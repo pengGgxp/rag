@@ -26,6 +26,7 @@ import {
 import { API_URL, request, streamRequest } from "./api";
 import { Modal } from "./modal";
 import { AccountButton } from "./auth";
+import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
 import "./chat.css";
 
@@ -61,6 +62,7 @@ type Message = {
   traces: Trace[];
   refused: boolean;
   error_detail?: string | null;
+  feedback?: Feedback | null;
 };
 type Conversation = {
   id: string;
@@ -840,6 +842,27 @@ export function ChatWorkspace({
                             >
                               <Copy size={15} />
                             </button>
+                          )}
+                          {message.status === "completed" && (
+                            <AnswerFeedback
+                              messageId={message.id}
+                              value={message.feedback}
+                              onChange={(feedback) =>
+                                setConversation((current) =>
+                                  current?.id === conversation.id
+                                    ? {
+                                        ...current,
+                                        messages: current.messages.map(
+                                          (item) =>
+                                            item.id === message.id
+                                              ? { ...item, feedback }
+                                              : item,
+                                        ),
+                                      }
+                                    : current,
+                                )
+                              }
+                            />
                           )}
                           {!!message.traces.length && (
                             <details className="answer-details">

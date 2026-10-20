@@ -1,3 +1,44 @@
+.feedback-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.feedback-actions .feedback-selected {
+  color: var(--accent);
+  background: #edf2ff;
+}
+.feedback-error {
+  color: #b83d43;
+  font-size: 12px;
+}
+.feedback-categories {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.feedback-categories legend {
+  font-size: 13px;
+  margin-bottom: 14px;
+}
+.feedback-form .feedback-categories label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.feedback-form .feedback-categories input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.feedback-remove {
+  margin-right: auto;
+}
 .chat-shell {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);

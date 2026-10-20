@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from .auth import Access, get_access
 from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase
+from .feedback import feedback_read
 
 
 class ConversationCreate(BaseModel):
@@ -54,6 +55,7 @@ def message_read(message: ChatMessage) -> dict:
         "citations": message.citations, "traces": message.traces,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
         "retrieval_query": message.retrieval_query, "error_detail": message.error_detail,
+        "feedback": feedback_read(message.feedback),
         "created_at": message.created_at.isoformat(),
     }
 

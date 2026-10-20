@@ -49,6 +49,7 @@ from .schemas import (
 from .storage import ensure_bucket, upload_fileobj
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
+from .feedback import router as feedback_router
 
 
 @asynccontextmanager
@@ -594,5 +595,6 @@ def answer_knowledge_base(
 
 app.include_router(auth_router)
 app.include_router(permissions_router)
+app.include_router(feedback_router)
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 
