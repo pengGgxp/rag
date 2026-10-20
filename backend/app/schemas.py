@@ -70,3 +70,27 @@ class SearchResult(BaseModel):
     score: float
     filename: str
 
+
+class TraceResultRead(BaseModel):
+    chunk_id: UUID
+    filename: str
+    score: float
+    rank: int
+    lexical_rank: int | None = None
+    vector_rank: int | None = None
+
+
+class QueryTraceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    knowledge_base_id: UUID
+    query: str
+    retrieval_mode: str
+    embedding_provider: str | None
+    embedding_model: str | None
+    embedding_dimension: int | None
+    result_count: int
+    results: list[TraceResultRead]
+    created_at: datetime
+

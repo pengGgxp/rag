@@ -22,6 +22,7 @@ from .models import (
     JobState,
     KnowledgeBase,
     KnowledgeBaseStatus,
+    QueryTrace,
 )
 from .schemas import (
     DocumentRead,
@@ -30,6 +31,7 @@ from .schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseRead,
     SearchResult,
+    QueryTraceRead,
 )
 from .storage import ensure_bucket, upload_fileobj
 from .tasks import embed_document, process_document
@@ -280,6 +282,14 @@ def get_job(job_id: UUID, db: Session = Depends(get_db)):
     return job
 
 
+@app.get("/traces/{trace_id}", response_model=QueryTraceRead)
+def get_query_trace(trace_id: UUID, db: Session = Depends(get_db)):
+    trace = db.get(QueryTrace, trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return trace
+
+
 @app.get("/documents/{document_id}/chunks", response_model=list[ChunkRead])
 def list_chunks(document_id: UUID, db: Session = Depends(get_db)):
     document = db.get(Document, document_id)
@@ -343,6 +353,7 @@ def search_knowledge_base(
     lexical_rows.sort(key=lambda item: item[2], reverse=True)
 
     vector_rows = []
+    retrieval_mode = "lexical"
     provider = OpenAICompatibleEmbeddingProvider()
     if provider.status.configured:
         try:
@@ -358,24 +369,56 @@ def search_knowledge_base(
                 .order_by(Chunk.embedding.cosine_distance(query_vector))
                 .limit(20)
             ).all()
+            retrieval_mode = "hybrid"
         except (EmbeddingProviderError, IndexError):
             vector_rows = []
+            retrieval_mode = "lexical_fallback"
 
     # Reciprocal rank fusion keeps lexical search useful for exact terms while
     # allowing semantic matches to rise when embeddings are available.
     fused: dict[UUID, dict] = {}
+    lexical_ranks: dict[UUID, int] = {}
     for rank, (chunk, filename, _lexical_score) in enumerate(lexical_rows, start=1):
+        lexical_ranks[chunk.id] = rank
         fused[chunk.id] = {
             "chunk": chunk,
             "filename": filename,
             "score": 1.0 / (60 + rank),
         }
+    vector_ranks: dict[UUID, int] = {}
     for rank, (chunk, filename) in enumerate(vector_rows, start=1):
+        vector_ranks[chunk.id] = rank
         entry = fused.setdefault(
             chunk.id,
             {"chunk": chunk, "filename": filename, "score": 0.0},
         )
         entry["score"] += 1.0 / (60 + rank)
+
+    ordered_results = sorted(fused.items(), key=lambda item: item[1]["score"], reverse=True)[:20]
+    trace_results = [
+        {
+            "chunk_id": str(chunk_id),
+            "filename": entry["filename"],
+            "score": float(entry["score"]),
+            "rank": rank,
+            "lexical_rank": lexical_ranks.get(chunk_id),
+            "vector_rank": vector_ranks.get(chunk_id),
+        }
+        for rank, (chunk_id, entry) in enumerate(ordered_results, start=1)
+    ]
+    trace = QueryTrace(
+        id=trace_id,
+        knowledge_base_id=knowledge_base_id,
+        query=query,
+        retrieval_mode=retrieval_mode,
+        embedding_provider=provider.status.provider,
+        embedding_model=provider.status.model,
+        embedding_dimension=provider.status.dimension if provider.status.configured else None,
+        result_count=len(trace_results),
+        results=trace_results,
+    )
+    db.add(trace)
+    db.commit()
 
     results = [
         SearchResult(
@@ -384,7 +427,7 @@ def search_knowledge_base(
             score=float(entry["score"]),
             filename=entry["filename"],
         )
-        for entry in fused.values()
+        for _, entry in ordered_results
     ]
-    return sorted(results, key=lambda item: item.score, reverse=True)[:20]
+    return results
 
