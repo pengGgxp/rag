@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .auth import Access, get_access
 from .db import get_db
 from .models import AnswerFeedback, ChatMessage, Conversation
+from .audit_log import record_audit
 
 Category = Literal["missing_source", "retrieval_error", "answer_error", "citation_error"]
 
@@ -63,6 +64,7 @@ router = APIRouter(tags=["feedback"])
 @router.post("/feedback")
 def write_feedback(
     payload: FeedbackWrite,
+    request: Request,
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
@@ -83,6 +85,13 @@ def write_feedback(
         set_={**values, "updated_at": func.now()},
     ))
     db.commit()
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="feedback.created_or_updated", resource_type="message",
+        resource_id=message.id, metadata={"rating": payload.rating, "category_count": len(payload.categories)},
+        request=request,
+    )
+    db.commit()
     row = db.scalar(select(AnswerFeedback).where(
         AnswerFeedback.message_id == message.id, AnswerFeedback.user_id == access.user_id,
     ).execution_options(populate_existing=True))
@@ -92,6 +101,7 @@ def write_feedback(
 @router.delete("/feedback/{message_id}", status_code=204)
 def delete_feedback(
     message_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
@@ -99,5 +109,9 @@ def delete_feedback(
     db.execute(delete(AnswerFeedback).where(
         AnswerFeedback.message_id == message_id, AnswerFeedback.user_id == access.user_id,
     ))
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="feedback.deleted", resource_type="message", resource_id=message_id, request=request,
+    )
     db.commit()
     return Response(status_code=204)

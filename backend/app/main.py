@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import redis
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func, or_, select, text
@@ -50,6 +50,8 @@ from .storage import ensure_bucket, upload_fileobj
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
+from .audit import router as audit_router
+from .audit_log import record_audit
 
 
 @asynccontextmanager
@@ -105,11 +107,17 @@ def health():
 
 
 @app.post("/knowledge-bases", response_model=KnowledgeBaseRead, status_code=status.HTTP_201_CREATED)
-def create_knowledge_base(payload: KnowledgeBaseCreate, db: Session = Depends(get_db),
-                          access: Access = Depends(get_access)):
+def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
+                          db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.editor()
     knowledge_base = KnowledgeBase(name=payload.name, description=payload.description, workspace_id=access.workspace_id)
     db.add(knowledge_base)
+    db.flush()
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="knowledge_base.created", resource_type="knowledge_base",
+        resource_id=knowledge_base.id, metadata={"name": payload.name[:100]}, request=request,
+    )
     db.commit()
     db.refresh(knowledge_base)
     return KnowledgeBaseRead.model_validate(knowledge_base)
@@ -141,6 +149,7 @@ def list_knowledge_bases(db: Session = Depends(get_db), access: Access = Depends
 )
 def upload_document(
     knowledge_base_id: UUID,
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
@@ -196,6 +205,12 @@ def upload_document(
     job = IngestionJob(document_id=document.id)
     db.add(job)
     knowledge_base.status = KnowledgeBaseStatus.PROCESSING
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="document.uploaded", resource_type="document", resource_id=document.id,
+        metadata={"knowledge_base_id": str(knowledge_base_id), "filename": document.filename[:255],
+                  "size_bytes": document.size_bytes}, request=request,
+    )
     db.commit()
     db.refresh(document)
     process_document.delay(str(job.id))
@@ -228,7 +243,7 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), acces
 
 
 @app.delete("/documents/{document_id}", response_model=DocumentRead)
-def delete_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+def delete_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -252,13 +267,19 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db), access: Ac
     document.knowledge_base.status = (
         KnowledgeBaseStatus.READY if remaining_ready else KnowledgeBaseStatus.DRAFT
     )
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="document.deleted", resource_type="document", resource_id=document.id,
+        metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
+        request=request,
+    )
     db.commit()
     db.refresh(document)
     return DocumentRead.model_validate(document)
 
 
 @app.post("/documents/{document_id}/restore", response_model=DocumentRead)
-def restore_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+def restore_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -282,6 +303,12 @@ def restore_document(document_id: UUID, db: Session = Depends(get_db), access: A
     if has_ready_embeddings:
         job.state = JobState.SUCCEEDED
     db.add(job)
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="document.restored", resource_type="document", resource_id=document.id,
+        metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
+        request=request,
+    )
     db.commit()
     db.refresh(document)
     db.refresh(job)
@@ -327,7 +354,7 @@ def list_chunks(document_id: UUID, db: Session = Depends(get_db), access: Access
 
 
 @app.post("/documents/{document_id}/reindex", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
-def reindex_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+def reindex_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -341,6 +368,12 @@ def reindex_document(document_id: UUID, db: Session = Depends(get_db), access: A
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     job = IngestionJob(document_id=document.id)
     db.add(job)
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="document.reindexed", resource_type="document", resource_id=document.id,
+        metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
+        request=request,
+    )
     db.commit()
     db.refresh(job)
     embed_document.delay(str(document.id), str(job.id))
@@ -596,5 +629,6 @@ def answer_knowledge_base(
 app.include_router(auth_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
+app.include_router(audit_router)
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
+from .audit_log import record_audit
 from .models import (
     AuthToken, Conversation, ExternalIdentity, KnowledgeBase, LibraryGrant,
     LoginSession, Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
@@ -198,7 +199,7 @@ def session_info(db, session):
     }
 
 
-def login_response(db, user, previous=None, workspace_id=None):
+def login_response(db, user, previous=None, workspace_id=None, request=None, action="auth.login"):
     if workspace_id is None:
         workspace_id = db.scalar(select(Membership.workspace_id).where(Membership.user_id == user.id))
     if workspace_id is None:
@@ -212,6 +213,10 @@ def login_response(db, user, previous=None, workspace_id=None):
         csrf_token=secrets.token_urlsafe(32), expires_at=now() + timedelta(hours=settings.auth_session_hours),
     )
     db.add(session)
+    record_audit(
+        db, workspace_id=workspace_id, actor_user_id=user.id, action=action,
+        resource_type="session", request=request,
+    )
     db.commit()
     response = JSONResponse(session_info(db, session))
     response.set_cookie(COOKIE, raw, httponly=True, secure=settings.auth_cookie_secure,
@@ -237,7 +242,7 @@ def register(payload: Registration, request: Request, db: Session = Depends(get_
         raise HTTPException(409, "邮箱已被使用，请登录或找回密码")
     try:
         user, workspace_id = create_user(db, payload.email, payload.name, payload.password)
-        response = login_response(db, user, request.cookies.get(COOKIE), workspace_id)
+        response = login_response(db, user, request.cookies.get(COOKIE), workspace_id, request, "auth.register")
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(409, "邮箱已被使用") from exc
@@ -253,7 +258,7 @@ def login(payload: Credentials, request: Request, db: Session = Depends(get_db))
     valid = passwords.verify(payload.password, user.password_hash if user and user.password_hash else DUMMY_HASH)
     if not user or not user.password_hash or not valid:
         raise HTTPException(401, "邮箱或密码不正确")
-    return login_response(db, user, request.cookies.get(COOKIE))
+    return login_response(db, user, request.cookies.get(COOKIE), request=request)
 
 
 @router.get("/me")
@@ -262,7 +267,11 @@ def me(session: LoginSession = Depends(current_session), db: Session = Depends(g
 
 
 @router.post("/logout", status_code=204)
-def logout(session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+def logout(request: Request, session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+    record_audit(
+        db, workspace_id=session.workspace_id, actor_user_id=session.user_id,
+        action="auth.logout", resource_type="session", request=request,
+    )
     db.delete(session)
     db.commit()
     response = JSONResponse(None, status_code=204)
@@ -284,6 +293,10 @@ def change_password(payload: PasswordChange, request: Request,
         raise HTTPException(400, "当前密码不正确")
     user.password_hash = passwords.hash(payload.password)
     db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.token_hash != session.token_hash))
+    record_audit(
+        db, workspace_id=session.workspace_id, actor_user_id=session.user_id,
+        action="auth.password_changed", resource_type="user", resource_id=user.id, request=request,
+    )
     db.commit()
     return {"message": "密码已更新，其他设备已退出登录"}
 
@@ -313,7 +326,7 @@ def bootstrap(payload: Bootstrap, request: Request, db: Session = Depends(get_db
         QueryTrace.knowledge_base_id.in_(select(KnowledgeBase.id).where(KnowledgeBase.workspace_id == LEGACY_WORKSPACE_ID)),
     ).values(owner_id=user.id))
     db.execute(delete(AuthToken).where(AuthToken.purpose == "bootstrap"))
-    return login_response(db, user, request.cookies.get(COOKIE), LEGACY_WORKSPACE_ID)
+    return login_response(db, user, request.cookies.get(COOKIE), LEGACY_WORKSPACE_ID, request, "auth.bootstrap")
 
 
 class EmailRequest(BaseModel):
@@ -375,6 +388,11 @@ def reset(payload: ResetPassword, request: Request, db: Session = Depends(get_db
     db.execute(update(User).where(User.id == user_id).values(password_hash=new_hash))
     db.execute(delete(AuthToken).where(AuthToken.user_id == user_id, AuthToken.purpose == "reset"))
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
+    for workspace_id in db.scalars(select(Membership.workspace_id).where(Membership.user_id == user_id)):
+        record_audit(
+            db, workspace_id=workspace_id, actor_user_id=user_id,
+            action="auth.password_reset", resource_type="user", resource_id=user_id, request=request,
+        )
     db.commit()
     response = JSONResponse({"message": "密码已更新，请重新登录"})
     response.delete_cookie(COOKIE, path="/")
@@ -386,10 +404,17 @@ class SwitchWorkspace(BaseModel):
 
 
 @router.post("/workspace")
-def switch(payload: SwitchWorkspace, session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+def switch(payload: SwitchWorkspace, request: Request,
+           session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
     if db.get(Membership, (payload.workspace_id, session.user_id)) is None:
         raise HTTPException(404, "工作区不存在")
+    previous_workspace_id = session.workspace_id
     session.workspace_id = payload.workspace_id
+    record_audit(
+        db, workspace_id=payload.workspace_id, actor_user_id=session.user_id,
+        action="auth.workspace_switched", resource_type="workspace",
+        resource_id=payload.workspace_id, metadata={"from_workspace_id": str(previous_workspace_id)}, request=request,
+    )
     db.commit()
     return session_info(db, session)
 
@@ -409,7 +434,7 @@ class MemberUpdate(BaseModel):
 
 
 @router.put("/members")
-def set_member(payload: MemberUpdate, access: Access = Depends(get_access), db: Session = Depends(get_db)):
+def set_member(payload: MemberUpdate, request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
     access.admin()
     # Lock all membership changes on the same workspace, including last-admin protection.
     db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
@@ -421,8 +446,15 @@ def set_member(payload: MemberUpdate, access: Access = Depends(get_access), db: 
         protect_last_admin(db, access.workspace_id)
     if member:
         member.role = payload.role
+        action = "workspace.member_role_changed"
     else:
         db.add(Membership(workspace_id=access.workspace_id, user_id=user.id, role=payload.role))
+        action = "workspace.member_added"
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action=action, resource_type="membership", resource_id=user.id,
+        metadata={"role": payload.role}, request=request,
+    )
     db.commit()
     return {"message": "成员已更新"}
 
@@ -436,7 +468,7 @@ def protect_last_admin(db, workspace_id):
 
 
 @router.delete("/members/{user_id}", status_code=204)
-def remove_member(user_id: UUID, access: Access = Depends(get_access), db: Session = Depends(get_db)):
+def remove_member(user_id: UUID, request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
     access.admin()
     db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
     member = db.get(Membership, (access.workspace_id, user_id))
@@ -447,6 +479,11 @@ def remove_member(user_id: UUID, access: Access = Depends(get_access), db: Sessi
     db.execute(delete(LibraryGrant).where(LibraryGrant.user_id == user_id,
         LibraryGrant.knowledge_base_id.in_(select(KnowledgeBase.id).where(KnowledgeBase.workspace_id == access.workspace_id))))
     db.delete(member)
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="workspace.member_removed", resource_type="membership", resource_id=user_id,
+        metadata={"role": member.role}, request=request,
+    )
     db.commit()
 
 
@@ -511,7 +548,7 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
                 return RedirectResponse(f"{settings.frontend_url}/?auth_error=link_required", status_code=303)
             user, _ = create_user(db, email, (info.get("name") or email.split("@")[0])[:100])
             db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=user.id))
-        signed_in = login_response(db, user, request.cookies.get(COOKIE))
+        signed_in = login_response(db, user, request.cookies.get(COOKIE), request=request)
         response = RedirectResponse(settings.frontend_url, status_code=303)
         for cookie in signed_in.headers.getlist("set-cookie"):
             response.headers.append("set-cookie", cookie)
@@ -541,7 +578,7 @@ def library_permissions(id: UUID, access: Access = Depends(get_access), db: Sess
 
 @permissions_router.put("/knowledge-bases/{id}/permissions")
 def update_library_permissions(id: UUID, payload: LibraryPermissions,
-                               access: Access = Depends(get_access), db: Session = Depends(get_db)):
+                               request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
     access.admin()
     db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
     library = access.library(db, id)
@@ -553,5 +590,10 @@ def update_library_permissions(id: UUID, payload: LibraryPermissions,
     library.restricted = payload.restricted
     db.execute(delete(LibraryGrant).where(LibraryGrant.knowledge_base_id == id))
     db.add_all([LibraryGrant(knowledge_base_id=id, user_id=user_id) for user_id in ids] if payload.restricted else [])
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="knowledge_base.permission_changed", resource_type="knowledge_base", resource_id=id,
+        metadata={"restricted": payload.restricted, "member_count": len(ids)}, request=request,
+    )
     db.commit()
     return {"message": "访问权限已更新"}

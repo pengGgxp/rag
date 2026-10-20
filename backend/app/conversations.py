@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, update
@@ -17,6 +17,7 @@ from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatPr
 from .auth import Access, get_access
 from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase
 from .feedback import feedback_read
+from .audit_log import record_audit
 
 
 class ConversationCreate(BaseModel):
@@ -106,7 +107,8 @@ def chat_router(get_db, retrieve):
     router = APIRouter(prefix="/conversations", tags=["conversations"])
 
     @router.post("", status_code=201)
-    def create(payload: ConversationCreate, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+    def create(payload: ConversationCreate, request: Request,
+               db: Session = Depends(get_db), access: Access = Depends(get_access)):
         ids = list(dict.fromkeys(payload.knowledge_base_ids))
         for id in ids:
             access.library(db, id)
@@ -114,6 +116,12 @@ def chat_router(get_db, retrieve):
             ConversationLibrary(knowledge_base_id=id) for id in ids
         ])
         db.add(conversation)
+        db.flush()
+        record_audit(
+            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            action="conversation.created", resource_type="conversation",
+            resource_id=conversation.id, metadata={"knowledge_base_count": len(ids)}, request=request,
+        )
         db.commit()
         db.refresh(conversation)
         return conversation_read(conversation, True)
@@ -133,14 +141,21 @@ def chat_router(get_db, retrieve):
         return conversation_read(live_conversation(db, conversation_id, access), True)
 
     @router.patch("/{conversation_id}")
-    def rename(conversation_id: UUID, payload: ConversationRename, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+    def rename(conversation_id: UUID, payload: ConversationRename, request: Request,
+               db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = live_conversation(db, conversation_id, access)
         conversation.title = payload.title
+        record_audit(
+            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            action="conversation.renamed", resource_type="conversation",
+            resource_id=conversation.id, metadata={"title": payload.title[:100]}, request=request,
+        )
         db.commit()
         return conversation_read(conversation)
 
     @router.delete("/{conversation_id}", status_code=204)
-    def delete(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+    def delete(conversation_id: UUID, request: Request,
+               db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = db.scalar(select(Conversation).where(
             Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
         ).with_for_update())
@@ -152,6 +167,11 @@ def chat_router(get_db, retrieve):
         ).values(status="cancelled", error_detail=None))
         conversation.deleted_at = datetime.now(timezone.utc)
         conversation.active_request_id = None
+        record_audit(
+            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            action="conversation.deleted", resource_type="conversation",
+            resource_id=conversation.id, request=request,
+        )
         db.commit()
         return Response(status_code=204)
 
