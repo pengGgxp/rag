@@ -98,6 +98,24 @@ export default function Home() {
     }
   }
 
+  async function updateDocument(document: Document, action: "delete" | "restore") {
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${API_URL}/documents/${document.id}${action === "restore" ? "/restore" : ""}`, {
+        method: action === "delete" ? "DELETE" : "POST",
+      });
+      if (!response.ok) throw new Error((await response.json()).detail ?? "Document update failed");
+      await loadDocuments(selectedId);
+      await loadKnowledgeBases();
+      setMessage(action === "delete" ? "Document deleted." : "Document restored.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Document update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selected = knowledgeBases.find((item) => item.id === selectedId);
 
   return (
@@ -165,7 +183,14 @@ export default function Home() {
                 {documents.map((document) => (
                   <article className="document" key={document.id}>
                     <div><strong>{document.filename}</strong><small>{Math.ceil(document.size_bytes / 1024)} KB · {document.content_type}</small></div>
-                    <span className={`pill ${document.status}`}>{document.job?.state ?? document.status}</span>
+                    <div className="document-actions">
+                      <span className={`pill ${document.status}`}>{document.job?.state ?? document.status}</span>
+                      {document.status === "deleted" ? (
+                        <button className="ghost" disabled={busy} onClick={() => updateDocument(document, "restore")}>Restore</button>
+                      ) : (
+                        <button className="ghost danger" disabled={busy} onClick={() => updateDocument(document, "delete")}>Delete</button>
+                      )}
+                    </div>
                   </article>
                 ))}
                 {!documents.length && <p className="muted">No documents yet.</p>}

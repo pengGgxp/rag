@@ -34,6 +34,11 @@ def process_document(self, job_id: str) -> None:
             job.error_detail = "Document no longer exists"
             session.commit()
             return
+        if document.status == DocumentStatus.DELETED:
+            job.state = JobState.CANCELLED
+            job.error_detail = "Document deleted"
+            session.commit()
+            return
 
         job.state = JobState.RUNNING
         document.status = DocumentStatus.PROCESSING
@@ -47,6 +52,12 @@ def process_document(self, job_id: str) -> None:
         )
         if not parsed_text.strip():
             raise ValueError("The document parser produced no text")
+        session.refresh(document)
+        if document.status == DocumentStatus.DELETED:
+            job.state = JobState.CANCELLED
+            job.error_detail = "Document deleted"
+            session.commit()
+            return
         document.parsed_text = parsed_text
         document.parser_name = parser_name
         document.chunks.clear()
@@ -72,6 +83,15 @@ def process_document(self, job_id: str) -> None:
         embedding_job = IngestionJob(document_id=document.id)
         session.add(embedding_job)
         session.flush()
+        session.refresh(document)
+        if document.status == DocumentStatus.DELETED:
+            session.rollback()
+            job = session.get(IngestionJob, job_id)
+            if job is not None:
+                job.state = JobState.CANCELLED
+                job.error_detail = "Document deleted"
+                session.commit()
+            return
         session.commit()
         embed_document.delay(str(document.id), str(embedding_job.id))
     except Exception as exc:
@@ -105,6 +125,12 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
             if job is not None:
                 job.state = JobState.FAILED
                 job.error_detail = "Document no longer exists"
+                session.commit()
+            return
+        if document.status == DocumentStatus.DELETED:
+            if job is not None:
+                job.state = JobState.CANCELLED
+                job.error_detail = "Document deleted"
                 session.commit()
             return
         chunks = list(
@@ -144,10 +170,26 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
         vectors = provider.embed_texts([chunk.text for chunk in pending])
         if len(vectors) != len(pending):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
+        session.refresh(document)
+        if document.status == DocumentStatus.DELETED:
+            if job is not None:
+                job.state = JobState.CANCELLED
+                job.error_detail = "Document deleted"
+                session.commit()
+            return
         for chunk, vector in zip(pending, vectors):
             chunk.embedding = vector
             chunk.embedding_status = EmbeddingStatus.READY
             chunk.embedding_error = None
+        session.refresh(document)
+        if document.status == DocumentStatus.DELETED:
+            session.rollback()
+            if job is not None:
+                job = session.get(IngestionJob, job.id)
+                job.state = JobState.CANCELLED
+                job.error_detail = "Document deleted"
+                session.commit()
+            return
         document.status = DocumentStatus.READY
         document.error_detail = None
         document.knowledge_base.status = KnowledgeBaseStatus.READY

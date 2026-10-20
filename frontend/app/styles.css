@@ -44,8 +44,10 @@ textarea { resize: vertical; }
 .documents { margin-top: 34px; }
 .section-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .document { display: flex; justify-content: space-between; gap: 20px; align-items: center; border-top: 1px solid var(--line); padding: 15px 0; }
-.document div { display: grid; gap: 5px; min-width: 0; }
+.document > div:first-child { display: grid; gap: 5px; min-width: 0; }
 .document strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-actions { display: flex; align-items: center; gap: 8px; }
+.ghost.danger { color: #9a4038; }
 .pill { display: inline-flex; border-radius: 999px; padding: 5px 9px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; background: #edf0ee; color: var(--muted); }
 .pill.ready, .pill.succeeded { color: #176b4d; background: var(--accent-soft); }
 .pill.processing, .pill.running { color: #865b1e; background: #fbefd9; }

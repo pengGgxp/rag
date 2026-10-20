@@ -97,7 +97,11 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, db: Session = Depends(ge
 def list_knowledge_bases(db: Session = Depends(get_db)):
     rows = db.execute(
         select(KnowledgeBase, func.count(Document.id))
-        .outerjoin(Document, Document.knowledge_base_id == KnowledgeBase.id)
+        .outerjoin(
+            Document,
+            (Document.knowledge_base_id == KnowledgeBase.id)
+            & (Document.status != DocumentStatus.DELETED),
+        )
         .group_by(KnowledgeBase.id)
         .order_by(KnowledgeBase.created_at.desc())
     ).all()
@@ -200,6 +204,72 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db)):
             )
         )
     return result
+
+
+@app.delete("/documents/{document_id}", response_model=DocumentRead)
+def delete_document(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.status == DocumentStatus.DELETED:
+        return DocumentRead.model_validate(document)
+
+    document.status = DocumentStatus.DELETED
+    document.error_detail = None
+    for job in document.jobs:
+        if job.state in (JobState.QUEUED, JobState.RUNNING):
+            job.state = JobState.CANCELLED
+            job.error_detail = "Document deleted"
+    remaining_ready = db.scalar(
+        select(func.count(Document.id)).where(
+            Document.knowledge_base_id == document.knowledge_base_id,
+            Document.id != document.id,
+            Document.status == DocumentStatus.READY,
+        )
+    )
+    document.knowledge_base.status = (
+        KnowledgeBaseStatus.READY if remaining_ready else KnowledgeBaseStatus.DRAFT
+    )
+    db.commit()
+    db.refresh(document)
+    return DocumentRead.model_validate(document)
+
+
+@app.post("/documents/{document_id}/restore", response_model=DocumentRead)
+def restore_document(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.status != DocumentStatus.DELETED:
+        return DocumentRead.model_validate(document)
+
+    document.error_detail = None
+    document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
+    has_ready_embeddings = bool(document.chunks) and all(
+        chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
+        for chunk in document.chunks
+    )
+    document.status = DocumentStatus.READY if has_ready_embeddings else DocumentStatus.PROCESSING
+    if not has_ready_embeddings:
+        for chunk in document.chunks:
+            chunk.embedding = None
+            chunk.embedding_status = EmbeddingStatus.PENDING
+            chunk.embedding_error = None
+    job = IngestionJob(document_id=document.id)
+    if has_ready_embeddings:
+        job.state = JobState.SUCCEEDED
+    db.add(job)
+    db.commit()
+    db.refresh(document)
+    db.refresh(job)
+    if has_ready_embeddings:
+        document.knowledge_base.status = KnowledgeBaseStatus.READY
+        db.commit()
+    else:
+        embed_document.delay(str(document.id), str(job.id))
+    return DocumentRead.model_validate(document).model_copy(
+        update={"job": JobRead.model_validate(job)}
+    )
 
 
 @app.get("/jobs/{job_id}", response_model=JobRead)
