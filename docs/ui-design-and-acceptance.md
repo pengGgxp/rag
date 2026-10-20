@@ -1,5 +1,8 @@
 # 知识工作空间界面
 
+本文件记录 Issue #10 的历史设计与验收。当前产品导航已按用户要求调整为
+RAGFlow / Dify 的工作流层级，见 [产品导航调整](product-navigation-acceptance.md)。
+
 ## 目标与边界
 
 对应 GitHub Issue #10。根据用户要求，已通过 Gemini 网页版咨询 UI 设计。

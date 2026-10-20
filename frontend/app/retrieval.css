@@ -1,5 +1,5 @@
 .retrieval-view {
-  padding: 29px 40px 40px;
+  padding: 8px 32px 40px;
   max-width: 1100px;
 }
 .retrieval-search {
@@ -127,6 +127,17 @@
   flex-wrap: wrap;
   gap: 10px 18px;
   margin: 14px 0 0 31px;
+}
+.result-details {
+  margin: 14px 0 0 31px;
+  color: #76828a;
+  font-size: 11px;
+}
+.result-details summary {
+  cursor: pointer;
+}
+.result-details .rank-metrics {
+  margin-left: 0;
 }
 .rank-metrics > div {
   display: flex;
@@ -310,6 +321,7 @@
   .retrieval-location,
   .retrieval-excerpt,
   .rank-metrics,
+  .result-details,
   .trace-result .rank-metrics,
   .chunk-id {
     margin-left: 0;

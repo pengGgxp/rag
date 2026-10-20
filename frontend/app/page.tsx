@@ -13,13 +13,13 @@ import {
 } from "react";
 import {
   ArrowRight,
+  ArrowLeft,
   ArrowUp,
   BookOpen,
   Check,
   ChevronRight,
   CircleAlert,
   Copy,
-  Database,
   FileText,
   FolderClosed,
   Layers3,
@@ -30,6 +30,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Settings2,
   Server,
   Trash2,
   Upload,
@@ -195,9 +196,14 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState("");
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
-  const [view, setView] = useState<"documents" | "answers" | "retrieval">(
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [screen, setScreen] = useState<"catalog" | "knowledge" | "chat">(
+    "catalog",
+  );
+  const [view, setView] = useState<"documents" | "retrieval" | "settings">(
     "documents",
   );
+  const [diagnostics, setDiagnostics] = useState(false);
   const [traceId, setTraceId] = useState<string | null>(null);
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
@@ -233,6 +239,16 @@ export default function Home() {
       error: true,
     });
   }, []);
+  const refreshHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      setHealth(await request<Health>("/health"));
+    } catch {
+      setHealth(null);
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
   const loadLibraries = useCallback(async () => {
     try {
       const data = await request<KnowledgeBase[]>("/knowledge-bases");
@@ -258,11 +274,9 @@ export default function Home() {
   }, []);
   useEffect(() => {
     loadLibraries().catch(notifyError);
-    request<Health>("/health")
-      .then(setHealth)
-      .catch(() => setHealth(null));
+    void refreshHealth();
     return () => answerRequest.current?.abort();
-  }, [loadLibraries, notifyError]);
+  }, [loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
     answerRequest.current?.abort();
     setAsking(false);
@@ -328,6 +342,7 @@ export default function Home() {
       });
       setLibraries((items) => [created, ...items]);
       setSelectedId(created.id);
+      setScreen("knowledge");
       setView("documents");
       setName("");
       setDescription("");
@@ -449,16 +464,22 @@ export default function Home() {
     setPreview({
       filename: citation.filename,
       text: citation.text,
-      detail: `${citation.heading_path ? `${citation.heading_path} · ` : ""}字符 ${citation.char_start}–${citation.char_end} · Chunk ${citation.chunk_id}`,
+      detail: `${citation.heading_path ? `${citation.heading_path} · ` : ""}字符 ${citation.char_start}–${citation.char_end}`,
     });
+  }
+  function openLibrary(
+    id: string,
+    destination: "knowledge" | "chat" = "knowledge",
+  ) {
+    setSelectedId(id);
+    setScreen(destination);
+    setView("documents");
+    setSidebarOpen(false);
   }
   const selected = libraries.find((item) => item.id === selectedId);
   const activeDocuments = documents.filter((doc) => doc.status !== "deleted");
   const readyCount = activeDocuments.filter(
     (doc) => doc.status === "ready",
-  ).length;
-  const processingCount = activeDocuments.filter((doc) =>
-    ["queued", "processing"].includes(doc.status),
   ).length;
   const visibleDocuments = documents.filter(
     (doc) =>
@@ -482,22 +503,44 @@ export default function Home() {
         className={`sidebar ${sidebarOpen ? "is-open" : ""}`}
         aria-label="工作空间导航"
       >
-        <a className="brand" href="/">
+        <a
+          className="brand"
+          href="/"
+          onClick={(event) => {
+            event.preventDefault();
+            setScreen("catalog");
+            setSidebarOpen(false);
+          }}
+        >
           <span className="brand-mark">
             <Layers3 size={23} />
           </span>
-          <span>
-            知库<span className="brand-caption">KNOWLEDGE WORKSPACE</span>
-          </span>
+          <span>知库</span>
         </a>
-        <div className="workspace-identity">
-          <span className="workspace-monogram">
-            <Database size={17} />
-          </span>
-          <div>
-            <strong>我的工作空间</strong>
-            <small>本地部署</small>
-          </div>
+        <nav className="primary-navigation" aria-label="产品导航">
+          <button
+            className={screen !== "chat" ? "selected" : ""}
+            onClick={() => {
+              setScreen("catalog");
+              setSidebarOpen(false);
+            }}
+          >
+            <BookOpen size={18} />
+            知识库
+          </button>
+          <button
+            className={screen === "chat" ? "selected" : ""}
+            onClick={() => {
+              if (selectedId) openLibrary(selectedId, "chat");
+              else {
+                setScreen("chat");
+                setSidebarOpen(false);
+              }
+            }}
+          >
+            <MessageSquare size={18} />
+            知识问答
+          </button>
           <button
             className="icon-button mobile-only"
             aria-label="关闭导航"
@@ -505,68 +548,129 @@ export default function Home() {
           >
             <X size={18} />
           </button>
-        </div>
-        <div className="sidebar-section-heading">
-          <span>知识库</span>
-          <span className="sidebar-heading-actions">
-            <span>{libraries.length}</span>
+        </nav>
+        {screen !== "catalog" && (
+          <>
+            {screen === "knowledge" && selected && (
+              <nav className="knowledge-navigation" aria-label="知识库管理">
+                <button
+                  className="back-link"
+                  onClick={() => {
+                    setScreen("catalog");
+                    setSidebarOpen(false);
+                  }}
+                >
+                  <ArrowLeft size={15} />
+                  全部知识库
+                </button>
+                <div className="knowledge-navigation-title">
+                  <BookOpen size={18} />
+                  <strong>{selected.name}</strong>
+                </div>
+                <button
+                  className={view === "documents" ? "selected" : ""}
+                  onClick={() => {
+                    setView("documents");
+                    setSidebarOpen(false);
+                  }}
+                  aria-current={view === "documents" ? "page" : undefined}
+                >
+                  <FolderClosed size={16} />
+                  文档<span>{activeDocuments.length}</span>
+                </button>
+                <button
+                  className={view === "retrieval" ? "selected" : ""}
+                  onClick={() => {
+                    setView("retrieval");
+                    setSidebarOpen(false);
+                  }}
+                  aria-current={view === "retrieval" ? "page" : undefined}
+                >
+                  <Search size={16} />
+                  检索测试
+                </button>
+                <button
+                  className={view === "settings" ? "selected" : ""}
+                  onClick={() => {
+                    setView("settings");
+                    setSidebarOpen(false);
+                    void refreshHealth();
+                  }}
+                  aria-current={view === "settings" ? "page" : undefined}
+                >
+                  <Settings2 size={16} />
+                  配置
+                </button>
+              </nav>
+            )}
+            <div className="sidebar-section-heading">
+              <span>{screen === "chat" ? "选择知识库" : "切换知识库"}</span>
+              <span className="sidebar-heading-actions">
+                <span>{libraries.length}</span>
+                <button
+                  className="icon-button"
+                  title="新建知识库"
+                  aria-label="新建知识库"
+                  onClick={() => openModal("create")}
+                >
+                  <Plus size={16} />
+                </button>
+              </span>
+            </div>
+            <label className="search-field sidebar-search">
+              <Search size={15} />
+              <input
+                aria-label="搜索知识库"
+                placeholder="搜索知识库"
+                value={librarySearch}
+                onChange={(event) => setLibrarySearch(event.target.value)}
+              />
+            </label>
+            <nav className="library-list" aria-label="知识库">
+              {filteredLibraries.map((library) => (
+                <button
+                  key={library.id}
+                  className={`library-item ${selectedId === library.id ? "selected" : ""}`}
+                  aria-current={selectedId === library.id ? "page" : undefined}
+                  onClick={() => {
+                    openLibrary(
+                      library.id,
+                      screen === "chat" ? "chat" : "knowledge",
+                    );
+                  }}
+                >
+                  <BookOpen size={17} />
+                  <span>{library.name}</span>
+                  <small>{library.document_count}</small>
+                </button>
+              ))}
+              {libraryLoading && <p className="sidebar-empty">正在加载…</p>}
+              {!libraryLoading && !filteredLibraries.length && (
+                <p className="sidebar-empty">
+                  {librarySearch ? "没有匹配的知识库" : "暂无知识库"}
+                </p>
+              )}
+            </nav>
             <button
-              className="icon-button"
-              title="新建知识库"
-              aria-label="新建知识库"
+              className="create-library"
               onClick={() => openModal("create")}
             >
               <Plus size={16} />
+              新建知识库
             </button>
-          </span>
-        </div>
-        <label className="search-field sidebar-search">
-          <Search size={15} />
-          <input
-            aria-label="搜索知识库"
-            placeholder="搜索知识库"
-            value={librarySearch}
-            onChange={(event) => setLibrarySearch(event.target.value)}
-          />
-        </label>
-        <nav className="library-list" aria-label="知识库">
-          {filteredLibraries.map((library) => (
-            <button
-              key={library.id}
-              className={`library-item ${selectedId === library.id ? "selected" : ""}`}
-              aria-current={selectedId === library.id ? "page" : undefined}
-              onClick={() => {
-                setSelectedId(library.id);
-                setSidebarOpen(false);
-              }}
-            >
-              <BookOpen size={17} />
-              <span>{library.name}</span>
-              <small>{library.document_count}</small>
-            </button>
-          ))}
-          {libraryLoading && <p className="sidebar-empty">正在加载…</p>}
-          {!libraryLoading && !filteredLibraries.length && (
-            <p className="sidebar-empty">
-              {librarySearch ? "没有匹配的知识库" : "暂无知识库"}
-            </p>
-          )}
-        </nav>
-        <button className="create-library" onClick={() => openModal("create")}>
-          <Plus size={16} />
-          新建知识库
-        </button>
+          </>
+        )}
         <div className="sidebar-footer">
-          <Server size={16} />
-          <div>
-            <strong>本地 Docker</strong>
-            <small>
-              <span
-                className={`status-dot ${health?.status === "ok" ? "online" : ""}`}
-              />
-              {health?.status === "ok" ? "服务运行中" : "服务状态待检查"}
-            </small>
-          </div>
+          <button
+            className="diagnostics-link"
+            onClick={() => {
+              setDiagnostics(true);
+              void refreshHealth();
+            }}
+          >
+            <Settings2 size={16} />
+            系统诊断
+          </button>
         </div>
       </aside>
       <main className="main">
@@ -580,16 +684,90 @@ export default function Home() {
             >
               <Menu size={19} />
             </button>
-            <span>工作空间</span>
-            <ChevronRight size={14} />
-            <strong>{selected?.name || "知识库"}</strong>
+            <button
+              className="breadcrumb-link"
+              onClick={() => setScreen("catalog")}
+            >
+              知识库
+            </button>
+            {screen !== "catalog" && (
+              <>
+                <ChevronRight size={14} />
+                <strong>
+                  {screen === "chat" ? "知识问答" : selected?.name || "知识库"}
+                </strong>
+              </>
+            )}
           </div>
-          <span className="environment">
-            <span className="status-dot online" />
-            LOCAL
-          </span>
+          {screen === "knowledge" && selected && (
+            <button
+              className="secondary"
+              onClick={() => openLibrary(selectedId, "chat")}
+            >
+              <MessageSquare size={15} />
+              前往问答
+            </button>
+          )}
         </header>
-        {selected ? (
+        {screen === "catalog" ? (
+          <section className="catalog" aria-label="知识库列表">
+            <div className="catalog-heading">
+              <h1>知识库</h1>
+              <button className="primary" onClick={() => openModal("create")}>
+                <Plus size={16} />
+                新建知识库
+              </button>
+            </div>
+            <div className="catalog-toolbar">
+              <span>
+                全部知识库 <span className="count">{libraries.length}</span>
+              </span>
+              <label className="search-field">
+                <Search size={15} />
+                <input
+                  aria-label="搜索知识库"
+                  placeholder="搜索知识库"
+                  value={librarySearch}
+                  onChange={(event) => setLibrarySearch(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="library-grid">
+              {filteredLibraries.map((library) => (
+                <button
+                  className="library-card"
+                  key={library.id}
+                  onClick={() => openLibrary(library.id)}
+                >
+                  <span className="catalog-library-icon">
+                    <BookOpen size={23} strokeWidth={1.7} />
+                  </span>
+                  <h2>{library.name}</h2>
+                  <p>{library.description || "暂无描述"}</p>
+                  <span className="library-card-footer">
+                    <span>
+                      <FileText size={14} />
+                      {library.document_count} 份文档
+                    </span>
+                    <ChevronRight size={16} />
+                  </span>
+                </button>
+              ))}
+            </div>
+            {!filteredLibraries.length && (
+              <div className="empty-state">
+                <BookOpen size={30} />
+                <h2>
+                  {libraryLoading
+                    ? "正在加载…"
+                    : librarySearch
+                      ? "没有匹配的知识库"
+                      : "暂无知识库"}
+                </h2>
+              </div>
+            )}
+          </section>
+        ) : selected ? (
           <>
             <div className="page-heading">
               <div className="library-symbol">
@@ -598,92 +776,82 @@ export default function Home() {
               <div>
                 <div className="title-line">
                   <h1>{selected.name}</h1>
-                  <span className="subtle-label">知识库</span>
+                  <span className="subtle-label">
+                    {screen === "chat"
+                      ? "知识问答"
+                      : view === "retrieval"
+                        ? "检索测试"
+                        : view === "settings"
+                          ? "配置"
+                          : "文档"}
+                  </span>
                 </div>
                 <p>
                   {selected.description || `${selected.document_count} 份文档`}
                 </p>
               </div>
             </div>
-            <div className="view-tabs" role="tablist" aria-label="知识库视图">
-              <button
-                role="tab"
-                aria-selected={view === "documents"}
-                aria-controls="documents-view"
-                id="documents-tab"
-                className={view === "documents" ? "active" : ""}
-                onClick={() => setView("documents")}
-              >
-                <FolderClosed size={16} />
-                文档<span>{activeDocuments.length}</span>
-              </button>
-              <button
-                role="tab"
-                aria-selected={view === "answers"}
-                aria-controls="answers-view"
-                id="answers-tab"
-                className={view === "answers" ? "active" : ""}
-                onClick={() => setView("answers")}
-              >
-                <MessageSquare size={16} />
-                知识问答
-              </button>
-              <button
-                role="tab"
-                aria-selected={view === "retrieval"}
-                aria-controls="retrieval-view"
-                id="retrieval-tab"
-                className={view === "retrieval" ? "active" : ""}
-                onClick={() => setView("retrieval")}
-              >
-                <Search size={16} />
-                检索调试
-              </button>
-            </div>
-            {view === "retrieval" ? (
+            {screen === "knowledge" && view === "settings" ? (
+              <section className="configuration" aria-label="知识库配置">
+                <h2>基本信息</h2>
+                <dl className="configuration-fields">
+                  <div>
+                    <dt>名称</dt>
+                    <dd>{selected.name}</dd>
+                  </div>
+                  <div>
+                    <dt>描述</dt>
+                    <dd>{selected.description || "暂无描述"}</dd>
+                  </div>
+                </dl>
+                <h2>当前服务配置</h2>
+                <dl className="configuration-fields">
+                  <div>
+                    <dt>检索方式</dt>
+                    <dd>混合检索</dd>
+                  </div>
+                  <div>
+                    <dt>向量模型</dt>
+                    <dd>
+                      {healthLoading
+                        ? "加载中…"
+                        : !health
+                          ? "无法获取配置"
+                          : health.embedding.model || "未配置"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>向量维度</dt>
+                    <dd>
+                      {healthLoading
+                        ? "加载中…"
+                        : (health?.embedding.dimension ?? "—")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>回答模型</dt>
+                    <dd>
+                      {healthLoading
+                        ? "加载中…"
+                        : !health
+                          ? "无法获取配置"
+                          : health.llm.model || "未配置"}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+            ) : screen === "knowledge" && view === "retrieval" ? (
               <RetrievalPanel
                 key={selectedId}
                 knowledgeBaseId={selectedId}
                 onPreview={setPreview}
               />
-            ) : view === "documents" ? (
+            ) : screen === "knowledge" ? (
               <section
                 className="documents-view"
                 id="documents-view"
-                role="tabpanel"
-                aria-labelledby="documents-tab"
+                aria-label="文档"
               >
-                <div className="summary-strip">
-                  <div>
-                    <span>文档总数</span>
-                    <strong>
-                      {activeDocuments.length}
-                      <small>份</small>
-                    </strong>
-                  </div>
-                  <div>
-                    <span>
-                      <i className="status-dot online" />
-                      已就绪
-                    </span>
-                    <strong>{readyCount}</strong>
-                  </div>
-                  <div>
-                    <span>
-                      <i className="status-dot amber" />
-                      处理中
-                    </span>
-                    <strong>{processingCount}</strong>
-                  </div>
-                  <div className="summary-note">
-                    <Database size={16} />
-                    <span>
-                      {health?.embedding.configured
-                        ? `${health.embedding.dimension} 维向量索引`
-                        : "Embedding 待配置"}
-                    </span>
-                  </div>
-                </div>
                 <div className="document-toolbar">
                   <div className="document-filters">
                     <button
@@ -691,6 +859,7 @@ export default function Home() {
                       onClick={() => setTrash(false)}
                     >
                       全部文档
+                      <span>{activeDocuments.length}</span>
                     </button>
                     <button
                       className={trash ? "active" : ""}
@@ -870,20 +1039,13 @@ export default function Home() {
                       ? "正在加载文档…"
                       : `共 ${visibleDocuments.length} 份${trash ? "已删除" : ""}文档`}
                   </span>
-                  <span>
-                    <Check size={13} />
-                    {health?.embedding.configured
-                      ? health.embedding.model
-                      : "未连接向量模型"}
-                  </span>
                 </footer>
               </section>
             ) : (
               <section
                 className="answers-view"
                 id="answers-view"
-                role="tabpanel"
-                aria-labelledby="answers-tab"
+                aria-label="知识问答"
               >
                 <div className="conversation">
                   {!submittedQuestion ? (
@@ -962,15 +1124,17 @@ export default function Home() {
                               >
                                 <Copy size={15} />
                               </button>
-                              <button
-                                className="trace-button"
-                                title={answer.trace_id}
-                                aria-label="查看回答检索记录"
-                                onClick={() => setTraceId(answer.trace_id)}
-                              >
-                                TRACE {answer.trace_id.slice(0, 8)}
-                                <ChevronRight size={11} />
-                              </button>
+                              <details className="answer-details">
+                                <summary>回答详情</summary>
+                                <button
+                                  className="text-button"
+                                  aria-label="查看回答检索记录"
+                                  onClick={() => setTraceId(answer.trace_id)}
+                                >
+                                  <Search size={14} />
+                                  检索记录
+                                </button>
+                              </details>
                             </div>
                           </>
                         )}
@@ -1021,14 +1185,6 @@ export default function Home() {
                     </div>
                   </form>
                   <div className="composer-meta">
-                    <span>
-                      <span
-                        className={`status-dot ${health?.llm.configured ? "online" : "amber"}`}
-                      />
-                      {health?.llm.configured
-                        ? health.llm.model
-                        : "回答模型未配置"}
-                    </span>
                     <span>AI 回答仅供参考，请核对来源</span>
                   </div>
                 </div>
@@ -1048,6 +1204,49 @@ export default function Home() {
           </div>
         )}
       </main>
+      {diagnostics && (
+        <Modal title="系统诊断" onClose={() => setDiagnostics(false)}>
+          <div className="diagnostic-content">
+            <Server size={22} />
+            <dl className="configuration-fields">
+              <div>
+                <dt>连接状态</dt>
+                <dd>
+                  {healthLoading
+                    ? "检查中…"
+                    : health?.status === "ok"
+                      ? "正常"
+                      : "暂不可用"}
+                </dd>
+              </div>
+              <div>
+                <dt>向量服务</dt>
+                <dd>
+                  {healthLoading
+                    ? "检查中…"
+                    : !health
+                      ? "无法获取"
+                      : health.embedding.configured
+                        ? "已配置"
+                        : "未配置"}
+                </dd>
+              </div>
+              <div>
+                <dt>回答服务</dt>
+                <dd>
+                  {healthLoading
+                    ? "检查中…"
+                    : !health
+                      ? "无法获取"
+                      : health.llm.configured
+                        ? "已配置"
+                        : "未配置"}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </Modal>
+      )}
       {traceId && (
         <Modal title="检索记录" wide onClose={() => setTraceId(null)}>
           <TraceInspector

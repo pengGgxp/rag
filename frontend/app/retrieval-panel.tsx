@@ -264,8 +264,7 @@ export function RetrievalPanel({
     <section
       className="retrieval-view"
       id="retrieval-view"
-      role="tabpanel"
-      aria-labelledby="retrieval-tab"
+      aria-label="检索测试"
     >
       <form className="retrieval-search" onSubmit={search}>
         <label htmlFor="retrieval-query">检索问题</label>
@@ -377,7 +376,12 @@ export function RetrievalPanel({
                     )}
                   </div>
                   <p className="retrieval-excerpt">{result.chunk.text}</p>
-                  {rank && <RankMetrics result={rank} />}
+                  {rank && (
+                    <details className="result-details">
+                      <summary>排名详情</summary>
+                      <RankMetrics result={rank} />
+                    </details>
+                  )}
                 </article>
               );
             })}
