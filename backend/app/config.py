@@ -17,10 +17,18 @@ class Settings(BaseSettings):
     embedding_model: str | None = None
     embedding_dimension: int = 1024
     embedding_timeout_seconds: float = 30.0
+    llm_base_url: str | None = None
+    llm_api_key: SecretStr | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: float = 60.0
 
     @property
     def embedding_configured(self) -> bool:
         return bool(self.embedding_base_url and self.embedding_api_key and self.embedding_model)
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

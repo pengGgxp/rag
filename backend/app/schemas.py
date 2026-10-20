@@ -78,6 +78,7 @@ class TraceResultRead(BaseModel):
     rank: int
     lexical_rank: int | None = None
     vector_rank: int | None = None
+    vector_distance: float | None = None
 
 
 class QueryTraceRead(BaseModel):
@@ -93,4 +94,26 @@ class QueryTraceRead(BaseModel):
     result_count: int
     results: list[TraceResultRead]
     created_at: datetime
+
+
+class AnswerRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=6, ge=1, le=12)
+
+
+class CitationRead(BaseModel):
+    chunk_id: UUID
+    filename: str
+    text: str
+    char_start: int
+    char_end: int
+    heading_path: str | None
+
+
+class AnswerRead(BaseModel):
+    trace_id: UUID
+    answer: str
+    refused: bool
+    refusal_reason: str | None
+    citations: list[CitationRead]
 
