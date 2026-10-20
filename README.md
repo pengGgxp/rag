@@ -45,6 +45,7 @@ docker compose down
 - 确定性文本分块，保留字符偏移和标题路径
 - 可查看文档 chunks
 - 带 `trace_id` 的知识库关键词检索
+- OpenAI-compatible 云端 Embedding 适配器（未配置凭据时保持 `not_configured`）
 - 健康检查、结构化错误状态和基础 CORS
 
 ## 当前边界
@@ -52,7 +53,7 @@ docker compose down
 这个垂直切片还没有实现：
 
 - 用户注册、OAuth 和权限模型
-- Chunk、Embedding 和索引
+- 云端 Embedding 适配器已准备，但尚未接入文档索引任务
 - 向量检索、混合检索、Rerank 和引用
 - LLM 问答、SSE 和反馈
 

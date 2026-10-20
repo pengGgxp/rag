@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,15 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_bucket: str = "rag-documents"
     s3_region: str = "us-east-1"
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str | None = None
+    embedding_dimension: int = 1536
+    embedding_timeout_seconds: float = 30.0
+
+    @property
+    def embedding_configured(self) -> bool:
+        return bool(self.embedding_base_url and self.embedding_api_key and self.embedding_model)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

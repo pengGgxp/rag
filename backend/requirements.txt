@@ -1,6 +1,7 @@
 boto3==1.35.99
 celery[redis]==5.4.0
 fastapi==0.115.6
+httpx==0.28.1
 openpyxl==3.1.5
 pgvector==0.3.6
 pypdf==5.1.0

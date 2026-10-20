@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
+from .embedding import OpenAICompatibleEmbeddingProvider
 from .models import (
     Document,
     DocumentStatus,
@@ -78,6 +79,7 @@ def health():
         "status": "ok" if overall else "degraded",
         "database": "ok" if db_ok else "error",
         "redis": "ok" if redis_ok else "error",
+        "embedding": OpenAICompatibleEmbeddingProvider().status.__dict__,
     }
 
 
