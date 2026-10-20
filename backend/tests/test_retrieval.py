@@ -18,6 +18,7 @@ from app.models import (
     KnowledgeBase,
     QueryTrace,
 )
+from auth_helpers import authenticate
 
 
 @pytest.fixture
@@ -43,6 +44,7 @@ def retrieval_client(monkeypatch):
     )
     main.app.dependency_overrides[main.get_db] = lambda: session
     client = TestClient(main.app)
+    authenticate(client, session)
     try:
         yield client, session
     finally:

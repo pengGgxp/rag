@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { API_URL, request, streamRequest } from "./api";
 import { Modal } from "./modal";
+import { AccountButton } from "./auth";
 import { TraceInspector } from "./retrieval-panel";
 import "./chat.css";
 
@@ -512,6 +513,7 @@ export function ChatWorkspace({
     try {
       const response = await fetch(
         `${API_URL}/conversations/${conversation.id}/export`,
+        { credentials: "include" },
       );
       if (!response.ok) throw new Error("导出失败，请重试");
       const url = URL.createObjectURL(await response.blob());
@@ -640,6 +642,9 @@ export function ChatWorkspace({
             </p>
           )}
         </nav>
+        <div className="sidebar-footer">
+          <AccountButton />
+        </div>
       </aside>
       <main className="chat-main">
         <header className="chat-header">

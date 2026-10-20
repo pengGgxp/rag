@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
+from .auth import Access, get_access
 from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase
 
 
@@ -73,10 +74,11 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
     return data
 
 
-def live_conversation(db: Session, conversation_id: UUID) -> Conversation:
+def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Conversation:
     conversation = db.get(Conversation, conversation_id)
     if conversation is None or conversation.deleted_at is not None:
         raise HTTPException(404, "会话不存在或已删除")
+    access.conversation(db, conversation)
     return conversation
 
 
@@ -102,11 +104,11 @@ def chat_router(get_db, retrieve):
     router = APIRouter(prefix="/conversations", tags=["conversations"])
 
     @router.post("", status_code=201)
-    def create(payload: ConversationCreate, db: Session = Depends(get_db)):
+    def create(payload: ConversationCreate, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         ids = list(dict.fromkeys(payload.knowledge_base_ids))
-        if len(db.scalars(select(KnowledgeBase.id).where(KnowledgeBase.id.in_(ids))).all()) != len(ids):
-            raise HTTPException(404, "所选知识库不存在")
-        conversation = Conversation(title=payload.title, libraries=[
+        for id in ids:
+            access.library(db, id)
+        conversation = Conversation(title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id, libraries=[
             ConversationLibrary(knowledge_base_id=id) for id in ids
         ])
         db.add(conversation)
@@ -115,30 +117,34 @@ def chat_router(get_db, retrieve):
         return conversation_read(conversation, True)
 
     @router.get("")
-    def listing(db: Session = Depends(get_db)):
+    def listing(db: Session = Depends(get_db), access: Access = Depends(get_access)):
         rows = db.scalars(select(Conversation).where(
             Conversation.deleted_at.is_(None),
+            Conversation.owner_id == access.user_id, Conversation.workspace_id == access.workspace_id,
         ).order_by(Conversation.updated_at.desc(), Conversation.id)).all()
-        return [conversation_read(row) for row in rows]
+        visible = set(db.scalars(select(KnowledgeBase.id).where(access.visible_libraries())).all())
+        return [conversation_read(row) for row in rows
+                if all(item.knowledge_base_id in visible for item in row.libraries)]
 
     @router.get("/{conversation_id}")
-    def detail(conversation_id: UUID, db: Session = Depends(get_db)):
-        return conversation_read(live_conversation(db, conversation_id), True)
+    def detail(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        return conversation_read(live_conversation(db, conversation_id, access), True)
 
     @router.patch("/{conversation_id}")
-    def rename(conversation_id: UUID, payload: ConversationRename, db: Session = Depends(get_db)):
-        conversation = live_conversation(db, conversation_id)
+    def rename(conversation_id: UUID, payload: ConversationRename, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        conversation = live_conversation(db, conversation_id, access)
         conversation.title = payload.title
         db.commit()
         return conversation_read(conversation)
 
     @router.delete("/{conversation_id}", status_code=204)
-    def delete(conversation_id: UUID, db: Session = Depends(get_db)):
+    def delete(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = db.scalar(select(Conversation).where(
             Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
         ).with_for_update())
         if conversation is None:
             raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
         db.execute(update(ChatMessage).where(
             ChatMessage.conversation_id == conversation.id, ChatMessage.status == "streaming",
         ).values(status="cancelled", error_detail=None))
@@ -148,12 +154,13 @@ def chat_router(get_db, retrieve):
         return Response(status_code=204)
 
     @router.post("/{conversation_id}/stop")
-    def stop(conversation_id: UUID, payload: StopRequest, db: Session = Depends(get_db)):
+    def stop(conversation_id: UUID, payload: StopRequest, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = db.scalar(select(Conversation).where(
             Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
         ).with_for_update())
         if conversation is None:
             raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
         message = db.scalar(select(ChatMessage).where(
             ChatMessage.conversation_id == conversation.id, ChatMessage.request_id == payload.request_id,
         ))
@@ -174,8 +181,8 @@ def chat_router(get_db, retrieve):
         return message_read(message)
 
     @router.get("/{conversation_id}/export")
-    def export(conversation_id: UUID, db: Session = Depends(get_db)):
-        conversation = live_conversation(db, conversation_id)
+    def export(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        conversation = live_conversation(db, conversation_id, access)
         lines = [
             f"# {conversation.title}", "",
             "知识库：" + "、".join(item.library.name for item in conversation.libraries), "",
@@ -199,12 +206,13 @@ def chat_router(get_db, retrieve):
         )
 
     @router.post("/{conversation_id}/messages")
-    def send(conversation_id: UUID, payload: TurnRequest, db: Session = Depends(get_db)):
+    def send(conversation_id: UUID, payload: TurnRequest, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = db.scalar(select(Conversation).where(
             Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
         ).with_for_update())
         if conversation is None:
             raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
         existing = db.scalar(select(ChatMessage).where(ChatMessage.request_id == payload.request_id))
         if existing:
             if existing.conversation_id != conversation.id or existing.status == "streaming":
@@ -259,12 +267,12 @@ def chat_router(get_db, retrieve):
         message_id = message.id
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         return StreamingResponse(
-            generate(factory, conversation.id, message_id, payload.request_id),
+            generate(factory, conversation.id, message_id, payload.request_id, access),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def generate(factory, conversation_id, message_id, request_id):
+    async def generate(factory, conversation_id, message_id, request_id, access):
         final_status = "cancelled"
         error_detail = None
         content = ""
@@ -279,6 +287,19 @@ def chat_router(get_db, retrieve):
                 conversation = db.scalar(select(Conversation).where(
                     Conversation.id == conversation_id,
                 ).with_for_update())
+                try:
+                    access.revalidate(db).conversation(db, conversation)
+                except HTTPException:
+                    message = db.get(ChatMessage, message_id)
+                    if message.request_id == request_id and message.status == "streaming":
+                        message.status = "interrupted"
+                        message.error_detail = "访问权限已变更，回答已停止"
+                    if conversation.active_request_id == request_id:
+                        conversation.active_request_id = None
+                    db.commit()
+                    result = message_read(message)
+                    result.update(content="", citations=[], traces=[])
+                    return result, False
                 if conversation.active_request_id != request_id or conversation.deleted_at is not None:
                     return message_read(db.get(ChatMessage, message_id)), False
                 row = db.execute(update(ChatMessage).where(
@@ -301,9 +322,10 @@ def chat_router(get_db, retrieve):
             candidates = []
             snapshots = []
             with factory() as db:
-                conversation = live_conversation(db, conversation_id)
+                checked = access.revalidate(db)
+                conversation = live_conversation(db, conversation_id, checked)
                 for scope in conversation.libraries:
-                    retrieval = retrieve(scope.knowledge_base_id, query, db)
+                    retrieval = retrieve(scope.knowledge_base_id, query, db, checked)
                     snapshots.append({
                         "id": str(retrieval.trace.id),
                         "knowledge_base_id": str(scope.knowledge_base_id),
@@ -335,8 +357,15 @@ def chat_router(get_db, retrieve):
                 total += len(source["text"])
             return selected, snapshots
 
+        def still_authorized():
+            with factory() as db:
+                checked = access.revalidate(db)
+                conversation = live_conversation(db, conversation_id, checked)
+                return conversation.active_request_id == request_id
+
         try:
             with factory() as db:
+                live_conversation(db, conversation_id, access.revalidate(db))
                 message = db.get(ChatMessage, message_id)
                 query = db.scalar(select(ChatMessage.content).where(
                     ChatMessage.conversation_id == conversation_id,
@@ -401,6 +430,8 @@ def chat_router(get_db, retrieve):
                 yield event_text(event("phase", {"phase": "answering"}))
                 last_save = 0.0
                 async for delta in provider.stream(prompt):
+                    if not await run_in_threadpool(still_authorized):
+                        return
                     content += delta
                     if time.monotonic() - last_save >= 0.4:
                         _, active = await run_in_threadpool(save)
@@ -409,6 +440,9 @@ def chat_router(get_db, retrieve):
                         last_save = time.monotonic()
                     yield event_text(event("delta", {"text": delta}))
             final_status = "completed"
+        except HTTPException:
+            final_status = "interrupted"
+            error_detail = "访问权限已变更，回答已停止"
         except (LLMProviderError, LLMConfigurationError) as exc:
             final_status = "failed"
             error_detail = str(exc)
@@ -419,7 +453,7 @@ def chat_router(get_db, retrieve):
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
                 saved, _ = await run_in_threadpool(save, final_status)
-            if final_status in ("completed", "failed") and saved["request_id"] == str(request_id):
+            if final_status in ("completed", "failed", "interrupted") and saved["request_id"] == str(request_id):
                 yield event_text(event("done", saved))
 
     return router

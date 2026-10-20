@@ -3,6 +3,7 @@
 import { ChatWorkspace } from "./chat-workspace";
 import { Modal } from "./modal";
 import { request } from "./api";
+import { AccountButton, LibraryAccess, useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -77,6 +78,8 @@ function extension(filename: string) {
 }
 
 export default function Home() {
+  const { role } = useAuth();
+  const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
@@ -438,6 +441,7 @@ export default function Home() {
                   className="icon-button"
                   title="新建知识库"
                   aria-label="新建知识库"
+                  disabled={!canEdit}
                   onClick={() => openModal("create")}
                 >
                   <Plus size={16} />
@@ -477,6 +481,7 @@ export default function Home() {
             </nav>
             <button
               className="create-library"
+              disabled={!canEdit}
               onClick={() => openModal("create")}
             >
               <Plus size={16} />
@@ -485,16 +490,19 @@ export default function Home() {
           </>
         )}
         <div className="sidebar-footer">
-          <button
-            className="diagnostics-link"
-            onClick={() => {
-              setDiagnostics(true);
-              void refreshHealth();
-            }}
-          >
-            <Settings2 size={16} />
-            系统诊断
-          </button>
+          <AccountButton />
+          {role === "admin" && (
+            <button
+              className="diagnostics-link"
+              onClick={() => {
+                setDiagnostics(true);
+                void refreshHealth();
+              }}
+            >
+              <Settings2 size={16} />
+              系统诊断
+            </button>
+          )}
         </div>
       </aside>
       <main className="main">
@@ -535,7 +543,11 @@ export default function Home() {
           <section className="catalog" aria-label="知识库列表">
             <div className="catalog-heading">
               <h1>知识库</h1>
-              <button className="primary" onClick={() => openModal("create")}>
+              <button
+                className="primary"
+                disabled={!canEdit}
+                onClick={() => openModal("create")}
+              >
                 <Plus size={16} />
                 新建知识库
               </button>
@@ -659,6 +671,13 @@ export default function Home() {
                     </dd>
                   </div>
                 </dl>
+                {role === "admin" && (
+                  <LibraryAccess
+                    key={selectedId}
+                    id={selectedId}
+                    onChange={() => void loadLibraries().catch(notifyError)}
+                  />
+                )}
               </section>
             ) : screen === "knowledge" && view === "retrieval" ? (
               <RetrievalPanel
@@ -722,6 +741,7 @@ export default function Home() {
                     </button>
                     <button
                       className="primary"
+                      disabled={!canEdit}
                       onClick={() => openModal("upload")}
                     >
                       <Plus size={16} />
@@ -805,7 +825,7 @@ export default function Home() {
                                     className={`icon-button ${trash ? "" : "danger"}`}
                                     title={trash ? "恢复文档" : "移至回收站"}
                                     aria-label={`${trash ? "恢复" : "删除"} ${doc.filename}`}
-                                    disabled={busy}
+                                    disabled={busy || !canEdit}
                                     onClick={() =>
                                       updateDocument(
                                         doc,
@@ -843,6 +863,7 @@ export default function Home() {
                       </h2>
                       {!trash && !documentSearch && (
                         <button
+                          disabled={!canEdit}
                           className="text-button"
                           onClick={() => openModal("upload")}
                         >
@@ -868,7 +889,11 @@ export default function Home() {
             <Layers3 size={36} strokeWidth={1.4} />
             <h1>{libraryLoading ? "正在加载工作空间…" : "我的知识库"}</h1>
             {!libraryLoading && (
-              <button className="primary" onClick={() => openModal("create")}>
+              <button
+                className="primary"
+                disabled={!canEdit}
+                onClick={() => openModal("create")}
+              >
                 <Plus size={16} />
                 新建知识库
               </button>

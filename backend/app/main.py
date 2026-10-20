@@ -1,5 +1,6 @@
 import hashlib
 import io
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -7,11 +8,13 @@ from uuid import UUID, uuid4
 import redis
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import SessionLocal, engine, init_db
+from .db import SessionLocal, engine, get_db, init_db
+from .auth import Access, BrowserRequestGuard, get_access, permissions_router, router as auth_router
 from .embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from .llm import (
     LLMConfigurationError,
@@ -48,14 +51,6 @@ from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
 
 
-def get_db():
-    session = SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -66,9 +61,17 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
+settings = get_settings()
+app.add_middleware(BrowserRequestGuard)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.auth_secret_key.get_secret_value() if settings.auth_secret_key else secrets.token_urlsafe(48),
+    session_cookie="rag_oidc_state", max_age=600,
+    https_only=settings.auth_cookie_secure, same_site="lax",
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[settings.frontend_url],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,8 +104,10 @@ def health():
 
 
 @app.post("/knowledge-bases", response_model=KnowledgeBaseRead, status_code=status.HTTP_201_CREATED)
-def create_knowledge_base(payload: KnowledgeBaseCreate, db: Session = Depends(get_db)):
-    knowledge_base = KnowledgeBase(name=payload.name, description=payload.description)
+def create_knowledge_base(payload: KnowledgeBaseCreate, db: Session = Depends(get_db),
+                          access: Access = Depends(get_access)):
+    access.editor()
+    knowledge_base = KnowledgeBase(name=payload.name, description=payload.description, workspace_id=access.workspace_id)
     db.add(knowledge_base)
     db.commit()
     db.refresh(knowledge_base)
@@ -110,7 +115,7 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, db: Session = Depends(ge
 
 
 @app.get("/knowledge-bases", response_model=list[KnowledgeBaseRead])
-def list_knowledge_bases(db: Session = Depends(get_db)):
+def list_knowledge_bases(db: Session = Depends(get_db), access: Access = Depends(get_access)):
     rows = db.execute(
         select(KnowledgeBase, func.count(Document.id))
         .outerjoin(
@@ -118,6 +123,7 @@ def list_knowledge_bases(db: Session = Depends(get_db)):
             (Document.knowledge_base_id == KnowledgeBase.id)
             & (Document.status != DocumentStatus.DELETED),
         )
+        .where(access.visible_libraries())
         .group_by(KnowledgeBase.id)
         .order_by(KnowledgeBase.created_at.desc())
     ).all()
@@ -136,10 +142,9 @@ def upload_document(
     knowledge_base_id: UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
 ):
-    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
-    if knowledge_base is None:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    knowledge_base = access.library(db, knowledge_base_id, write=True)
     allowed = {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -199,9 +204,8 @@ def upload_document(
 
 
 @app.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=list[DocumentRead])
-def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db)):
-    if db.get(KnowledgeBase, knowledge_base_id) is None:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+    access.library(db, knowledge_base_id)
     documents = db.scalars(
         select(Document)
         .where(Document.knowledge_base_id == knowledge_base_id)
@@ -223,10 +227,11 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.delete("/documents/{document_id}", response_model=DocumentRead)
-def delete_document(document_id: UUID, db: Session = Depends(get_db)):
+def delete_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id, write=True)
     if document.status == DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
@@ -252,10 +257,11 @@ def delete_document(document_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.post("/documents/{document_id}/restore", response_model=DocumentRead)
-def restore_document(document_id: UUID, db: Session = Depends(get_db)):
+def restore_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id, write=True)
     if document.status != DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
@@ -289,26 +295,29 @@ def restore_document(document_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.get("/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: UUID, db: Session = Depends(get_db)):
+def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     job = db.get(IngestionJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    access.library(db, job.document.knowledge_base_id)
     return job
 
 
 @app.get("/traces/{trace_id}", response_model=QueryTraceRead)
-def get_query_trace(trace_id: UUID, db: Session = Depends(get_db)):
+def get_query_trace(trace_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     trace = db.get(QueryTrace, trace_id)
-    if trace is None:
+    if trace is None or trace.owner_id != access.user_id:
         raise HTTPException(status_code=404, detail="Trace not found")
+    access.library(db, trace.knowledge_base_id)
     return trace
 
 
 @app.get("/documents/{document_id}/chunks", response_model=list[ChunkRead])
-def list_chunks(document_id: UUID, db: Session = Depends(get_db)):
+def list_chunks(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id)
     return db.scalars(
         select(Chunk)
         .where(Chunk.document_id == document_id)
@@ -317,10 +326,11 @@ def list_chunks(document_id: UUID, db: Session = Depends(get_db)):
 
 
 @app.post("/documents/{document_id}/reindex", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
-def reindex_document(document_id: UUID, db: Session = Depends(get_db)):
+def reindex_document(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id, write=True)
     for chunk in document.chunks:
         chunk.embedding = None
         chunk.embedding_status = EmbeddingStatus.PENDING
@@ -341,8 +351,9 @@ def search_knowledge_base(
     knowledge_base_id: UUID,
     query: str,
     db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
 ):
-    return retrieve_knowledge_base(knowledge_base_id, query, db).results
+    return retrieve_knowledge_base(knowledge_base_id, query, db, access).results
 
 
 @app.post("/knowledge-bases/{knowledge_base_id}/retrieval", response_model=RetrievalRead)
@@ -350,16 +361,15 @@ def inspect_retrieval(
     knowledge_base_id: UUID,
     payload: RetrievalRequest,
     db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
 ):
-    return retrieve_knowledge_base(knowledge_base_id, payload.query, db)
+    return retrieve_knowledge_base(knowledge_base_id, payload.query, db, access)
 
 
 def retrieve_knowledge_base(
-    knowledge_base_id: UUID, query: str, db: Session
+    knowledge_base_id: UUID, query: str, db: Session, access: Access
 ) -> RetrievalRead:
-    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
-    if knowledge_base is None:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    access.library(db, knowledge_base_id)
     terms = [term for term in query.split() if term]
     trace_id = uuid4()
     lexical_rows = []
@@ -445,6 +455,7 @@ def retrieve_knowledge_base(
     ]
     trace = QueryTrace(
         id=trace_id,
+        owner_id=access.user_id,
         knowledge_base_id=knowledge_base_id,
         query=query,
         retrieval_mode=retrieval_mode,
@@ -457,6 +468,8 @@ def retrieve_knowledge_base(
     db.add(trace)
     db.commit()
     db.refresh(trace)
+    db.expire_all()
+    access.revalidate(db).library(db, knowledge_base_id)
 
     results = [
         SearchResult(
@@ -475,12 +488,11 @@ def answer_knowledge_base(
     knowledge_base_id: UUID,
     payload: AnswerRequest,
     db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
 ):
-    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
-    if knowledge_base is None:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    access.library(db, knowledge_base_id)
 
-    retrieval = retrieve_knowledge_base(knowledge_base_id, payload.query, db)
+    retrieval = retrieve_knowledge_base(knowledge_base_id, payload.query, db, access)
     retrieved = retrieval.results[: payload.top_k]
     trace_id = retrieval.trace.id
     trace = db.get(QueryTrace, trace_id)
@@ -569,6 +581,8 @@ def answer_knowledge_base(
     except LLMProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    db.expire_all()
+    access.revalidate(db).library(db, knowledge_base_id)
     return AnswerRead(
         trace_id=trace_id,
         answer=answer,
@@ -578,5 +592,7 @@ def answer_knowledge_base(
     )
 
 
+app.include_router(auth_router)
+app.include_router(permissions_router)
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 

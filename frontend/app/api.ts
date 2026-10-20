@@ -3,11 +3,28 @@ import { createParser } from "eventsource-parser";
 export const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+let csrfToken = "";
+export function setCsrfToken(value: string) {
+  csrfToken = value;
+}
+export function sessionHeaders(options?: RequestInit) {
+  const headers = new Headers(options?.headers);
+  headers.set("X-RAG-Request", "1");
+  if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+  return headers;
+}
+
 export async function request<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, options);
+  const response = await fetch(`${API_URL}${path}`, {
+    ...options,
+    credentials: "include",
+    headers: sessionHeaders(options),
+  });
+  if (response.status === 401 && !["/auth/me", "/auth/login", "/auth/register", "/auth/bootstrap"].includes(path))
+    window.dispatchEvent(new Event("rag-session-expired"));
   if (response.status === 204) return undefined as T;
   const data = await response.json();
   if (!response.ok)
@@ -26,12 +43,17 @@ export async function streamRequest(
   onEvent: (name: string, data: unknown) => void,
 ) {
   const response = await fetch(`${API_URL}${path}`, {
+    credentials: "include",
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: sessionHeaders({
+      headers: { "Content-Type": "application/json" },
+    }),
     body: JSON.stringify(body),
     signal,
   });
   if (!response.ok) {
+    if (response.status === 401)
+      window.dispatchEvent(new Event("rag-session-expired"));
     const error = await response.json().catch(() => ({}));
     throw new Error(
       typeof error.detail === "string"

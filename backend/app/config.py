@@ -21,6 +21,30 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
     llm_timeout_seconds: float = 60.0
+    frontend_url: str = "http://localhost:3000"
+    api_public_url: str = "http://localhost:8000"
+    auth_cookie_secure: bool = False
+    auth_session_hours: int = 168
+    auth_secret_key: SecretStr | None = None
+    oidc_name: str = "企业账号"
+    oidc_metadata_url: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_starttls: bool = True
+
+    @property
+    def oidc_configured(self) -> bool:
+        return bool(self.oidc_metadata_url and self.oidc_client_id and self.oidc_client_secret
+                    and self.auth_secret_key and len(self.auth_secret_key.get_secret_value()) >= 32)
+
+    @property
+    def mail_configured(self) -> bool:
+        return bool(self.smtp_host and self.smtp_from)
 
     @property
     def embedding_configured(self) -> bool:

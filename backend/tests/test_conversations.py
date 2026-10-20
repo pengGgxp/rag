@@ -14,6 +14,7 @@ from app.db import Base
 from app.llm import LLMProviderError
 from app.models import ChatMessage, Conversation, DocumentStatus
 from test_retrieval import add_document, add_library
+from auth_helpers import authenticate
 
 
 @pytest.fixture
@@ -40,6 +41,7 @@ def client(monkeypatch):
     ))
     main.app.dependency_overrides[main.get_db] = lambda: db
     http = TestClient(main.app)
+    authenticate(http, db)
     try:
         yield http, db, captured
     finally:
