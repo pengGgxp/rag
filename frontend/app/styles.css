@@ -38,6 +38,20 @@ textarea { resize: vertical; }
 .primary:disabled { opacity: .45; cursor: not-allowed; }
 .ghost { border: 1px solid var(--line); border-radius: 5px; background: transparent; padding: 7px 10px; color: var(--muted); font-size: 12px; }
 .description { color: var(--muted); line-height: 1.5; margin: 22px 0 30px; }
+.ask { border: 1px solid #b8cabe; border-radius: 7px; padding: 18px; background: #f7fbf8; margin-bottom: 26px; }
+.ask .section-title { margin-bottom: 14px; }
+.ask-footer { display: flex; justify-content: space-between; gap: 14px; align-items: center; margin-top: 10px; }
+.ask-footer small { color: var(--muted); font-size: 12px; }
+.answer { border-top: 1px solid var(--line); padding: 20px 0 8px; margin-bottom: 20px; }
+.answer-meta { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.answer-meta .eyebrow { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.answer-text { font-size: 17px; line-height: 1.6; margin: 14px 0 20px; white-space: pre-wrap; }
+.citations { display: grid; gap: 10px; }
+.citations h3 { margin-bottom: 2px; }
+.citation { border-left: 3px solid #b8cabe; padding: 10px 12px; background: #fbfdfb; }
+.citation-heading { display: flex; justify-content: space-between; gap: 12px; }
+.citation-heading small { color: var(--muted); white-space: nowrap; }
+.citation p { color: var(--muted); line-height: 1.5; margin: 7px 0 0; }
 .upload { border: 1px dashed #b8cabe; border-radius: 7px; padding: 18px; background: #fbfdfb; }
 .upload label { display: block; font-weight: 700; margin-bottom: 12px; }
 .upload-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
@@ -54,4 +68,4 @@ textarea { resize: vertical; }
 .pill.failed { color: #9a4038; background: #f9e5e3; }
 .muted, .empty { color: var(--muted); line-height: 1.5; }
 .notice { margin-top: 24px; border-left: 3px solid var(--warm); padding: 10px 12px; background: #fff8ea; color: #765323; }
-@media (max-width: 800px) { .shell { padding: 32px 16px 60px; } .topbar { display: block; } .status-dot { display: inline-block; margin-top: 20px; } .grid { grid-template-columns: 1fr; } .content { min-height: 0; } }
+@media (max-width: 800px) { .shell { padding: 32px 16px 60px; } .topbar { display: block; } .status-dot { display: inline-block; margin-top: 20px; } .grid { grid-template-columns: 1fr; } .content { min-height: 0; } .ask-footer { align-items: stretch; flex-direction: column; } .citation-heading { align-items: flex-start; flex-direction: column; gap: 3px; } }

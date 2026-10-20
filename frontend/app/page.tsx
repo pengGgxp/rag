@@ -19,6 +19,23 @@ type Document = {
   job?: { state: string; error_detail?: string | null };
 };
 
+type Citation = {
+  chunk_id: string;
+  filename: string;
+  text: string;
+  char_start: number;
+  char_end: number;
+  heading_path?: string | null;
+};
+
+type Answer = {
+  trace_id: string;
+  answer: string;
+  refused: boolean;
+  refusal_reason?: string | null;
+  citations: Citation[];
+};
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function Home() {
@@ -30,6 +47,9 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<Answer | null>(null);
+  const [asking, setAsking] = useState(false);
 
   async function loadKnowledgeBases() {
     const response = await fetch(`${API_URL}/knowledge-bases`);
@@ -49,7 +69,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (selectedId) loadDocuments(selectedId).catch((error: Error) => setMessage(error.message));
+    if (selectedId) {
+      setAnswer(null);
+      loadDocuments(selectedId).catch((error: Error) => setMessage(error.message));
+    }
   }, [selectedId]);
 
   async function createKnowledgeBase(event: FormEvent) {
@@ -116,6 +139,28 @@ export default function Home() {
     }
   }
 
+  async function askQuestion(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId || !question.trim()) return;
+    setAsking(true);
+    setMessage("");
+    setAnswer(null);
+    try {
+      const response = await fetch(`${API_URL}/knowledge-bases/${selectedId}/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: question.trim(), top_k: 6 }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail ?? "Answer request failed");
+      setAnswer(data as Answer);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Answer request failed");
+    } finally {
+      setAsking(false);
+    }
+  }
+
   const selected = knowledgeBases.find((item) => item.id === selectedId);
 
   return (
@@ -170,6 +215,49 @@ export default function Home() {
           {selected ? (
             <>
               <p className="description">{selected.description || "Add source material to begin building this knowledge base."}</p>
+              <form className="ask" onSubmit={askQuestion}>
+                <div className="section-title">
+                  <div>
+                    <span className="eyebrow">GROUNDED ANSWERS</span>
+                    <h3>Ask this knowledge base</h3>
+                  </div>
+                  {answer && <span className={`pill ${answer.refused ? "failed" : "ready"}`}>{answer.refused ? "refused" : "answered"}</span>}
+                </div>
+                <textarea
+                  value={question}
+                  onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="Ask a question about the sources..."
+                  rows={3}
+                  disabled={asking}
+                />
+                <div className="ask-footer">
+                  <small>Answers use retrieved evidence and show the exact source chunks.</small>
+                  <button className="primary" disabled={asking || !question.trim()} type="submit">{asking ? "Thinking..." : "Ask"}</button>
+                </div>
+              </form>
+              {answer && (
+                <section className="answer">
+                  <div className="answer-meta">
+                    <span className="eyebrow">TRACE {answer.trace_id}</span>
+                    {answer.refusal_reason && <span className="muted">{answer.refusal_reason}</span>}
+                  </div>
+                  <p className="answer-text">{answer.answer}</p>
+                  {answer.citations.length > 0 && (
+                    <div className="citations">
+                      <h3>Sources</h3>
+                      {answer.citations.map((citation) => (
+                        <article className="citation" key={citation.chunk_id}>
+                          <div className="citation-heading">
+                            <strong>{citation.filename}</strong>
+                            <small>chars {citation.char_start}-{citation.char_end}</small>
+                          </div>
+                          <p>{citation.text}</p>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
               <form className="upload" onSubmit={uploadDocument}>
                 <label htmlFor="file">Upload a source document</label>
                 <div className="upload-row">
