@@ -32,7 +32,7 @@
 - 向量检索使用 pgvector。
 - 关键词检索使用 PostgreSQL Full-Text Search。
 - 默认采用向量检索与全文检索结合，再使用 RRF 融合。
-- 原始文件使用 S3 兼容对象存储；本地开发使用 MinIO。
+- 原始文件使用 S3 兼容对象存储；本地开发使用 RustFS（MinIO 兼容 API）。
 
 ### 异步任务
 
