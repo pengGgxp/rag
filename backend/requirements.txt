@@ -2,8 +2,10 @@ boto3==1.35.99
 celery[redis]==5.4.0
 fastapi==0.115.6
 openpyxl==3.1.5
+pgvector==0.3.6
 pypdf==5.1.0
 psycopg[binary]==3.2.3
+pytest==8.3.4
 pydantic-settings==2.7.0
 python-multipart==0.0.20
 python-docx==1.1.2

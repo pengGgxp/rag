@@ -42,6 +42,9 @@ docker compose down
 - PDF、DOCX、Markdown、TXT、HTML、CSV、XLSX 文本解析
 - 文件 hash 去重
 - 文档上传、对象存储、解析和 Job 状态
+- 确定性文本分块，保留字符偏移和标题路径
+- 可查看文档 chunks
+- 带 `trace_id` 的知识库关键词检索
 - 健康检查、结构化错误状态和基础 CORS
 
 ## 当前边界
@@ -50,7 +53,7 @@ docker compose down
 
 - 用户注册、OAuth 和权限模型
 - Chunk、Embedding 和索引
-- 混合检索、Rerank 和引用
+- 向量检索、混合检索、Rerank 和引用
 - LLM 问答、SSE 和反馈
 
 这些能力会沿着 `RAG_PLATFORM_FEATURE_BASELINE.md` 继续接入。当前实现优先保证导入和处理链路真实可运行，未完成的 RAG 能力不会被伪装成已完成。

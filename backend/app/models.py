@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -75,6 +76,25 @@ class Document(Base):
     jobs: Mapped[list["IngestionJob"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+    chunks: Mapped[list["Chunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    token_count: Mapped[int] = mapped_column(Integer)
+    char_start: Mapped[int] = mapped_column(Integer)
+    char_end: Mapped[int] = mapped_column(Integer)
+    heading_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    document: Mapped[Document] = relationship(back_populates="chunks")
 
 
 class IngestionJob(Base):

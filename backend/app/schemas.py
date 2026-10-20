@@ -48,3 +48,23 @@ class DocumentRead(BaseModel):
     created_at: datetime
     job: JobRead | None = None
 
+
+class ChunkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    ordinal: int
+    text: str
+    token_count: int
+    char_start: int
+    char_end: int
+    heading_path: str | None
+
+
+class SearchResult(BaseModel):
+    trace_id: UUID
+    chunk: ChunkRead
+    score: float
+    filename: str
+

@@ -2,7 +2,8 @@ from celery import Celery
 
 from .config import get_settings
 from .db import SessionLocal
-from .models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBaseStatus
+from .chunking import chunk_text
+from .models import Chunk, Document, DocumentStatus, IngestionJob, JobState, KnowledgeBaseStatus
 from .parsers import parse_document
 from .storage import download_fileobj
 
@@ -39,6 +40,21 @@ def process_document(self, job_id: str) -> None:
             raise ValueError("The document parser produced no text")
         document.parsed_text = parsed_text
         document.parser_name = parser_name
+        document.chunks.clear()
+        document.chunks.extend(
+            Chunk(
+                ordinal=draft.ordinal,
+                text=draft.text,
+                token_count=draft.token_count,
+                char_start=draft.char_start,
+                char_end=draft.char_end,
+                heading_path=draft.heading_path,
+                content_hash=draft.content_hash,
+            )
+            for draft in chunk_text(parsed_text)
+        )
+        if not document.chunks:
+            raise ValueError("The document did not produce any chunks")
         job.state = JobState.SUCCEEDED
         document.status = DocumentStatus.READY
         document.knowledge_base.status = KnowledgeBaseStatus.READY

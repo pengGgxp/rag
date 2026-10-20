@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import redis
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -15,6 +15,7 @@ from .db import SessionLocal, engine, init_db
 from .models import (
     Document,
     DocumentStatus,
+    Chunk,
     IngestionJob,
     JobState,
     KnowledgeBase,
@@ -22,9 +23,11 @@ from .models import (
 )
 from .schemas import (
     DocumentRead,
+    ChunkRead,
     JobRead,
     KnowledgeBaseCreate,
     KnowledgeBaseRead,
+    SearchResult,
 )
 from .storage import ensure_bucket, upload_fileobj
 from .tasks import process_document
@@ -202,4 +205,54 @@ def get_job(job_id: UUID, db: Session = Depends(get_db)):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/documents/{document_id}/chunks", response_model=list[ChunkRead])
+def list_chunks(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return db.scalars(
+        select(Chunk)
+        .where(Chunk.document_id == document_id)
+        .order_by(Chunk.ordinal)
+    ).all()
+
+
+@app.post("/knowledge-bases/{knowledge_base_id}/search", response_model=list[SearchResult])
+def search_knowledge_base(
+    knowledge_base_id: UUID,
+    query: str,
+    db: Session = Depends(get_db),
+):
+    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+    if knowledge_base is None:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    terms = [term for term in query.split() if term]
+    if not terms:
+        return []
+    conditions = [Chunk.text.ilike(f"%{term}%") for term in terms]
+    rows = db.execute(
+        select(Chunk, Document.filename)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Document.knowledge_base_id == knowledge_base_id,
+            Document.status == DocumentStatus.READY,
+            or_(*conditions),
+        )
+        .limit(20)
+    ).all()
+    trace_id = uuid4()
+    results = []
+    for chunk, filename in rows:
+        score = sum(chunk.text.lower().count(term.lower()) for term in terms)
+        results.append(
+            SearchResult(
+                trace_id=trace_id,
+                chunk=ChunkRead.model_validate(chunk),
+                score=float(score),
+                filename=filename,
+            )
+        )
+    return sorted(results, key=lambda item: item.score, reverse=True)
 
