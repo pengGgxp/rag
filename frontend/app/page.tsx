@@ -15,6 +15,7 @@ import {
   CircleAlert,
   FileText,
   FolderClosed,
+  History,
   Layers3,
   Loader2,
   Menu,
@@ -40,6 +41,10 @@ type KnowledgeBase = {
 type SourceDocument = {
   id: string;
   filename: string;
+  version_group_id: string;
+  version_number: number;
+  is_active: boolean;
+  supersedes_id?: string | null;
   status: string;
   content_type: string;
   size_bytes: number;
@@ -99,7 +104,10 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [modal, setModal] = useState<"create" | "upload" | null>(null);
+  const [modal, setModal] = useState<"create" | "upload" | "versions" | null>(null);
+  const [versionTarget, setVersionTarget] = useState<SourceDocument | null>(null);
+  const [versions, setVersions] = useState<SourceDocument[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -192,7 +200,40 @@ export default function Home() {
   function openModal(next: "create" | "upload") {
     setModalError("");
     setFile(null);
+    setVersionTarget(null);
     setModal(next);
+  }
+  function openVersionUpload(doc: SourceDocument) {
+    setModalError("");
+    setFile(null);
+    setVersionTarget(doc);
+    setModal("upload");
+  }
+  async function openVersions(doc: SourceDocument) {
+    setVersionsLoading(true);
+    setModalError("");
+    try {
+      setVersions(await request<SourceDocument[]>(`/documents/${doc.id}/versions`));
+      setVersionTarget(doc);
+      setModal("versions");
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setVersionsLoading(false);
+    }
+  }
+  async function activateVersion(doc: SourceDocument) {
+    setBusy(true);
+    try {
+      await request(`/documents/${doc.id}/activate`, { method: "POST" });
+      setNotice({ text: `已切换到 v${doc.version_number}` });
+      setModal(null);
+      await refresh(selectedId);
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setBusy(false);
+    }
   }
   async function refresh(id: string) {
     await Promise.all([
@@ -245,13 +286,18 @@ export default function Home() {
     try {
       const body = new FormData();
       body.append("file", file);
+      if (versionTarget) body.append("version_of", versionTarget.id);
       await request(`/knowledge-bases/${id}/documents`, {
         method: "POST",
         body,
       });
       setFile(null);
       setModal(null);
-      setNotice({ text: "上传成功，文档已进入处理队列" });
+      setNotice({
+        text: versionTarget
+          ? "新版本已上传，处理完成后可切换生效版本"
+          : "上传成功，文档已进入处理队列",
+      });
       await refresh(id);
     } catch (error) {
       const text = error instanceof Error ? error.message : "上传失败";
@@ -787,7 +833,8 @@ export default function Home() {
                                   <span className="filename">
                                     <strong>{doc.filename}</strong>
                                     <small>
-                                      {extension(doc.filename)} 文档
+                                      {extension(doc.filename)} 文档 · v{doc.version_number}
+                                      {doc.is_active ? " · 当前生效" : ""}
                                     </small>
                                   </span>
                                 </button>
@@ -839,6 +886,28 @@ export default function Home() {
                                       <Trash2 size={16} />
                                     )}
                                   </button>
+                                  {!trash && canEdit && (
+                                    <>
+                                      <button
+                                        className="icon-button"
+                                        title="上传新版本"
+                                        aria-label={`为 ${doc.filename} 上传新版本`}
+                                        disabled={busy}
+                                        onClick={() => openVersionUpload(doc)}
+                                      >
+                                        <Upload size={16} />
+                                      </button>
+                                      <button
+                                        className="icon-button"
+                                        title="查看版本"
+                                        aria-label={`查看 ${doc.filename} 的版本`}
+                                        disabled={busy}
+                                        onClick={() => void openVersions(doc)}
+                                      >
+                                        <History size={16} />
+                                      </button>
+                                    </>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -1009,7 +1078,11 @@ export default function Home() {
         </Modal>
       )}
       {modal === "upload" && (
-        <Modal title="上传文档" onClose={() => setModal(null)} busy={busy}>
+        <Modal
+          title={versionTarget ? `上传 ${versionTarget.filename} 的新版本` : "上传文档"}
+          onClose={() => setModal(null)}
+          busy={busy}
+        >
           <form className="modal-form" onSubmit={uploadDocument}>
             <div className="upload-destination">
               <BookOpen size={15} />
@@ -1070,6 +1143,44 @@ export default function Home() {
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+      {modal === "versions" && versionTarget && (
+        <Modal
+          title={`${versionTarget.filename} 的版本`}
+          onClose={() => setModal(null)}
+          busy={busy}
+          wide
+        >
+          <div className="version-list">
+            {versionsLoading ? (
+              <p>正在加载版本…</p>
+            ) : (
+              versions.map((version) => (
+                <div className="version-row" key={version.id}>
+                  <div>
+                    <strong>v{version.version_number}</strong>
+                    <small>
+                      {STATUS[version.status] || version.status} ·{" "}
+                      {new Date(version.created_at).toLocaleString("zh-CN")}
+                    </small>
+                  </div>
+                  <span className={version.is_active ? "version-current" : ""}>
+                    {version.is_active ? "当前生效" : ""}
+                  </span>
+                  {!version.is_active && version.status === "ready" && canEdit && (
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => void activateVersion(version)}
+                    >
+                      切换生效
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
         </Modal>
       )}
       {preview && (

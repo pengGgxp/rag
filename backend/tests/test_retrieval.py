@@ -125,6 +125,41 @@ def test_retrieval_isolates_library_and_excludes_unavailable_documents(retrieval
     assert payload["results"][0]["chunk"]["char_end"] == len(first.chunks[0].text)
 
 
+def test_document_versions_preserve_history_and_only_active_version_is_retrieved(retrieval_client):
+    client, session = retrieval_client
+    library = add_library(session)
+    first = add_document(session, library, "old release guidance")
+    first.version_group_id = first.id
+    first.version_number = 1
+    first.is_active = True
+    second = Document(
+        knowledge_base_id=library.id,
+        version_group_id=first.id,
+        version_number=2,
+        is_active=False,
+        supersedes_id=first.id,
+        filename=first.filename,
+        content_type="text/plain",
+        size_bytes=19,
+        object_key=str(uuid4()),
+        content_hash=str(uuid4()),
+        status=DocumentStatus.READY,
+    )
+    second.chunks.append(Chunk(
+        ordinal=0, text="new release guidance", token_count=3, char_start=0, char_end=21,
+        content_hash=str(uuid4()), embedding_status=EmbeddingStatus.READY,
+    ))
+    session.add(second)
+    session.commit()
+
+    results = client.post(f"/knowledge-bases/{library.id}/search", params={"query": "release"}).json()
+    assert [row["chunk"]["text"] for row in results] == ["old release guidance"]
+    versions = client.get(f"/documents/{first.id}/versions")
+    assert versions.status_code == 200
+    assert [row["version_number"] for row in versions.json()] == [2, 1]
+    assert client.post(f"/documents/{second.id}/activate").status_code == 200
+    results = client.post(f"/knowledge-bases/{library.id}/search", params={"query": "release"}).json()
+    assert [row["chunk"]["text"] for row in results] == ["new release guidance"]
 def test_empty_retrieval_returns_a_unique_persisted_trace(retrieval_client):
     client, session = retrieval_client
     library = add_library(session)

@@ -38,6 +38,10 @@ class DocumentRead(BaseModel):
 
     id: UUID
     knowledge_base_id: UUID
+    version_group_id: UUID
+    version_number: int
+    is_active: bool
+    supersedes_id: UUID | None
     filename: str
     content_type: str
     size_bytes: int
@@ -62,6 +66,8 @@ class ChunkRead(BaseModel):
     heading_path: str | None
     embedding_status: EmbeddingStatus
     embedding_error: str | None
+    version_group_id: UUID | None = None
+    version_number: int | None = None
 
 
 class SearchResult(BaseModel):
@@ -79,6 +85,8 @@ class TraceResultRead(BaseModel):
     lexical_rank: int | None = None
     vector_rank: int | None = None
     vector_distance: float | None = None
+    version_group_id: UUID | None = None
+    version_number: int | None = None
 
 
 class QueryTraceRead(BaseModel):
@@ -119,6 +127,8 @@ class CitationRead(BaseModel):
     char_start: int
     char_end: int
     heading_path: str | None
+    version_group_id: UUID | None = None
+    version_number: int | None = None
 
 
 class AnswerRead(BaseModel):

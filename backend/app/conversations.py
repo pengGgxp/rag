@@ -219,7 +219,8 @@ def chat_router(get_db, retrieve):
                 for citation in message.citations:
                     lines.extend([
                         f"来源：{citation['filename']}（{citation['knowledge_base_name']}，"
-                        f"字符 {citation['char_start']}–{citation['char_end']}，{citation['chunk_id']}）",
+                        f"v{citation.get('version_number', 1)}，字符 {citation['char_start']}–{citation['char_end']}，"
+                        f"{citation['chunk_id']}）",
                         "", citation["text"], "",
                     ])
         return Response(
@@ -364,6 +365,8 @@ def chat_router(get_db, retrieve):
                                 "chunk_id": str(result.chunk.id), "filename": result.filename,
                                 "text": result.chunk.text, "char_start": result.chunk.char_start,
                                 "char_end": result.chunk.char_end, "heading_path": result.chunk.heading_path,
+                                "version_group_id": str(result.chunk.version_group_id) if result.chunk.version_group_id else None,
+                                "version_number": result.chunk.version_number,
                                 "knowledge_base_id": str(scope.knowledge_base_id),
                                 "knowledge_base_name": scope.library.name,
                             }))
@@ -468,9 +471,9 @@ def chat_router(get_db, retrieve):
         except (LLMProviderError, LLMConfigurationError) as exc:
             final_status = "failed"
             error_detail = str(exc)
-        except Exception:
+        except Exception as exc:
             final_status = "failed"
-            error_detail = "本次回答未能完成，请重试"
+            error_detail = f"本次回答未能完成，请重试: {exc}"
         finally:
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):

@@ -556,6 +556,32 @@ tbody tr:hover {
 .row-actions .icon-button {
   width: 27px;
 }
+.version-list {
+  display: grid;
+  gap: 8px;
+  padding: 4px 0;
+}
+.version-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 14px;
+  border: 1px solid #e2e7e2;
+  padding: 12px 14px;
+}
+.version-row > div {
+  display: grid;
+  gap: 4px;
+}
+.version-row small {
+  color: #768078;
+  font-size: 11px;
+}
+.version-current {
+  color: #2b7a4b;
+  font-size: 11px;
+  font-weight: 600;
+}
 .table-footer {
   display: flex;
   justify-content: space-between;

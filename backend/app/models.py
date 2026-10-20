@@ -115,6 +115,12 @@ class Document(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
+    version_group_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True, default=uuid4)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    is_active: Mapped[bool] = mapped_column(default=True, index=True)
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
+    )
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(150))
     size_bytes: Mapped[int] = mapped_column(Integer)

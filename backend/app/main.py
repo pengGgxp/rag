@@ -6,10 +6,10 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import redis
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -151,10 +151,21 @@ def upload_document(
     knowledge_base_id: UUID,
     request: Request,
     file: UploadFile = File(...),
+    version_of: UUID | None = Form(None),
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
     knowledge_base = access.library(db, knowledge_base_id, write=True)
+    previous = None
+    if version_of:
+        previous = db.scalar(
+            select(Document).where(
+                Document.id == version_of,
+                Document.knowledge_base_id == knowledge_base_id,
+            ).with_for_update()
+        )
+        if previous is None or previous.status == DocumentStatus.DELETED:
+            raise HTTPException(status_code=404, detail="The source document version was not found")
     allowed = {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -185,6 +196,18 @@ def upload_document(
     )
     if existing is not None:
         raise HTTPException(status_code=409, detail="This document already exists")
+    if previous:
+        version_group_id = previous.version_group_id
+        version_number = db.scalar(
+            select(func.max(Document.version_number)).where(
+                Document.version_group_id == version_group_id
+            )
+        ) + 1
+        is_active = False
+    else:
+        version_group_id = uuid4()
+        version_number = 1
+        is_active = True
 
     object_key = f"{knowledge_base_id}/{uuid4()}-{file.filename}"
     upload_fileobj(
@@ -194,6 +217,10 @@ def upload_document(
     )
     document = Document(
         knowledge_base_id=knowledge_base_id,
+        version_group_id=version_group_id,
+        version_number=version_number,
+        is_active=is_active,
+        supersedes_id=previous.id if previous else None,
         filename=file.filename or "untitled",
         content_type=file.content_type,
         size_bytes=len(content),
@@ -207,9 +234,11 @@ def upload_document(
     knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     record_audit(
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action="document.uploaded", resource_type="document", resource_id=document.id,
+        action="document.version_uploaded" if previous else "document.uploaded",
+        resource_type="document", resource_id=document.id,
         metadata={"knowledge_base_id": str(knowledge_base_id), "filename": document.filename[:255],
-                  "size_bytes": document.size_bytes}, request=request,
+                  "size_bytes": document.size_bytes, "version_number": version_number},
+        request=request,
     )
     db.commit()
     db.refresh(document)
@@ -242,6 +271,50 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), acces
     return result
 
 
+@app.get("/documents/{document_id}/versions", response_model=list[DocumentRead])
+def list_document_versions(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id)
+    documents = db.scalars(
+        select(Document)
+        .where(Document.version_group_id == document.version_group_id)
+        .order_by(Document.version_number.desc())
+    ).all()
+    return [DocumentRead.model_validate(item) for item in documents]
+
+
+@app.post("/documents/{document_id}/activate", response_model=DocumentRead)
+def activate_document_version(
+    document_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    document = db.scalar(select(Document).where(Document.id == document_id).with_for_update())
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id, write=True)
+    if document.status != DocumentStatus.READY:
+        raise HTTPException(status_code=409, detail="Only a ready document version can be activated")
+    db.execute(
+        update(Document)
+        .where(Document.version_group_id == document.version_group_id)
+        .values(is_active=False)
+    )
+    document.is_active = True
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="document.version_activated", resource_type="document", resource_id=document.id,
+        metadata={"version_number": document.version_number, "filename": document.filename[:255]},
+        request=request,
+    )
+    db.commit()
+    db.refresh(document)
+    return DocumentRead.model_validate(document)
+
+
 @app.delete("/documents/{document_id}", response_model=DocumentRead)
 def delete_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
@@ -251,17 +324,33 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
     if document.status == DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
+    was_active = document.is_active
     document.status = DocumentStatus.DELETED
+    document.is_active = False
     document.error_detail = None
     for job in document.jobs:
         if job.state in (JobState.QUEUED, JobState.RUNNING):
             job.state = JobState.CANCELLED
             job.error_detail = "Document deleted"
+    if was_active:
+        replacement = db.scalar(
+            select(Document)
+            .where(
+                Document.version_group_id == document.version_group_id,
+                Document.id != document.id,
+                Document.status == DocumentStatus.READY,
+            )
+            .order_by(Document.version_number.desc())
+            .with_for_update()
+        )
+        if replacement is not None:
+            replacement.is_active = True
     remaining_ready = db.scalar(
         select(func.count(Document.id)).where(
             Document.knowledge_base_id == document.knowledge_base_id,
             Document.id != document.id,
             Document.status == DocumentStatus.READY,
+            Document.is_active.is_(True),
         )
     )
     document.knowledge_base.status = (
@@ -416,6 +505,7 @@ def retrieve_knowledge_base(
             .where(
                 Document.knowledge_base_id == knowledge_base_id,
                 Document.status == DocumentStatus.READY,
+                Document.is_active.is_(True),
                 or_(*conditions),
             )
             .limit(20)
@@ -441,6 +531,7 @@ def retrieve_knowledge_base(
                 .where(
                     Document.knowledge_base_id == knowledge_base_id,
                     Document.status == DocumentStatus.READY,
+                    Document.is_active.is_(True),
                     Chunk.embedding.is_not(None),
                 )
                 .order_by(Chunk.embedding.cosine_distance(query_vector))
@@ -484,6 +575,8 @@ def retrieve_knowledge_base(
             "lexical_rank": lexical_ranks.get(chunk_id),
             "vector_rank": vector_ranks.get(chunk_id),
             "vector_distance": vector_distances.get(chunk_id),
+            "version_group_id": str(entry["chunk"].document.version_group_id) if entry["chunk"].document.version_group_id else None,
+            "version_number": entry["chunk"].document.version_number,
         }
         for rank, (chunk_id, entry) in enumerate(ordered_results, start=1)
     ]
@@ -508,7 +601,10 @@ def retrieve_knowledge_base(
     results = [
         SearchResult(
             trace_id=trace_id,
-            chunk=ChunkRead.model_validate(entry["chunk"]),
+            chunk=ChunkRead.model_validate(entry["chunk"]).model_copy(update={
+                "version_group_id": entry["chunk"].document.version_group_id,
+                "version_number": entry["chunk"].document.version_number,
+            }),
             score=float(entry["score"]),
             filename=entry["filename"],
         )
@@ -570,6 +666,8 @@ def answer_knowledge_base(
                 char_start=result.chunk.char_start,
                 char_end=result.chunk.char_end,
                 heading_path=result.chunk.heading_path,
+                version_group_id=result.chunk.version_group_id,
+                version_number=result.chunk.version_number,
             )
             for result in retrieved
             if result.chunk.id in evidence_ids
