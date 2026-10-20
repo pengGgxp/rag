@@ -420,6 +420,72 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     return job
 
 
+@app.post("/jobs/{job_id}/cancel", response_model=JobRead)
+def cancel_job(
+    job_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    job = db.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update())
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    access.library(db, job.document.knowledge_base_id, write=True)
+    if job.state not in (JobState.QUEUED, JobState.RUNNING):
+        raise HTTPException(status_code=409, detail="Only queued or running jobs can be cancelled")
+    job.state = JobState.CANCELLED
+    job.error_detail = "任务已取消"
+    if job.document.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
+        job.document.status = DocumentStatus.FAILED
+        job.document.error_detail = "任务已取消"
+        job.document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="job.cancelled", resource_type="ingestion_job", resource_id=job.id,
+        metadata={"document_id": str(job.document_id)}, request=request,
+    )
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.post("/jobs/{job_id}/retry", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
+def retry_job(
+    job_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    old_job = db.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update())
+    if old_job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    document = old_job.document
+    access.library(db, document.knowledge_base_id, write=True)
+    if old_job.state not in (JobState.FAILED, JobState.CANCELLED):
+        raise HTTPException(status_code=409, detail="Only failed or cancelled jobs can be retried")
+    active = db.scalar(select(IngestionJob).where(
+        IngestionJob.document_id == document.id,
+        IngestionJob.state.in_((JobState.QUEUED, JobState.RUNNING)),
+    ))
+    if active is not None:
+        raise HTTPException(status_code=409, detail="This document already has an active job")
+    document.status = DocumentStatus.QUEUED
+    document.error_detail = None
+    document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
+    new_job = IngestionJob(document_id=document.id)
+    db.add(new_job)
+    db.flush()
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="job.retried", resource_type="ingestion_job", resource_id=new_job.id,
+        metadata={"document_id": str(document.id), "previous_job_id": str(old_job.id)}, request=request,
+    )
+    db.commit()
+    db.refresh(new_job)
+    process_document.delay(str(new_job.id))
+    return new_job
+
+
 @app.get("/traces/{trace_id}", response_model=QueryTraceRead)
 def get_query_trace(trace_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     trace = db.get(QueryTrace, trace_id)

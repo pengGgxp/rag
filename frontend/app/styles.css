@@ -556,6 +556,14 @@ tbody tr:hover {
 .row-actions .icon-button {
   width: 27px;
 }
+.document-error {
+  display: block;
+  max-width: 220px;
+  margin-top: 4px;
+  color: #b34d4d;
+  font-size: 11px;
+  line-height: 1.4;
+}
 .version-list {
   display: grid;
   gap: 8px;

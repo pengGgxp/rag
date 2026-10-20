@@ -28,6 +28,7 @@ import {
   Server,
   Trash2,
   Upload,
+  XCircle,
   X,
 } from "lucide-react";
 
@@ -52,7 +53,7 @@ type SourceDocument = {
   parsed_text?: string | null;
   parser_name?: string | null;
   error_detail?: string | null;
-  job?: { state: string; error_detail?: string | null };
+  job?: { id: string; state: string; error_detail?: string | null };
 };
 type Health = {
   status: string;
@@ -322,6 +323,19 @@ export default function Home() {
         text: action === "delete" ? "文档已移至回收站" : "文档已恢复",
       });
       await refresh(id);
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function updateJob(doc: SourceDocument, action: "retry" | "cancel") {
+    if (!doc.job) return;
+    setBusy(true);
+    try {
+      await request(`/jobs/${doc.job.id}/${action}`, { method: "POST" });
+      setNotice({ text: action === "retry" ? "任务已重新排队" : "任务已取消" });
+      await refresh(selectedId);
     } catch (error) {
       notifyError(error);
     } finally {
@@ -840,10 +854,18 @@ export default function Home() {
                                 </button>
                               </td>
                               <td>
-                                <span className={`status-badge ${doc.status}`}>
+                                <span
+                                  className={`status-badge ${doc.status}`}
+                                  title={doc.error_detail || doc.job?.error_detail || undefined}
+                                >
                                   <span className="status-dot" />
                                   {STATUS[doc.status] || doc.status}
                                 </span>
+                                {(doc.error_detail || doc.job?.error_detail) && (
+                                  <small className="document-error">
+                                    {doc.error_detail || doc.job?.error_detail}
+                                  </small>
+                                )}
                               </td>
                               <td className="size-column metadata">
                                 {sizeLabel(doc.size_bytes)}
@@ -888,6 +910,38 @@ export default function Home() {
                                   </button>
                                   {!trash && canEdit && (
                                     <>
+                                      {doc.job &&
+                                        ["failed", "cancelled"].includes(
+                                          doc.job.state,
+                                        ) && (
+                                          <button
+                                            className="icon-button"
+                                            title="重试处理"
+                                            aria-label={`重试 ${doc.filename} 的处理`}
+                                            disabled={busy}
+                                            onClick={() =>
+                                              void updateJob(doc, "retry")
+                                            }
+                                          >
+                                            <RotateCcw size={16} />
+                                          </button>
+                                        )}
+                                      {doc.job &&
+                                        ["queued", "running"].includes(
+                                          doc.job.state,
+                                        ) && (
+                                          <button
+                                            className="icon-button danger"
+                                            title="取消处理"
+                                            aria-label={`取消 ${doc.filename} 的处理`}
+                                            disabled={busy}
+                                            onClick={() =>
+                                              void updateJob(doc, "cancel")
+                                            }
+                                          >
+                                            <XCircle size={16} />
+                                          </button>
+                                        )}
                                       <button
                                         className="icon-button"
                                         title="上传新版本"

@@ -34,6 +34,8 @@ def process_document(self, job_id: str) -> None:
             job.error_detail = "Document no longer exists"
             session.commit()
             return
+        if job.state == JobState.CANCELLED:
+            return
         if document.status == DocumentStatus.DELETED:
             job.state = JobState.CANCELLED
             job.error_detail = "Document deleted"
@@ -53,6 +55,9 @@ def process_document(self, job_id: str) -> None:
         if not parsed_text.strip():
             raise ValueError("The document parser produced no text")
         session.refresh(document)
+        session.refresh(job)
+        if job.state == JobState.CANCELLED:
+            return
         if document.status == DocumentStatus.DELETED:
             job.state = JobState.CANCELLED
             job.error_detail = "Document deleted"
@@ -116,6 +121,8 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
     session = SessionLocal()
     try:
         job = session.get(IngestionJob, job_id) if job_id else None
+        if job is not None and job.state == JobState.CANCELLED:
+            return
         if job is not None:
             job.state = JobState.RUNNING
             job.error_detail = None
@@ -171,6 +178,10 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
         if len(vectors) != len(pending):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
         session.refresh(document)
+        if job is not None:
+            session.refresh(job)
+            if job.state == JobState.CANCELLED:
+                return
         if document.status == DocumentStatus.DELETED:
             if job is not None:
                 job.state = JobState.CANCELLED
