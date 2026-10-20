@@ -41,7 +41,14 @@ def test_chat_provider_uses_openai_compatible_shape(monkeypatch):
 
 
 def test_chat_provider_requires_configuration():
-    provider = OpenAICompatibleChatProvider(Settings(_env_file=None))
+    provider = OpenAICompatibleChatProvider(
+        Settings(
+            _env_file=None,
+            llm_base_url=None,
+            llm_api_key=None,
+            llm_model=None,
+        )
+    )
 
     with pytest.raises(LLMConfigurationError):
         provider.complete([{"role": "user", "content": "Question"}])
