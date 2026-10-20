@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     embedding_base_url: str | None = None
     embedding_api_key: SecretStr | None = None
     embedding_model: str | None = None
-    embedding_dimension: int = 1536
+    embedding_dimension: int = 1024
     embedding_timeout_seconds: float = 30.0
 
     @property

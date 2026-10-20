@@ -3,7 +3,16 @@ from celery import Celery
 from .config import get_settings
 from .db import SessionLocal
 from .chunking import chunk_text
-from .models import Chunk, Document, DocumentStatus, IngestionJob, JobState, KnowledgeBaseStatus
+from .embedding import EmbeddingConfigurationError, OpenAICompatibleEmbeddingProvider
+from .models import (
+    Chunk,
+    Document,
+    DocumentStatus,
+    EmbeddingStatus,
+    IngestionJob,
+    JobState,
+    KnowledgeBaseStatus,
+)
 from .parsers import parse_document
 from .storage import download_fileobj
 
@@ -55,10 +64,16 @@ def process_document(self, job_id: str) -> None:
         )
         if not document.chunks:
             raise ValueError("The document did not produce any chunks")
+        document.error_detail = None
+        # Parsing and indexing are separate jobs: a document is not READY
+        # until every chunk has a successfully stored embedding.
+        document.status = DocumentStatus.PROCESSING
         job.state = JobState.SUCCEEDED
-        document.status = DocumentStatus.READY
-        document.knowledge_base.status = KnowledgeBaseStatus.READY
+        embedding_job = IngestionJob(document_id=document.id)
+        session.add(embedding_job)
+        session.flush()
         session.commit()
+        embed_document.delay(str(document.id), str(embedding_job.id))
     except Exception as exc:
         session.rollback()
         job = session.get(IngestionJob, job_id)
@@ -71,6 +86,92 @@ def process_document(self, job_id: str) -> None:
                 document.error_detail = str(exc)
                 document.knowledge_base.status = KnowledgeBaseStatus.ERROR
             session.commit()
+        raise
+    finally:
+        session.close()
+
+
+@celery_app.task(bind=True, max_retries=3)
+def embed_document(self, document_id: str, job_id: str | None = None) -> None:
+    session = SessionLocal()
+    try:
+        job = session.get(IngestionJob, job_id) if job_id else None
+        if job is not None:
+            job.state = JobState.RUNNING
+            job.error_detail = None
+            session.commit()
+        document = session.get(Document, document_id)
+        if document is None:
+            if job is not None:
+                job.state = JobState.FAILED
+                job.error_detail = "Document no longer exists"
+                session.commit()
+            return
+        chunks = list(
+            session.query(Chunk)
+            .filter(Chunk.document_id == document.id)
+            .order_by(Chunk.ordinal)
+            .all()
+        )
+        if not chunks:
+            raise ValueError("The document has no chunks to embed")
+
+        pending = [
+            chunk
+            for chunk in chunks
+            if chunk.embedding_status in (EmbeddingStatus.PENDING, EmbeddingStatus.FAILED)
+        ]
+        if not pending:
+            # Another worker may currently own RUNNING chunks. Leave the
+            # document in PROCESSING instead of falsely reporting readiness.
+            if all(chunk.embedding_status == EmbeddingStatus.READY for chunk in chunks):
+                document.status = DocumentStatus.READY
+                document.error_detail = None
+                document.knowledge_base.status = KnowledgeBaseStatus.READY
+                if job is not None:
+                    job.state = JobState.SUCCEEDED
+                session.commit()
+            return
+
+        for chunk in pending:
+            chunk.embedding_status = EmbeddingStatus.RUNNING
+            chunk.embedding_error = None
+        document.status = DocumentStatus.PROCESSING
+        document.error_detail = None
+        session.commit()
+
+        provider = OpenAICompatibleEmbeddingProvider()
+        vectors = provider.embed_texts([chunk.text for chunk in pending])
+        if len(vectors) != len(pending):
+            raise ValueError("Embedding provider returned an unexpected number of vectors")
+        for chunk, vector in zip(pending, vectors):
+            chunk.embedding = vector
+            chunk.embedding_status = EmbeddingStatus.READY
+            chunk.embedding_error = None
+        document.status = DocumentStatus.READY
+        document.error_detail = None
+        document.knowledge_base.status = KnowledgeBaseStatus.READY
+        if job is not None:
+            job.state = JobState.SUCCEEDED
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        document = session.get(Document, document_id)
+        if document is not None:
+            chunks = session.query(Chunk).filter(Chunk.document_id == document.id).all()
+            for chunk in chunks:
+                if chunk.embedding_status == EmbeddingStatus.RUNNING:
+                    chunk.embedding_status = EmbeddingStatus.FAILED
+                    chunk.embedding_error = str(exc)
+            document.status = DocumentStatus.FAILED
+            document.error_detail = str(exc)
+            document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+            if job is not None:
+                job.state = JobState.FAILED
+                job.error_detail = str(exc)
+            session.commit()
+        if not isinstance(exc, (ValueError, EmbeddingConfigurationError)) and self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=2 ** (self.request.retries + 1))
         raise
     finally:
         session.close()

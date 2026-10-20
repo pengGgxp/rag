@@ -34,6 +34,13 @@ class JobState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class EmbeddingStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    READY = "ready"
+    FAILED = "failed"
+
+
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 
@@ -93,7 +100,11 @@ class Chunk(Base):
     char_end: Mapped[int] = mapped_column(Integer)
     heading_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    embedding_status: Mapped[EmbeddingStatus] = mapped_column(
+        SqlEnum(EmbeddingStatus), default=EmbeddingStatus.PENDING, nullable=False
+    )
+    embedding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     document: Mapped[Document] = relationship(back_populates="chunks")
 
 

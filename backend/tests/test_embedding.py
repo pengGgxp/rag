@@ -45,7 +45,14 @@ def test_embedding_provider_uses_openai_compatible_shape(monkeypatch):
 
 
 def test_embedding_provider_requires_credentials():
-    provider = OpenAICompatibleEmbeddingProvider(Settings())
+    provider = OpenAICompatibleEmbeddingProvider(
+        Settings(
+            _env_file=None,
+            embedding_base_url=None,
+            embedding_api_key=None,
+            embedding_model=None,
+        )
+    )
 
     with pytest.raises(EmbeddingConfigurationError):
         provider.embed_texts(["text"])

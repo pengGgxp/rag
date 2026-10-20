@@ -3,7 +3,7 @@
 一个以知识库为中心的 RAG 平台。当前仓库已经包含第一条可运行的垂直闭环：
 
 ```text
-Docker Compose → 创建知识库 → 上传文档 → 异步解析 → 查看处理状态
+Docker Compose → 创建知识库 → 上传文档 → 异步解析 → 1024 维向量化 → 混合检索
 ```
 
 ## 本地运行
@@ -44,8 +44,9 @@ docker compose down
 - 文档上传、对象存储、解析和 Job 状态
 - 确定性文本分块，保留字符偏移和标题路径
 - 可查看文档 chunks
-- 带 `trace_id` 的知识库关键词检索
-- OpenAI-compatible 云端 Embedding 适配器（未配置凭据时保持 `not_configured`）
+- 带 `trace_id` 的知识库混合检索（关键词 + pgvector cosine + RRF）
+- OpenAI-compatible 云端 Embedding 适配器，当前默认维度为 1024
+- 文档向量化任务、失败状态、重试和手动重建索引
 - 健康检查、结构化错误状态和基础 CORS
 
 ## 当前边界
@@ -53,8 +54,7 @@ docker compose down
 这个垂直切片还没有实现：
 
 - 用户注册、OAuth 和权限模型
-- 云端 Embedding 适配器已准备，但尚未接入文档索引任务
-- 向量检索、混合检索、Rerank 和引用
+- Rerank、引用展示和可验证的回答证据
 - LLM 问答、SSE 和反馈
 
 这些能力会沿着 `RAG_PLATFORM_FEATURE_BASELINE.md` 继续接入。当前实现优先保证导入和处理链路真实可运行，未完成的 RAG 能力不会被伪装成已完成。

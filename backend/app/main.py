@@ -12,11 +12,12 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
-from .embedding import OpenAICompatibleEmbeddingProvider
+from .embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from .models import (
     Document,
     DocumentStatus,
     Chunk,
+    EmbeddingStatus,
     IngestionJob,
     JobState,
     KnowledgeBase,
@@ -31,7 +32,7 @@ from .schemas import (
     SearchResult,
 )
 from .storage import ensure_bucket, upload_fileobj
-from .tasks import process_document
+from .tasks import embed_document, process_document
 
 
 def get_db():
@@ -221,6 +222,26 @@ def list_chunks(document_id: UUID, db: Session = Depends(get_db)):
     ).all()
 
 
+@app.post("/documents/{document_id}/reindex", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
+def reindex_document(document_id: UUID, db: Session = Depends(get_db)):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    for chunk in document.chunks:
+        chunk.embedding = None
+        chunk.embedding_status = EmbeddingStatus.PENDING
+        chunk.embedding_error = None
+    document.status = DocumentStatus.PROCESSING
+    document.error_detail = None
+    document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
+    job = IngestionJob(document_id=document.id)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    embed_document.delay(str(document.id), str(job.id))
+    return job
+
+
 @app.post("/knowledge-bases/{knowledge_base_id}/search", response_model=list[SearchResult])
 def search_knowledge_base(
     knowledge_base_id: UUID,
@@ -233,6 +254,8 @@ def search_knowledge_base(
     terms = [term for term in query.split() if term]
     if not terms:
         return []
+    trace_id = uuid4()
+    lexical_rows = []
     conditions = [Chunk.text.ilike(f"%{term}%") for term in terms]
     rows = db.execute(
         select(Chunk, Document.filename)
@@ -244,17 +267,54 @@ def search_knowledge_base(
         )
         .limit(20)
     ).all()
-    trace_id = uuid4()
-    results = []
     for chunk, filename in rows:
-        score = sum(chunk.text.lower().count(term.lower()) for term in terms)
-        results.append(
-            SearchResult(
-                trace_id=trace_id,
-                chunk=ChunkRead.model_validate(chunk),
-                score=float(score),
-                filename=filename,
-            )
+        lexical_score = sum(chunk.text.lower().count(term.lower()) for term in terms)
+        lexical_rows.append((chunk, filename, lexical_score))
+    lexical_rows.sort(key=lambda item: item[2], reverse=True)
+
+    vector_rows = []
+    provider = OpenAICompatibleEmbeddingProvider()
+    if provider.status.configured:
+        try:
+            query_vector = provider.embed_texts([query])[0]
+            vector_rows = db.execute(
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(
+                    Document.knowledge_base_id == knowledge_base_id,
+                    Document.status == DocumentStatus.READY,
+                    Chunk.embedding.is_not(None),
+                )
+                .order_by(Chunk.embedding.cosine_distance(query_vector))
+                .limit(20)
+            ).all()
+        except (EmbeddingProviderError, IndexError):
+            vector_rows = []
+
+    # Reciprocal rank fusion keeps lexical search useful for exact terms while
+    # allowing semantic matches to rise when embeddings are available.
+    fused: dict[UUID, dict] = {}
+    for rank, (chunk, filename, _lexical_score) in enumerate(lexical_rows, start=1):
+        fused[chunk.id] = {
+            "chunk": chunk,
+            "filename": filename,
+            "score": 1.0 / (60 + rank),
+        }
+    for rank, (chunk, filename) in enumerate(vector_rows, start=1):
+        entry = fused.setdefault(
+            chunk.id,
+            {"chunk": chunk, "filename": filename, "score": 0.0},
         )
-    return sorted(results, key=lambda item: item.score, reverse=True)
+        entry["score"] += 1.0 / (60 + rank)
+
+    results = [
+        SearchResult(
+            trace_id=trace_id,
+            chunk=ChunkRead.model_validate(entry["chunk"]),
+            score=float(entry["score"]),
+            filename=entry["filename"],
+        )
+        for entry in fused.values()
+    ]
+    return sorted(results, key=lambda item: item.score, reverse=True)[:20]
 

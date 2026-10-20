@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import DocumentStatus, JobState, KnowledgeBaseStatus
+from .models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -60,6 +60,8 @@ class ChunkRead(BaseModel):
     char_start: int
     char_end: int
     heading_path: str | None
+    embedding_status: EmbeddingStatus
+    embedding_error: str | None
 
 
 class SearchResult(BaseModel):
