@@ -1,9 +1,11 @@
+import asyncio
 import httpx
 import pytest
 
 from app.config import Settings
 from app.llm import (
     LLMConfigurationError,
+    LLMProviderError,
     OpenAICompatibleChatProvider,
 )
 
@@ -52,3 +54,52 @@ def test_chat_provider_requires_configuration():
 
     with pytest.raises(LLMConfigurationError):
         provider.complete([{"role": "user", "content": "Question"}])
+
+
+@pytest.mark.parametrize("body,content_type,expected", [
+    (
+        'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"好"},"finish_reason":"stop"}]}\n\n'
+        'data: [DONE]\n\n',
+        "text/event-stream", ["你", "好"],
+    ),
+    ('{"choices":[{"message":{"content":"完整回答"}}]}', "application/json", ["完整回答"]),
+])
+def test_streaming_and_non_streaming_compatible_provider(monkeypatch, body, content_type, expected):
+    captured = {}
+
+    def handle(request):
+        import json
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": content_type}, content=body.encode())
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs))
+
+    async def collect():
+        return [part async for part in OpenAICompatibleChatProvider(configured_settings()).stream([{"role": "user", "content": "问题"}])]
+
+    assert asyncio.run(collect()) == expected
+    assert captured["stream"] is True
+    assert captured["model"] == "chat-model"
+
+
+@pytest.mark.parametrize("body", [
+    'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n',
+    'data: {"error":{"message":"failed"}}\n\n',
+    "data: not-json\n\n",
+])
+def test_stream_errors_are_not_silently_marked_complete(monkeypatch, body):
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(
+        transport=httpx.MockTransport(lambda _: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body,
+        )), **kwargs,
+    ))
+
+    async def collect():
+        return [part async for part in OpenAICompatibleChatProvider(configured_settings()).stream([])]
+
+    with pytest.raises(LLMProviderError):
+        asyncio.run(collect())

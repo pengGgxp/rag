@@ -1,25 +1,17 @@
 "use client";
 
-import ReactMarkdown from "react-markdown";
+import { ChatWorkspace } from "./chat-workspace";
+import { Modal } from "./modal";
 import { request } from "./api";
-import { RetrievalPanel, TraceInspector } from "./retrieval-panel";
-import {
-  FormEvent,
-  ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { RetrievalPanel } from "./retrieval-panel";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowLeft,
-  ArrowUp,
   BookOpen,
   Check,
   ChevronRight,
   CircleAlert,
-  Copy,
   FileText,
   FolderClosed,
   Layers3,
@@ -56,21 +48,6 @@ type SourceDocument = {
   error_detail?: string | null;
   job?: { state: string; error_detail?: string | null };
 };
-type Citation = {
-  chunk_id: string;
-  filename: string;
-  text: string;
-  char_start: number;
-  char_end: number;
-  heading_path?: string | null;
-};
-type Answer = {
-  trace_id: string;
-  answer: string;
-  refused: boolean;
-  refusal_reason?: string | null;
-  citations: Citation[];
-};
 type Health = {
   status: string;
   embedding: { configured: boolean; model: string; dimension: number };
@@ -99,98 +76,6 @@ function extension(filename: string) {
   return filename.split(".").pop()?.toUpperCase() ?? "FILE";
 }
 
-function AnswerContent({
-  answer,
-  onCitation,
-}: {
-  answer: Answer;
-  onCitation: (citation: Citation) => void;
-}) {
-  let markdown = answer.answer;
-  answer.citations.forEach((citation, index) => {
-    markdown = markdown
-      .split(`[${citation.chunk_id}]`)
-      .join(`[${index + 1}](#citation-${citation.chunk_id})`);
-  });
-  return (
-    <div className="answer-text">
-      <ReactMarkdown
-        skipHtml
-        components={{
-          img: ({ alt }) => <span>{alt}</span>,
-          a: ({ href, children }) => {
-            const citation = answer.citations.find(
-              (item) => href === `#citation-${item.chunk_id}`,
-            );
-            return citation ? (
-              <button
-                className="inline-citation"
-                title={`查看来源：${citation.filename}`}
-                aria-label={`查看来源：${citation.filename}`}
-                onClick={() => onCitation(citation)}
-              >
-                {children}
-              </button>
-            ) : (
-              <a href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
-        {markdown}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function Modal({
-  title,
-  children,
-  onClose,
-  busy = false,
-  wide = false,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  busy?: boolean;
-  wide?: boolean;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = ref.current;
-    dialog?.showModal();
-    return () => dialog?.close();
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      className={`modal ${wide ? "modal-wide" : ""}`}
-      aria-label={title}
-      onCancel={(event) => {
-        event.preventDefault();
-        if (!busy) onClose();
-      }}
-    >
-      <div className="modal-heading">
-        <h2>{title}</h2>
-        <button
-          className="icon-button"
-          title="关闭"
-          aria-label="关闭"
-          disabled={busy}
-          onClick={onClose}
-        >
-          <X size={18} />
-        </button>
-      </div>
-      {children}
-    </dialog>
-  );
-}
-
 export default function Home() {
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -200,11 +85,11 @@ export default function Home() {
   const [screen, setScreen] = useState<"catalog" | "knowledge" | "chat">(
     "catalog",
   );
+  const [chatEntry, setChatEntry] = useState(0);
   const [view, setView] = useState<"documents" | "retrieval" | "settings">(
     "documents",
   );
   const [diagnostics, setDiagnostics] = useState(false);
-  const [traceId, setTraceId] = useState<string | null>(null);
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
@@ -222,15 +107,9 @@ export default function Home() {
     error?: boolean;
   } | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [question, setQuestion] = useState("");
-  const [submittedQuestion, setSubmittedQuestion] = useState("");
-  const [answer, setAnswer] = useState<Answer | null>(null);
-  const [asking, setAsking] = useState(false);
   const selectedRef = useRef(selectedId);
   const documentRequest = useRef(0);
-  const answerRequest = useRef<AbortController | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const answerEnd = useRef<HTMLDivElement>(null);
   selectedRef.current = selectedId;
 
   const notifyError = useCallback((error: unknown) => {
@@ -273,19 +152,17 @@ export default function Home() {
     }
   }, []);
   useEffect(() => {
+    if (
+      new URLSearchParams(window.location.search).has("conversation") ||
+      new URLSearchParams(window.location.search).has("chat")
+    )
+      setScreen("chat");
     loadLibraries().catch(notifyError);
     void refreshHealth();
-    return () => answerRequest.current?.abort();
   }, [loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
-    answerRequest.current?.abort();
-    setAsking(false);
-    setAnswer(null);
-    setQuestion("");
-    setSubmittedQuestion("");
     setDocuments([]);
     setPreview(null);
-    setTraceId(null);
     setDocumentSearch("");
     setTrash(false);
     if (selectedId) loadDocuments(selectedId).catch(notifyError);
@@ -308,13 +185,6 @@ export default function Home() {
     const timer = setTimeout(() => setNotice(null), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
-  useEffect(() => {
-    if (answer || asking)
-      answerEnd.current?.scrollIntoView({
-        block: "nearest",
-        behavior: "smooth",
-      });
-  }, [answer, asking]);
 
   function openModal(next: "create" | "upload") {
     setModalError("");
@@ -399,12 +269,6 @@ export default function Home() {
         `/documents/${doc.id}${action === "restore" ? "/restore" : ""}`,
         { method: action === "delete" ? "DELETE" : "POST" },
       );
-      if (selectedRef.current === id) {
-        answerRequest.current?.abort();
-        setAsking(false);
-        setAnswer(null);
-        setSubmittedQuestion("");
-      }
       setNotice({
         text: action === "delete" ? "文档已移至回收站" : "文档已恢复",
       });
@@ -415,43 +279,6 @@ export default function Home() {
       setBusy(false);
     }
   }
-  async function askQuestion(event: FormEvent) {
-    event.preventDefault();
-    if (!question.trim() || asking) return;
-    const id = selectedId;
-    const controller = new AbortController();
-    answerRequest.current = controller;
-    const query = question.trim();
-    setSubmittedQuestion(query);
-    setQuestion("");
-    setAnswer(null);
-    setAsking(true);
-    try {
-      const data = await request<Answer>(`/knowledge-bases/${id}/answer`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, top_k: 6 }),
-        signal: controller.signal,
-      });
-      if (selectedRef.current === id && !controller.signal.aborted)
-        setAnswer(data);
-    } catch (error) {
-      if (!controller.signal.aborted && selectedRef.current === id) {
-        notifyError(error);
-        setQuestion(query);
-      }
-    } finally {
-      if (answerRequest.current === controller) setAsking(false);
-    }
-  }
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setNotice({ text: "已复制" });
-    } catch {
-      setNotice({ text: "浏览器不允许访问剪贴板", error: true });
-    }
-  }
   function showDocument(doc: SourceDocument) {
     setPreview({
       filename: doc.filename,
@@ -460,27 +287,18 @@ export default function Home() {
       error: doc.error_detail || doc.job?.error_detail,
     });
   }
-  function showCitation(citation: Citation) {
-    setPreview({
-      filename: citation.filename,
-      text: citation.text,
-      detail: `${citation.heading_path ? `${citation.heading_path} · ` : ""}字符 ${citation.char_start}–${citation.char_end}`,
-    });
-  }
   function openLibrary(
     id: string,
     destination: "knowledge" | "chat" = "knowledge",
   ) {
     setSelectedId(id);
+    if (destination === "chat") setChatEntry((value) => value + 1);
     setScreen(destination);
     setView("documents");
     setSidebarOpen(false);
   }
   const selected = libraries.find((item) => item.id === selectedId);
   const activeDocuments = documents.filter((doc) => doc.status !== "deleted");
-  const readyCount = activeDocuments.filter(
-    (doc) => doc.status === "ready",
-  ).length;
   const visibleDocuments = documents.filter(
     (doc) =>
       (doc.status === "deleted") === trash &&
@@ -489,6 +307,16 @@ export default function Home() {
   const filteredLibraries = libraries.filter((item) =>
     item.name.toLowerCase().includes(librarySearch.toLowerCase()),
   );
+
+  if (screen === "chat")
+    return (
+      <ChatWorkspace
+        key={chatEntry}
+        libraries={libraries}
+        initialLibraryId={selectedId}
+        onKnowledge={() => setScreen("catalog")}
+      />
+    );
 
   return (
     <div className="workspace">
@@ -519,7 +347,7 @@ export default function Home() {
         </a>
         <nav className="primary-navigation" aria-label="产品导航">
           <button
-            className={screen !== "chat" ? "selected" : ""}
+            className="selected"
             onClick={() => {
               setScreen("catalog");
               setSidebarOpen(false);
@@ -529,7 +357,6 @@ export default function Home() {
             知识库
           </button>
           <button
-            className={screen === "chat" ? "selected" : ""}
             onClick={() => {
               if (selectedId) openLibrary(selectedId, "chat");
               else {
@@ -604,7 +431,7 @@ export default function Home() {
               </nav>
             )}
             <div className="sidebar-section-heading">
-              <span>{screen === "chat" ? "选择知识库" : "切换知识库"}</span>
+              <span>切换知识库</span>
               <span className="sidebar-heading-actions">
                 <span>{libraries.length}</span>
                 <button
@@ -633,10 +460,7 @@ export default function Home() {
                   className={`library-item ${selectedId === library.id ? "selected" : ""}`}
                   aria-current={selectedId === library.id ? "page" : undefined}
                   onClick={() => {
-                    openLibrary(
-                      library.id,
-                      screen === "chat" ? "chat" : "knowledge",
-                    );
+                    openLibrary(library.id);
                   }}
                 >
                   <BookOpen size={17} />
@@ -693,9 +517,7 @@ export default function Home() {
             {screen !== "catalog" && (
               <>
                 <ChevronRight size={14} />
-                <strong>
-                  {screen === "chat" ? "知识问答" : selected?.name || "知识库"}
-                </strong>
+                <strong>{selected?.name || "知识库"}</strong>
               </>
             )}
           </div>
@@ -777,13 +599,11 @@ export default function Home() {
                 <div className="title-line">
                   <h1>{selected.name}</h1>
                   <span className="subtle-label">
-                    {screen === "chat"
-                      ? "知识问答"
-                      : view === "retrieval"
-                        ? "检索测试"
-                        : view === "settings"
-                          ? "配置"
-                          : "文档"}
+                    {view === "retrieval"
+                      ? "检索测试"
+                      : view === "settings"
+                        ? "配置"
+                        : "文档"}
                   </span>
                 </div>
                 <p>
@@ -846,7 +666,7 @@ export default function Home() {
                 knowledgeBaseId={selectedId}
                 onPreview={setPreview}
               />
-            ) : screen === "knowledge" ? (
+            ) : (
               <section
                 className="documents-view"
                 id="documents-view"
@@ -1041,154 +861,6 @@ export default function Home() {
                   </span>
                 </footer>
               </section>
-            ) : (
-              <section
-                className="answers-view"
-                id="answers-view"
-                aria-label="知识问答"
-              >
-                <div className="conversation">
-                  {!submittedQuestion ? (
-                    <div className="answer-empty">
-                      <span className="answer-emblem">
-                        <Layers3 size={32} strokeWidth={1.4} />
-                      </span>
-                      <h2>{selected.name}</h2>
-                      <p>
-                        {readyCount} 份就绪文档<span>·</span>知识问答
-                      </p>
-                      <div className="answer-divider" />
-                      <span className="grounding-label">
-                        <BookOpen size={14} />
-                        基于知识库原文
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="exchange">
-                      <div className="question-block">
-                        <span className="message-label">你</span>
-                        <p>{submittedQuestion}</p>
-                      </div>
-                      <div className="response-block">
-                        <span className="message-label">
-                          <Layers3 size={16} />
-                          知库
-                          {answer && (
-                            <span
-                              className={`answer-label ${answer.refused ? "refused" : ""}`}
-                            >
-                              {answer.refused ? "证据不足" : "回答完成"}
-                            </span>
-                          )}
-                        </span>
-                        {asking && (
-                          <div className="thinking">
-                            <Loader2 size={17} className="spin" />
-                            正在检索资料并生成回答…
-                          </div>
-                        )}
-                        {answer && (
-                          <>
-                            <AnswerContent
-                              answer={answer}
-                              onCitation={showCitation}
-                            />
-                            {answer.citations.length > 0 && (
-                              <div className="sources">
-                                <div className="sources-heading">
-                                  参考来源<span>{answer.citations.length}</span>
-                                </div>
-                                <div className="source-list">
-                                  {answer.citations.map((citation, index) => (
-                                    <button
-                                      className="source-chip"
-                                      key={citation.chunk_id}
-                                      onClick={() => showCitation(citation)}
-                                      title={citation.filename}
-                                    >
-                                      <span>{index + 1}</span>
-                                      <FileText size={14} />
-                                      <strong>{citation.filename}</strong>
-                                      <ChevronRight size={14} />
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                            <div className="answer-actions">
-                              <button
-                                className="icon-button"
-                                title="复制回答"
-                                aria-label="复制回答"
-                                onClick={() => copy(answer.answer)}
-                              >
-                                <Copy size={15} />
-                              </button>
-                              <details className="answer-details">
-                                <summary>回答详情</summary>
-                                <button
-                                  className="text-button"
-                                  aria-label="查看回答检索记录"
-                                  onClick={() => setTraceId(answer.trace_id)}
-                                >
-                                  <Search size={14} />
-                                  检索记录
-                                </button>
-                              </details>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div ref={answerEnd} />
-                </div>
-                <div className="composer-area">
-                  <form className="composer" onSubmit={askQuestion}>
-                    <textarea
-                      aria-label="向知识库提问"
-                      placeholder={`向「${selected.name}」提问…`}
-                      rows={2}
-                      value={question}
-                      maxLength={4000}
-                      disabled={asking}
-                      onChange={(event) => setQuestion(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (
-                          event.key === "Enter" &&
-                          !event.shiftKey &&
-                          !event.nativeEvent.isComposing
-                        ) {
-                          event.preventDefault();
-                          event.currentTarget.form?.requestSubmit();
-                        }
-                      }}
-                    />
-                    <div className="composer-footer">
-                      <span>
-                        <BookOpen size={14} />
-                        {selected.name}
-                      </span>
-                      <button
-                        className="send-button"
-                        title="发送问题"
-                        aria-label="发送问题"
-                        disabled={asking || !question.trim()}
-                        type="submit"
-                      >
-                        {asking ? (
-                          <Loader2 size={18} className="spin" />
-                        ) : (
-                          <ArrowUp size={19} />
-                        )}
-                      </button>
-                    </div>
-                  </form>
-                  <div className="composer-meta">
-                    <span>AI 回答仅供参考，请核对来源</span>
-                  </div>
-                </div>
-              </section>
             )}
           </>
         ) : (
@@ -1245,15 +917,6 @@ export default function Home() {
               </div>
             </dl>
           </div>
-        </Modal>
-      )}
-      {traceId && (
-        <Modal title="检索记录" wide onClose={() => setTraceId(null)}>
-          <TraceInspector
-            key={traceId}
-            traceId={traceId}
-            knowledgeBaseId={selectedId}
-          />
         </Modal>
       )}
       {notice && (

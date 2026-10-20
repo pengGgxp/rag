@@ -45,6 +45,7 @@ from .schemas import (
 )
 from .storage import ensure_bucket, upload_fileobj
 from .tasks import embed_document, process_document
+from .conversations import chat_router, recover_interrupted_conversations
 
 
 def get_db():
@@ -59,6 +60,8 @@ def get_db():
 async def lifespan(_: FastAPI):
     init_db()
     ensure_bucket()
+    with SessionLocal() as db:
+        recover_interrupted_conversations(db)
     yield
 
 
@@ -573,4 +576,7 @@ def answer_knowledge_base(
         refusal_reason=None,
         citations=citations,
     )
+
+
+app.include_router(chat_router(get_db, retrieve_knowledge_base))
 

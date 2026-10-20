@@ -1,4 +1,7 @@
 import httpx
+import json
+from collections.abc import AsyncIterator
+from httpx_sse import aconnect_sse, SSEError
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,6 +76,61 @@ class OpenAICompatibleChatProvider:
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("LLM response did not contain message content")
         return content.strip()
+
+    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        if not self.settings.llm_configured:
+            raise LLMConfigurationError("回答模型尚未配置")
+        payload = {
+            "model": self.settings.llm_model,
+            "messages": messages,
+            "temperature": 0.0,
+            "stream": True,
+        }
+        headers = {"Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}"}
+        try:
+            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
+                async with aconnect_sse(
+                    client, "POST", self._chat_url(self.settings.llm_base_url or ""),
+                    headers=headers, json=payload,
+                ) as source:
+                    if source.response.status_code >= 400:
+                        raise LLMProviderError(f"回答服务请求失败（HTTP {source.response.status_code}）")
+                    # Some compatible providers ignore stream=True and return one JSON response.
+                    if "application/json" in source.response.headers.get("content-type", ""):
+                        body = json.loads(await source.response.aread())
+                        content = body["choices"][0]["message"]["content"]
+                        if not isinstance(content, str) or not content.strip():
+                            raise LLMProviderError("回答服务未返回正文")
+                        yield content
+                        return
+                    received = False
+                    finished = False
+                    async for event in source.aiter_sse():
+                        if event.data == "[DONE]":
+                            finished = True
+                            break
+                        body = event.json()
+                        if body.get("error"):
+                            raise LLMProviderError("回答服务返回错误")
+                        choices = body.get("choices", [])
+                        if not choices:
+                            continue
+                        choice = choices[0]
+                        reason = choice.get("finish_reason")
+                        if reason in ("length", "content_filter"):
+                            raise LLMProviderError("回答未完整生成，请重试")
+                        if reason is not None:
+                            finished = True
+                        content = choice.get("delta", {}).get("content")
+                        if isinstance(content, str) and content:
+                            received = True
+                            yield content
+                    if not received or not finished:
+                        raise LLMProviderError("回答连接中断，未收到完整回答")
+        except LLMProviderError:
+            raise
+        except (httpx.HTTPError, SSEError, ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+            raise LLMProviderError("回答服务连接或响应异常，请重试") from exc
 
     @staticmethod
     def _chat_url(base_url: str) -> str:
