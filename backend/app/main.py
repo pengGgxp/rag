@@ -40,6 +40,8 @@ from .schemas import (
     AnswerRead,
     AnswerRequest,
     CitationRead,
+    RetrievalRead,
+    RetrievalRequest,
 )
 from .storage import ensure_bucket, upload_fileobj
 from .tasks import embed_document, process_document
@@ -337,25 +339,40 @@ def search_knowledge_base(
     query: str,
     db: Session = Depends(get_db),
 ):
+    return retrieve_knowledge_base(knowledge_base_id, query, db).results
+
+
+@app.post("/knowledge-bases/{knowledge_base_id}/retrieval", response_model=RetrievalRead)
+def inspect_retrieval(
+    knowledge_base_id: UUID,
+    payload: RetrievalRequest,
+    db: Session = Depends(get_db),
+):
+    return retrieve_knowledge_base(knowledge_base_id, payload.query, db)
+
+
+def retrieve_knowledge_base(
+    knowledge_base_id: UUID, query: str, db: Session
+) -> RetrievalRead:
     knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
     if knowledge_base is None:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     terms = [term for term in query.split() if term]
-    if not terms:
-        return []
     trace_id = uuid4()
     lexical_rows = []
     conditions = [Chunk.text.ilike(f"%{term}%") for term in terms]
-    rows = db.execute(
-        select(Chunk, Document.filename)
-        .join(Document, Document.id == Chunk.document_id)
-        .where(
-            Document.knowledge_base_id == knowledge_base_id,
-            Document.status == DocumentStatus.READY,
-            or_(*conditions),
-        )
-        .limit(20)
-    ).all()
+    rows = []
+    if terms:
+        rows = db.execute(
+            select(Chunk, Document.filename)
+            .join(Document, Document.id == Chunk.document_id)
+            .where(
+                Document.knowledge_base_id == knowledge_base_id,
+                Document.status == DocumentStatus.READY,
+                or_(*conditions),
+            )
+            .limit(20)
+        ).all()
     for chunk, filename in rows:
         lexical_score = sum(chunk.text.lower().count(term.lower()) for term in terms)
         lexical_rows.append((chunk, filename, lexical_score))
@@ -364,7 +381,7 @@ def search_knowledge_base(
     vector_rows = []
     retrieval_mode = "lexical"
     provider = OpenAICompatibleEmbeddingProvider()
-    if provider.status.configured:
+    if terms and provider.status.configured:
         try:
             query_vector = provider.embed_texts([query])[0]
             vector_rows = db.execute(
@@ -436,6 +453,7 @@ def search_knowledge_base(
     )
     db.add(trace)
     db.commit()
+    db.refresh(trace)
 
     results = [
         SearchResult(
@@ -446,7 +464,7 @@ def search_knowledge_base(
         )
         for _, entry in ordered_results
     ]
-    return results
+    return RetrievalRead(trace=QueryTraceRead.model_validate(trace), results=results)
 
 
 @app.post("/knowledge-bases/{knowledge_base_id}/answer", response_model=AnswerRead)
@@ -459,10 +477,11 @@ def answer_knowledge_base(
     if knowledge_base is None:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
 
-    retrieved = search_knowledge_base(knowledge_base_id, payload.query, db)[: payload.top_k]
+    retrieval = retrieve_knowledge_base(knowledge_base_id, payload.query, db)
+    retrieved = retrieval.results[: payload.top_k]
+    trace_id = retrieval.trace.id
+    trace = db.get(QueryTrace, trace_id)
     if retrieved:
-        trace_id = retrieved[0].trace_id
-        trace = db.get(QueryTrace, trace_id)
         has_evidence = bool(
             trace
             and any(
@@ -507,31 +526,7 @@ def answer_knowledge_base(
             if result.chunk.id in evidence_ids
         ]
     else:
-        trace = db.scalar(
-            select(QueryTrace)
-            .where(
-                QueryTrace.knowledge_base_id == knowledge_base_id,
-                QueryTrace.query == payload.query,
-            )
-            .order_by(QueryTrace.created_at.desc())
-            .limit(1)
-        )
-        trace_id = trace.id if trace else uuid4()
-        if trace is None:
-            trace = QueryTrace(
-                id=trace_id,
-                knowledge_base_id=knowledge_base_id,
-                query=payload.query,
-                retrieval_mode="no_evidence",
-                embedding_provider=None,
-                embedding_model=None,
-                embedding_dimension=None,
-                result_count=0,
-                results=[],
-            )
-            db.add(trace)
-        else:
-            trace.retrieval_mode = "no_evidence"
+        trace.retrieval_mode = "no_evidence"
         db.commit()
         return AnswerRead(
             trace_id=trace_id,

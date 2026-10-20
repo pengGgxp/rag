@@ -1,0 +1,323 @@
+.retrieval-view {
+  padding: 29px 40px 40px;
+  max-width: 1100px;
+}
+.retrieval-search {
+  max-width: 760px;
+}
+.retrieval-search label {
+  display: block;
+  color: #68727c;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 9px;
+}
+.retrieval-search-row {
+  display: flex;
+  gap: 9px;
+}
+.retrieval-search-row input {
+  height: 39px;
+  flex: 1;
+  border: 1px solid #dfe4e7;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #fff;
+}
+.retrieval-search-row .primary,
+.retrieval-search-row .secondary {
+  height: 39px;
+}
+.retrieval-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 35px 0 13px;
+}
+.retrieval-heading h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.retrieval-heading h2 span,
+.trace-results-heading span {
+  margin-left: 7px;
+  color: #727d85;
+  font-size: 11px;
+  font-weight: 400;
+}
+.retrieval-mode {
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: #edf4ef;
+  color: #47765c;
+  font-size: 11px;
+}
+.retrieval-results {
+  display: grid;
+  gap: 11px;
+}
+.retrieval-result {
+  border: 1px solid #e7eaec;
+  border-radius: 7px;
+  padding: 16px 17px;
+  background: #fff;
+}
+.retrieval-result:hover {
+  border-color: #cbdcd2;
+}
+.retrieval-result-heading,
+.trace-result-name {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: #668776;
+}
+.retrieval-result-heading h3 {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #464f58;
+  font-size: 13px;
+  font-weight: 550;
+}
+.retrieval-rank {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #edf4ef;
+  color: #4d8266;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.retrieval-location {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #717e88;
+  font-size: 11px;
+  margin: 11px 0 12px 31px;
+}
+.retrieval-location span {
+  overflow-wrap: anywhere;
+}
+.retrieval-location span + span {
+  border-left: 1px solid #e1e5e7;
+  padding-left: 8px;
+}
+.retrieval-excerpt {
+  margin-left: 31px;
+  color: #69727a;
+  font-size: 13px;
+  line-height: 1.85;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  overflow: hidden;
+}
+.rank-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 14px 0 0 31px;
+}
+.rank-metrics > div {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.rank-metrics dt {
+  color: #76828a;
+  font-size: 11px;
+}
+.rank-metrics dd {
+  color: #53646e;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.trace-details {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.trace-details summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  padding: 12px 2px;
+  color: #758087;
+  font-size: 12px;
+  list-style: none;
+}
+.trace-details summary::-webkit-details-marker {
+  display: none;
+}
+.trace-details[open] summary svg {
+  transform: rotate(90deg);
+}
+.trace-details > .trace-metadata,
+.trace-details > .trace-identity,
+.trace-details > .retrieval-warning {
+  margin-bottom: 14px;
+}
+.trace-metadata {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 15px 0;
+}
+.trace-metadata > div {
+  min-width: 0;
+}
+.trace-metadata dt {
+  color: #76828a;
+  font-size: 11px;
+}
+.trace-metadata dd {
+  color: #5e6971;
+  font-size: 12px;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.trace-identity {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #76828a;
+  font-size: 11px;
+}
+.trace-identity code {
+  color: #6f7a82;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-identity .icon-button {
+  width: 24px;
+  height: 24px;
+}
+.trace-identity [role="status"] {
+  color: #4e8768;
+}
+.retrieval-warning,
+.retrieval-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 5px;
+  padding: 10px 12px;
+  background: #fff8ea;
+  color: #97703a;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  margin-top: 14px;
+}
+.retrieval-error {
+  background: #fff3f1;
+  color: #b36558;
+}
+.retrieval-error .secondary {
+  margin-left: auto;
+  height: 29px;
+  flex-shrink: 0;
+}
+.retrieval-loading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 180px;
+  justify-content: center;
+  color: #82928a;
+  font-size: 12px;
+}
+.retrieval-initial {
+  min-height: 330px;
+}
+.retrieval-muted {
+  color: #758189;
+  font-size: 12px;
+  padding: 20px 0;
+}
+.trace-inspector {
+  padding: 24px;
+}
+.trace-query {
+  padding: 12px 13px;
+  border-radius: 5px;
+  background: #f6f8f7;
+  color: #59646b;
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.trace-results-heading {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 26px 0 13px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.trace-result {
+  border-top: 1px solid var(--line);
+  padding: 13px 0;
+}
+.trace-result-name strong {
+  color: #56616a;
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-result .rank-metrics {
+  margin-left: 31px;
+}
+.chunk-id {
+  display: block;
+  margin: 9px 0 0 31px;
+  color: #78838b;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 700px) {
+  .retrieval-view {
+    padding: 24px 17px 30px;
+  }
+  .retrieval-search-row {
+    align-items: stretch;
+  }
+  .retrieval-search-row .primary,
+  .retrieval-search-row .secondary {
+    padding: 0 10px;
+  }
+  .trace-metadata {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .retrieval-location,
+  .retrieval-excerpt,
+  .rank-metrics,
+  .trace-result .rank-metrics,
+  .chunk-id {
+    margin-left: 0;
+  }
+  .retrieval-result-heading h3 {
+    font-size: 12px;
+  }
+  .trace-inspector {
+    padding: 18px;
+  }
+}

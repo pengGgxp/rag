@@ -96,6 +96,17 @@ class QueryTraceRead(BaseModel):
     created_at: datetime
 
 
+class RetrievalRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    query: str = Field(min_length=1, max_length=4000)
+
+
+class RetrievalRead(BaseModel):
+    trace: QueryTraceRead
+    results: list[SearchResult]
+
+
 class AnswerRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=6, ge=1, le=12)

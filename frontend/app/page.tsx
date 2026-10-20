@@ -1,6 +1,8 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
+import { request } from "./api";
+import { RetrievalPanel, TraceInspector } from "./retrieval-panel";
 import {
   FormEvent,
   ReactNode,
@@ -79,7 +81,6 @@ type Preview = {
   detail: string;
   error?: string | null;
 };
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const STATUS: Record<string, string> = {
   ready: "已就绪",
   queued: "排队中",
@@ -88,17 +89,6 @@ const STATUS: Record<string, string> = {
   deleted: "已删除",
 };
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, options);
-  const data = await response.json();
-  if (!response.ok)
-    throw new Error(
-      typeof data.detail === "string"
-        ? data.detail
-        : `请求失败 (${response.status})`,
-    );
-  return data as T;
-}
 function sizeLabel(bytes: number) {
   return bytes < 1024 * 1024
     ? `${Math.max(1, Math.ceil(bytes / 1024))} KB`
@@ -205,7 +195,10 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState("");
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
-  const [view, setView] = useState<"documents" | "answers">("documents");
+  const [view, setView] = useState<"documents" | "answers" | "retrieval">(
+    "documents",
+  );
+  const [traceId, setTraceId] = useState<string | null>(null);
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
@@ -278,6 +271,7 @@ export default function Home() {
     setSubmittedQuestion("");
     setDocuments([]);
     setPreview(null);
+    setTraceId(null);
     setDocumentSearch("");
     setTrash(false);
     if (selectedId) loadDocuments(selectedId).catch(notifyError);
@@ -634,8 +628,25 @@ export default function Home() {
                 <MessageSquare size={16} />
                 知识问答
               </button>
+              <button
+                role="tab"
+                aria-selected={view === "retrieval"}
+                aria-controls="retrieval-view"
+                id="retrieval-tab"
+                className={view === "retrieval" ? "active" : ""}
+                onClick={() => setView("retrieval")}
+              >
+                <Search size={16} />
+                检索调试
+              </button>
             </div>
-            {view === "documents" ? (
+            {view === "retrieval" ? (
+              <RetrievalPanel
+                key={selectedId}
+                knowledgeBaseId={selectedId}
+                onPreview={setPreview}
+              />
+            ) : view === "documents" ? (
               <section
                 className="documents-view"
                 id="documents-view"
@@ -916,7 +927,10 @@ export default function Home() {
                         )}
                         {answer && (
                           <>
-                            <AnswerContent answer={answer} onCitation={showCitation} />
+                            <AnswerContent
+                              answer={answer}
+                              onCitation={showCitation}
+                            />
                             {answer.citations.length > 0 && (
                               <div className="sources">
                                 <div className="sources-heading">
@@ -951,10 +965,11 @@ export default function Home() {
                               <button
                                 className="trace-button"
                                 title={answer.trace_id}
-                                onClick={() => copy(answer.trace_id)}
+                                aria-label="查看回答检索记录"
+                                onClick={() => setTraceId(answer.trace_id)}
                               >
                                 TRACE {answer.trace_id.slice(0, 8)}
-                                <Copy size={11} />
+                                <ChevronRight size={11} />
                               </button>
                             </div>
                           </>
@@ -1033,6 +1048,15 @@ export default function Home() {
           </div>
         )}
       </main>
+      {traceId && (
+        <Modal title="检索记录" wide onClose={() => setTraceId(null)}>
+          <TraceInspector
+            key={traceId}
+            traceId={traceId}
+            knowledgeBaseId={selectedId}
+          />
+        </Modal>
+      )}
       {notice && (
         <div
           className={`toast ${notice.error ? "error" : ""}`}
