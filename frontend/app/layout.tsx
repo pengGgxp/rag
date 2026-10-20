@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "RAG Knowledge Workspace",
-  description: "Build and use trusted knowledge bases.",
+  title: "知库 · 知识工作空间",
+  description: "知识库、文档与可追溯的知识问答。",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="zh-CN">
       <body>{children}</body>
     </html>
   );
