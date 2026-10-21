@@ -185,6 +185,8 @@ def run_retrieval_agent(
                             "char_start": result.chunk.char_start,
                             "char_end": result.chunk.char_end,
                             "heading_path": result.chunk.heading_path,
+                            "page_number": result.chunk.page_number,
+                            "source_locations": [item.model_dump() for item in result.chunk.source_locations],
                             "version_group_id": str(result.chunk.version_group_id) if result.chunk.version_group_id else None,
                             "version_number": result.chunk.version_number,
                             "knowledge_base_id": str(knowledge_base_id),

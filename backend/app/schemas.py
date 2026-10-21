@@ -98,6 +98,14 @@ class DocumentPreviewRead(BaseModel):
     created_at: datetime
 
 
+class SourceLocation(BaseModel):
+    page_number: int
+    char_start: int
+    char_end: int
+    block_type: str
+    bbox: list[float] | None = None
+
+
 class ChunkRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -109,6 +117,8 @@ class ChunkRead(BaseModel):
     char_start: int
     char_end: int
     heading_path: str | None
+    page_number: int | None = None
+    source_locations: list[SourceLocation] = Field(default_factory=list)
     embedding_status: EmbeddingStatus
     embedding_error: str | None
     version_group_id: UUID | None = None
@@ -173,6 +183,8 @@ class CitationRead(BaseModel):
     char_start: int
     char_end: int
     heading_path: str | None
+    page_number: int | None = None
+    source_locations: list[SourceLocation] = Field(default_factory=list)
     version_group_id: UUID | None = None
     version_number: int | None = None
 

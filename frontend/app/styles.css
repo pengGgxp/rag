@@ -995,6 +995,12 @@ tbody tr:hover {
   gap: 9px;
   padding-top: 5px;
 }
+.field-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
 .upload-destination {
   display: flex;
   align-items: center;

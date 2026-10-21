@@ -1,6 +1,7 @@
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +22,12 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
     llm_timeout_seconds: float = 60.0
+    pdf_parser: Literal["local", "aliyun"] = "local"
+    aliyun_access_key_id: SecretStr | None = None
+    aliyun_access_key_secret: SecretStr | None = None
+    docmind_max_pages: int = Field(default=50, ge=1, le=500)
+    docmind_timeout_seconds: float = Field(default=300, ge=1, le=1800)
+    docmind_poll_seconds: float = Field(default=3, ge=0.1, le=30)
     frontend_url: str = "http://localhost:3000"
     api_public_url: str = "http://localhost:8000"
     auth_cookie_secure: bool = False
@@ -53,6 +60,10 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+
+    @property
+    def docmind_configured(self) -> bool:
+        return bool(self.aliyun_access_key_id and self.aliyun_access_key_secret)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

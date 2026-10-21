@@ -44,6 +44,7 @@ type RetrievedChunk = {
   char_start: number;
   char_end: number;
   heading_path: string | null;
+  page_number?: number | null;
 };
 type Retrieval = {
   trace: QueryTrace;
@@ -359,7 +360,7 @@ export function RetrievalPanel({
                         onPreview({
                           filename: result.filename,
                           text: result.chunk.text,
-                          detail: `${result.chunk.heading_path ? `${result.chunk.heading_path} · ` : ""}字符 ${result.chunk.char_start}–${result.chunk.char_end} · Chunk ${result.chunk.id}`,
+                          detail: `${result.chunk.page_number ? `第 ${result.chunk.page_number} 页 · ` : ""}${result.chunk.heading_path ? `${result.chunk.heading_path} · ` : ""}字符 ${result.chunk.char_start}–${result.chunk.char_end} · Chunk ${result.chunk.id}`,
                         })
                       }
                     >
@@ -368,6 +369,7 @@ export function RetrievalPanel({
                   </div>
                   <div className="retrieval-location">
                     <span>片段 {result.chunk.ordinal + 1}</span>
+                    {result.chunk.page_number && <span>第 {result.chunk.page_number} 页</span>}
                     <span>
                       字符 {result.chunk.char_start}–{result.chunk.char_end}
                     </span>

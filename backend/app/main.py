@@ -111,6 +111,16 @@ def health():
     }
 
 
+@app.get("/ingestion/options")
+def ingestion_options(access: Access = Depends(get_access)):
+    settings = get_settings()
+    return {
+        "pdf_parser": settings.pdf_parser,
+        "max_pdf_pages": settings.docmind_max_pages if settings.pdf_parser == "aliyun" else None,
+        "third_party_processor": "阿里云 DocMind" if settings.pdf_parser == "aliyun" else None,
+    }
+
+
 @app.post("/knowledge-bases", response_model=KnowledgeBaseRead, status_code=status.HTTP_201_CREATED)
 def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
                           db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -896,6 +906,8 @@ def answer_knowledge_base(
                 char_start=result.chunk.char_start,
                 char_end=result.chunk.char_end,
                 heading_path=result.chunk.heading_path,
+                page_number=result.chunk.page_number,
+                source_locations=result.chunk.source_locations,
                 version_group_id=result.chunk.version_group_id,
                 version_number=result.chunk.version_number,
             )

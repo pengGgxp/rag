@@ -230,6 +230,7 @@ def chat_router(get_db, retrieve):
                     lines.extend([
                         f"来源：{citation['filename']}（{citation['knowledge_base_name']}，"
                         f"v{citation.get('version_number', 1)}，字符 {citation['char_start']}–{citation['char_end']}，"
+                        f"{'第 ' + str(citation['page_number']) + ' 页，' if citation.get('page_number') else ''}"
                         f"{citation['chunk_id']}）",
                         "", citation["text"], "",
                     ])
@@ -386,6 +387,8 @@ def chat_router(get_db, retrieve):
                                 "chunk_id": str(result.chunk.id), "filename": result.filename,
                                 "text": result.chunk.text, "char_start": result.chunk.char_start,
                                 "char_end": result.chunk.char_end, "heading_path": result.chunk.heading_path,
+                                "page_number": result.chunk.page_number,
+                                "source_locations": [item.model_dump() for item in result.chunk.source_locations],
                                 "version_group_id": str(result.chunk.version_group_id) if result.chunk.version_group_id else None,
                                 "version_number": result.chunk.version_number,
                                 "knowledge_base_id": str(scope.knowledge_base_id),

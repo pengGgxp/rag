@@ -100,6 +100,10 @@ export default function Home() {
   const [selectedId, setSelectedId] = useState("");
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
+  const [ingestionOptions, setIngestionOptions] = useState<{
+    third_party_processor: string | null;
+    max_pdf_pages: number | null;
+  } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [screen, setScreen] = useState<"catalog" | "knowledge" | "chat">(
     "catalog",
@@ -186,6 +190,9 @@ export default function Home() {
       setScreen("chat");
     loadLibraries().catch(notifyError);
     void refreshHealth();
+    request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
+      "/ingestion/options",
+    ).then(setIngestionOptions).catch(notifyError);
   }, [loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
     setDocuments([]);
@@ -1430,6 +1437,12 @@ export default function Home() {
                   : "可一次选择多个文件，单个文件最大 100 MB"}
               </small>
             </label>
+            {ingestionOptions?.third_party_processor && (
+              <p className="field-hint">
+                PDF 将上传至{ingestionOptions.third_party_processor}进行文字与版面解析，
+                每份最多 {ingestionOptions.max_pdf_pages} 页。请确认你有权上传相关资料。
+              </p>
+            )}
             {files.length > 0 && (
               <ul className="upload-file-list">
                 {files.map((item) => (

@@ -65,6 +65,8 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
             char_start=0,
             char_end=14,
             heading_path=None,
+            page_number=2,
+            source_locations=[],
             version_group_id=None,
             version_number=1,
         ),
@@ -88,5 +90,6 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
 
     assert calls == [(allowed, "needle")]
     assert len(run.citations) == 1
+    assert run.citations[0]["page_number"] == 2
     assert run.tool_results[0]["result_count"] == 1
     assert run.answer == "done"

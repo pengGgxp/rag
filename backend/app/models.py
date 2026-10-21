@@ -156,6 +156,7 @@ class Document(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     parsed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     parser_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    parsing_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[DocumentStatus] = mapped_column(
         SqlEnum(DocumentStatus), default=DocumentStatus.QUEUED
     )
@@ -184,6 +185,7 @@ class Chunk(Base):
     char_start: Mapped[int] = mapped_column(Integer)
     char_end: Mapped[int] = mapped_column(Integer)
     heading_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_locations: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
     embedding_status: Mapped[EmbeddingStatus] = mapped_column(
@@ -191,6 +193,10 @@ class Chunk(Base):
     )
     embedding_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     document: Mapped[Document] = relationship(back_populates="chunks")
+
+    @property
+    def page_number(self) -> int | None:
+        return self.source_locations[0]["page_number"] if self.source_locations else None
 
 
 class IngestionJob(Base):

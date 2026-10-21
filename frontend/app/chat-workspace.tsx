@@ -43,6 +43,7 @@ type Citation = {
   char_start: number;
   char_end: number;
   heading_path?: string | null;
+  page_number?: number | null;
   version_number?: number | null;
   knowledge_base_name: string;
   knowledge_base_id: string;
@@ -833,6 +834,7 @@ export function ChatWorkspace({
                                     ? `${citation.knowledge_base_name} · `
                                     : ""}
                                   {citation.filename} · v{citation.version_number ?? 1}
+                                  {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />
                               </button>
@@ -1003,6 +1005,7 @@ export function ChatWorkspace({
               <h3>{preview.filename}</h3>
               <p>
                 {preview.knowledge_base_name} · v{preview.version_number ?? 1} ·{" "}
+                {preview.page_number ? `第 ${preview.page_number} 页 · ` : ""}
                 {preview.heading_path ? `${preview.heading_path} · ` : ""}字符{" "}
                 {preview.char_start}–{preview.char_end}
               </p>

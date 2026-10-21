@@ -6,6 +6,8 @@ from docx import Document as DocxDocument
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
+from .parsed_document import ParsedDocument, assemble_pages
+
 
 class UnsupportedDocumentError(ValueError):
     pass
@@ -48,3 +50,21 @@ def parse_document(filename: str, content_type: str, content: bytes) -> tuple[st
         document = DocxDocument(io.BytesIO(content))
         return "\n".join(paragraph.text for paragraph in document.paragraphs), "python-docx"
     raise UnsupportedDocumentError(f"No parser is configured for {filename}")
+
+
+def pdf_pages(content: bytes):
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        if reader.is_encrypted:
+            raise ValueError("Encrypted PDF")
+        if not reader.pages:
+            raise ValueError("Empty PDF")
+        return reader.pages
+    except Exception:
+        raise ValueError("无法读取 PDF，请检查文件是否损坏或受密码保护") from None
+
+
+def parse_local_pdf(content: bytes) -> ParsedDocument:
+    pages = [(index, [{"text": page.extract_text() or "", "block_type": "text"}])
+             for index, page in enumerate(pdf_pages(content), start=1)]
+    return assemble_pages(pages, "pypdf")
