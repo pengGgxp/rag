@@ -5,6 +5,7 @@ import { Modal } from "./modal";
 import { request } from "./api";
 import { AccountButton, LibraryAccess, useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
+import { useUiStore } from "./ui-store";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -104,7 +105,8 @@ export default function Home() {
   const [trash, setTrash] = useState(false);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarOpen = useUiStore((state) => state.sidebarOpen);
+  const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [modal, setModal] = useState<"create" | "upload" | "versions" | null>(null);
   const [versionTarget, setVersionTarget] = useState<SourceDocument | null>(null);
   const [versions, setVersions] = useState<SourceDocument[]>([]);

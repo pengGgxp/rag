@@ -160,7 +160,7 @@
   cursor: pointer;
   border-bottom: 2px solid transparent;
 }
-.account-tabs button[aria-selected="true"] {
+.account-tabs button[data-state="active"] {
   color: #166c53;
   border-bottom-color: #248466;
 }

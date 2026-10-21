@@ -909,16 +909,43 @@ tbody tr:hover {
   width: 470px;
   max-width: calc(100vw - 32px);
   max-height: calc(100dvh - 48px);
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
   border: 1px solid #e1e5e2;
   border-radius: 8px;
   padding: 0;
+  background: #fff;
   color: var(--ink);
   box-shadow: 0 20px 90px #172a2426;
   overflow-y: auto;
+  outline: none;
 }
-.modal::backdrop {
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
   background: #25352d42;
   backdrop-filter: blur(2px);
+}
+.modal {
+  z-index: 41;
+}
+.modal-overlay + .modal {
+  margin: 0;
+}
+.ui-tooltip {
+  z-index: 60;
+  border-radius: 5px;
+  padding: 6px 9px;
+  background: #1f2925;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.2;
+  box-shadow: 0 5px 18px #172a2430;
+}
+.ui-tooltip-arrow {
+  fill: #1f2925;
 }
 .modal-wide {
   width: 720px;

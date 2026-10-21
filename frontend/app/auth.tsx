@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
+import * as Tabs from "../components/ui/tabs";
 import "./auth.css";
 
 type Role = "admin" | "editor" | "viewer";
@@ -540,34 +541,22 @@ function AccountModal({
   }
   return (
     <Modal title="账号与工作区" onClose={onClose} busy={busy} wide>
-      <div className="account-settings">
-        <div className="account-tabs" role="tablist">
-          <button
-            role="tab"
-            aria-selected={tab === "account"}
-            onClick={() => setTab("account")}
-          >
-            我的账号
-          </button>
+      <Tabs.Root
+        className="account-settings"
+        value={tab}
+        onValueChange={(value) =>
+          setTab(value as "account" | "members" | "audit")
+        }
+      >
+        <Tabs.List className="account-tabs" aria-label="账号设置">
+          <Tabs.Trigger value="account">我的账号</Tabs.Trigger>
           {role === "admin" && (
-            <button
-              role="tab"
-              aria-selected={tab === "members"}
-              onClick={() => setTab("members")}
-            >
-              工作区成员
-            </button>
+            <Tabs.Trigger value="members">工作区成员</Tabs.Trigger>
           )}
           {role === "admin" && (
-            <button
-              role="tab"
-              aria-selected={tab === "audit"}
-              onClick={() => setTab("audit")}
-            >
-              审计日志
-            </button>
+            <Tabs.Trigger value="audit">审计日志</Tabs.Trigger>
           )}
-        </div>
+        </Tabs.List>
         {error && (
           <p className="form-error" role="alert">
             {error}
@@ -813,7 +802,7 @@ function AccountModal({
             onPageChange={setAuditPage}
           />
         )}
-      </div>
+      </Tabs.Root>
     </Modal>
   );
 }
