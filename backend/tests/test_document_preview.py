@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from test_auth import library, register
 from app.models import Document, DocumentStatus
 
@@ -13,7 +15,7 @@ def test_document_preview_is_loaded_on_demand_and_hides_deleted_content(accounts
     assert created.status_code == 201, created.text
     document_id = created.json()["id"]
 
-    document = session.get(Document, document_id)
+    document = session.get(Document, UUID(document_id))
     document.parsed_text = "preview content"
     document.status = DocumentStatus.READY
     session.commit()

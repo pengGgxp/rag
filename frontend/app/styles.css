@@ -1053,6 +1053,48 @@ tbody tr:hover {
   font-size: 10px;
   margin-top: 6px;
 }
+.upload-file-list {
+  display: grid;
+  gap: 6px;
+  max-height: 148px;
+  margin: -4px 0 17px;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.upload-file-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #e5e8e5;
+  border-radius: 5px;
+  color: #58635d;
+  font-size: 11px;
+}
+.upload-file-list li span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-file-list li small {
+  flex-shrink: 0;
+  margin: 0;
+}
+.upload-failures {
+  margin-bottom: 17px;
+}
+.upload-failures strong {
+  display: block;
+  margin-bottom: 5px;
+}
+.upload-failures ul {
+  margin: 0;
+  padding-left: 18px;
+}
 .form-error {
   color: #b06557;
   background: #fff4f1;

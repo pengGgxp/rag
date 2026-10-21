@@ -123,7 +123,8 @@ export default function Home() {
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [uploadFailures, setUploadFailures] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState("");
   const [notice, setNotice] = useState<{
@@ -212,7 +213,8 @@ export default function Home() {
 
   function openModal(next: "create" | "edit" | "upload") {
     setModalError("");
-    setFile(null);
+    setFiles([]);
+    setUploadFailures([]);
     setVersionTarget(null);
     setModal(next);
   }
@@ -263,7 +265,8 @@ export default function Home() {
   }
   function openVersionUpload(doc: SourceDocument) {
     setModalError("");
-    setFile(null);
+    setFiles([]);
+    setUploadFailures([]);
     setVersionTarget(doc);
     setModal("upload");
   }
@@ -326,37 +329,64 @@ export default function Home() {
       setBusy(false);
     }
   }
-  function chooseFile(next?: File) {
+  function chooseFiles(next?: FileList | File[]) {
     setModalError("");
-    if (next && next.size > 100 * 1024 * 1024) {
-      setModalError("文件大小不能超过 100 MB");
-      setFile(null);
-      return;
+    const selectedFiles = Array.from(next ?? []);
+    if (versionTarget && selectedFiles.length > 1) {
+      setModalError("文档版本上传一次只能选择一个文件");
     }
-    setFile(next ?? null);
+    const candidates = versionTarget ? selectedFiles.slice(0, 1) : selectedFiles;
+    const oversized = selectedFiles.filter(
+      (item) => item.size > 100 * 1024 * 1024,
+    );
+    if (oversized.length) {
+      setModalError(`${oversized.map((item) => item.name).join("、")} 超过 100 MB`);
+    }
+    setFiles(
+      candidates.filter((item) => item.size <= 100 * 1024 * 1024),
+    );
+    setUploadFailures([]);
   }
   async function uploadDocument(event: FormEvent) {
     event.preventDefault();
-    if (!file || !selectedId) return;
+    if (!files.length || !selectedId) return;
     const id = selectedId;
     setBusy(true);
     setModalError("");
+    const failures: string[] = [];
+    const remaining: File[] = [];
+    let successCount = 0;
     try {
-      const body = new FormData();
-      body.append("file", file);
-      if (versionTarget) body.append("version_of", versionTarget.id);
-      await request(`/knowledge-bases/${id}/documents`, {
-        method: "POST",
-        body,
-      });
-      setFile(null);
-      setModal(null);
+      for (const nextFile of files) {
+        const body = new FormData();
+        body.append("file", nextFile);
+        if (versionTarget) body.append("version_of", versionTarget.id);
+        try {
+          await request(`/knowledge-bases/${id}/documents`, {
+            method: "POST",
+            body,
+          });
+          successCount += 1;
+        } catch (error) {
+          remaining.push(nextFile);
+          failures.push(
+            `${nextFile.name}：${error instanceof Error ? error.message : "上传失败"}`,
+          );
+        }
+        if (versionTarget) break;
+      }
+      setFiles(remaining);
+      setUploadFailures(failures);
       setNotice({
         text: versionTarget
-          ? "新版本已上传，处理完成后可切换生效版本"
-          : "上传成功，文档已进入处理队列",
+          ? successCount
+            ? "新版本已上传，处理完成后可切换生效版本"
+            : "新版本上传失败"
+          : `已上传 ${successCount} 个文件${failures.length ? `，${failures.length} 个失败` : ""}`,
+        error: failures.length > 0 && successCount === 0,
       });
       await refresh(id);
+      if (!failures.length) setModal(null);
     } catch (error) {
       const text = error instanceof Error ? error.message : "上传失败";
       setModalError(text);
@@ -1316,32 +1346,62 @@ export default function Home() {
               <span>{selected?.name}</span>
             </div>
             <label
-              className={`dropzone ${file ? "has-file" : ""}`}
+              className={`dropzone ${files.length ? "has-file" : ""}`}
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => {
                 event.preventDefault();
-                if (!busy) chooseFile(event.dataTransfer.files[0]);
+                if (!busy) chooseFiles(event.dataTransfer.files);
               }}
             >
               <input
                 ref={fileInput}
                 aria-label="选择文件"
                 type="file"
+                multiple={!versionTarget}
                 accept=".pdf,.docx,.md,.txt,.html,.csv,.xlsx"
                 disabled={busy}
-                onChange={(event) => chooseFile(event.target.files?.[0])}
+                onChange={(event) => chooseFiles(event.target.files ?? undefined)}
               />
               <span className="upload-symbol">
-                {file ? <FileText size={26} /> : <Upload size={26} />}
+                {files.length ? <FileText size={26} /> : <Upload size={26} />}
               </span>
-              <strong>{file ? file.name : "选择文件或拖拽到此处"}</strong>
+              <strong>
+                {files.length
+                  ? `已选择 ${files.length} 个文件`
+                  : "选择文件或拖拽到此处"}
+              </strong>
               <span>
-                {file
-                  ? sizeLabel(file.size)
+                {files.length
+                  ? `${sizeLabel(files.reduce((total, item) => total + item.size, 0))} 总计`
                   : "PDF、DOCX、MD、TXT、HTML、CSV、XLSX"}
               </span>
-              <small>单个文件最大 100 MB</small>
+              <small>
+                {versionTarget
+                  ? "单个文件最大 100 MB"
+                  : "可一次选择多个文件，单个文件最大 100 MB"}
+              </small>
             </label>
+            {files.length > 0 && (
+              <ul className="upload-file-list">
+                {files.map((item) => (
+                  <li key={`${item.name}-${item.lastModified}`}>
+                    <FileText size={14} />
+                    <span>{item.name}</span>
+                    <small>{sizeLabel(item.size)}</small>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {uploadFailures.length > 0 && (
+              <div className="form-error upload-failures" role="alert">
+                <strong>以下文件上传失败，可保留后重试：</strong>
+                <ul>
+                  {uploadFailures.map((failure) => (
+                    <li key={failure}>{failure}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {modalError && (
               <p className="form-error" role="alert">
                 {modalError}
@@ -1358,7 +1418,7 @@ export default function Home() {
               </button>
               <button
                 className="primary"
-                disabled={busy || !file}
+                disabled={busy || !files.length}
                 type="submit"
               >
                 {busy ? (
