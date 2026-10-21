@@ -11,8 +11,8 @@ from sqlalchemy.pool import StaticPool
 
 from app import main, conversations as chat
 from app.db import Base
-from app.llm import LLMProviderError, ToolResponse
-from app.models import ChatMessage, Conversation, DocumentStatus
+from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app.models import ChatMessage, Conversation, CreditAccount, DocumentStatus
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate
 
@@ -25,15 +25,24 @@ def client(monkeypatch):
     captured = []
 
     class Provider:
-        def complete(self, messages):
-            captured.append(("rewrite", messages))
-            return "needle duration"
-
-        async def stream(self, messages):
-            captured.append(("answer", messages))
-            sources = json.loads(messages[-1]["content"])["sources"]
-            yield "测试回答"
-            yield f" [{sources[0]['chunk_id']}]"
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            assert tool_choice == "auto"
+            captured.append(messages)
+            if messages[-1]["role"] == "user":
+                libraries = json.loads(messages[0]["content"].split("\n本会话知识库：")[1])
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base",
+                    arguments={
+                        "query": "needle",
+                        "knowledge_base_ids": [item["id"] for item in libraries],
+                    },
+                )])
+            sources = json.loads(messages[-1]["content"])["evidence"]
+            text = (
+                "测试回答 [" + sources[0]["chunk_id"] + "]"
+                if sources else "没有找到相关资料。你能补充一下资料名称或问题背景吗？"
+            )
+            return ToolResponse(content=text, tool_calls=[])
 
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", Provider)
     monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
@@ -71,16 +80,17 @@ def test_persists_streamed_turn_and_followup_context(client):
     add_document(db, library, "needle duration is 3 days")
     conversation = create(http, [library])
     events, _ = turn(http, conversation["id"])
-    assert [name for name, _ in events].count("delta") == 2
+    assert [name for name, _ in events].count("delta") >= 1
+    assert "".join(data["text"] for name, data in events if name == "delta") == events[-1][1]["content"]
     assert events[-1][0] == "done"
     assert events[-1][1]["status"] == "completed"
     assert events[-1][1]["citations"]
     second, _ = turn(http, conversation["id"], "需要多长时间？")
     assert second[-1][1]["status"] == "completed"
-    rewrite = next(messages for kind, messages in captured if kind == "rewrite")
-    assert json.loads(rewrite[-1]["content"])["history"][0]["content"] == "needle"
-    generation = [messages for kind, messages in captured if kind == "answer"][-1]
-    assert len(json.loads(generation[-1]["content"])["history"]) == 2
+    assert captured[2][1]["content"] == "needle"
+    assert captured[2][2]["role"] == "assistant"
+    assert captured[2][-1]["content"] == "需要多长时间？"
+    assert [name for name, _ in events].index("tool_call") < [name for name, _ in events].index("tool_result")
     detail = http.get(f"/conversations/{conversation['id']}").json()
     assert [message["role"] for message in detail["messages"]] == ["user", "assistant"] * 2
     assert [message["sequence"] for message in detail["messages"]] == [0, 1, 2, 3]
@@ -111,16 +121,19 @@ def test_multi_library_scope_and_deleted_filtering(client):
     assert "needle outside" not in exported.text
 
 
-def test_no_evidence_refusal_is_saved_without_calling_answer_model(client):
+def test_empty_retrieval_keeps_agent_clarification_instead_of_fixed_refusal(client):
     http, db, captured = client
     library = add_library(db)
     conversation = create(http, [library])
     events, _ = turn(http, conversation["id"])
-    assert events[-1][1]["refused"] is True
+    assert events[-1][1]["refused"] is False
+    assert events[-1][1]["content"] == "没有找到相关资料。你能补充一下资料名称或问题背景吗？"
     assert events[-1][1]["citations"] == []
     assert events[-1][1]["traces"]
-    assert captured == []
-    assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["refused"] is True
+    assert len(captured) == 2
+    assert captured[-1][-1]["role"] == "tool"
+    assert "has_sufficient_evidence" not in json.loads(captured[-1][-1]["content"])
+    assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["content"] == events[-1][1]["content"]
 
 
 def test_agent_direct_answer_does_not_require_retrieval_evidence(client, monkeypatch):
@@ -155,9 +168,9 @@ def test_followup_does_not_reuse_deleted_document_as_evidence(client):
     turn(http, conversation["id"])
     assert http.delete(f"/documents/{document.id}").status_code == 200
     events, _ = turn(http, conversation["id"], "需要多久？")
-    assert events[-1][1]["refused"] is True
+    assert events[-1][1]["content"] == "没有找到相关资料。你能补充一下资料名称或问题背景吗？"
     assert events[-1][1]["citations"] == []
-    assert len([kind for kind, _ in captured if kind == "answer"]) == 1
+    assert json.loads(captured[-1][-1]["content"])["evidence"] == []
 
 
 def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, monkeypatch):
@@ -167,16 +180,19 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
     conversation = create(http, [library])
 
     class Failing:
-        async def stream(self, _messages):
-            yield "部分回答"
+        def complete_with_tools(self, _messages, _tools, *, tool_choice):
             raise LLMProviderError("upstream failed")
+
+        def complete(self, _messages):
+            raise AssertionError("must not fall back to fixed RAG")
 
     original = chat.OpenAICompatibleChatProvider
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", Failing)
     events, payload = turn(http, conversation["id"])
     failed = events[-1][1]
     assert failed["status"] == "failed"
-    assert failed["content"] == "部分回答"
+    assert failed["content"] == ""
+    assert failed["error_detail"] == "upstream failed"
     assert http.get(f"/conversations/{conversation['id']}").json()["active_request_id"] is None
     repeated = http.post(f"/conversations/{conversation['id']}/messages", json=payload)
     assert repeated.status_code == 200
@@ -235,8 +251,7 @@ def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, mon
     conversation = create(http, [library])
 
     class LateProvider:
-        async def stream(self, _messages):
-            yield "已保存片段"
+        def complete_with_tools(self, _messages, _tools, *, tool_choice):
             with Session(db.get_bind()) as other:
                 current = other.get(Conversation, UUID(conversation["id"]))
                 message = other.scalar(select(ChatMessage).where(
@@ -245,14 +260,14 @@ def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, mon
                 message.status = "cancelled"
                 current.active_request_id = None
                 other.commit()
-            yield "不应覆盖取消状态"
+            return ToolResponse(content="不应覆盖取消状态", tool_calls=[])
 
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", LateProvider)
     turn(http, conversation["id"])
     detail = http.get(f"/conversations/{conversation['id']}").json()
     assert detail["active_request_id"] is None
     assert detail["messages"][-1]["status"] == "cancelled"
-    assert detail["messages"][-1]["content"] == "已保存片段"
+    assert detail["messages"][-1]["content"] == ""
 
 
 def test_rename_and_validation(client):

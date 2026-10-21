@@ -356,7 +356,7 @@ export function ChatWorkspace({
       return;
     sending.current = true;
     setAsking(true);
-    setPhase("正在检索资料…");
+    setPhase("正在分析问题…");
     const currentEpoch = epoch.current;
     const query = question.trim();
     const controller = new AbortController();
@@ -423,9 +423,11 @@ export function ChatWorkspace({
             return;
           if (name === "phase")
             setPhase(
-              (data as { phase: string }).phase === "retrieving"
-                ? "正在检索资料…"
-                : "正在生成回答…",
+              (data as { phase: string }).phase === "planning"
+                ? "正在分析问题…"
+                : (data as { phase: string }).phase === "retrieving"
+                  ? "正在检索资料…"
+                  : "正在生成回答…",
             );
           if (name === "agent_step")
             setPhase(
@@ -724,9 +726,7 @@ export function ChatWorkspace({
                         setScope((ids) =>
                           ids.includes(item.id)
                             ? ids.filter((id) => id !== item.id)
-                            : ids.length < 10
-                              ? [...ids, item.id]
-                              : ids,
+                            : [...ids, item.id],
                         )
                       }
                     />
@@ -924,7 +924,6 @@ export function ChatWorkspace({
                 selectedNames.length ? "向知识库提问…" : "选择知识库后提问…"
               }
               rows={2}
-              maxLength={4000}
               value={question}
               disabled={running || loading}
               onChange={(event) => setQuestion(event.target.value)}

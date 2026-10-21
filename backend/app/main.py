@@ -676,7 +676,8 @@ def inspect_retrieval(
 
 
 def retrieve_knowledge_base(
-    knowledge_base_id: UUID, query: str, db: Session, access: Access
+    knowledge_base_id: UUID, query: str, db: Session, access: Access,
+    *, result_limit: int = 20,
 ) -> RetrievalRead:
     access.library(db, knowledge_base_id)
     knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
@@ -705,7 +706,6 @@ def retrieve_knowledge_base(
                 select(Chunk, Document.filename)
                 .join(Document, Document.id == Chunk.document_id)
                 .where(*lexical_scope, document_vector.op("@@")(query_vector))
-                .limit(2000)
             ).all()
         else:
             # SQLite is used by the unit-test harness only. Production uses
@@ -717,7 +717,6 @@ def retrieve_knowledge_base(
                     *lexical_scope,
                     or_(*[Chunk.text.ilike(f"%{term}%") for term in terms]),
                 )
-                .limit(2000)
             ).all()
     if rows:
         corpus_size = max(len(corpus_rows), 1)
@@ -773,7 +772,7 @@ def retrieve_knowledge_base(
                     Chunk.embedding.is_not(None),
                 )
                 .order_by(Chunk.embedding.cosine_distance(query_vector))
-                .limit(20)
+                .limit(result_limit)
             ).all()
             retrieval_mode = "hybrid"
         except (EmbeddingProviderError, IndexError):
@@ -804,7 +803,9 @@ def retrieve_knowledge_base(
         entry["vector_distance"] = float(vector_distance)
         entry["score"] += 1.0 / (60 + rank)
 
-    ordered_results = sorted(fused.items(), key=lambda item: item[1]["score"], reverse=True)[:20]
+    ordered_results = sorted(
+        fused.items(), key=lambda item: item[1]["score"], reverse=True,
+    )[:result_limit]
     trace_results = [
         {
             "chunk_id": str(chunk_id),

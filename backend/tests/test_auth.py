@@ -20,6 +20,7 @@ from pydantic import SecretStr
 
 from app import auth, conversations as chat, main
 from app.db import Base
+from app.llm import ToolResponse
 from app.models import (
     AuthToken, Conversation, ExternalIdentity, IngestionJob, KnowledgeBase, LoginSession,
     Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
@@ -241,12 +242,11 @@ def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
     switch(viewer, a["workspace_id"])
     conv = viewer.post("/conversations", json={"knowledge_base_ids": [str(id)]}).json()["id"]
     class RevokingProvider:
-        async def stream(self, _messages):
-            yield "before revoke"
+        def complete_with_tools(self, _messages, _tools, *, tool_choice):
             with Session(db.get_bind()) as session:
                 session.delete(session.get(Membership, (UUID(a["workspace_id"]), UUID(b["user"]["id"]))))
                 session.commit()
-            yield "SECRET AFTER REVOKE"
+            return ToolResponse(content="SECRET AFTER REVOKE", tool_calls=[])
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", RevokingProvider)
     response = viewer.post(f"/conversations/{conv}/messages", json={"query": "needle", "request_id": str(uuid4())})
     assert response.status_code == 200
