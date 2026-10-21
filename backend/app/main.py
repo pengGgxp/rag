@@ -113,13 +113,20 @@ def health():
 def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
                           db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.editor()
-    knowledge_base = KnowledgeBase(name=payload.name, description=payload.description, workspace_id=access.workspace_id)
+    knowledge_base = KnowledgeBase(
+        name=payload.name,
+        description=payload.description,
+        tags=payload.tags,
+        workspace_id=access.workspace_id,
+    )
     db.add(knowledge_base)
     db.flush()
     record_audit(
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="knowledge_base.created", resource_type="knowledge_base",
-        resource_id=knowledge_base.id, metadata={"name": payload.name[:100]}, request=request,
+        resource_id=knowledge_base.id,
+        metadata={"name": payload.name[:100], "tags": payload.tags},
+        request=request,
     )
     db.commit()
     db.refresh(knowledge_base)
@@ -139,11 +146,17 @@ def update_knowledge_base(
     )
     knowledge_base.name = payload.name
     knowledge_base.description = payload.description
+    if payload.tags is not None:
+        knowledge_base.tags = payload.tags
     record_audit(
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="knowledge_base.updated", resource_type="knowledge_base",
         resource_id=knowledge_base.id,
-        metadata={"name": payload.name[:100], "has_description": bool(payload.description)},
+        metadata={
+            "name": payload.name[:100],
+            "has_description": bool(payload.description),
+            "tags": payload.tags if payload.tags is not None else knowledge_base.tags,
+        },
         request=request,
     )
     db.commit()

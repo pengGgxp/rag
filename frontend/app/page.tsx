@@ -38,6 +38,7 @@ type KnowledgeBase = {
   id: string;
   name: string;
   description?: string | null;
+  tags: string[];
   status: string;
   document_count: number;
 };
@@ -123,6 +124,7 @@ export default function Home() {
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [tagsInput, setTagsInput] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadFailures, setUploadFailures] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -216,12 +218,14 @@ export default function Home() {
     setFiles([]);
     setUploadFailures([]);
     setVersionTarget(null);
+    setTagsInput("");
     setModal(next);
   }
   function openEditLibrary() {
     if (!selected) return;
     setName(selected.name);
     setDescription(selected.description || "");
+    setTagsInput(selected.tags.join(", "));
     setModalError("");
     setModal("edit");
   }
@@ -237,6 +241,7 @@ export default function Home() {
         body: JSON.stringify({
           name: name.trim(),
           description: description.trim() || null,
+          tags: tagsInput.split(",").map((tag) => tag.trim()).filter(Boolean),
         }),
       });
       setModal(null);
@@ -313,6 +318,7 @@ export default function Home() {
         body: JSON.stringify({
           name: name.trim(),
           description: description.trim() || null,
+          tags: tagsInput.split(",").map((tag) => tag.trim()).filter(Boolean),
         }),
       });
       setLibraries((items) => [created, ...items]);
@@ -321,6 +327,7 @@ export default function Home() {
       setView("documents");
       setName("");
       setDescription("");
+      setTagsInput("");
       setModal(null);
       setNotice({ text: "知识库已创建" });
     } catch (error) {
@@ -485,7 +492,10 @@ export default function Home() {
       doc.filename.toLowerCase().includes(documentSearch.toLowerCase()),
   );
   const filteredLibraries = libraries.filter((item) =>
-    item.name.toLowerCase().includes(librarySearch.toLowerCase()),
+    [item.name, item.description || "", ...item.tags]
+      .join(" ")
+      .toLowerCase()
+      .includes(librarySearch.toLowerCase()),
   );
 
   if (screen === "chat")
@@ -761,6 +771,13 @@ export default function Home() {
                     </span>
                   </div>
                   <p>{library.description || "暂无描述"}</p>
+                  {library.tags.length > 0 && (
+                    <div className="library-card-tags">
+                      {library.tags.map((tag) => (
+                        <span key={tag}>{tag}</span>
+                      ))}
+                    </div>
+                  )}
                   <span className="library-card-footer">
                     <span>
                       <FileText size={14} />
@@ -820,6 +837,20 @@ export default function Home() {
                   <div>
                     <dt>描述</dt>
                     <dd>{selected.description || "暂无描述"}</dd>
+                  </div>
+                  <div>
+                    <dt>标签</dt>
+                    <dd>
+                      {selected.tags.length ? (
+                        <span className="configuration-tags">
+                          {selected.tags.map((tag) => (
+                            <span key={tag}>{tag}</span>
+                          ))}
+                        </span>
+                      ) : (
+                        "暂无标签"
+                      )}
+                    </dd>
                   </div>
                 </dl>
                 {canEdit && (
@@ -1262,6 +1293,15 @@ export default function Home() {
                 placeholder="知识库描述"
               />
             </label>
+            <label>
+              标签<span className="optional">选填，用逗号分隔</span>
+              <input
+                maxLength={500}
+                value={tagsInput}
+                onChange={(event) => setTagsInput(event.target.value)}
+                placeholder="例如：产品、技术、内部"
+              />
+            </label>
             {modalError && (
               <p className="form-error" role="alert">
                 {modalError}
@@ -1307,6 +1347,15 @@ export default function Home() {
                 maxLength={2000}
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
+              />
+            </label>
+            <label>
+              标签<span className="optional">选填，用逗号分隔</span>
+              <input
+                maxLength={500}
+                value={tagsInput}
+                onChange={(event) => setTagsInput(event.target.value)}
+                placeholder="例如：产品、技术、内部"
               />
             </label>
             {modalError && (

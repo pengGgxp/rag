@@ -8,10 +8,15 @@ def test_knowledge_base_can_be_edited_archived_and_restored(accounts):
 
     updated = owner.patch(
         f"/knowledge-bases/{knowledge_base_id}",
-        json={"name": "Updated docs", "description": "Maintained reference"},
+        json={
+            "name": "Updated docs",
+            "description": "Maintained reference",
+            "tags": [" Product ", "内部", "product"],
+        },
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()["name"] == "Updated docs"
+    assert updated.json()["tags"] == ["Product", "内部"]
 
     archived = owner.post(f"/knowledge-bases/{knowledge_base_id}/archive")
     assert archived.status_code == 200, archived.text

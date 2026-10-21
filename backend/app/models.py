@@ -125,6 +125,7 @@ class KnowledgeBase(Base):
     restricted: Mapped[bool] = mapped_column(default=False)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[KnowledgeBaseStatus] = mapped_column(
         SqlEnum(KnowledgeBaseStatus), default=KnowledgeBaseStatus.DRAFT
     )

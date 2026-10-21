@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
 
@@ -9,11 +9,33 @@ from .models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStat
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
+    tags: list[str] = Field(default_factory=list, max_length=12)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            tag = raw.strip()
+            if not tag or len(tag) > 40:
+                raise ValueError("标签不能为空且不能超过 40 个字符")
+            key = tag.casefold()
+            if key not in seen:
+                seen.add(key)
+                result.append(tag)
+        return result
 
 
 class KnowledgeBaseUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = Field(default=None, max_length=12)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, value: list[str] | None) -> list[str] | None:
+        return KnowledgeBaseCreate.normalize_tags(value) if value is not None else None
 
 
 class KnowledgeBaseRead(BaseModel):
@@ -22,6 +44,7 @@ class KnowledgeBaseRead(BaseModel):
     id: UUID
     name: str
     description: str | None
+    tags: list[str]
     status: KnowledgeBaseStatus
     created_at: datetime
     document_count: int = 0
