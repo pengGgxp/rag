@@ -494,7 +494,30 @@ def chat_router(get_db, retrieve):
             if not active:
                 return
             yield event_text(event("sources", {"citations": citations, "traces": traces}))
-            if not citations:
+            direct_answer = bool(
+                agent_run is not None
+                and agent_run.answer
+                and not agent_run.tool_calls
+            )
+            if direct_answer:
+                # ReAct may correctly decide that a greeting or general
+                # question does not require private knowledge. That is a
+                # successful answer, not an evidence refusal.
+                yield event_text(event("phase", {"phase": "answering"}))
+                answer = agent_run.answer or ""
+                last_save = 0.0
+                for offset in range(0, len(answer), 120):
+                    delta = answer[offset:offset + 120]
+                    if not await run_in_threadpool(still_authorized):
+                        return
+                    content += delta
+                    if time.monotonic() - last_save >= 0.4:
+                        _, active = await run_in_threadpool(save)
+                        if not active:
+                            return
+                        last_save = time.monotonic()
+                    yield event_text(event("delta", {"text": delta}))
+            elif not citations:
                 content = "在所选知识库中没有找到足够的依据，暂时无法回答这个问题。"
                 refused = True
                 refusal_reason = "no_retrieved_evidence"

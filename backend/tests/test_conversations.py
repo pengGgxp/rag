@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main, conversations as chat
 from app.db import Base
-from app.llm import LLMProviderError
+from app.llm import LLMProviderError, ToolResponse
 from app.models import ChatMessage, Conversation, DocumentStatus
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate
@@ -121,6 +121,30 @@ def test_no_evidence_refusal_is_saved_without_calling_answer_model(client):
     assert events[-1][1]["traces"]
     assert captured == []
     assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["refused"] is True
+
+
+def test_agent_direct_answer_does_not_require_retrieval_evidence(client, monkeypatch):
+    http, _, _ = client
+    library = add_library(client[1])
+    conversation = create(http, [library])
+
+    class DirectAnswerProvider:
+        def complete_with_tools(self, _messages, _tools, *, tool_choice):
+            assert tool_choice == "auto"
+            return ToolResponse(content="你好！有什么可以帮你？", tool_calls=[])
+
+        async def stream(self, _messages):
+            raise AssertionError("direct ReAct answers must not call the answer stream")
+            yield ""
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", DirectAnswerProvider)
+    events, _ = turn(http, conversation["id"], "你好")
+    done = events[-1][1]
+    assert done["status"] == "completed"
+    assert done["refused"] is False
+    assert done["content"] == "你好！有什么可以帮你？"
+    assert done["citations"] == []
+    assert [name for name, _ in events].count("tool_call") == 0
 
 
 def test_followup_does_not_reuse_deleted_document_as_evidence(client):
