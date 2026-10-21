@@ -52,6 +52,7 @@ from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
 from .audit import router as audit_router
 from .audit_log import record_audit
+from .credits import CREDIT_RESERVATION, build_router as build_usage_router, release, reserve
 
 
 @asynccontextmanager
@@ -772,12 +773,23 @@ def answer_knowledge_base(
         },
     ]
     provider = OpenAICompatibleChatProvider()
+    reservation_id = uuid4()
+    reserve(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+    db.commit()
     try:
         answer = provider.complete(messages)
     except LLMConfigurationError as exc:
+        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        db.commit()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMProviderError as exc:
+        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        db.commit()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception:
+        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        db.commit()
+        raise
 
     db.expire_all()
     access.revalidate(db).library(db, knowledge_base_id)
@@ -794,5 +806,6 @@ app.include_router(auth_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
+app.include_router(build_usage_router(get_db))
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 

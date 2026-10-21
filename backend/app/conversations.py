@@ -18,6 +18,7 @@ from .auth import Access, get_access
 from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase
 from .feedback import feedback_read
 from .audit_log import record_audit
+from .credits import CREDIT_RESERVATION, CreditError, release, reserve
 
 
 class ConversationCreate(BaseModel):
@@ -252,6 +253,17 @@ def chat_router(get_db, retrieve):
             if (retry is None or retry.conversation_id != conversation.id or latest is None or latest.id != retry.id
                     or retry.role != "assistant" or retry.status not in ("failed", "cancelled", "interrupted")):
                 raise HTTPException(409, "只能重试最后一条未完成的回答")
+        try:
+            reserve(
+                db,
+                access.workspace_id,
+                access.user_id,
+                payload.request_id,
+                CREDIT_RESERVATION,
+            )
+        except CreditError:
+            db.rollback()
+            raise
         next_sequence = db.scalar(update(Conversation).where(
             Conversation.id == conversation.id, Conversation.deleted_at.is_(None),
             Conversation.active_request_id.is_(None),
@@ -478,6 +490,19 @@ def chat_router(get_db, retrieve):
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
                 saved, _ = await run_in_threadpool(save, final_status)
+                if final_status != "completed" or refused:
+                    with factory() as credit_db:
+                        try:
+                            release(
+                                credit_db,
+                                access.workspace_id,
+                                access.user_id,
+                                request_id,
+                                CREDIT_RESERVATION,
+                            )
+                            credit_db.commit()
+                        except Exception:
+                            credit_db.rollback()
             if final_status in ("completed", "failed", "interrupted") and saved["request_id"] == str(request_id):
                 yield event_text(event("done", saved))
 

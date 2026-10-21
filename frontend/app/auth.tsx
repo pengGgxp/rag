@@ -51,6 +51,19 @@ type AuditLogPage = {
   page: number;
   page_size: number;
 };
+type CreditUsage = {
+  balance: number;
+  lifetime_granted: number;
+  lifetime_spent: number;
+  entries: {
+    id: string;
+    amount: number;
+    balance_after: number;
+    kind: string;
+    metadata: Record<string, unknown>;
+    created_at: string;
+  }[];
+};
 type Session = {
   user: {
     id: string;
@@ -483,6 +496,9 @@ function AccountModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [usage, setUsage] = useState<CreditUsage | null>(null);
+  const [creditAmount, setCreditAmount] = useState("1000");
+  const [creditNote, setCreditNote] = useState("");
   const load = useCallback(
     async () => setMembers(await request<Member[]>("/auth/members")),
     [],
@@ -522,6 +538,12 @@ function AccountModal({
   useEffect(() => {
     if (tab === "audit" && role === "admin") void loadAuditLogs();
   }, [tab, role, loadAuditLogs]);
+  const loadUsage = useCallback(async () => {
+    setUsage(await request<CreditUsage>("/usage"));
+  }, []);
+  useEffect(() => {
+    if (tab === "account") void loadUsage().catch((e) => setError(errorMessage(e)));
+  }, [tab, loadUsage]);
   async function action(run: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -576,6 +598,82 @@ function AccountModal({
                 <p>{session.user.email}</p>
               </div>
             </div>
+            {usage && (
+              <section className="credit-usage" aria-label="积分用量">
+                <div className="credit-usage-heading">
+                  <div>
+                    <span className="credit-label">工作区积分</span>
+                    <strong>{usage.balance.toLocaleString("zh-CN")}</strong>
+                  </div>
+                  <small>
+                    已使用 {usage.lifetime_spent.toLocaleString("zh-CN")} ·
+                    累计获得 {usage.lifetime_granted.toLocaleString("zh-CN")}
+                  </small>
+                </div>
+                {usage.entries.length > 0 && (
+                  <div className="credit-entry-list" aria-label="最近积分流水">
+                    {usage.entries.slice(0, 5).map((entry) => (
+                      <div className="credit-entry" key={entry.id}>
+                        <span>
+                          {entry.kind === "admin_grant"
+                            ? "管理员充值"
+                            : entry.kind === "chat_reservation"
+                              ? "问答消耗"
+                              : entry.kind === "chat_release"
+                                ? "失败返还"
+                                : "初始赠送"}
+                        </span>
+                        <strong className={entry.amount < 0 ? "negative" : ""}>
+                          {entry.amount > 0 ? "+" : ""}
+                          {entry.amount}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {role === "admin" && (
+                  <form
+                    className="credit-grant"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void action(async () => {
+                        await request("/usage/credits", json({
+                          amount: Number(creditAmount),
+                          note: creditNote.trim() || "管理员充值",
+                          idempotency_key: crypto.randomUUID(),
+                        }));
+                        setCreditNote("");
+                        setNotice("积分已充值");
+                        await loadUsage();
+                      });
+                    }}
+                  >
+                    <label>
+                      充值积分
+                      <input
+                        type="number"
+                        min="1"
+                        max="1000000"
+                        value={creditAmount}
+                        onChange={(event) => setCreditAmount(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      备注
+                      <input
+                        value={creditNote}
+                        placeholder="可选"
+                        onChange={(event) => setCreditNote(event.target.value)}
+                      />
+                    </label>
+                    <button className="secondary" disabled={busy}>
+                      <Plus size={15} />
+                      充值
+                    </button>
+                  </form>
+                )}
+              </section>
+            )}
             <label className="account-field">
               当前工作区
               <select

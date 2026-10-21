@@ -22,8 +22,9 @@ from .config import get_settings
 from .db import get_db
 from .audit_log import record_audit
 from .models import (
-    AuthToken, Conversation, ExternalIdentity, KnowledgeBase, LibraryGrant,
-    LoginSession, Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
+    AuthToken, Conversation, CreditAccount, CreditLedgerEntry, ExternalIdentity,
+    KnowledgeBase, LibraryGrant, LoginSession, Membership, QueryTrace, User,
+    Workspace, LEGACY_WORKSPACE_ID,
 )
 
 COOKIE = "rag_session"
@@ -181,6 +182,21 @@ def create_user(db, email, name, password=None):
     db.add(workspace)
     db.flush()
     db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
+    db.add(CreditAccount(
+        workspace_id=workspace.id,
+        balance=1000,
+        lifetime_granted=1000,
+        lifetime_spent=0,
+    ))
+    db.add(CreditLedgerEntry(
+        workspace_id=workspace.id,
+        actor_user_id=None,
+        amount=1000,
+        balance_after=1000,
+        kind="initial_grant",
+        idempotency_key=f"workspace:{workspace.id}:initial",
+        metadata_json={"reason": "workspace_created"},
+    ))
     db.flush()
     return user, workspace.id
 

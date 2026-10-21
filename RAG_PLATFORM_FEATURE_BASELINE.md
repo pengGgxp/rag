@@ -22,7 +22,8 @@
   - 普通使用者
 - 知识库级访问权限
 - 所有数据强制按工作区隔离
-- API Key 管理
+- 工作区积分账户与用量流水
+- 平台统一配置模型，用户不管理模型 API Key
 - 操作审计日志
 - 登录、成员变更、文档增删改、知识库发布等操作留痕
 
@@ -296,6 +297,14 @@ Document
 - P50/P95 延迟
 - 单次请求成本
 
+积分与用量要求：
+
+- 问答生成前检查并预扣工作区积分
+- 失败、取消和证据不足时释放预扣积分
+- 成功回答保留扣费流水
+- 余额和流水按工作区隔离，管理员可充值
+- 扣费引用必须幂等，不能因重试或并发请求重复扣费
+
 ## 六、核心数据模型
 
 必须包含：
@@ -315,6 +324,7 @@ Document
 - Citation
 - QueryTrace
 - Feedback
+- CreditAccount / CreditLedgerEntry
 - EvalDataset
 - EvalRun
 - ModelConfig
@@ -355,6 +365,7 @@ POST   /feedback
 POST   /eval-datasets
 POST   /eval-runs
 GET    /usage
+POST   /usage/credits
 GET    /audit-logs
 ```
 
@@ -385,7 +396,8 @@ GET    /audit-logs
 - GraphRAG
 - 自动训练模型
 - 视频、音频多模态知识库
-- 复杂计费系统
+- 支付网关、套餐、发票等复杂计费系统
+- 面向用户的模型 API Key 管理
 - 插件市场
 - 十几种第三方连接器
 - 过度复杂的企业级 IAM
