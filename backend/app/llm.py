@@ -17,6 +17,19 @@ class LLMProviderError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ToolResponse:
+    content: str | None
+    tool_calls: list[ToolCall]
+
+
+@dataclass(frozen=True)
 class LLMStatus:
     configured: bool
     provider: str | None
@@ -76,6 +89,75 @@ class OpenAICompatibleChatProvider:
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("LLM response did not contain message content")
         return content.strip()
+
+    def complete_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str | dict[str, Any] = "auto",
+    ) -> ToolResponse:
+        """Run one OpenAI-compatible tool-calling turn.
+
+        This deliberately returns a small provider-neutral shape so the Agent
+        runtime does not depend on a vendor SDK or on provider-specific
+        message classes.
+        """
+        if not self.settings.llm_configured:
+            raise LLMConfigurationError(
+                "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
+            )
+        payload = {
+            "model": self.settings.llm_model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "temperature": 0.0,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = httpx.post(
+                self._chat_url(self.settings.llm_base_url or ""),
+                headers=headers,
+                json=payload,
+                timeout=self.settings.llm_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise LLMProviderError(f"LLM request failed: {exc}") from exc
+        if response.status_code >= 400:
+            detail = response.text[:500].replace("\n", " ")
+            raise LLMProviderError(
+                f"LLM provider returned HTTP {response.status_code}: {detail}"
+            )
+        try:
+            body: Any = response.json()
+            message = body["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMProviderError("LLM response did not contain a valid tool message") from exc
+        raw_calls = message.get("tool_calls") or []
+        calls: list[ToolCall] = []
+        for raw in raw_calls:
+            try:
+                function = raw["function"]
+                arguments = function.get("arguments", {})
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                if not isinstance(arguments, dict):
+                    raise TypeError
+                calls.append(ToolCall(
+                    id=str(raw.get("id") or f"tool_{len(calls) + 1}"),
+                    name=str(function["name"]),
+                    arguments=arguments,
+                ))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise LLMProviderError("LLM returned an invalid tool call") from exc
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise LLMProviderError("LLM returned invalid tool-call content")
+        return ToolResponse(content=content.strip() if isinstance(content, str) else None, tool_calls=calls)
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         if not self.settings.llm_configured:

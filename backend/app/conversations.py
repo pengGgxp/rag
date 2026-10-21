@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
+from .agent import run_retrieval_agent
 from .auth import Access, get_access
 from .models import (
     ChatMessage,
@@ -361,7 +362,7 @@ def chat_router(get_db, retrieve):
                 message = db.get(ChatMessage, message_id)
                 return message_read(message), bool(row.rowcount)
 
-        def prepare(query):
+        def prepare(query, provider):
             candidates = []
             snapshots = []
             with factory() as db:
@@ -450,7 +451,42 @@ def chat_router(get_db, retrieve):
                 except (LLMConfigurationError, LLMProviderError):
                     previous = next((item["content"] for item in reversed(history) if item["role"] == "user"), "")
                     retrieval_query = f"{previous[:1500]}\n{query}"[:4000]
-            citations, traces = await run_in_threadpool(prepare, retrieval_query)
+            agent_run = None
+            if hasattr(provider, "complete_with_tools"):
+                with factory() as agent_db:
+                    checked = access.revalidate(agent_db)
+                    conversation = live_conversation(agent_db, conversation_id, checked)
+                    scope_ids = [item.knowledge_base_id for item in conversation.libraries]
+                try:
+                    agent_run = await run_in_threadpool(
+                        run_retrieval_agent,
+                        query=retrieval_query,
+                        knowledge_base_ids=scope_ids,
+                        history=history,
+                        factory=factory,
+                        access=access,
+                        retrieve=retrieve,
+                        provider=provider,
+                    )
+                except (LLMConfigurationError, LLMProviderError):
+                    # Keep the existing retrieval path available for providers
+                    # without tool-call support or during a temporary outage.
+                    agent_run = None
+            if agent_run is not None:
+                citations, traces = agent_run.citations, agent_run.traces
+                yield event_text(event("agent_step", {
+                    "step": agent_run.steps,
+                    "status": "retrieved",
+                }))
+                for call in agent_run.tool_calls:
+                    yield event_text(event("tool_call", {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    }))
+                for result in agent_run.tool_results:
+                    yield event_text(event("tool_result", result))
+            else:
+                citations, traces = await run_in_threadpool(prepare, retrieval_query, provider)
             _, active = await run_in_threadpool(save)
             if not active:
                 return

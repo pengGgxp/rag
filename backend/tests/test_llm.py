@@ -56,6 +56,39 @@ def test_chat_provider_requires_configuration():
         provider.complete([{"role": "user", "content": "Question"}])
 
 
+def test_chat_provider_parses_openai_compatible_tool_calls(monkeypatch):
+    def fake_post(url, **kwargs):
+        assert kwargs["json"]["tools"][0]["function"]["name"] == "search_knowledge_base"
+        return httpx.Response(200, json={
+            "choices": [{
+                "message": {
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_knowledge_base",
+                            "arguments": '{"query":"needle","knowledge_base_ids":["abc"]}',
+                        },
+                    }],
+                },
+            }],
+        })
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    response = OpenAICompatibleChatProvider(configured_settings()).complete_with_tools(
+        [{"role": "user", "content": "Question"}],
+        [{"type": "function", "function": {
+            "name": "search_knowledge_base",
+            "parameters": {"type": "object"},
+        }}],
+    )
+
+    assert response.content is None
+    assert response.tool_calls[0].name == "search_knowledge_base"
+    assert response.tool_calls[0].arguments["query"] == "needle"
+
+
 @pytest.mark.parametrize("body,content_type,expected", [
     (
         'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'

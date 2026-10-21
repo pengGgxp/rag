@@ -426,6 +426,14 @@ export function ChatWorkspace({
                 ? "正在检索资料…"
                 : "正在生成回答…",
             );
+          if (name === "agent_step")
+            setPhase(
+              (data as { status?: string }).status === "retrieved"
+                ? "已找到相关资料，正在生成回答…"
+                : "正在分析问题…",
+            );
+          if (name === "tool_call")
+            setPhase("正在检索知识库…");
           if (name === "message") received = true;
           setConversation((item) => {
             if (!item || item.id !== current!.id) return item;
