@@ -1,5 +1,7 @@
 import hashlib
 import io
+import math
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -670,30 +672,79 @@ def retrieve_knowledge_base(
     knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
     if knowledge_base and knowledge_base.status == KnowledgeBaseStatus.ARCHIVED:
         raise HTTPException(409, "知识库已归档，无法检索")
-    terms = [term for term in query.split() if term]
+    terms = [term for term in re.findall(r"\w+", query.casefold()) if term]
     trace_id = uuid4()
     lexical_rows = []
-    conditions = [Chunk.text.ilike(f"%{term}%") for term in terms]
     rows = []
+    corpus_rows = []
     if terms:
-        rows = db.execute(
-            select(Chunk, Document.filename)
+        lexical_scope = (
+            Document.knowledge_base_id == knowledge_base_id,
+            Document.status == DocumentStatus.READY,
+            Document.is_active.is_(True),
+        )
+        corpus_rows = db.execute(
+            select(Chunk.text, Chunk.token_count)
             .join(Document, Document.id == Chunk.document_id)
-            .where(
-                Document.knowledge_base_id == knowledge_base_id,
-                Document.status == DocumentStatus.READY,
-                Document.is_active.is_(True),
-                or_(*conditions),
-            )
-            .limit(20)
+            .where(*lexical_scope)
         ).all()
-    for chunk, filename in rows:
-        lexical_score = sum(chunk.text.lower().count(term.lower()) for term in terms)
-        lexical_rows.append((chunk, filename, lexical_score))
+        if db.get_bind().dialect.name == "postgresql":
+            document_vector = func.to_tsvector("simple", Chunk.text)
+            query_vector = func.websearch_to_tsquery("simple", " OR ".join(terms))
+            rows = db.execute(
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(*lexical_scope, document_vector.op("@@")(query_vector))
+                .limit(2000)
+            ).all()
+        else:
+            # SQLite is used by the unit-test harness only. Production uses
+            # PostgreSQL's indexed full-text path above.
+            rows = db.execute(
+                select(Chunk, Document.filename)
+                .join(Document, Document.id == Chunk.document_id)
+                .where(
+                    *lexical_scope,
+                    or_(*[Chunk.text.ilike(f"%{term}%") for term in terms]),
+                )
+                .limit(2000)
+            ).all()
+    if rows:
+        corpus_size = max(len(corpus_rows), 1)
+        average_length = sum(
+            max(token_count, 1) for _, token_count in corpus_rows
+        ) / corpus_size
+        document_frequency = {
+            term: sum(
+                1 for text_value, _ in corpus_rows if term in text_value.casefold()
+            )
+            for term in terms
+        }
+        for chunk, filename in rows:
+            tokens = re.findall(r"\w+", chunk.text.casefold())
+            score = 0.0
+            length = max(chunk.token_count, 1)
+            for term in terms:
+                frequency = tokens.count(term)
+                if not frequency:
+                    continue
+                df = document_frequency[term]
+                inverse_frequency = math.log(
+                    1.0 + (corpus_size - df + 0.5) / (df + 0.5)
+                )
+                saturation = (
+                    frequency * 2.0
+                    / (
+                        frequency
+                        + 1.2 * (0.25 + 0.75 * length / max(average_length, 1.0))
+                    )
+                )
+                score += inverse_frequency * saturation
+            lexical_rows.append((chunk, filename, score))
     lexical_rows.sort(key=lambda item: item[2], reverse=True)
 
     vector_rows = []
-    retrieval_mode = "lexical"
+    retrieval_mode = "bm25"
     provider = OpenAICompatibleEmbeddingProvider()
     if terms and provider.status.configured:
         try:
@@ -717,7 +768,7 @@ def retrieve_knowledge_base(
             retrieval_mode = "hybrid"
         except (EmbeddingProviderError, IndexError):
             vector_rows = []
-            retrieval_mode = "lexical_fallback"
+            retrieval_mode = "bm25_fallback"
 
     # Reciprocal rank fusion keeps lexical search useful for exact terms while
     # allowing semantic matches to rise when embeddings are available.
@@ -729,6 +780,7 @@ def retrieve_knowledge_base(
             "chunk": chunk,
             "filename": filename,
             "score": 1.0 / (60 + rank),
+            "bm25_score": float(_lexical_score),
         }
     vector_ranks: dict[UUID, int] = {}
     vector_distances: dict[UUID, float] = {}
@@ -737,7 +789,7 @@ def retrieve_knowledge_base(
         vector_distances[chunk.id] = float(vector_distance)
         entry = fused.setdefault(
             chunk.id,
-            {"chunk": chunk, "filename": filename, "score": 0.0},
+            {"chunk": chunk, "filename": filename, "score": 0.0, "bm25_score": None},
         )
         entry["vector_distance"] = float(vector_distance)
         entry["score"] += 1.0 / (60 + rank)
@@ -748,6 +800,7 @@ def retrieve_knowledge_base(
             "chunk_id": str(chunk_id),
             "filename": entry["filename"],
             "score": float(entry["score"]),
+            "bm25_score": entry.get("bm25_score"),
             "rank": rank,
             "lexical_rank": lexical_ranks.get(chunk_id),
             "vector_rank": vector_ranks.get(chunk_id),

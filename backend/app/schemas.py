@@ -126,6 +126,7 @@ class TraceResultRead(BaseModel):
     chunk_id: UUID
     filename: str
     score: float
+    bm25_score: float | None = None
     rank: int
     lexical_rank: int | None = None
     vector_rank: int | None = None

@@ -44,11 +44,12 @@ docker compose down
 - 文档上传、对象存储、解析和 Job 状态
 - 确定性文本分块，保留字符偏移和标题路径
 - 可查看文档 chunks
-- 带 `trace_id` 的知识库混合检索（关键词 + pgvector cosine + RRF）
+- 带 `trace_id` 的知识库混合检索（PostgreSQL 全文检索 + BM25 + pgvector cosine + RRF）
 - 持久化检索 Trace，可按 `trace_id` 复盘查询、召回方式和排序结果
 - 基于证据阈值的问答接口，返回拒答状态、原因和可定位引用
 - OpenAI-compatible 云端 Embedding 适配器，当前默认维度为 1024
 - OpenAI-compatible LLM 适配器（配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 后启用问答生成）
+- LangGraph 受控 ReAct Agent，可按需调用知识库检索工具并继续检索
 - 文档向量化任务、失败状态、重试和手动重建索引
 - 健康检查、结构化错误状态和基础 CORS
 

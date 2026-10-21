@@ -15,6 +15,7 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
         used = False
 
         def complete_with_tools(self, messages, tools, tool_choice):
+            assert tool_choice == "auto"
             if self.used:
                 return ToolResponse(content="done", tool_calls=[])
             self.used = True
@@ -88,3 +89,4 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
     assert calls == [(allowed, "needle")]
     assert len(run.citations) == 1
     assert run.tool_results[0]["result_count"] == 1
+    assert run.answer == "done"

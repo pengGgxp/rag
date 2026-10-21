@@ -428,8 +428,8 @@ export function ChatWorkspace({
             );
           if (name === "agent_step")
             setPhase(
-              (data as { status?: string }).status === "retrieved"
-                ? "已找到相关资料，正在生成回答…"
+              (data as { status?: string }).status === "decided"
+                ? "Agent 正在整理检索结果…"
                 : "正在分析问题…",
             );
           if (name === "tool_call")

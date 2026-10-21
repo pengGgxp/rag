@@ -114,10 +114,11 @@ def test_retrieval_isolates_library_and_excludes_unavailable_documents(retrieval
     trace = payload["trace"]
     assert trace["query"] == "needle"
     assert trace["knowledge_base_id"] == str(library.id)
-    assert trace["retrieval_mode"] == "lexical"
+    assert trace["retrieval_mode"] == "bm25"
     assert trace["result_count"] == 2
     assert [row["lexical_rank"] for row in trace["results"]] == [1, 2]
     assert trace["results"][0]["score"] == pytest.approx(1 / 61)
+    assert trace["results"][0]["bm25_score"] > 0
     assert all(row["vector_rank"] is None for row in trace["results"])
     assert {row["trace_id"] for row in payload["results"]} == {trace["id"]}
     persisted = client.get(f"/traces/{trace['id']}")
@@ -207,7 +208,7 @@ def test_legacy_search_response_stays_a_list(retrieval_client):
     assert response.json()[0]["chunk"]["document_id"] == str(document.id)
 
 
-def test_vector_failure_is_visible_as_lexical_fallback(retrieval_client, monkeypatch):
+def test_vector_failure_is_visible_as_bm25_fallback(retrieval_client, monkeypatch):
     client, session = retrieval_client
     library = add_library(session)
     add_document(session, library, "needle")
@@ -232,7 +233,7 @@ def test_vector_failure_is_visible_as_lexical_fallback(retrieval_client, monkeyp
         f"/knowledge-bases/{library.id}/retrieval", json={"query": "needle"}
     )
     assert response.status_code == 200
-    assert response.json()["trace"]["retrieval_mode"] == "lexical_fallback"
+    assert response.json()["trace"]["retrieval_mode"] == "bm25_fallback"
     assert response.json()["trace"]["embedding_dimension"] == 1024
     assert len(response.json()["results"]) == 1
 
