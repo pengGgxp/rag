@@ -109,7 +109,8 @@ def process_document(self, job_id: str) -> None:
             if document is not None:
                 document.status = DocumentStatus.FAILED
                 document.error_detail = str(exc)
-                document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+                if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+                    document.knowledge_base.status = KnowledgeBaseStatus.ERROR
             session.commit()
         raise
     finally:
@@ -160,7 +161,8 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
             if all(chunk.embedding_status == EmbeddingStatus.READY for chunk in chunks):
                 document.status = DocumentStatus.READY
                 document.error_detail = None
-                document.knowledge_base.status = KnowledgeBaseStatus.READY
+                if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+                    document.knowledge_base.status = KnowledgeBaseStatus.READY
                 if job is not None:
                     job.state = JobState.SUCCEEDED
                 session.commit()
@@ -203,7 +205,8 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
             return
         document.status = DocumentStatus.READY
         document.error_detail = None
-        document.knowledge_base.status = KnowledgeBaseStatus.READY
+        if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+            document.knowledge_base.status = KnowledgeBaseStatus.READY
         if job is not None:
             job.state = JobState.SUCCEEDED
         session.commit()
@@ -218,7 +221,8 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
                     chunk.embedding_error = str(exc)
             document.status = DocumentStatus.FAILED
             document.error_detail = str(exc)
-            document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+            if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+                document.knowledge_base.status = KnowledgeBaseStatus.ERROR
             if job is not None:
                 job.state = JobState.FAILED
                 job.error_detail = str(exc)

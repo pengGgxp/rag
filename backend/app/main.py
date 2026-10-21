@@ -37,6 +37,7 @@ from .schemas import (
     ChunkRead,
     JobRead,
     KnowledgeBaseCreate,
+    KnowledgeBaseUpdate,
     KnowledgeBaseRead,
     SearchResult,
     QueryTraceRead,
@@ -118,6 +119,83 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="knowledge_base.created", resource_type="knowledge_base",
         resource_id=knowledge_base.id, metadata={"name": payload.name[:100]}, request=request,
+    )
+    db.commit()
+    db.refresh(knowledge_base)
+    return KnowledgeBaseRead.model_validate(knowledge_base)
+
+
+@app.patch("/knowledge-bases/{knowledge_base_id}", response_model=KnowledgeBaseRead)
+def update_knowledge_base(
+    knowledge_base_id: UUID,
+    payload: KnowledgeBaseUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    knowledge_base = access.library(
+        db, knowledge_base_id, write=True, allow_archived=True,
+    )
+    knowledge_base.name = payload.name
+    knowledge_base.description = payload.description
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="knowledge_base.updated", resource_type="knowledge_base",
+        resource_id=knowledge_base.id,
+        metadata={"name": payload.name[:100], "has_description": bool(payload.description)},
+        request=request,
+    )
+    db.commit()
+    db.refresh(knowledge_base)
+    return KnowledgeBaseRead.model_validate(knowledge_base)
+
+
+@app.post("/knowledge-bases/{knowledge_base_id}/archive", response_model=KnowledgeBaseRead)
+def archive_knowledge_base(
+    knowledge_base_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    knowledge_base = access.library(
+        db, knowledge_base_id, write=True, allow_archived=True,
+    )
+    if knowledge_base.status == KnowledgeBaseStatus.ARCHIVED:
+        return KnowledgeBaseRead.model_validate(knowledge_base)
+    knowledge_base.status = KnowledgeBaseStatus.ARCHIVED
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="knowledge_base.archived", resource_type="knowledge_base",
+        resource_id=knowledge_base.id, request=request,
+    )
+    db.commit()
+    db.refresh(knowledge_base)
+    return KnowledgeBaseRead.model_validate(knowledge_base)
+
+
+@app.post("/knowledge-bases/{knowledge_base_id}/restore", response_model=KnowledgeBaseRead)
+def restore_knowledge_base(
+    knowledge_base_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    knowledge_base = access.library(db, knowledge_base_id, write=True, allow_archived=True)
+    if knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+        return KnowledgeBaseRead.model_validate(knowledge_base)
+    active_documents = db.scalars(select(Document).where(
+        Document.knowledge_base_id == knowledge_base.id,
+        Document.status != DocumentStatus.DELETED,
+    )).all()
+    knowledge_base.status = (
+        KnowledgeBaseStatus.READY
+        if any(document.status == DocumentStatus.READY for document in active_documents)
+        else KnowledgeBaseStatus.DRAFT
+    )
+    record_audit(
+        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="knowledge_base.restored", resource_type="knowledge_base",
+        resource_id=knowledge_base.id, request=request,
     )
     db.commit()
     db.refresh(knowledge_base)
@@ -560,6 +638,9 @@ def retrieve_knowledge_base(
     knowledge_base_id: UUID, query: str, db: Session, access: Access
 ) -> RetrievalRead:
     access.library(db, knowledge_base_id)
+    knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
+    if knowledge_base and knowledge_base.status == KnowledgeBaseStatus.ARCHIVED:
+        raise HTTPException(409, "知识库已归档，无法检索")
     terms = [term for term in query.split() if term]
     trace_id = uuid4()
     lexical_rows = []

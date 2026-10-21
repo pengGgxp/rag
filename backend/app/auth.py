@@ -23,8 +23,8 @@ from .db import get_db
 from .audit_log import record_audit
 from .models import (
     AuthToken, Conversation, CreditAccount, CreditLedgerEntry, ExternalIdentity,
-    KnowledgeBase, LibraryGrant, LoginSession, Membership, QueryTrace, User,
-    Workspace, LEGACY_WORKSPACE_ID,
+    KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, LoginSession, Membership,
+    QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
 )
 
 COOKIE = "rag_session"
@@ -114,10 +114,13 @@ class Access:
             ))
         )
 
-    def library(self, db: Session, id: UUID, write=False):
+    def library(self, db: Session, id: UUID, write=False, allow_archived=False):
         library = db.scalar(select(KnowledgeBase).where(KnowledgeBase.id == id, self.visible_libraries()))
         if library is None:
             raise HTTPException(404, "知识库不存在或无权访问")
+        if library.status == KnowledgeBaseStatus.ARCHIVED and not allow_archived:
+            if write:
+                raise HTTPException(409, "知识库已归档，请先恢复后再修改")
         if write:
             self.editor()
         return library

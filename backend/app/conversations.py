@@ -15,7 +15,13 @@ from starlette.concurrency import run_in_threadpool
 
 from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from .auth import Access, get_access
-from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase
+from .models import (
+    ChatMessage,
+    Conversation,
+    ConversationLibrary,
+    KnowledgeBase,
+    KnowledgeBaseStatus,
+)
 from .feedback import feedback_read
 from .audit_log import record_audit
 from .credits import CREDIT_RESERVATION, CreditError, release, reserve
@@ -112,7 +118,9 @@ def chat_router(get_db, retrieve):
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
         ids = list(dict.fromkeys(payload.knowledge_base_ids))
         for id in ids:
-            access.library(db, id)
+            library = access.library(db, id)
+            if library.status == KnowledgeBaseStatus.ARCHIVED:
+                raise HTTPException(409, "归档知识库不能用于新对话")
         conversation = Conversation(title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id, libraries=[
             ConversationLibrary(knowledge_base_id=id) for id in ids
         ])

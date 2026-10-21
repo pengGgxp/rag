@@ -10,6 +10,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowLeft,
+  Archive,
   BookOpen,
   Check,
   ChevronRight,
@@ -74,6 +75,13 @@ const STATUS: Record<string, string> = {
   failed: "处理失败",
   deleted: "已删除",
 };
+const LIBRARY_STATUS: Record<string, string> = {
+  draft: "草稿",
+  processing: "处理中",
+  ready: "可用",
+  error: "处理失败",
+  archived: "已归档",
+};
 
 function sizeLabel(bytes: number) {
   return bytes < 1024 * 1024
@@ -107,7 +115,9 @@ export default function Home() {
   const [libraryLoading, setLibraryLoading] = useState(true);
   const sidebarOpen = useUiStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
-  const [modal, setModal] = useState<"create" | "upload" | "versions" | null>(null);
+  const [modal, setModal] = useState<
+    "create" | "edit" | "upload" | "versions" | null
+  >(null);
   const [versionTarget, setVersionTarget] = useState<SourceDocument | null>(null);
   const [versions, setVersions] = useState<SourceDocument[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
@@ -200,11 +210,56 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  function openModal(next: "create" | "upload") {
+  function openModal(next: "create" | "edit" | "upload") {
     setModalError("");
     setFile(null);
     setVersionTarget(null);
     setModal(next);
+  }
+  function openEditLibrary() {
+    if (!selected) return;
+    setName(selected.name);
+    setDescription(selected.description || "");
+    setModalError("");
+    setModal("edit");
+  }
+  async function updateLibrary(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId) return;
+    setBusy(true);
+    setModalError("");
+    try {
+      await request(`/knowledge-bases/${selectedId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          description: description.trim() || null,
+        }),
+      });
+      setModal(null);
+      setNotice({ text: "知识库信息已更新" });
+      await loadLibraries();
+    } catch (error) {
+      setModalError(error instanceof Error ? error.message : "保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function changeLibraryArchive(action: "archive" | "restore") {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      await request(`/knowledge-bases/${selectedId}/${action}`, {
+        method: "POST",
+      });
+      setNotice({ text: action === "archive" ? "知识库已归档" : "知识库已恢复" });
+      await loadLibraries();
+    } catch (error) {
+      notifyError(error);
+    } finally {
+      setBusy(false);
+    }
   }
   function openVersionUpload(doc: SourceDocument) {
     setModalError("");
@@ -472,6 +527,7 @@ export default function Home() {
                 </button>
                 <button
                   className={view === "retrieval" ? "selected" : ""}
+                  disabled={selected.status === "archived"}
                   onClick={() => {
                     setView("retrieval");
                     setSidebarOpen(false);
@@ -638,7 +694,12 @@ export default function Home() {
                   <span className="catalog-library-icon">
                     <BookOpen size={23} strokeWidth={1.7} />
                   </span>
-                  <h2>{library.name}</h2>
+                  <div className="library-card-title">
+                    <h2>{library.name}</h2>
+                    <span className={`library-status ${library.status}`}>
+                      {LIBRARY_STATUS[library.status] || library.status}
+                    </span>
+                  </div>
                   <p>{library.description || "暂无描述"}</p>
                   <span className="library-card-footer">
                     <span>
@@ -679,6 +740,9 @@ export default function Home() {
                         ? "配置"
                         : "文档"}
                   </span>
+                  <span className={`subtle-label library-status ${selected.status}`}>
+                    {LIBRARY_STATUS[selected.status] || selected.status}
+                  </span>
                 </div>
                 <p>
                   {selected.description || `${selected.document_count} 份文档`}
@@ -698,6 +762,36 @@ export default function Home() {
                     <dd>{selected.description || "暂无描述"}</dd>
                   </div>
                 </dl>
+                {canEdit && (
+                  <div className="configuration-actions">
+                    <button className="secondary" onClick={openEditLibrary}>
+                      <Settings2 size={15} />
+                      编辑知识库
+                    </button>
+                    {selected.status === "archived" ? (
+                      <button
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() => void changeLibraryArchive("restore")}
+                      >
+                        <RotateCcw size={15} />
+                        恢复知识库
+                      </button>
+                    ) : (
+                      <button
+                        className="secondary danger-action"
+                        disabled={busy}
+                        onClick={() => {
+                          if (window.confirm("归档后将无法上传、检索或开始新问答，确定继续吗？"))
+                            void changeLibraryArchive("archive");
+                        }}
+                      >
+                        <Archive size={15} />
+                        归档知识库
+                      </button>
+                    )}
+                  </div>
+                )}
                 <h2>当前服务配置</h2>
                 <dl className="configuration-fields">
                   <div>
@@ -803,7 +897,7 @@ export default function Home() {
                     </button>
                     <button
                       className="primary"
-                      disabled={!canEdit}
+                      disabled={!canEdit || selected.status === "archived"}
                       onClick={() => openModal("upload")}
                     >
                       <Plus size={16} />
@@ -1128,6 +1222,53 @@ export default function Home() {
                 disabled={busy || !name.trim()}
               >
                 {busy && <Loader2 size={15} className="spin" />}创建知识库
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {modal === "edit" && (
+        <Modal title="编辑知识库" onClose={() => setModal(null)} busy={busy}>
+          <form className="modal-form" onSubmit={updateLibrary}>
+            <label>
+              名称
+              <input
+                autoFocus
+                required
+                maxLength={200}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+            </label>
+            <label>
+              描述<span className="optional">选填</span>
+              <textarea
+                rows={3}
+                maxLength={2000}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </label>
+            {modalError && (
+              <p className="form-error" role="alert">
+                {modalError}
+              </p>
+            )}
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => setModal(null)}
+              >
+                取消
+              </button>
+              <button
+                className="primary"
+                type="submit"
+                disabled={busy || !name.trim()}
+              >
+                {busy && <Loader2 size={15} className="spin" />}保存修改
               </button>
             </div>
           </form>
