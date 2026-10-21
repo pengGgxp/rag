@@ -52,10 +52,27 @@ class DocumentRead(BaseModel):
     size_bytes: int
     status: DocumentStatus
     error_detail: str | None
-    parsed_text: str | None = None
     parser_name: str | None = None
     created_at: datetime
     job: JobRead | None = None
+
+
+class DocumentPreviewRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    knowledge_base_id: UUID
+    version_group_id: UUID
+    version_number: int
+    is_active: bool
+    filename: str
+    content_type: str
+    size_bytes: int
+    status: DocumentStatus
+    error_detail: str | None
+    parser_name: str | None
+    parsed_text: str | None
+    created_at: datetime
 
 
 class ChunkRead(BaseModel):

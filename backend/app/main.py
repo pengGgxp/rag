@@ -35,6 +35,7 @@ from .models import (
 from .schemas import (
     DocumentRead,
     ChunkRead,
+    DocumentPreviewRead,
     JobRead,
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
@@ -348,6 +349,21 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), acces
             )
         )
     return result
+
+
+@app.get("/documents/{document_id}/preview", response_model=DocumentPreviewRead)
+def preview_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    access: Access = Depends(get_access),
+):
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id)
+    return DocumentPreviewRead.model_validate(document).model_copy(
+        update={"parsed_text": None if document.status == DocumentStatus.DELETED else document.parsed_text}
+    )
 
 
 @app.get("/documents/{document_id}/versions", response_model=list[DocumentRead])

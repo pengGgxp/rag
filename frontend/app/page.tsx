@@ -52,7 +52,6 @@ type SourceDocument = {
   content_type: string;
   size_bytes: number;
   created_at: string;
-  parsed_text?: string | null;
   parser_name?: string | null;
   error_detail?: string | null;
   job?: { id: string; state: string; error_detail?: string | null };
@@ -63,6 +62,7 @@ type Health = {
   llm: { configured: boolean; model: string };
 };
 type Preview = {
+  id?: string;
   filename: string;
   text: string;
   detail: string;
@@ -399,13 +399,43 @@ export default function Home() {
       setBusy(false);
     }
   }
-  function showDocument(doc: SourceDocument) {
+  async function showDocument(doc: SourceDocument) {
     setPreview({
+      id: doc.id,
       filename: doc.filename,
-      text: doc.parsed_text || "暂无解析内容",
+      text: "正在加载解析内容…",
       detail: `${extension(doc.filename)} · ${sizeLabel(doc.size_bytes)}${doc.parser_name ? ` · ${doc.parser_name}` : ""}`,
       error: doc.error_detail || doc.job?.error_detail,
     });
+    try {
+      const preview = await request<{
+        id: string;
+        filename: string;
+        parser_name?: string | null;
+        parsed_text?: string | null;
+        error_detail?: string | null;
+      }>(`/documents/${doc.id}/preview`);
+      setPreview((current) =>
+        current?.id === doc.id
+          ? {
+              ...current,
+              text: preview.parsed_text || "暂无解析内容",
+              detail: `${extension(preview.filename)} · ${sizeLabel(doc.size_bytes)}${preview.parser_name ? ` · ${preview.parser_name}` : ""}`,
+              error: preview.error_detail || current.error,
+            }
+          : current,
+      );
+    } catch (error) {
+      setPreview((current) =>
+        current?.id === doc.id
+          ? {
+              ...current,
+              text: "无法加载解析内容",
+              error: error instanceof Error ? error.message : "预览加载失败",
+            }
+          : current,
+      );
+    }
   }
   function openLibrary(
     id: string,
