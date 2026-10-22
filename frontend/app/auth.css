@@ -229,26 +229,12 @@
 .credit-entry strong.negative {
   color: #a85b52;
 }
-.credit-grant {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
+.credit-billing-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-top: 16px;
-}
-.credit-grant label {
-  display: grid;
-  gap: 6px;
-  color: #56655d;
-  font-size: 11px;
-}
-.credit-grant input {
-  width: 100%;
-  min-width: 0;
-  padding: 8px 9px;
-  border: 1px solid #d9dfdc;
-  border-radius: 5px;
-  background: #fff;
+  font-size: 12px;
 }
 .account-password {
   margin-top: 28px;
@@ -479,13 +465,6 @@
   }
   .credit-usage-heading small {
     text-align: left;
-  }
-  .credit-grant {
-    grid-template-columns: 1fr 1fr;
-  }
-  .credit-grant button {
-    grid-column: 1 / -1;
-    justify-self: start;
   }
   .account-settings {
     padding: 0 16px 20px;

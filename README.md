@@ -54,6 +54,7 @@ docker compose down
 - 多文件 Skill 文件夹/ZIP 导入、文件管理、完整 ZIP 导出及 Agent 渐进加载
 - 文档向量化任务、失败状态、重试和手动重建索引
 - 健康检查、结构化错误状态和基础 CORS
+- 支付 FM 积分充值、本人订单、验签通知和幂等到账（默认关闭，待配置商户及售价）
 
 ## Agent 扩展配置
 
@@ -78,6 +79,16 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 - Skill 支持 SKILL.md 和 references/scripts/assets 等附属文件，Agent 可按需读取 UTF-8 文本。
   二进制资源原样保存并可下载；不运行技能包脚本、不安装依赖、不自动解析二进制资源。
 - MCP 授权可能允许外部写入，当前不提供逐次操作审批，也不自动重试外部操作。
+- 充值只处理入账，不改变现有问答扣费；尚不支持主动查单、退款、订阅和发票。
+
+## 积分充值配置
+
+参考 `.env.example` 的 `ZHIFUX_*` 和 `RECHARGE_PACKAGES_JSON`，填写真实商户信息、
+已开通的支付方式及确认后的充值档位。不能使用商户登录页作为 API 根地址。
+生产接入还需配置 `API_PUBLIC_URL` 和 `FRONTEND_URL` 为公网 HTTPS 地址。
+回调为 `/payments/zhifux/notify`，仅服务端验签成功后到账。
+未配置时界面显示“暂未开放充值”，不提供模拟付款；所有客户的直接加积分接口已关闭。
+本地 Docker 代码可验证订单和签名逻辑，真实支付还必须完成公网回调联调。
 
 ## 相关文档
 
@@ -86,3 +97,4 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 - [技术决策记录](./docs/adr/0001-technology-baseline.md)
 - [Agent 扩展边界与验收](./docs/agent-extensions-acceptance.md)
 - [多文件 Skill 设计与验收](./docs/skill-bundles-acceptance.md)
+- [支付 FM 积分充值与验收](./docs/recharge-acceptance.md)

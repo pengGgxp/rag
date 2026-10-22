@@ -7,7 +7,7 @@ from app.credits import CreditError, release, reserve
 from app.models import CreditAccount, CreditLedgerEntry
 from test_auth import accounts, register
 
-def test_workspace_usage_starts_with_credits_and_admin_grants_are_idempotent(accounts):
+def test_workspace_admin_cannot_mint_credits(accounts):
     (owner, _, _), db = accounts
     register(owner)
 
@@ -22,12 +22,12 @@ def test_workspace_usage_starts_with_credits_and_admin_grants_are_idempotent(acc
     }
     first = owner.post("/usage/credits", json=payload)
     second = owner.post("/usage/credits", json=payload)
-    assert first.status_code == 200, first.text
-    assert second.status_code == 200, second.text
-    assert owner.get("/usage").json()["balance"] == 1250
+    assert first.status_code == 403, first.text
+    assert second.status_code == 403, second.text
+    assert owner.get("/usage").json()["balance"] == 1000
     assert db.scalar(select(CreditLedgerEntry).where(
         CreditLedgerEntry.kind == "admin_grant",
-    )) is not None
+    )) is None
 
 
 def test_credit_reservation_is_released_idempotently_and_cannot_overdraw(accounts):

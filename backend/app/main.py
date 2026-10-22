@@ -58,6 +58,7 @@ from .audit import router as audit_router
 from .audit_log import record_audit
 from .credits import CREDIT_RESERVATION, build_router as build_usage_router, release, reserve
 from .extensions import router as extensions_router
+from .payments import build_router as build_payment_router
 
 
 @asynccontextmanager
@@ -984,6 +985,7 @@ app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
 app.include_router(build_usage_router(get_db))
+app.include_router(build_payment_router(get_db))
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 app.include_router(extensions_router)
 

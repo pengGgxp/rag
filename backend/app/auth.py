@@ -65,7 +65,9 @@ class BrowserRequestGuard:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS"):
+        # Only the signed provider callback is exempt from browser-only headers.
+        payment_callback = scope.get("path") == "/payments/zhifux/notify" and scope.get("method") == "POST"
+        if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS") and not payment_callback:
             headers = dict(scope["headers"])
             settings = get_settings()
             origin = headers.get(b"origin", b"").decode()

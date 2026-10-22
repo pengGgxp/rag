@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     smtp_from: str | None = None
     smtp_starttls: bool = True
+    zhifux_enabled: bool = False
+    zhifux_api_base_url: str = ""
+    zhifux_merchant_num: str = ""
+    zhifux_secret: SecretStr | None = None
+    zhifux_pay_type: str = ""
+    recharge_packages_json: str = "[]"
 
     @property
     def oidc_configured(self) -> bool:

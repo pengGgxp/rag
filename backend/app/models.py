@@ -3,7 +3,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, Enum as SqlEnum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,6 +53,35 @@ class CreditLedgerEntry(Base):
     idempotency_key: Mapped[str] = mapped_column(String(200))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class RechargeOrder(Base):
+    __tablename__ = "recharge_orders"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", "idempotency_key", name="uq_recharge_request"),
+        UniqueConstraint("merchant_num", "platform_order_no", name="uq_recharge_platform_order"),
+        CheckConstraint("amount_fen > 0 AND credits > 0", name="ck_recharge_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    package_id: Mapped[str] = mapped_column(String(64))
+    package_name: Mapped[str] = mapped_column(String(100))
+    amount_fen: Mapped[int] = mapped_column(Integer)
+    credits: Mapped[int] = mapped_column(Integer)
+    merchant_num: Mapped[str] = mapped_column(String(100))
+    pay_type: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(30), default="creating")
+    platform_order_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
 
 
 class Membership(Base):

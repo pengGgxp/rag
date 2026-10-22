@@ -302,7 +302,7 @@ Document
 - 问答生成前检查并预扣工作区积分
 - 失败、取消和证据不足时释放预扣积分
 - 成功回答保留扣费流水
-- 余额和流水按工作区隔离，管理员可充值
+- 余额和流水按工作区隔离，成员可支付充值；管理员不能任意增加积分
 - 扣费引用必须幂等，不能因重试或并发请求重复扣费
 
 ## 六、核心数据模型
@@ -365,7 +365,11 @@ POST   /feedback
 POST   /eval-datasets
 POST   /eval-runs
 GET    /usage
-POST   /usage/credits
+GET    /payments/catalog
+POST   /payments/orders
+GET    /payments/orders
+GET    /payments/orders/{id}
+POST   /payments/zhifux/notify
 GET    /audit-logs
 ```
 
@@ -396,7 +400,7 @@ GET    /audit-logs
 - GraphRAG
 - 自动训练模型
 - 视频、音频多模态知识库
-- 支付网关、套餐、发票等复杂计费系统
+- 订阅套餐、发票等复杂计费系统（2026-10-22 已按用户要求纳入支付 FM 积分充值，见 `docs/recharge-acceptance.md`）
 - 面向用户的模型 API Key 管理
 - 插件市场
 - 十几种第三方连接器

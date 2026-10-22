@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
+import { BillingPanel, creditKind, type CreditUsage } from "./billing-panel";
 import * as Tabs from "../components/ui/tabs";
 import "./auth.css";
 
@@ -50,19 +51,6 @@ type AuditLogPage = {
   total: number;
   page: number;
   page_size: number;
-};
-type CreditUsage = {
-  balance: number;
-  lifetime_granted: number;
-  lifetime_spent: number;
-  entries: {
-    id: string;
-    amount: number;
-    balance_after: number;
-    kind: string;
-    metadata: Record<string, unknown>;
-    created_at: string;
-  }[];
 };
 type Session = {
   user: {
@@ -215,6 +203,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       </div>
       {account && (
         <AccountModal
+          key={session.workspace_id}
           session={session}
           options={options}
           onClose={() => setAccount(false)}
@@ -477,7 +466,9 @@ function AccountModal({
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   )?.role;
-  const [tab, setTab] = useState<"account" | "members" | "audit">("account");
+  const [tab, setTab] = useState<"account" | "billing" | "members" | "audit">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("billing") ? "billing" : "account",
+  );
   const [members, setMembers] = useState<Member[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogPage>({
     items: [],
@@ -497,8 +488,12 @@ function AccountModal({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [usage, setUsage] = useState<CreditUsage | null>(null);
-  const [creditAmount, setCreditAmount] = useState("1000");
-  const [creditNote, setCreditNote] = useState("");
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("account");
+    url.searchParams.delete("billing");
+    window.history.replaceState(null, "", url);
+  }, []);
   const load = useCallback(
     async () => setMembers(await request<Member[]>("/auth/members")),
     [],
@@ -567,16 +562,17 @@ function AccountModal({
         className="account-settings"
         value={tab}
         onValueChange={(value) =>
-          setTab(value as "account" | "members" | "audit")
+          setTab(value as "account" | "billing" | "members" | "audit")
         }
       >
         <Tabs.List className="account-tabs" aria-label="账号设置">
-          <Tabs.Trigger value="account">我的账号</Tabs.Trigger>
+          <Tabs.Trigger value="account" disabled={busy}>我的账号</Tabs.Trigger>
+          <Tabs.Trigger value="billing" disabled={busy}>积分与充值</Tabs.Trigger>
           {role === "admin" && (
-            <Tabs.Trigger value="members">工作区成员</Tabs.Trigger>
+            <Tabs.Trigger value="members" disabled={busy}>工作区成员</Tabs.Trigger>
           )}
           {role === "admin" && (
-            <Tabs.Trigger value="audit">审计日志</Tabs.Trigger>
+            <Tabs.Trigger value="audit" disabled={busy}>审计日志</Tabs.Trigger>
           )}
         </Tabs.List>
         {error && (
@@ -615,13 +611,7 @@ function AccountModal({
                     {usage.entries.slice(0, 5).map((entry) => (
                       <div className="credit-entry" key={entry.id}>
                         <span>
-                          {entry.kind === "admin_grant"
-                            ? "管理员充值"
-                            : entry.kind === "chat_reservation"
-                              ? "问答消耗"
-                              : entry.kind === "chat_release"
-                                ? "失败返还"
-                                : "初始赠送"}
+                          {creditKind(entry.kind)}
                         </span>
                         <strong className={entry.amount < 0 ? "negative" : ""}>
                           {entry.amount > 0 ? "+" : ""}
@@ -631,47 +621,9 @@ function AccountModal({
                     ))}
                   </div>
                 )}
-                {role === "admin" && (
-                  <form
-                    className="credit-grant"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void action(async () => {
-                        await request("/usage/credits", json({
-                          amount: Number(creditAmount),
-                          note: creditNote.trim() || "管理员充值",
-                          idempotency_key: crypto.randomUUID(),
-                        }));
-                        setCreditNote("");
-                        setNotice("积分已充值");
-                        await loadUsage();
-                      });
-                    }}
-                  >
-                    <label>
-                      充值积分
-                      <input
-                        type="number"
-                        min="1"
-                        max="1000000"
-                        value={creditAmount}
-                        onChange={(event) => setCreditAmount(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      备注
-                      <input
-                        value={creditNote}
-                        placeholder="可选"
-                        onChange={(event) => setCreditNote(event.target.value)}
-                      />
-                    </label>
-                    <button className="secondary" disabled={busy}>
-                      <Plus size={15} />
-                      充值
-                    </button>
-                  </form>
-                )}
+                <button className="text-button credit-billing-link" onClick={() => setTab("billing")}>
+                  积分与充值<ArrowRight size={14} />
+                </button>
               </section>
             )}
             <label className="account-field">
@@ -788,6 +740,11 @@ function AccountModal({
               退出登录
             </button>
           </>
+        ) : tab === "billing" ? (
+          <BillingPanel
+            workspaceName={session.workspaces.find((item) => item.id === session.workspace_id)?.name ?? ""}
+            onBusyChange={setBusy}
+          />
         ) : tab === "members" ? (
           <>
             <form
@@ -926,6 +883,8 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   "conversation.deleted": "删除会话",
   "feedback.created_or_updated": "提交反馈",
   "feedback.deleted": "撤销反馈",
+  "recharge.created": "创建充值订单",
+  "recharge.paid": "充值到账",
 };
 
 function auditActionLabel(action: string) {

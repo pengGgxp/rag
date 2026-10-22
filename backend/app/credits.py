@@ -1,12 +1,10 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import Access, get_access
-from .audit_log import record_audit
 from .models import CreditAccount, CreditLedgerEntry
 
 CREDIT_RESERVATION = 10
@@ -15,17 +13,11 @@ INITIAL_CREDITS = 1000
 
 class CreditError(HTTPException):
     def __init__(self):
-        super().__init__(status_code=402, detail="积分余额不足，请联系管理员充值")
-
-
-class CreditGrantRequest(BaseModel):
-    amount: int = Field(ge=1, le=1_000_000)
-    note: str = Field(default="管理员充值", max_length=200)
-    idempotency_key: str = Field(min_length=8, max_length=200)
+        super().__init__(status_code=402, detail="积分余额不足，请前往账号的积分与充值页面充值")
 
 
 def ensure_account(db: Session, workspace_id: UUID, *, initial: int = INITIAL_CREDITS) -> CreditAccount:
-    account = db.get(CreditAccount, workspace_id, with_for_update=True)
+    account = db.get(CreditAccount, workspace_id, with_for_update=True, populate_existing=True)
     if account is not None:
         return account
     account = CreditAccount(
@@ -129,16 +121,17 @@ def release(
     if entry.kind == "chat_release":
         account.lifetime_granted -= amount
         account.lifetime_spent -= amount
+        db.flush()
     return entry
 
 
-def grant(
+def recharge(
     db: Session,
     workspace_id: UUID,
     actor_user_id: UUID,
     amount: int,
-    note: str,
-    idempotency_key: str,
+    order_id: UUID,
+    amount_fen: int,
 ) -> CreditLedgerEntry:
     account = ensure_account(db, workspace_id, initial=0)
     return _entry(
@@ -146,9 +139,9 @@ def grant(
         account,
         actor_user_id=actor_user_id,
         amount=amount,
-        kind="admin_grant",
-        idempotency_key=idempotency_key,
-        metadata={"note": note},
+        kind="paid_recharge",
+        idempotency_key=f"recharge:{order_id}:paid",
+        metadata={"order_id": str(order_id), "amount_fen": amount_fen},
     )
 
 
@@ -180,32 +173,7 @@ def build_router(get_db):
         }
 
     @router.post("/credits")
-    def add_credits(
-        payload: CreditGrantRequest,
-        request: Request,
-        db: Session = Depends(get_db),
-        access: Access = Depends(get_access),
-    ):
-        access.admin()
-        entry = grant(
-            db,
-            access.workspace_id,
-            access.user_id,
-            payload.amount,
-            payload.note,
-            f"admin:{access.workspace_id}:{payload.idempotency_key}",
-        )
-        record_audit(
-            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-            action="usage.credits_granted", resource_type="credit_account",
-            resource_id=access.workspace_id, metadata={"amount": payload.amount, "note": payload.note},
-            request=request,
-        )
-        db.commit()
-        return {
-            "amount": entry.amount,
-            "balance_after": entry.balance_after,
-            "kind": entry.kind,
-        }
+    def add_credits(access: Access = Depends(get_access)):
+        raise HTTPException(403, "不支持直接增加积分，请使用积分充值")
 
     return router
