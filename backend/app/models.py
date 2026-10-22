@@ -55,15 +55,43 @@ class CreditLedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class LLMProviderConfig(Base):
+    __tablename__ = "llm_provider_configs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "key", name="uq_llm_provider_workspace_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    key: Mapped[str] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(120))
+    base_url: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(200))
+    encrypted_api_key: Mapped[str] = mapped_column(Text)
+    timeout_seconds: Mapped[float] = mapped_column(default=60)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    active: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
+
+
 class UsagePolicy(Base):
     __tablename__ = "usage_policies"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "capability", name="uq_usage_policy_workspace_capability"),
+        UniqueConstraint(
+            "workspace_id", "provider_id", "capability",
+            name="uq_usage_policy_workspace_provider_capability",
+        ),
         CheckConstraint("credits_per_unit >= 0 AND unit_size > 0", name="ck_usage_policy_positive"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    provider_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_provider_configs.id"), nullable=True, index=True,
+    )
     capability: Mapped[str] = mapped_column(String(80))
     unit: Mapped[str] = mapped_column(String(40))
     unit_size: Mapped[int] = mapped_column(Integer, default=1)
@@ -86,6 +114,10 @@ class UsageEvent(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    provider_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("llm_provider_configs.id"), nullable=True, index=True,
+    )
+    provider_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     capability: Mapped[str] = mapped_column(String(80), index=True)
     units: Mapped[int] = mapped_column(Integer)
     credits: Mapped[int] = mapped_column(Integer)

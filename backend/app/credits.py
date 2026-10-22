@@ -37,16 +37,26 @@ class UsagePolicyUpdate(BaseModel):
     enabled: bool = True
 
 
-def ensure_policies(db: Session, workspace_id: UUID) -> list[UsagePolicy]:
+def ensure_policies(
+    db: Session, workspace_id: UUID, provider_id: UUID | None = None,
+) -> list[UsagePolicy]:
     existing = {
         policy.capability: policy
         for policy in db.scalars(select(UsagePolicy).where(
             UsagePolicy.workspace_id == workspace_id,
+            UsagePolicy.provider_id == provider_id,
         )).all()
     }
     for defaults in DEFAULT_USAGE_POLICIES:
+        if provider_id is None and defaults["capability"].startswith("llm_"):
+            # Keep the environment-configured legacy provider compatible.
+            pass
+        elif provider_id is None and not defaults["capability"].startswith("llm_"):
+            pass
+        elif provider_id is not None and not defaults["capability"].startswith("llm_"):
+            continue
         if defaults["capability"] not in existing:
-            policy = UsagePolicy(workspace_id=workspace_id, **defaults)
+            policy = UsagePolicy(workspace_id=workspace_id, provider_id=provider_id, **defaults)
             db.add(policy)
             existing[policy.capability] = policy
     db.flush()
@@ -213,6 +223,8 @@ def settle_usage(
     *,
     metadata: dict | None = None,
     event_key: str | None = None,
+    provider_id: UUID | None = None,
+    provider_key: str | None = None,
 ) -> UsageEvent:
     """Record one measured event and reconcile it against the internal hold."""
     if units < 0:
@@ -223,7 +235,7 @@ def settle_usage(
     ))
     if existing is not None:
         return existing
-    policies = ensure_policies(db, workspace_id)
+    policies = ensure_policies(db, workspace_id, provider_id)
     policy = next((item for item in policies if item.capability == capability), None)
     if policy is None or not policy.enabled:
         raise CreditError()
@@ -238,12 +250,15 @@ def settle_usage(
         )
     event = UsageEvent(
         workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
+        provider_id=provider_id, provider_key=provider_key,
         capability=capability, units=units, credits=credits,
         policy_version=policy.version,
         policy_snapshot={
             "capability": policy.capability, "unit": policy.unit,
             "unit_size": policy.unit_size, "credits_per_unit": policy.credits_per_unit,
             "enabled": policy.enabled,
+            "provider_id": str(provider_id) if provider_id else None,
+            "provider_key": provider_key,
         },
         idempotency_key=idempotency_key,
         metadata_json=metadata or {},
@@ -260,8 +275,19 @@ def settle_model_usage(
     request_id: UUID,
     usage_events: list[dict],
     hold: int = CREDIT_RESERVATION,
+    provider_id: UUID | None = None,
+    provider_key: str | None = None,
 ) -> int:
     total = 0
+    event_provider_id = provider_id
+    event_provider_key = provider_key
+    if usage_events and event_provider_id is None:
+        raw_provider_id = usage_events[0].get("provider_id")
+        try:
+            event_provider_id = UUID(str(raw_provider_id)) if raw_provider_id else None
+        except (TypeError, ValueError):
+            event_provider_id = None
+        event_provider_key = usage_events[0].get("provider_key")
     for index, usage in enumerate(usage_events):
         for capability, units in (
             ("llm_input_tokens", usage.get("prompt_tokens")),
@@ -273,6 +299,8 @@ def settle_model_usage(
                 db, workspace_id, actor_user_id, request_id, capability, units,
                 event_key=f"model:{index}:{capability}",
                 metadata={"source": usage.get("source", "unknown"), "round": index},
+                provider_id=event_provider_id,
+                provider_key=event_provider_key,
             )
             total += event.credits
     reconcile_hold(db, workspace_id, actor_user_id, request_id, total, hold)

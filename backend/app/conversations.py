@@ -30,6 +30,7 @@ from .credits import (
     release_hold, settle_model_usage,
 )
 from .extensions import ExtensionRuntime, validate_selection
+from .llm_providers import active_provider_config
 
 
 class ExtensionSelection(BaseModel):
@@ -425,7 +426,12 @@ def chat_router(get_db, retrieve):
                 history = [{"role": row.role, "content": row.content} for row in rows]
             yield event_text(event("message", message_read(message)))
             yield event_text(event("phase", {"phase": "planning"}))
-            provider = OpenAICompatibleChatProvider()
+            with factory() as provider_db:
+                provider_config = active_provider_config(provider_db, access.workspace_id)
+            provider = (
+                OpenAICompatibleChatProvider(config=provider_config)
+                if provider_config else OpenAICompatibleChatProvider()
+            )
             retrieval_query = query
             if not hasattr(provider, "complete_with_tools"):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")

@@ -49,33 +49,77 @@ class LLMStatus:
     configured: bool
     provider: str | None
     model: str | None
+    provider_id: str | None = None
+    provider_key: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatProviderConfig:
+    base_url: str
+    api_key: str
+    model: str
+    timeout_seconds: float = 60.0
+    provider_id: str | None = None
+    provider_key: str | None = None
+    provider_name: str | None = None
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.base_url and self.api_key and self.model)
 
 
 class OpenAICompatibleChatProvider:
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, config: ChatProviderConfig | None = None):
         self.settings = settings or get_settings()
+        self.config = config
         self.last_usage: LLMUsage | None = None
+
+    @property
+    def configured(self) -> bool:
+        return self.config.llm_configured if self.config else self.settings.llm_configured
+
+    @property
+    def base_url(self) -> str:
+        return self.config.base_url if self.config else self.settings.llm_base_url or ""
+
+    @property
+    def api_key(self) -> str:
+        return self.config.api_key if self.config else (
+            self.settings.llm_api_key.get_secret_value() if self.settings.llm_api_key else ""
+        )
+
+    @property
+    def model(self) -> str:
+        return self.config.model if self.config else self.settings.llm_model or ""
+
+    @property
+    def timeout_seconds(self) -> float:
+        return self.config.timeout_seconds if self.config else self.settings.llm_timeout_seconds
 
     @property
     def status(self) -> LLMStatus:
         return LLMStatus(
-            configured=self.settings.llm_configured,
-            provider="openai-compatible" if self.settings.llm_configured else None,
-            model=self.settings.llm_model or None,
+            configured=self.configured,
+            provider=(
+                self.config.provider_name if self.config else "openai-compatible"
+            ) if self.configured else None,
+            model=self.model or None,
+            provider_id=self.config.provider_id if self.config else None,
+            provider_key=self.config.provider_key if self.config else None,
         )
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
-        if not self.settings.llm_configured:
+        if not self.configured:
             raise LLMConfigurationError(
                 "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
             )
-        url = self._chat_url(self.settings.llm_base_url or "")
+        url = self._chat_url(self.base_url)
         headers = {
-            "Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": self.settings.llm_model,
+            "model": self.model,
             "messages": messages,
             "temperature": temperature,
         }
@@ -84,7 +128,7 @@ class OpenAICompatibleChatProvider:
                 url,
                 headers=headers,
                 json=payload,
-                timeout=self.settings.llm_timeout_seconds,
+                timeout=self.timeout_seconds,
             )
         except httpx.HTTPError as exc:
             raise LLMProviderError(f"LLM request failed: {exc}") from exc
@@ -120,27 +164,27 @@ class OpenAICompatibleChatProvider:
         runtime does not depend on a vendor SDK or on provider-specific
         message classes.
         """
-        if not self.settings.llm_configured:
+        if not self.configured:
             raise LLMConfigurationError(
                 "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
             )
         payload = {
-            "model": self.settings.llm_model,
+            "model": self.model,
             "messages": messages,
             "temperature": 0.0,
         }
         if tools:
             payload.update(tools=tools, tool_choice=tool_choice)
         headers = {
-            "Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}",
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         try:
             response = httpx.post(
-                self._chat_url(self.settings.llm_base_url or ""),
+                self._chat_url(self.base_url),
                 headers=headers,
                 json=payload,
-                timeout=self.settings.llm_timeout_seconds,
+                timeout=self.timeout_seconds,
             )
         except httpx.HTTPError as exc:
             raise LLMProviderError(f"LLM request failed: {exc}") from exc
@@ -183,19 +227,19 @@ class OpenAICompatibleChatProvider:
         )
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        if not self.settings.llm_configured:
+        if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")
         payload = {
-            "model": self.settings.llm_model,
+            "model": self.model,
             "messages": messages,
             "temperature": 0.0,
             "stream": True,
         }
-        headers = {"Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}"}
+        headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
-            async with httpx.AsyncClient(timeout=self.settings.llm_timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 async with aconnect_sse(
-                    client, "POST", self._chat_url(self.settings.llm_base_url or ""),
+                    client, "POST", self._chat_url(self.base_url),
                     headers=headers, json=payload,
                 ) as source:
                     if source.response.status_code >= 400:
