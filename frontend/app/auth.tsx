@@ -26,6 +26,7 @@ import {
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
 import { BillingPanel, creditKind, type CreditUsage } from "./billing-panel";
+import { UsagePolicyPanel } from "./usage-policy-panel";
 import * as Tabs from "../components/ui/tabs";
 import "./auth.css";
 
@@ -466,7 +467,7 @@ function AccountModal({
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   )?.role;
-  const [tab, setTab] = useState<"account" | "billing" | "members" | "audit">(() =>
+  const [tab, setTab] = useState<"account" | "billing" | "policies" | "members" | "audit">(() =>
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("billing") ? "billing" : "account",
   );
   const [members, setMembers] = useState<Member[]>([]);
@@ -562,12 +563,15 @@ function AccountModal({
         className="account-settings"
         value={tab}
         onValueChange={(value) =>
-          setTab(value as "account" | "billing" | "members" | "audit")
+          setTab(value as "account" | "billing" | "policies" | "members" | "audit")
         }
       >
         <Tabs.List className="account-tabs" aria-label="账号设置">
           <Tabs.Trigger value="account" disabled={busy}>我的账号</Tabs.Trigger>
           <Tabs.Trigger value="billing" disabled={busy}>积分与充值</Tabs.Trigger>
+          {role === "admin" && (
+            <Tabs.Trigger value="policies" disabled={busy}>计费规则</Tabs.Trigger>
+          )}
           {role === "admin" && (
             <Tabs.Trigger value="members" disabled={busy}>工作区成员</Tabs.Trigger>
           )}
@@ -745,6 +749,8 @@ function AccountModal({
             workspaceName={session.workspaces.find((item) => item.id === session.workspace_id)?.name ?? ""}
             onBusyChange={setBusy}
           />
+        ) : tab === "policies" ? (
+          <UsagePolicyPanel onBusyChange={setBusy} />
         ) : tab === "members" ? (
           <>
             <form

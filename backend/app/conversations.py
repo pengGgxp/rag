@@ -25,7 +25,10 @@ from .models import (
 )
 from .feedback import feedback_read
 from .audit_log import record_audit
-from .credits import CREDIT_RESERVATION, CreditError, release, reserve
+from .credits import (
+    CreditError, authorization_hold, authorization_hold_amount,
+    release_hold, settle_model_usage,
+)
 from .extensions import ExtensionRuntime, validate_selection
 
 
@@ -294,12 +297,13 @@ def chat_router(get_db, retrieve):
                     or retry.role != "assistant" or retry.status not in ("failed", "cancelled", "interrupted")):
                 raise HTTPException(409, "只能重试最后一条未完成的回答")
         try:
-            reserve(
+            hold_amount = authorization_hold_amount()
+            authorization_hold(
                 db,
                 access.workspace_id,
                 access.user_id,
                 payload.request_id,
-                CREDIT_RESERVATION,
+                hold_amount,
             )
         except CreditError:
             db.rollback()
@@ -343,12 +347,12 @@ def chat_router(get_db, retrieve):
         message_id = message.id
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         return StreamingResponse(
-            generate(factory, conversation.id, message_id, payload.request_id, access),
+            generate(factory, conversation.id, message_id, payload.request_id, access, hold_amount),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def generate(factory, conversation_id, message_id, request_id, access):
+    async def generate(factory, conversation_id, message_id, request_id, access, hold_amount):
         final_status = "cancelled"
         error_detail = None
         content = ""
@@ -358,6 +362,7 @@ def chat_router(get_db, retrieve):
         retrieval_query = None
         refused = False
         refusal_reason = None
+        usage_settled = False
 
         def save(status="streaming"):
             with factory() as db:
@@ -457,6 +462,13 @@ def chat_router(get_db, retrieve):
             if agent_run is None:
                 raise LLMProviderError("Agent 未完成回答，请重试")
             citations, traces = agent_run.citations, agent_run.traces
+            with factory() as usage_db:
+                settle_model_usage(
+                    usage_db, access.workspace_id, access.user_id, request_id,
+                    agent_run.usage_events, hold_amount,
+                )
+                usage_db.commit()
+            usage_settled = True
             _, active = await run_in_threadpool(save)
             if not active:
                 return
@@ -491,15 +503,15 @@ def chat_router(get_db, retrieve):
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
                 saved, _ = await run_in_threadpool(save, final_status)
-                if final_status != "completed" or refused:
+                if final_status != "completed" or not usage_settled:
                     with factory() as credit_db:
                         try:
-                            release(
+                            release_hold(
                                 credit_db,
                                 access.workspace_id,
                                 access.user_id,
                                 request_id,
-                                CREDIT_RESERVATION,
+                                hold_amount,
                             )
                             credit_db.commit()
                         except Exception:

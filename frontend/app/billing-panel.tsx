@@ -9,6 +9,10 @@ export type CreditUsage = {
   balance: number;
   lifetime_granted: number;
   lifetime_spent: number;
+  usage?: {
+    events: number;
+    units: Record<string, { units: number; credits: number }>;
+  };
   entries: {
     id: string;
     amount: number;
@@ -49,8 +53,15 @@ export function creditKind(kind: string) {
   return ({
     paid_recharge: "充值到账", admin_grant: "历史赠送", initial_grant: "初始赠送",
     chat_reservation: "问答消耗", chat_release: "失败返还",
+    usage_settlement: "能力使用",
   } as Record<string, string>)[kind] ?? "积分变动";
 }
+const usageLabel: Record<string, string> = {
+  llm_input_tokens: "模型输入量",
+  llm_output_tokens: "模型输出量",
+  embedding_tokens: "知识库处理量",
+  ocr_pages: "文档解析页数",
+};
 
 export function BillingPanel({ workspaceName, onBusyChange }: {
   workspaceName: string;
@@ -195,6 +206,20 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
           </div>
         </form>
       ) : catalog && <div className="billing-empty">暂未开放充值</div>}
+      {usage?.usage && Object.keys(usage.usage.units).length > 0 && (
+        <section className="billing-section" aria-label="最近使用量">
+          <h3>最近使用量</h3>
+          <div className="billing-ledger">
+            {Object.entries(usage.usage.units).map(([capability, value]) => (
+              <div key={capability}>
+                <span>{usageLabel[capability] ?? "其他能力"}<small>累计</small></span>
+                <strong>{count(value.units)}</strong>
+                <small>使用量</small>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <section className="billing-section" aria-label="我的充值订单">
         <h3>我的充值订单</h3>
         {!orders?.items.length ? <p className="billing-muted">暂无充值订单</p> : (

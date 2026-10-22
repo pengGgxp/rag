@@ -10,7 +10,7 @@ from uuid import UUID
 
 from langgraph.graph import END, StateGraph
 
-from .llm import LLMProviderError, OpenAICompatibleChatProvider, ToolCall
+from .llm import LLMProviderError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
 from .models import KnowledgeBase
 
 AGENT_SYSTEM_PROMPT = (
@@ -76,6 +76,7 @@ class AgentState(TypedDict, total=False):
     answer: str | None
     all_tool_calls: list[ToolCall]
     tool_results: list[dict[str, Any]]
+    usage_events: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class AgentRun:
     tool_results: list[dict[str, Any]]
     steps: int
     answer: str | None
+    usage_events: list[dict[str, Any]]
 
 
 class AgentCancelled(RuntimeError):
@@ -151,6 +153,25 @@ def stream_retrieval_agent(
         )
         check_active()
         calls = response.tool_calls
+        usage_events = list(state.get("usage_events", []))
+        if response.usage is not None:
+            prompt_tokens = response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens
+            source = response.usage.source
+        else:
+            prompt_tokens = estimate_tokens(state["messages"])
+            completion_tokens = estimate_tokens([{
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": [call.arguments for call in calls],
+            }])
+            source = "estimate"
+        usage_events.append({
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": (prompt_tokens or 0) + (completion_tokens or 0),
+            "source": source,
+        })
         if not calls and not response.content:
             raise LLMProviderError("Agent 未返回回答或工具调用，请重试")
         assistant_message = {
@@ -170,6 +191,7 @@ def stream_retrieval_agent(
             "steps": state.get("steps", 0) + 1,
             "answer": response.content if not calls else None,
             "all_tool_calls": state.get("all_tool_calls", []) + calls,
+            "usage_events": usage_events,
         }
 
     def execute(state: AgentState) -> AgentState:
@@ -329,6 +351,7 @@ def stream_retrieval_agent(
         tool_results=result.get("tool_results", []),
         steps=result.get("steps", 0),
         answer=result.get("answer"),
+        usage_events=result.get("usage_events", []),
     )
 
 

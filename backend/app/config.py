@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     zhifux_secret: SecretStr | None = None
     zhifux_pay_type: str = ""
     recharge_packages_json: str = "[]"
+    usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
 
     @property
     def oidc_configured(self) -> bool:

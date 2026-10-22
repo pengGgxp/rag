@@ -27,6 +27,21 @@ class ToolCall:
 class ToolResponse:
     content: str | None
     tool_calls: list[ToolCall]
+    usage: "LLMUsage | None" = None
+
+
+@dataclass(frozen=True)
+class LLMUsage:
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    source: str = "provider"
+
+
+def estimate_tokens(messages: list[dict[str, Any]]) -> int:
+    """Conservative provider-neutral fallback when usage is omitted."""
+    text = json.dumps(messages, ensure_ascii=False)
+    return max(1, (len(text) + 3) // 4)
 
 
 @dataclass(frozen=True)
@@ -39,6 +54,7 @@ class LLMStatus:
 class OpenAICompatibleChatProvider:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        self.last_usage: LLMUsage | None = None
 
     @property
     def status(self) -> LLMStatus:
@@ -88,6 +104,7 @@ class OpenAICompatibleChatProvider:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("LLM response did not contain message content")
+        self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
         return content.strip()
 
     def complete_with_tools(
@@ -157,7 +174,13 @@ class OpenAICompatibleChatProvider:
         content = message.get("content")
         if content is not None and not isinstance(content, str):
             raise LLMProviderError("LLM returned invalid tool-call content")
-        return ToolResponse(content=content.strip() if isinstance(content, str) else None, tool_calls=calls)
+        usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
+        self.last_usage = usage
+        return ToolResponse(
+            content=content.strip() if isinstance(content, str) else None,
+            tool_calls=calls,
+            usage=usage,
+        )
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         if not self.settings.llm_configured:
@@ -218,3 +241,15 @@ class OpenAICompatibleChatProvider:
     def _chat_url(base_url: str) -> str:
         normalized = base_url.rstrip("/")
         return normalized if normalized.endswith("/chat/completions") else f"{normalized}/chat/completions"
+
+
+def _parse_usage(raw: Any) -> LLMUsage | None:
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens")
+    completion = raw.get("completion_tokens")
+    total = raw.get("total_tokens")
+    values = [value if isinstance(value, int) and value >= 0 else None for value in (prompt, completion, total)]
+    if all(value is None for value in values):
+        return None
+    return LLMUsage(prompt_tokens=values[0], completion_tokens=values[1], total_tokens=values[2])

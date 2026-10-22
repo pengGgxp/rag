@@ -18,6 +18,9 @@ from .models import (
 )
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
+from .credits import (
+    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold,
+)
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
@@ -38,6 +41,9 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     if page_count > settings.docmind_max_pages:
         raise DocMindError(f"PDF 超过云端解析页数限制（{settings.docmind_max_pages} 页），未提交云端")
     provider = AliyunDocMind(settings)
+    workspace_id = document.knowledge_base.workspace_id
+    ocr_hold = False
+    hold_amount = authorization_hold_amount()
 
     def check_active():
         session.refresh(job)
@@ -46,9 +52,12 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
             raise ParsingCancelled()
 
     check_active()
+    if not metadata.get("task_id") and metadata.get("status") == "submitting":
+        raise DocMindError("上次云端提交结果未知，已阻止重复付费提交，请由管理员核对云端任务")
+    authorization_hold(session, workspace_id, None, job.id, hold_amount)
+    session.commit()
+    ocr_hold = True
     if not metadata.get("task_id"):
-        if metadata.get("status") == "submitting":
-            raise DocMindError("上次云端提交结果未知，已阻止重复付费提交，请由管理员核对云端任务")
         metadata = {
             "provider": PARSER_NAME, "status": "submitting", "page_count": page_count,
             "config": {"llm_enhancement": False, "formula_enhancement": False,
@@ -62,13 +71,32 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
             if not exc.uncertain:
                 # An explicit rejection is safe to retry after configuration is fixed.
                 document.parsing_metadata = None
+                release_hold(session, workspace_id, None, job.id, hold_amount)
                 session.commit()
+            raise
+        except Exception:
+            release_hold(session, workspace_id, None, job.id, hold_amount)
+            session.commit()
             raise
         document.parsing_metadata = {**metadata, "status": "processing", "task_id": task_id}
         session.commit()
         metadata = document.parsing_metadata
-    parsed = provider.collect(metadata["task_id"], page_count, check_active)
+    try:
+        parsed = provider.collect(metadata["task_id"], page_count, check_active)
+    except Exception:
+        if ocr_hold:
+            release_hold(session, workspace_id, None, job.id, authorization_hold_amount())
+            session.commit()
+        raise
     check_active()
+    event = settle_usage(
+        session, workspace_id, None, job.id, "ocr_pages", page_count,
+        event_key="ocr", metadata={"document_id": str(document.id), "provider": PARSER_NAME},
+    )
+    reconcile_hold(
+        session, workspace_id, None, job.id, event.credits, hold_amount,
+    )
+    session.commit()
     document.parsed_text = parsed.text
     document.parser_name = parsed.parser_name
     document.parsing_metadata = {**metadata, "status": "complete", "pages": parsed.pages}
@@ -246,9 +274,27 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
         session.commit()
 
         provider = OpenAICompatibleEmbeddingProvider()
-        vectors = provider.embed_texts([chunk.text for chunk in pending])
+        workspace_id = document.knowledge_base.workspace_id
+        metering_id = UUID(str(job.id if job is not None else document.id))
+        hold_amount = authorization_hold_amount()
+        authorization_hold(session, workspace_id, None, metering_id, hold_amount)
+        session.commit()
+        try:
+            vectors = provider.embed_texts([chunk.text for chunk in pending])
+        except Exception:
+            release_hold(session, workspace_id, None, metering_id, hold_amount)
+            session.commit()
+            raise
         if len(vectors) != len(pending):
             raise ValueError("Embedding provider returned an unexpected number of vectors")
+        event = settle_usage(
+            session, workspace_id, None, metering_id, "embedding_tokens",
+            sum(max(chunk.token_count, 0) for chunk in pending),
+            event_key="embedding", metadata={"document_id": str(document.id)},
+        )
+        reconcile_hold(
+            session, workspace_id, None, metering_id, event.credits, hold_amount,
+        )
         session.refresh(document)
         if job is not None:
             session.refresh(job)

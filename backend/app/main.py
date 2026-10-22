@@ -22,6 +22,7 @@ from .llm import (
     LLMConfigurationError,
     LLMProviderError,
     OpenAICompatibleChatProvider,
+    estimate_tokens,
 )
 from .models import (
     Document,
@@ -56,7 +57,13 @@ from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
 from .audit import router as audit_router
 from .audit_log import record_audit
-from .credits import CREDIT_RESERVATION, build_router as build_usage_router, release, reserve
+from .credits import (
+    authorization_hold,
+    authorization_hold_amount,
+    build_router as build_usage_router,
+    release_hold,
+    settle_model_usage,
+)
 from .extensions import router as extensions_router
 from .payments import build_router as build_payment_router
 
@@ -952,22 +959,40 @@ def answer_knowledge_base(
     ]
     provider = OpenAICompatibleChatProvider()
     reservation_id = uuid4()
-    reserve(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+    authorization_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
     db.commit()
     try:
         answer = provider.complete(messages)
     except LLMConfigurationError as exc:
-        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
         db.commit()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMProviderError as exc:
-        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
         db.commit()
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception:
-        release(db, access.workspace_id, access.user_id, reservation_id, CREDIT_RESERVATION)
+        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
         db.commit()
         raise
+    usage = provider.last_usage
+    if usage is not None:
+        usage_event = {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "source": usage.source,
+        }
+    else:
+        usage_event = {
+            "prompt_tokens": estimate_tokens(messages),
+            "completion_tokens": estimate_tokens([{"role": "assistant", "content": answer}]),
+            "source": "estimate",
+        }
+    settle_model_usage(
+        db, access.workspace_id, access.user_id, reservation_id, [usage_event],
+        authorization_hold_amount(),
+    )
+    db.commit()
 
     db.expire_all()
     access.revalidate(db).library(db, knowledge_base_id)

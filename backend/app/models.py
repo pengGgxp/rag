@@ -55,6 +55,47 @@ class CreditLedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class UsagePolicy(Base):
+    __tablename__ = "usage_policies"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "capability", name="uq_usage_policy_workspace_capability"),
+        CheckConstraint("credits_per_unit >= 0 AND unit_size > 0", name="ck_usage_policy_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    capability: Mapped[str] = mapped_column(String(80))
+    unit: Mapped[str] = mapped_column(String(40))
+    unit_size: Mapped[int] = mapped_column(Integer, default=1)
+    credits_per_unit: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
+
+
+class UsageEvent(Base):
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_usage_event_idempotency"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    capability: Mapped[str] = mapped_column(String(80), index=True)
+    units: Mapped[int] = mapped_column(Integer)
+    credits: Mapped[int] = mapped_column(Integer)
+    policy_version: Mapped[int] = mapped_column(Integer)
+    policy_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class RechargeOrder(Base):
     __tablename__ = "recharge_orders"
     __table_args__ = (
