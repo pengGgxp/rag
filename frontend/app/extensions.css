@@ -64,6 +64,23 @@
 .tool-event { display: flex; align-items: center; gap: 7px; padding: 6px 0; font-size: 11px; color: var(--muted); }
 .tool-event strong { color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
 .tool-event .tool-status { margin-left: auto; flex-shrink: 0; }
+.skill-file-toolbar { display: flex; gap: 6px; align-items: center; }
+.skill-file-toolbar input { flex: 1; }
+.skill-file-workspace { display: grid; grid-template-columns: minmax(140px, 200px) minmax(0, 1fr); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; height: 390px; max-height: 55dvh; min-height: 240px; }
+.skill-file-list { overflow: auto; border-right: 1px solid var(--line); padding: 6px; background: #f8f9fa; }
+.skill-file-list button { display: flex; align-items: flex-start; gap: 7px; width: 100%; text-align: left; padding: 8px 6px; border-radius: 3px; font-size: 11px; }
+.skill-file-list button svg { flex-shrink: 0; margin-top: 2px; }
+.skill-file-list button span { overflow-wrap: anywhere; min-width: 0; }
+.skill-file-list .selected { background: #e9f1f8; color: #235785; }
+.skill-file-content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.skill-file-heading { display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--line); padding: 5px 8px; min-height: 41px; }
+.skill-file-heading strong { font-size: 11px; font-weight: 500; overflow-wrap: anywhere; min-width: 0; flex: 1; }
+.skill-file-heading > div { display: flex; flex-shrink: 0; }
+.extension-form .skill-file-content .skill-editor { border: 0; border-radius: 0; flex: 1; min-height: 0; max-height: none; resize: none; font-size: 12px; }
+.skill-binary-preview { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; color: var(--muted); font-size: 12px; overflow: auto; overflow-wrap: anywhere; }
+.skill-binary-preview strong { max-width: 100%; text-align: center; }
+.skill-bundle-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.skill-bundle-footer > span, .skill-runtime-note { font-size: 11px; color: var(--muted); }
 @media (max-width: 700px) {
   .extensions-header { padding: 20px 16px; }
   .extensions-tabs { padding: 0 16px; }
@@ -76,4 +93,7 @@
   .extension-row-actions { margin-left: 52px; }
   .extension-form-grid { grid-template-columns: 1fr; }
   .extension-form, .extension-delete { padding: 20px 16px; }
+  .skill-file-workspace { grid-template-columns: 1fr; grid-template-rows: 105px minmax(0, 1fr); height: 430px; max-height: 57dvh; }
+  .skill-file-list { border-right: 0; border-bottom: 1px solid var(--line); }
+  .skill-file-list button { padding: 6px; }
 }

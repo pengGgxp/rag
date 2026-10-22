@@ -36,6 +36,21 @@ export async function request<T>(
   return data as T;
 }
 
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(`${API_URL}${path}`, {
+    credentials: "include", headers: sessionHeaders(),
+  });
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event("rag-session-expired"));
+    const data = await response.json().catch(() => ({}));
+    throw new Error(typeof data.detail === "string" ? data.detail : `下载失败 (${response.status})`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function streamRequest(
   path: string,
   body: unknown,

@@ -1,13 +1,15 @@
 """User-owned MCP connections and progressively loaded Agent Skills."""
 
+import base64
+import binascii
 import json
-import re
 from datetime import datetime, timezone
 from typing import Literal
+from urllib.parse import quote
 from uuid import UUID
 
 import frontmatter
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from jsonschema import Draft202012Validator, ValidationError
 from referencing import Registry
@@ -15,19 +17,26 @@ from referencing.exceptions import Unresolvable
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select
 
-from . import mcp_client
+from . import mcp_client, skill_files
 from .auth import Access, get_access
 from .audit_log import record_audit
 from .db import get_db
-from .models import AgentSkill, MCPServer
+from .models import AgentSkill, AgentSkillFile, MCPServer
 
 router = APIRouter(prefix="/agent", tags=["agent-extensions"])
 
 
+class SkillFileInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=512)
+    content_base64: str | None = Field(default=None, max_length=7 * 1024 * 1024)
+
+
 class SkillInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    markdown: str = Field(min_length=1)
+    markdown: str = Field(min_length=1, max_length=skill_files.MAX_FILE_BYTES)
     enabled: bool = True
+    files: list[SkillFileInput] | None = Field(default=None, max_length=skill_files.MAX_FILES - 1)
 
 
 class MCPInput(BaseModel):
@@ -47,13 +56,57 @@ def parse_skill(markdown: str):
     except Exception as exc:
         raise HTTPException(422, "SKILL.md frontmatter 无法解析") from exc
     name, description = post.get("name"), post.get("description")
-    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) or len(name) > 64:
+    if (
+        not isinstance(name, str) or not 1 <= len(name) <= 64 or name != name.lower()
+        or name.startswith("-") or name.endswith("-") or "--" in name
+        or any(not (c.isalnum() or c == "-") for c in name)
+    ):
         raise HTTPException(422, "Skill name 必须是 1–64 位小写字母、数字或单连字符")
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise HTTPException(422, "Skill description 必须是 1–1024 字符的说明")
-    if not post.content.strip():
-        raise HTTPException(422, "Skill 正文不能为空")
+    for field, limit in (("license", None), ("compatibility", 500), ("allowed-tools", None)):
+        if field in post and (not isinstance(post[field], str) or (
+            limit and not 1 <= len(post[field]) <= limit
+        )):
+            raise HTTPException(422, f"Skill {field} 格式无效")
+    if "metadata" in post and (
+        not isinstance(post["metadata"], dict)
+        or any(not isinstance(k, str) or not isinstance(v, str) for k, v in post["metadata"].items())
+    ):
+        raise HTTPException(422, "Skill metadata 必须是字符串键值映射")
     return name, description.strip(), post.content
+
+
+def apply_skill(row, payload):
+    name, description, _ = parse_skill(payload.markdown)
+    existing = {item.path: item for item in row.files}
+    files = {"SKILL.md": payload.markdown.encode("utf-8")}
+    if payload.files is None:
+        files.update({path: item.content for path, item in existing.items()})
+    else:
+        seen = {"skill.md"}
+        for item in payload.files:
+            path = skill_files.safe_path(item.path)
+            if path.casefold() in seen:
+                raise HTTPException(422, "Skill 存在重复文件路径")
+            seen.add(path.casefold())
+            if item.content_base64 is None:
+                if path not in existing:
+                    raise HTTPException(422, "新文件必须提供内容")
+                files[path] = existing[path].content
+            else:
+                try:
+                    files[path] = base64.b64decode(item.content_base64, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise HTTPException(422, "文件内容不是有效的 Base64") from exc
+    skill_files.validate_files(files)
+    # Validate the whole replacement before mutating any persistent state.
+    row.name, row.description, row.markdown, row.enabled = name, description, payload.markdown, payload.enabled
+    row.files = [existing.get(path) or AgentSkillFile(path=path, content=content)
+                 for path, content in files.items() if path != "SKILL.md"]
+    for item in row.files:
+        item.content = files[item.path]
+    row.updated_at = datetime.now(timezone.utc)
 
 
 def owned(db, model, identifier: UUID, access: Access):
@@ -82,6 +135,7 @@ def skill_read(row, *, detail=False):
     }
     if detail:
         data["markdown"] = row.markdown
+        data["files"] = skill_files.manifest(skill_files.bundle_files(row))
     return data
 
 
@@ -110,17 +164,49 @@ def list_skills(db=Depends(get_db), access=Depends(get_access)):
 
 @router.post("/skills", status_code=201)
 def create_skill(payload: SkillInput, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    name, description, _ = parse_skill(payload.markdown)
     row = AgentSkill(
         workspace_id=access.workspace_id, owner_id=access.user_id,
-        name=name, description=description, markdown=payload.markdown, enabled=payload.enabled,
     )
+    apply_skill(row, payload)
     db.add(row)
     db.flush()
     audit(db, access, request, "agent_skill.created", row)
     db.commit()
     db.refresh(row)
     return skill_read(row, detail=True)
+
+
+@router.post("/skills/import", status_code=201)
+async def import_skill(
+    request: Request, files: list[UploadFile] = File(...), paths: list[str] | None = Form(None),
+    db=Depends(get_db), access=Depends(get_access),
+):
+    if not files or len(files) > skill_files.MAX_FILES or paths is not None and len(paths) != len(files):
+        raise HTTPException(422, "Skill 文件数量或路径数量无效")
+    try:
+        if len(files) == 1 and (files[0].filename or "").lower().endswith(".zip") and paths is None:
+            data = await files[0].read(skill_files.MAX_UPLOAD_BYTES + 1)
+            contents, folder = skill_files.unzip(data)
+        else:
+            entries, total = [], 0
+            for index, file in enumerate(files):
+                data = await file.read(skill_files.MAX_FILE_BYTES + 1)
+                total += len(data)
+                if len(data) > skill_files.MAX_FILE_BYTES or total > skill_files.MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, "Skill 文件超出大小限制")
+                entries.append((paths[index] if paths else file.filename or "", data))
+            contents, folder = skill_files.imported_files(entries)
+    finally:
+        for file in files:
+            await file.close()
+    markdown = contents["SKILL.md"].decode("utf-8")
+    name, _, _ = parse_skill(markdown)
+    if folder is not None and folder != name:
+        raise HTTPException(422, "Skill 目录名称必须与 frontmatter 的 name 一致")
+    return create_skill(SkillInput(markdown=markdown, files=[
+        SkillFileInput(path=path, content_base64=base64.b64encode(data).decode())
+        for path, data in contents.items() if path != "SKILL.md"
+    ]), request, db, access)
 
 
 @router.get("/skills/{identifier}")
@@ -131,20 +217,35 @@ def get_skill(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 @router.put("/skills/{identifier}")
 def update_skill(identifier: UUID, payload: SkillInput, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, AgentSkill, identifier, access)
-    row.name, row.description, _ = parse_skill(payload.markdown)
-    row.markdown, row.enabled = payload.markdown, payload.enabled
+    apply_skill(row, payload)
     audit(db, access, request, "agent_skill.updated", row)
     db.commit()
     db.refresh(row)
     return skill_read(row, detail=True)
 
 
+@router.get("/skills/{identifier}/file")
+def get_skill_file(identifier: UUID, path: str, download: bool = False, db=Depends(get_db), access=Depends(get_access)):
+    row = owned(db, AgentSkill, identifier, access)
+    path = skill_files.safe_path(path)
+    content = skill_files.bundle_files(row).get(path)
+    if content is None:
+        raise HTTPException(404, "Skill 文件不存在")
+    if not download:
+        return {**skill_files.manifest({path: content})[0], "content": skill_files.text_content(content)}
+    return Response(
+        content, media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.split('/')[-1], safe='')}",
+                 "X-Content-Type-Options": "nosniff"},
+    )
+
+
 @router.get("/skills/{identifier}/export")
 def export_skill(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, AgentSkill, identifier, access)
     return Response(
-        row.markdown, media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{row.name}-SKILL.md"'},
+        skill_files.export_zip(row.name, skill_files.bundle_files(row)), media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(row.name, safe='')}.zip"},
     )
 
 
@@ -263,6 +364,27 @@ LOAD_SKILL = {
     },
 }
 
+READ_SKILL_FILE = {
+    "type": "function",
+    "function": {
+        "name": "read_skill_file",
+        "description": "Read a selected skill's supporting UTF-8 file by its root-relative path. Read only relevant references, scripts or text assets; binary files return metadata, not decoded content. Does not execute code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_id": {"type": "string", "format": "uuid"},
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "start_character": {"type": "integer", "minimum": 0, "description": "Continuation offset within start_line, from a prior next_character."},
+                "line_count": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "required": ["skill_id", "path"], "additionalProperties": False,
+        },
+    },
+}
+
+SKILL_TOOLS = {"load_skill": LOAD_SKILL, "read_skill_file": READ_SKILL_FILE}
+
 
 class ExtensionRuntime:
     def __init__(self, factory, access, skill_ids, server_ids):
@@ -276,7 +398,7 @@ class ExtensionRuntime:
                 if row.enabled:
                     self.skills.append(skill_read(row))
             if self.skills:
-                self.tools.append(LOAD_SKILL)
+                self.tools.extend(SKILL_TOOLS.values())
             for row in rows(db, MCPServer, checked, [UUID(item) for item in self.server_ids]):
                 if not row.enabled:
                     continue
@@ -294,8 +416,8 @@ class ExtensionRuntime:
                     })
 
     def label(self, name):
-        if name == "load_skill":
-            return "加载 Skill"
+        if name in SKILL_TOOLS:
+            return "加载 Skill" if name == "load_skill" else "读取 Skill 文件"
         binding = self.bindings.get(name)
         return f"{binding[2]} · {binding[1]['name']}" if binding else name
 
@@ -303,15 +425,52 @@ class ExtensionRuntime:
         try:
             with self.factory() as db:
                 checked = self.access.revalidate(db)
-                if name == "load_skill":
+                if name in SKILL_TOOLS:
+                    if check_active:
+                        check_active()
+                    Draft202012Validator(SKILL_TOOLS[name]["function"]["parameters"]).validate(arguments)
                     identifier = str(UUID(str(arguments.get("skill_id"))))
                     if identifier not in self.skill_ids:
                         return {"error": "该 Skill 不在本次对话授权范围内"}
                     row = owned(db, AgentSkill, UUID(identifier), checked)
                     if not row.enabled:
                         return {"error": "Skill 已停用"}
-                    _, _, instructions = parse_skill(row.markdown)
-                    return {"skill_id": identifier, "name": row.name, "instructions": instructions}
+                    files = skill_files.bundle_files(row)
+                    if name == "load_skill":
+                        post = frontmatter.loads(row.markdown)
+                        return {
+                            "skill_id": identifier, "name": row.name,
+                            "instructions": row.markdown,
+                            "metadata": {key: post[key] for key in (
+                                "name", "description", "license", "compatibility", "metadata", "allowed-tools",
+                            ) if key in post},
+                            "files": skill_files.manifest(files),
+                            "capabilities": {"read_text_files": True, "execute_scripts": False,
+                                             "interpret_binary_assets": False},
+                        }
+                    path = skill_files.safe_path(arguments["path"])
+                    if path not in files:
+                        return {"error": "Skill 文件不存在，请使用 load_skill 返回的文件路径"}
+                    data = files[path]
+                    result = {**skill_files.manifest({path: data})[0], "skill_id": identifier}
+                    text = skill_files.text_content(data)
+                    if text is None:
+                        return {**result, "content": None, "message": "这是二进制资源，可从 Skill 管理页下载；当前工具不解析或执行该文件"}
+                    start, count = arguments.get("start_line", 1), arguments.get("line_count", 200)
+                    lines = text.splitlines(keepends=True)
+                    offset = arguments.get("start_character", 0)
+                    if start <= len(lines) and offset > len(lines[start - 1]):
+                        return {**result, "error": "start_character 超出该行长度"}
+                    selected = "".join(lines[start - 1:start - 1 + count])[offset:offset + 32000]
+                    # Return an exact cursor so very long lines can also be read without data loss.
+                    next_line, next_character = start, offset + len(selected)
+                    while next_line <= len(lines) and next_character >= len(lines[next_line - 1]):
+                        next_character -= len(lines[next_line - 1])
+                        next_line += 1
+                    return {**result, "content": selected, "start_line": start,
+                            "start_character": offset, "total_lines": len(lines),
+                            "next_line": next_line if next_line <= len(lines) else None,
+                            "next_character": next_character if next_line <= len(lines) else None}
                 if name not in self.bindings:
                     return {"error": "该工具未授权或不可用"}
                 identifier, snapshot, _ = self.bindings[name]

@@ -51,7 +51,7 @@ docker compose down
 - OpenAI-compatible LLM 适配器（配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 后启用问答生成）
 - LangGraph 受控 ReAct Agent，可按需调用知识库检索工具并继续检索
 - 用户管理的 MCP 连接、逐工具授权和会话级扩展选择
-- SKILL.md 导入、编辑、导出及 Agent 按需加载
+- 多文件 Skill 文件夹/ZIP 导入、文件管理、完整 ZIP 导出及 Agent 渐进加载
 - 文档向量化任务、失败状态、重试和手动重建索引
 - 健康检查、结构化错误状态和基础 CORS
 
@@ -75,7 +75,8 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 
 - 尚未引入 Rerank；Agent 可以自主多步检索。
 - MCP 支持远程 Streamable HTTP 和 SSE 工具，不支持任意 stdio、MCP OAuth、resources/prompts。
-- Skill 支持 SKILL.md 指令，不运行技能包脚本或安装其依赖。
+- Skill 支持 SKILL.md 和 references/scripts/assets 等附属文件，Agent 可按需读取 UTF-8 文本。
+  二进制资源原样保存并可下载；不运行技能包脚本、不安装依赖、不自动解析二进制资源。
 - MCP 授权可能允许外部写入，当前不提供逐次操作审批，也不自动重试外部操作。
 
 ## 相关文档
@@ -84,3 +85,4 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 - [项目执行规则](./AGENTS.md)
 - [技术决策记录](./docs/adr/0001-technology-baseline.md)
 - [Agent 扩展边界与验收](./docs/agent-extensions-acceptance.md)
+- [多文件 Skill 设计与验收](./docs/skill-bundles-acceptance.md)

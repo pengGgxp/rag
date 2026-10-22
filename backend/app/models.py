@@ -3,7 +3,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, DateTime, Enum as SqlEnum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -334,6 +334,19 @@ class AgentSkill(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
     )
+    files: Mapped[list["AgentSkillFile"]] = relationship(
+        cascade="all, delete-orphan",
+    )
+
+
+class AgentSkillFile(Base):
+    __tablename__ = "agent_skill_files"
+    __table_args__ = (UniqueConstraint("skill_id", "path"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("agent_skills.id", ondelete="CASCADE"), index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class MCPServer(Base):
