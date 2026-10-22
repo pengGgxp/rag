@@ -23,4 +23,8 @@ langgraph==0.6.11
 langchain-core==0.3.86
 langsmith==0.3.45
 alibabacloud_docmind-api20220711==1.4.15
+mcp==1.26.0
+sse-starlette==2.2.1
+python-frontmatter==1.1.0
+cryptography==46.0.3
 

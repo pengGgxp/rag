@@ -15,6 +15,7 @@ import {
   Loader2,
   Menu,
   MessageSquare,
+  Puzzle,
   Pencil,
   Plus,
   RefreshCw,
@@ -29,6 +30,7 @@ import { AccountButton } from "./auth";
 import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
 import "./chat.css";
+import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
 
 type Library = {
   id: string;
@@ -62,6 +64,7 @@ type Message = {
   request_id?: string | null;
   citations: Citation[];
   traces: Trace[];
+  tool_events?: { call_id: string; name: string; label: string; kind: string; status: string }[];
   refused: boolean;
   error_detail?: string | null;
   feedback?: Feedback | null;
@@ -73,6 +76,8 @@ type Conversation = {
   active_request_id: string | null;
   updated_at: string;
   messages: Message[];
+  skill_ids: string[];
+  mcp_server_ids: string[];
 };
 type Generation = {
   controller: AbortController;
@@ -143,10 +148,12 @@ export function ChatWorkspace({
   libraries,
   initialLibraryId,
   onKnowledge,
+  onExtensions,
 }: {
   libraries: Library[];
   initialLibraryId: string;
   onKnowledge: () => void;
+  onExtensions: () => void;
 }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -154,6 +161,8 @@ export function ChatWorkspace({
     initialLibraryId ? [initialLibraryId] : [],
   );
   const [question, setQuestion] = useState("");
+  const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection>({ skill_ids: [], mcp_server_ids: [] });
+  const [extensionsBusy, setExtensionsBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -302,6 +311,8 @@ export function ChatWorkspace({
     setConversation(null);
     if (conversation)
       setScope(conversation.knowledge_bases.map((item) => item.id));
+    if (conversation)
+      setDraftExtensions({ skill_ids: conversation.skill_ids ?? [], mcp_server_ids: conversation.mcp_server_ids ?? [] });
     setLoading(false);
     setQuestion("");
     setAsking(false);
@@ -349,8 +360,8 @@ export function ChatWorkspace({
     if (
       sending.current ||
       loading ||
+      extensionsBusy ||
       (!retryId && !question.trim()) ||
-      !(conversation ? conversation.knowledge_bases.length : scope.length) ||
       conversation?.active_request_id
     )
       return;
@@ -368,7 +379,7 @@ export function ChatWorkspace({
         current = await request<Conversation>("/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ knowledge_base_ids: scope }),
+          body: JSON.stringify({ knowledge_base_ids: scope, ...draftExtensions }),
           signal: controller.signal,
         });
         if (epoch.current !== currentEpoch) return;
@@ -436,7 +447,8 @@ export function ChatWorkspace({
                 : "正在分析问题…",
             );
           if (name === "tool_call")
-            setPhase("正在检索知识库…");
+            setPhase(`正在调用${(data as { label?: string }).label ?? "工具"}…`);
+          if (name === "tool_result") setPhase("正在分析工具结果…");
           if (name === "message") received = true;
           setConversation((item) => {
             if (!item || item.id !== current!.id) return item;
@@ -586,6 +598,7 @@ export function ChatWorkspace({
             <MessageSquare size={18} />
             知识问答
           </button>
+          <button onClick={onExtensions}><Puzzle size={18} />Agent 扩展</button>
           <button
             className="icon-button mobile-only"
             title="关闭导航"
@@ -701,7 +714,7 @@ export function ChatWorkspace({
             <summary>
               <BookOpen size={15} />
               <span>
-                {selectedNames.length ? selectedNames.join("、") : "选择知识库"}
+                {selectedNames.length ? selectedNames.join("、") : "知识库（可选）"}
               </span>
               <ChevronDown size={14} />
             </summary>
@@ -737,6 +750,23 @@ export function ChatWorkspace({
               </fieldset>
             </div>
           </details>
+          <AgentExtensionPicker
+            selection={conversation ? { skill_ids: conversation.skill_ids ?? [], mcp_server_ids: conversation.mcp_server_ids ?? [] } : draftExtensions}
+            disabled={running || loading || extensionsBusy}
+            onManage={onExtensions}
+            onChange={async value => {
+              setExtensionsBusy(true);
+              try {
+                if (conversation) {
+                  const currentId = conversation.id;
+                  const updated = await request<Conversation>(`/conversations/${currentId}/extensions`, {
+                    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+                  });
+                  setConversation(current => current?.id === currentId ? updated : current);
+                } else setDraftExtensions(value);
+              } finally { setExtensionsBusy(false); }
+            }}
+          />
         </div>
         <section
           className="chat-messages"
@@ -875,9 +905,16 @@ export function ChatWorkspace({
                               }
                             />
                           )}
-                          {!!message.traces.length && (
+                          {(!!message.traces.length || !!message.tool_events?.length) && (
                             <details className="answer-details">
                               <summary>回答详情</summary>
+                              {message.tool_events?.map(item => (
+                                <div key={item.call_id} className="tool-event">
+                                  {item.kind === "skill" ? <Puzzle size={13} /> : <Search size={13} />}
+                                  <strong>{item.label}</strong>
+                                  <span className="tool-status">{item.status === "completed" ? "已完成" : item.status === "error" ? "失败" : "未完成"}</span>
+                                </div>
+                              ))}
                               {message.traces.map((item) => (
                                 <button
                                   key={item.id}
@@ -921,7 +958,7 @@ export function ChatWorkspace({
             <textarea
               aria-label="向知识库提问"
               placeholder={
-                selectedNames.length ? "向知识库提问…" : "选择知识库后提问…"
+                selectedNames.length ? "向知识库提问…" : "发送消息…"
               }
               rows={2}
               value={question}
@@ -964,7 +1001,7 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    !question.trim() || !selectedNames.length || loading
+                    !question.trim() || loading || extensionsBusy
                   }
                   type="submit"
                 >

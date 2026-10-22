@@ -1,6 +1,6 @@
 # RAG Knowledge Workspace
 
-一个以知识库为中心的 RAG 平台。当前仓库已经包含第一条可运行的垂直闭环：
+一个以知识库为中心、支持用户管理 MCP 和 Skill 的 Agent 平台：
 
 ```text
 Docker Compose → 创建知识库 → 上传文档 → 异步解析 → 1024 维向量化 → 混合检索
@@ -50,21 +50,37 @@ docker compose down
 - OpenAI-compatible 云端 Embedding 适配器，当前默认维度为 1024
 - OpenAI-compatible LLM 适配器（配置 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 后启用问答生成）
 - LangGraph 受控 ReAct Agent，可按需调用知识库检索工具并继续检索
+- 用户管理的 MCP 连接、逐工具授权和会话级扩展选择
+- SKILL.md 导入、编辑、导出及 Agent 按需加载
 - 文档向量化任务、失败状态、重试和手动重建索引
 - 健康检查、结构化错误状态和基础 CORS
 
+## Agent 扩展配置
+
+认证 MCP 的请求头使用独立密钥加密保存。首次使用前生成并持久化到本地 `.env`：
+
+```powershell
+docker compose run --rm --no-deps -v "${PWD}:/workspace" api python /workspace/tools/configure_mcp.py
+docker compose up -d api
+```
+
+安全备份 `.env` 中的 `MCP_CREDENTIAL_KEY`；不要提交或随意替换，丢失后已有 MCP 凭据无法恢复。
+未配置认证头的连接不依赖加密密钥。
+
+MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网服务时，可在
+`MCP_ALLOWED_PRIVATE_HOSTS` 中设置逗号分隔的精确主机名，并重新创建 API 容器。
+不要对普通用户开放该配置。连接和工具授权只属于当前工作区中的本人。
+
 ## 当前边界
 
-这个垂直切片还没有实现：
-
-- 用户注册、OAuth 和权限模型
-- Rerank、引用展示和可验证的回答证据
-- LLM 问答、SSE 和反馈
-
-这些能力会沿着 `RAG_PLATFORM_FEATURE_BASELINE.md` 继续接入。当前实现优先保证导入和处理链路真实可运行，未完成的 RAG 能力不会被伪装成已完成。
+- 尚未引入 Rerank；Agent 可以自主多步检索。
+- MCP 支持远程 Streamable HTTP 和 SSE 工具，不支持任意 stdio、MCP OAuth、resources/prompts。
+- Skill 支持 SKILL.md 指令，不运行技能包脚本或安装其依赖。
+- MCP 授权可能允许外部写入，当前不提供逐次操作审批，也不自动重试外部操作。
 
 ## 相关文档
 
 - [产品功能基线](./RAG_PLATFORM_FEATURE_BASELINE.md)
 - [项目执行规则](./AGENTS.md)
 - [技术决策记录](./docs/adr/0001-technology-baseline.md)
+- [Agent 扩展边界与验收](./docs/agent-extensions-acceptance.md)

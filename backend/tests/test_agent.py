@@ -261,7 +261,8 @@ def test_unknown_tool_returns_error_to_model(runtime):
 
     run = run_retrieval_agent(**runtime.arguments, provider=Provider())
     assert runtime.calls == []
-    assert run.tool_results == [{"error": "该工具不可用"}]
+    assert run.tool_results[0]["error"] == "该工具不可用"
+    assert run.tool_results[0]["status"] == "error"
 
 
 def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):

@@ -110,10 +110,10 @@ class OpenAICompatibleChatProvider:
         payload = {
             "model": self.settings.llm_model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": tool_choice,
             "temperature": 0.0,
         }
+        if tools:
+            payload.update(tools=tools, tool_choice=tool_choice)
         headers = {
             "Authorization": f"Bearer {self.settings.llm_api_key.get_secret_value()}",
             "Content-Type": "application/json",

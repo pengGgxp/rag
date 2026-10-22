@@ -238,6 +238,8 @@ class Conversation(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True, default=LEGACY_WORKSPACE_ID)
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
+    skill_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    mcp_server_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
     active_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -268,6 +270,7 @@ class ChatMessage(Base):
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
     citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
     traces: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    tool_events: Mapped[list[dict]] = mapped_column(JSON, default=list)
     retrieval_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     refused: Mapped[bool] = mapped_column(default=False)
     refusal_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -315,4 +318,41 @@ class LibraryGrant(Base):
     __tablename__ = "library_grants"
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
+class AgentSkill(Base):
+    __tablename__ = "agent_skills"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text)
+    markdown: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
+
+
+class MCPServer(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    url: Mapped[str] = mapped_column(Text)
+    transport: Mapped[str] = mapped_column(String(30), default="streamable_http")
+    encrypted_headers: Mapped[str | None] = mapped_column(Text, nullable=True)
+    header_names: Mapped[list[str]] = mapped_column(JSON, default=list)
+    tools: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    allowed_tools: Mapped[list[str]] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+    )
 

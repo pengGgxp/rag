@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
     llm_timeout_seconds: float = 60.0
+    mcp_credential_key: SecretStr | None = None
+    mcp_allowed_private_hosts: str = ""
+    mcp_timeout_seconds: float = Field(default=60, gt=0)
     pdf_parser: Literal["local", "aliyun"] = "local"
     aliyun_access_key_id: SecretStr | None = None
     aliyun_access_key_secret: SecretStr | None = None

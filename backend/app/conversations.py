@@ -26,11 +26,18 @@ from .models import (
 from .feedback import feedback_read
 from .audit_log import record_audit
 from .credits import CREDIT_RESERVATION, CreditError, release, reserve
+from .extensions import ExtensionRuntime, validate_selection
 
 
-class ConversationCreate(BaseModel):
+class ExtensionSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    skill_ids: list[UUID] = Field(default_factory=list)
+    mcp_server_ids: list[UUID] = Field(default_factory=list)
+
+
+class ConversationCreate(ExtensionSelection):
     model_config = ConfigDict(str_strip_whitespace=True)
-    knowledge_base_ids: list[UUID] = Field(min_length=1)
+    knowledge_base_ids: list[UUID] = Field(default_factory=list)
     title: str = Field(default="新对话", min_length=1, max_length=200)
 
 
@@ -62,6 +69,7 @@ def message_read(message: ChatMessage) -> dict:
         "content": message.content, "status": message.status,
         "request_id": str(message.request_id) if message.request_id else None,
         "citations": message.citations, "traces": message.traces,
+        "tool_events": message.tool_events,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
         "retrieval_query": message.retrieval_query, "error_detail": message.error_detail,
         "feedback": feedback_read(message.feedback),
@@ -77,6 +85,7 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
             for item in conversation.libraries
         ],
         "active_request_id": str(conversation.active_request_id) if conversation.active_request_id else None,
+        "skill_ids": conversation.skill_ids, "mcp_server_ids": conversation.mcp_server_ids,
         "created_at": conversation.created_at.isoformat(),
         "updated_at": conversation.updated_at.isoformat(),
     }
@@ -118,11 +127,15 @@ def chat_router(get_db, retrieve):
     def create(payload: ConversationCreate, request: Request,
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
         ids = list(dict.fromkeys(payload.knowledge_base_ids))
+        validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
         for id in ids:
             library = access.library(db, id)
             if library.status == KnowledgeBaseStatus.ARCHIVED:
                 raise HTTPException(409, "归档知识库不能用于新对话")
-        conversation = Conversation(title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id, libraries=[
+        conversation = Conversation(
+            title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id,
+            skill_ids=list(dict.fromkeys(map(str, payload.skill_ids))),
+            mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))), libraries=[
             ConversationLibrary(knowledge_base_id=id) for id in ids
         ])
         db.add(conversation)
@@ -149,6 +162,23 @@ def chat_router(get_db, retrieve):
     @router.get("/{conversation_id}")
     def detail(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         return conversation_read(live_conversation(db, conversation_id, access), True)
+
+    @router.put("/{conversation_id}/extensions")
+    def extensions(conversation_id: UUID, payload: ExtensionSelection,
+                   db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        conversation = db.scalar(select(Conversation).where(
+            Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
+        ).with_for_update())
+        if conversation is None:
+            raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
+        if conversation.active_request_id:
+            raise HTTPException(409, "请先停止或等待当前回答完成")
+        validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
+        conversation.skill_ids = list(dict.fromkeys(map(str, payload.skill_ids)))
+        conversation.mcp_server_ids = list(dict.fromkeys(map(str, payload.mcp_server_ids)))
+        db.commit()
+        return conversation_read(conversation, True)
 
     @router.patch("/{conversation_id}")
     def rename(conversation_id: UUID, payload: ConversationRename, request: Request,
@@ -295,6 +325,7 @@ def chat_router(get_db, retrieve):
             message.refusal_reason = None
             message.citations = []
             message.traces = []
+            message.tool_events = []
         else:
             db.add(ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
@@ -323,6 +354,7 @@ def chat_router(get_db, retrieve):
         content = ""
         citations = []
         traces = []
+        tool_events = []
         retrieval_query = None
         refused = False
         refusal_reason = None
@@ -343,7 +375,7 @@ def chat_router(get_db, retrieve):
                         conversation.active_request_id = None
                     db.commit()
                     result = message_read(message)
-                    result.update(content="", citations=[], traces=[])
+                    result.update(content="", citations=[], traces=[], tool_events=[])
                     return result, False
                 if conversation.active_request_id != request_id or conversation.deleted_at is not None:
                     return message_read(db.get(ChatMessage, message_id)), False
@@ -352,6 +384,7 @@ def chat_router(get_db, retrieve):
                     ChatMessage.status == "streaming",
                 ).values(
                     content=content, status=status, citations=citations, traces=traces,
+                    tool_events=tool_events,
                     retrieval_query=retrieval_query, refused=refused,
                     refusal_reason=refusal_reason, error_detail=error_detail,
                 ))
@@ -373,6 +406,7 @@ def chat_router(get_db, retrieve):
             with factory() as db:
                 conversation = live_conversation(db, conversation_id, access.revalidate(db))
                 scope_ids = [item.knowledge_base_id for item in conversation.libraries]
+                skill_ids, server_ids = conversation.skill_ids, conversation.mcp_server_ids
                 message = db.get(ChatMessage, message_id)
                 query = db.scalar(select(ChatMessage.content).where(
                     ChatMessage.conversation_id == conversation_id,
@@ -391,10 +425,14 @@ def chat_router(get_db, retrieve):
             if not hasattr(provider, "complete_with_tools"):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")
             agent_run = None
+            extension_runtime = await run_in_threadpool(
+                ExtensionRuntime, factory, access, skill_ids, server_ids,
+            )
             execution = stream_retrieval_agent(
                 query=query, knowledge_base_ids=scope_ids, history=history,
                 factory=factory, access=access, retrieve=retrieve, provider=provider,
                 is_active=still_authorized,
+                extensions=extension_runtime,
             )
             async for name, data in iterate_in_threadpool(execution):
                 if not await run_in_threadpool(still_authorized):
@@ -402,6 +440,19 @@ def chat_router(get_db, retrieve):
                 if name == "complete":
                     agent_run = data
                 else:
+                    if name in ("tool_call", "tool_result"):
+                        summary = {
+                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count")
+                            if key in data
+                        }
+                        summary.setdefault("status", "running")
+                        index = next((i for i, item in enumerate(tool_events)
+                                      if item.get("call_id") == summary.get("call_id")), None)
+                        if index is None:
+                            tool_events.append(summary)
+                        else:
+                            tool_events[index] = {**tool_events[index], **summary}
+                        await run_in_threadpool(save)
                     yield event_text(event(name, data))
             if agent_run is None:
                 raise LLMProviderError("Agent 未完成回答，请重试")

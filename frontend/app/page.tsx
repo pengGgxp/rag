@@ -1,6 +1,7 @@
 "use client";
 
 import { ChatWorkspace } from "./chat-workspace";
+import { AgentExtensions } from "./extensions";
 import { Modal } from "./modal";
 import { request } from "./api";
 import { AccountButton, LibraryAccess, useAuth } from "./auth";
@@ -22,6 +23,7 @@ import {
   Loader2,
   Menu,
   MessageSquare,
+  Puzzle,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -105,7 +107,7 @@ export default function Home() {
     max_pdf_pages: number | null;
   } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [screen, setScreen] = useState<"catalog" | "knowledge" | "chat">(
+  const [screen, setScreen] = useState<"catalog" | "knowledge" | "chat" | "extensions">(
     "catalog",
   );
   const [chatEntry, setChatEntry] = useState(0);
@@ -188,6 +190,8 @@ export default function Home() {
       new URLSearchParams(window.location.search).has("chat")
     )
       setScreen("chat");
+    if (new URLSearchParams(window.location.search).has("extensions"))
+      setScreen("extensions");
     loadLibraries().catch(notifyError);
     void refreshHealth();
     request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
@@ -504,6 +508,16 @@ export default function Home() {
       .toLowerCase()
       .includes(librarySearch.toLowerCase()),
   );
+  function showExtensions() {
+    window.history.replaceState(null, "", "/?extensions=1");
+    setScreen("extensions");
+    setSidebarOpen(false);
+  }
+  if (screen === "extensions")
+    return <AgentExtensions
+      onKnowledge={() => { window.history.replaceState(null, "", "/"); setScreen("catalog"); }}
+      onChat={() => { window.history.replaceState(null, "", "/?chat=1"); setChatEntry(value => value + 1); setScreen("chat"); }}
+    />;
 
   if (screen === "chat")
     return (
@@ -512,6 +526,7 @@ export default function Home() {
         libraries={libraries}
         initialLibraryId={selectedId}
         onKnowledge={() => setScreen("catalog")}
+        onExtensions={showExtensions}
       />
     );
 
@@ -565,6 +580,7 @@ export default function Home() {
             <MessageSquare size={18} />
             知识问答
           </button>
+          <button onClick={showExtensions}><Puzzle size={18} />Agent 扩展</button>
           <button
             className="icon-button mobile-only"
             aria-label="关闭导航"

@@ -272,7 +272,7 @@ def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, mon
 
 def test_rename_and_validation(client):
     http, db, _ = client
-    assert http.post("/conversations", json={"knowledge_base_ids": []}).status_code == 422
+    assert http.post("/conversations", json={"knowledge_base_ids": []}).status_code == 201
     assert http.post("/conversations", json={"knowledge_base_ids": [str(uuid4())]}).status_code == 404
     conversation = create(http, [add_library(db)])
     id = conversation["id"]
