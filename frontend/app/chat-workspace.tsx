@@ -29,6 +29,7 @@ import { Modal } from "./modal";
 import { AccountButton } from "./auth";
 import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
+import { Motion } from "../components/ui/motion";
 import "./chat.css";
 import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
 
@@ -780,24 +781,37 @@ export function ChatWorkspace({
           }}
         >
           {loading ? (
-            <div className="chat-loading" role="status">
+            <Motion.div
+              className="chat-loading"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
               <Loader2 size={21} className="spin" />
               正在加载对话…
-            </div>
+            </Motion.div>
           ) : !conversation?.messages.length ? (
-            <div className="answer-empty">
+            <Motion.div
+              className="answer-empty"
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ duration: 0.34 }}
+            >
               <span className="answer-emblem">
                 <Layers3 size={32} strokeWidth={1.4} />
               </span>
               <h2>今天想了解什么？</h2>
-            </div>
+            </Motion.div>
           ) : (
             <div className="chat-transcript">
               {conversation.messages.map((message, index) => (
-                <article
+                <Motion.article
                   className={`chat-message ${message.role}`}
                   key={message.id}
                   aria-label={message.role === "user" ? "你的问题" : "知库回答"}
+                  initial={{ opacity: 0, y: message.role === "user" ? 8 : 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
                 >
                   <span className="message-label">
                     {message.role === "user" ? (
@@ -821,10 +835,15 @@ export function ChatWorkspace({
                         onCitation={setPreview}
                       />
                       {message.status === "streaming" && (
-                        <div className="thinking" role="status">
+                        <Motion.div
+                          className="thinking"
+                          role="status"
+                          initial={{ opacity: 0, y: 4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                        >
                           <Loader2 size={15} className="spin" />
                           {phase || "正在生成回答…"}
-                        </div>
+                        </Motion.div>
                       )}
                       {["failed", "cancelled", "interrupted"].includes(
                         message.status,
@@ -851,11 +870,18 @@ export function ChatWorkspace({
                           </div>
                           <div className="source-list">
                             {message.citations.map((citation, number) => (
-                              <button
+                              <Motion.button
                                 className="source-chip"
                                 key={citation.chunk_id}
                                 title={`${citation.knowledge_base_name} · ${citation.filename}`}
                                 onClick={() => setPreview(citation)}
+                                initial={{ opacity: 0, x: -6 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{
+                                  duration: 0.22,
+                                  delay: Math.min(number, 4) * 0.035,
+                                }}
+                                whileHover={{ x: 3 }}
                               >
                                 <span>{number + 1}</span>
                                 <FileText size={14} />
@@ -867,7 +893,7 @@ export function ChatWorkspace({
                                   {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />
-                              </button>
+                              </Motion.button>
                             ))}
                           </div>
                         </div>
@@ -908,12 +934,18 @@ export function ChatWorkspace({
                           {(!!message.traces.length || !!message.tool_events?.length) && (
                             <details className="answer-details">
                               <summary>回答详情</summary>
-                              {message.tool_events?.map(item => (
-                                <div key={item.call_id} className="tool-event">
+                              {message.tool_events?.map((item, toolIndex) => (
+                                <Motion.div
+                                  key={item.call_id}
+                                  className="tool-event"
+                                  initial={{ opacity: 0, x: -5 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: Math.min(toolIndex, 4) * 0.04 }}
+                                >
                                   {item.kind === "skill" ? <Puzzle size={13} /> : <Search size={13} />}
                                   <strong>{item.label}</strong>
                                   <span className="tool-status">{item.status === "completed" ? "已完成" : item.status === "error" ? "失败" : "未完成"}</span>
-                                </div>
+                                </Motion.div>
                               ))}
                               {message.traces.map((item) => (
                                 <button
@@ -931,7 +963,7 @@ export function ChatWorkspace({
                       )}
                     </>
                   )}
-                </article>
+                </Motion.article>
               ))}
             </div>
           )}
@@ -940,10 +972,15 @@ export function ChatWorkspace({
               (item) => item.status === "streaming",
             ) && (
               <div className="chat-transcript">
-                <div className="thinking" role="status">
+                <Motion.div
+                  className="thinking"
+                  role="status"
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                >
                   <Loader2 size={16} className="spin" />
                   {phase}
-                </div>
+                </Motion.div>
               </div>
             )}
         </section>

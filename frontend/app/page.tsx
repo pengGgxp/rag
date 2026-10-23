@@ -7,6 +7,8 @@ import { request } from "./api";
 import { AccountButton, LibraryAccess, useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
 import { useUiStore } from "./ui-store";
+import { AnimatePresence } from "motion/react";
+import { Motion } from "../components/ui/motion";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
@@ -751,7 +753,13 @@ export default function Home() {
           )}
         </header>
         {screen === "catalog" ? (
-          <section className="catalog" aria-label="知识库列表">
+          <Motion.section
+            className="catalog"
+            aria-label="知识库列表"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          >
             <div className="catalog-heading">
               <h1>知识库</h1>
               <button
@@ -777,12 +785,22 @@ export default function Home() {
                 />
               </label>
             </div>
-            <div className="library-grid">
-              {filteredLibraries.map((library) => (
-                <button
+            <Motion.div layout className="library-grid">
+              {filteredLibraries.map((library, index) => (
+                <Motion.button
                   className="library-card"
                   key={library.id}
                   onClick={() => openLibrary(library.id)}
+                  layout
+                  initial={{ opacity: 0, y: 16, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{
+                    duration: 0.32,
+                    delay: Math.min(index, 5) * 0.045,
+                    ease: [0.22, 1, 0.36, 1],
+                  }}
+                  whileHover={{ y: -4, scale: 1.01 }}
+                  whileTap={{ scale: 0.99 }}
                 >
                   <span className="catalog-library-icon">
                     <BookOpen size={23} strokeWidth={1.7} />
@@ -808,11 +826,15 @@ export default function Home() {
                     </span>
                     <ChevronRight size={16} />
                   </span>
-                </button>
+                </Motion.button>
               ))}
-            </div>
+            </Motion.div>
             {!filteredLibraries.length && (
-              <div className="empty-state">
+              <Motion.div
+                className="empty-state"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+              >
                 <BookOpen size={30} />
                 <h2>
                   {libraryLoading
@@ -821,12 +843,17 @@ export default function Home() {
                       ? "没有匹配的知识库"
                       : "暂无知识库"}
                 </h2>
-              </div>
+              </Motion.div>
             )}
-          </section>
+          </Motion.section>
         ) : selected ? (
           <>
-            <div className="page-heading">
+            <Motion.div
+              className="page-heading"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
+            >
               <div className="library-symbol">
                 <BookOpen size={25} strokeWidth={1.6} />
               </div>
@@ -848,7 +875,7 @@ export default function Home() {
                   {selected.description || `${selected.document_count} 份文档`}
                 </p>
               </div>
-            </div>
+            </Motion.div>
             {screen === "knowledge" && view === "settings" ? (
               <section className="configuration" aria-label="知识库配置">
                 <h2>基本信息</h2>
@@ -956,10 +983,13 @@ export default function Home() {
                 onPreview={setPreview}
               />
             ) : (
-              <section
+              <Motion.section
                 className="documents-view"
                 id="documents-view"
                 aria-label="文档"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
               >
                 <div className="document-toolbar">
                   <div className="document-filters">
@@ -1214,7 +1244,7 @@ export default function Home() {
                       : `共 ${visibleDocuments.length} 份${trash ? "已删除" : ""}文档`}
                   </span>
                 </footer>
-              </section>
+              </Motion.section>
             )}
           </>
         ) : (
@@ -1277,22 +1307,28 @@ export default function Home() {
           </div>
         </Modal>
       )}
-      {notice && (
-        <div
-          className={`toast ${notice.error ? "error" : ""}`}
-          role={notice.error ? "alert" : "status"}
-        >
-          {notice.error ? <CircleAlert size={17} /> : <Check size={17} />}
-          <span>{notice.text}</span>
-          <button
-            className="icon-button"
-            aria-label="关闭通知"
-            onClick={() => setNotice(null)}
+      <AnimatePresence initial={false}>
+        {notice && (
+          <Motion.div
+            className={`toast ${notice.error ? "error" : ""}`}
+            role={notice.error ? "alert" : "status"}
+            initial={{ opacity: 0, x: "-50%", y: 18, scale: 0.96 }}
+            animate={{ opacity: 1, x: "-50%", y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: "-50%", y: 10, scale: 0.98 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
           >
-            <X size={15} />
-          </button>
-        </div>
-      )}
+            {notice.error ? <CircleAlert size={17} /> : <Check size={17} />}
+            <span>{notice.text}</span>
+            <button
+              className="icon-button"
+              aria-label="关闭通知"
+              onClick={() => setNotice(null)}
+            >
+              <X size={15} />
+            </button>
+          </Motion.div>
+        )}
+      </AnimatePresence>
       {modal === "create" && (
         <Modal title="新建知识库" onClose={() => setModal(null)} busy={busy}>
           <form className="modal-form" onSubmit={createLibrary}>

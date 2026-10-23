@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./styles.css";
 import { AuthBoundary } from "./auth";
 import { TooltipProvider } from "../components/ui/tooltip";
+import { MotionProvider } from "../components/ui/motion-provider";
 
 export const metadata: Metadata = {
   title: "知库 · 知识工作空间",
@@ -15,9 +16,11 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body>
-        <TooltipProvider>
-          <AuthBoundary>{children}</AuthBoundary>
-        </TooltipProvider>
+        <MotionProvider>
+          <TooltipProvider>
+            <AuthBoundary>{children}</AuthBoundary>
+          </TooltipProvider>
+        </MotionProvider>
       </body>
     </html>
   );

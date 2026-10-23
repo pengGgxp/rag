@@ -264,6 +264,7 @@
 }
 .chat-message {
   padding: 24px 0 28px;
+  will-change: opacity, transform;
 }
 .chat-message.user {
   padding-bottom: 10px;
@@ -285,9 +286,18 @@
 .chat-message .thinking {
   padding: 14px 0 0;
   color: #8090a7;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding-right: 11px;
 }
 .chat-message .sources {
   margin-top: 20px;
+}
+.chat-message.assistant .sources {
+  border-left: 2px solid #d9e8df;
+  padding-left: 14px;
 }
 .chat-message-error {
   display: flex;
