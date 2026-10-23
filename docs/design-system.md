@@ -11,7 +11,7 @@
 界面应同时具备两种气质：
 
 1. **Calm Knowledge Workspace**：文档、知识库和配置界面稳定、清晰、耐用。
-2. **Developer Intelligence**：检索详情、Agent 工具调用和系统诊断保留技术产品的密度与可观察性。
+2. **Developer Intelligence**：检索详情和 Agent 工具调用保留技术产品的密度与可观察性；系统级诊断不作为普通用户导航入口。
 
 表达型动效只用于 Agent 的关键状态和重要反馈，不让整个工作台变成动画展示页。
 

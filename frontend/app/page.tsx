@@ -31,7 +31,6 @@ import {
   RotateCcw,
   Search,
   Settings2,
-  Server,
   Trash2,
   Upload,
   XCircle,
@@ -116,7 +115,6 @@ export default function Home() {
   const [view, setView] = useState<"documents" | "retrieval" | "settings">(
     "documents",
   );
-  const [diagnostics, setDiagnostics] = useState(false);
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
@@ -704,18 +702,6 @@ export default function Home() {
         )}
         <div className="sidebar-footer">
           <AccountButton />
-          {role === "admin" && (
-            <button
-              className="diagnostics-link"
-              onClick={() => {
-                setDiagnostics(true);
-                void refreshHealth();
-              }}
-            >
-              <Settings2 size={16} />
-              系统诊断
-            </button>
-          )}
         </div>
       </aside>
       <main className="main">
@@ -1264,49 +1250,6 @@ export default function Home() {
           </div>
         )}
       </main>
-      {diagnostics && (
-        <Modal title="系统诊断" onClose={() => setDiagnostics(false)}>
-          <div className="diagnostic-content">
-            <Server size={22} />
-            <dl className="configuration-fields">
-              <div>
-                <dt>连接状态</dt>
-                <dd>
-                  {healthLoading
-                    ? "检查中…"
-                    : health?.status === "ok"
-                      ? "正常"
-                      : "暂不可用"}
-                </dd>
-              </div>
-              <div>
-                <dt>向量服务</dt>
-                <dd>
-                  {healthLoading
-                    ? "检查中…"
-                    : !health
-                      ? "无法获取"
-                      : health.embedding.configured
-                        ? "已配置"
-                        : "未配置"}
-                </dd>
-              </div>
-              <div>
-                <dt>回答服务</dt>
-                <dd>
-                  {healthLoading
-                    ? "检查中…"
-                    : !health
-                      ? "无法获取"
-                      : health.llm.configured
-                        ? "已配置"
-                        : "未配置"}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </Modal>
-      )}
       <AnimatePresence initial={false}>
         {notice && (
           <Motion.div
