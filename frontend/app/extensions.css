@@ -13,15 +13,15 @@
 .extensions-toolbar > div { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .extension-row { display: flex; gap: 14px; padding: 20px 0; align-items: center; border-bottom: 1px solid var(--line); }
 .extension-symbol { width: 42px; height: 42px; display: grid; place-items: center; flex-shrink: 0; border-radius: 6px; }
-.extension-symbol.mcp { color: #167568; background: #eaf5f1; }
-.extension-symbol.skill { color: #885c1c; background: #faf1df; }
+.extension-symbol.mcp { color: #0891b2; background: #ecfeff; }
+.extension-symbol.skill { color: #4f46e5; background: #eef2ff; }
 .extension-copy { flex: 1; min-width: 0; }
 .extension-copy > div { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .extension-copy strong { font-size: 14px; overflow-wrap: anywhere; }
 .extension-copy p { margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
 .extension-copy small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
 .extension-status { font-size: 10px; color: #687281; background: #f1f3f5; border-radius: 3px; padding: 1px 5px; }
-.extension-status.active { color: #167568; background: #eaf5f1; }
+.extension-status.active { color: #0891b2; background: #ecfeff; }
 .extension-row-actions { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
 .extension-enable { display: flex; padding: 8px; }
 .extension-enable input, .extension-checkbox input, .extension-tools input, .extension-picker input { width: 15px; height: 15px; flex-shrink: 0; accent-color: var(--accent); }
@@ -29,7 +29,7 @@
 .extensions-empty h2 { font-size: 15px; font-weight: 500; }
 .extensions-alert, .extensions-success { display: flex; gap: 8px; align-items: flex-start; padding: 10px 0; overflow-wrap: anywhere; }
 .extensions-alert { color: #b13e3e; }
-.extensions-success { color: #167568; }
+.extensions-success { color: #16a34a; }
 .extension-form { display: flex; flex-direction: column; gap: 17px; padding: 24px; }
 .extension-delete { padding: 24px; }
 .extension-delete p { margin-bottom: 20px; overflow-wrap: anywhere; }
