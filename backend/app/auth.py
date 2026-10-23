@@ -249,10 +249,22 @@ def login_response(db, user, previous=None, workspace_id=None, request=None, act
 @router.get("/options")
 def options(db: Session = Depends(get_db)):
     settings = get_settings()
+    # The setup link is only useful while a server-issued one-time token is
+    # active. Do not advertise a dead public entry point when setup has not
+    # been prepared from the server console (or when its token expired).
+    workspace_claimed = db.scalar(
+        select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)
+    ) is not None
+    bootstrap_ready = db.scalar(
+        select(AuthToken).where(
+            AuthToken.purpose == "bootstrap",
+            AuthToken.expires_at > now(),
+        )
+    ) is not None
     return {
         "oauth_name": settings.oidc_name if settings.oidc_configured else None,
         "password_reset": settings.mail_configured,
-        "setup_available": db.scalar(select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)) is None,
+        "setup_available": not workspace_claimed and bootstrap_ready,
     }
 
 

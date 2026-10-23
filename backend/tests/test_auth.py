@@ -196,6 +196,7 @@ def test_reset_is_single_use_and_revokes_all_sessions(accounts, monkeypatch):
 
 def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(accounts):
     (owner, outsider, _), db = accounts
+    assert owner.get("/auth/options").json()["setup_available"] is False
     kb = KnowledgeBase(name="Legacy private data")
     db.add(kb)
     db.flush()
@@ -207,6 +208,7 @@ def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(account
     raw = "bootstrap-test-secret-" + str(uuid4())
     db.add(AuthToken(token_hash=auth.digest(raw), purpose="bootstrap", expires_at=auth.now()+timedelta(hours=1)))
     db.commit()
+    assert owner.get("/auth/options").json()["setup_available"] is True
     response = owner.post("/auth/bootstrap", json={
         "email": "owner@example.com", "name": "Owner", "password": PASSWORD, "token": raw,
     })
