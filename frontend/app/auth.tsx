@@ -10,10 +10,12 @@ import {
   useState,
 } from "react";
 import {
+  ArrowLeft,
   ArrowRight,
   Check,
   ChevronLeft,
   ChevronRight,
+  CreditCard,
   Eye,
   EyeOff,
   Layers3,
@@ -21,9 +23,12 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  ScrollText,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   UserRound,
+  UsersRound,
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
@@ -206,26 +211,25 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
         openAccount: () => setAccount(true),
       }}
     >
-      <div
-        key={`${session.user.id}:${session.workspace_id}`}
-        className="authenticated-app"
-      >
-        {children}
+      <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
+        <div className={account ? "app-view app-view-hidden" : "app-view"} aria-hidden={account}>
+          {children}
+        </div>
+        {account && (
+          <AccountPage
+            key={session.workspace_id}
+            session={session}
+            options={options}
+            onClose={() => setAccount(false)}
+            onSession={accept}
+            onLogout={() => {
+              accept(null);
+              setAccount(false);
+              setMode("login");
+            }}
+          />
+        )}
       </div>
-      {account && (
-        <AccountModal
-          key={session.workspace_id}
-          session={session}
-          options={options}
-          onClose={() => setAccount(false)}
-          onSession={accept}
-          onLogout={() => {
-            accept(null);
-            setAccount(false);
-            setMode("login");
-          }}
-        />
-      )}
       {!workspace && !account && (
         <Modal title="工作区访问已变更" onClose={() => setAccount(true)}>
           <button className="primary" onClick={() => setAccount(true)}>
@@ -533,7 +537,7 @@ function LoginForm({
   );
 }
 
-function AccountModal({
+function AccountPage({
   session,
   options,
   onClose,
@@ -639,8 +643,30 @@ function AccountModal({
     await load();
     onSession(await request<Session>("/auth/me"));
   }
+  const tabMeta = {
+    account: {
+      title: "我的账号",
+      description: "管理登录方式、当前工作区和账号安全设置。",
+    },
+    billing: {
+      title: "积分与充值",
+      description: "查看工作区余额、充值记录和使用明细。",
+    },
+    policies: {
+      title: "计费规则",
+      description: "为不同模型和能力配置工作区积分消耗规则。",
+    },
+    members: {
+      title: "工作区成员",
+      description: "管理成员访问权限和工作区角色。",
+    },
+    audit: {
+      title: "审计日志",
+      description: "查看工作区内关键账号、内容和权限操作记录。",
+    },
+  } as const;
   return (
-    <Modal title="账号与工作区" onClose={onClose} busy={busy} wide>
+    <main className="account-page">
       <Tabs.Root
         className="account-settings"
         value={tab}
@@ -648,30 +674,64 @@ function AccountModal({
           setTab(value as "account" | "billing" | "policies" | "members" | "audit")
         }
       >
-        <Tabs.List className="account-tabs" aria-label="账号设置">
-          <Tabs.Trigger value="account" disabled={busy}>我的账号</Tabs.Trigger>
-          <Tabs.Trigger value="billing" disabled={busy}>积分与充值</Tabs.Trigger>
-          {role === "admin" && (
-            <Tabs.Trigger value="policies" disabled={busy}>计费规则</Tabs.Trigger>
-          )}
-          {role === "admin" && (
-            <Tabs.Trigger value="members" disabled={busy}>工作区成员</Tabs.Trigger>
-          )}
-          {role === "admin" && (
-            <Tabs.Trigger value="audit" disabled={busy}>审计日志</Tabs.Trigger>
-          )}
-        </Tabs.List>
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        )}
-        {notice && (
-          <p className="auth-success" role="status">
-            {notice}
-          </p>
-        )}
-        {tab === "account" ? (
+        <header className="account-page-header">
+          <div className="account-page-heading">
+            <p>设置与管理</p>
+            <h1>账号与工作区</h1>
+          </div>
+          <button className="secondary account-back" onClick={onClose} disabled={busy}>
+            <ArrowLeft size={16} />
+            返回工作台
+          </button>
+        </header>
+        <div className="account-page-layout">
+          <aside className="account-page-nav" aria-label="账号与工作区设置">
+            <div className="account-page-nav-label">工作区设置</div>
+            <Tabs.List className="account-tabs" aria-label="账号设置">
+              <Tabs.Trigger value="account" disabled={busy}>
+                <UserRound size={16} />
+                我的账号
+              </Tabs.Trigger>
+              <Tabs.Trigger value="billing" disabled={busy}>
+                <CreditCard size={16} />
+                积分与充值
+              </Tabs.Trigger>
+              {role === "admin" && (
+                <Tabs.Trigger value="policies" disabled={busy}>
+                  <SlidersHorizontal size={16} />
+                  计费规则
+                </Tabs.Trigger>
+              )}
+              {role === "admin" && (
+                <Tabs.Trigger value="members" disabled={busy}>
+                  <UsersRound size={16} />
+                  工作区成员
+                </Tabs.Trigger>
+              )}
+              {role === "admin" && (
+                <Tabs.Trigger value="audit" disabled={busy}>
+                  <ScrollText size={16} />
+                  审计日志
+                </Tabs.Trigger>
+              )}
+            </Tabs.List>
+          </aside>
+          <section className="account-page-content">
+            <div className="account-content-heading">
+              <h2>{tabMeta[tab].title}</h2>
+              <p>{tabMeta[tab].description}</p>
+            </div>
+            {error && (
+              <p className="form-error" role="alert">
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p className="auth-success" role="status">
+                {notice}
+              </p>
+            )}
+            {tab === "account" ? (
           <>
             <div className="account-identity">
               <UserRound size={22} />
@@ -826,7 +886,7 @@ function AccountModal({
               退出登录
             </button>
           </>
-        ) : tab === "billing" ? (
+            ) : tab === "billing" ? (
           <BillingPanel
             workspaceName={session.workspaces.find((item) => item.id === session.workspace_id)?.name ?? ""}
             onBusyChange={setBusy}
@@ -944,9 +1004,11 @@ function AccountModal({
             onRefresh={() => void loadAuditLogs()}
             onPageChange={setAuditPage}
           />
-        )}
+            )}
+          </section>
+        </div>
       </Tabs.Root>
-    </Modal>
+    </main>
   );
 }
 

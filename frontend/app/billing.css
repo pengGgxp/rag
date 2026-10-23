@@ -14,7 +14,7 @@
   min-width: 0;
 }
 .billing-heading strong {
-  color: #202b25;
+  color: var(--ink);
   font-size: 30px;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
@@ -22,7 +22,7 @@
 }
 .billing-heading small,
 .billing-muted {
-  color: #778079;
+  color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -31,7 +31,7 @@
   align-items: flex-start;
   gap: 8px;
   padding: 12px 0;
-  color: #226b51;
+  color: var(--success);
   font-size: 13px;
 }
 .billing-notice svg {
@@ -43,9 +43,9 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  color: #778079;
+  color: var(--muted);
   font-size: 13px;
-  border-top: 1px solid #e4e8e5;
+  border-top: 1px solid var(--line);
 }
 .recharge-options {
   display: grid;
@@ -65,27 +65,27 @@
   grid-template-columns: 16px minmax(0, 1fr);
   gap: 10px;
   padding: 14px;
-  border: 1px solid #dfe5e1;
+  border: 1px solid var(--line);
   border-radius: 6px;
   cursor: pointer;
-  background: #fff;
-  color: #5e6c63;
+  background: var(--surface);
+  color: var(--muted);
   font-size: 12px;
   min-width: 0;
 }
 .recharge-option[data-selected="true"] {
-  border-color: #28896a;
-  background: #f5faf7;
+  border-color: var(--brand);
+  background: var(--brand-soft);
 }
 .recharge-option:focus-within {
-  outline: 2px solid #a6d9c9;
+  outline: 2px solid var(--brand-soft);
   outline-offset: 2px;
 }
 .recharge-option input {
   width: 16px;
   height: 16px;
   margin: 0;
-  accent-color: #248466;
+  accent-color: var(--brand);
 }
 .recharge-option span {
   display: grid;
@@ -93,7 +93,7 @@
   overflow-wrap: anywhere;
 }
 .recharge-option strong {
-  color: #263d31;
+  color: var(--ink);
   font-size: 18px;
   font-weight: 600;
 }
@@ -103,7 +103,7 @@
 }
 .recharge-option b {
   grid-column: 2;
-  color: #3c4c42;
+  color: var(--ink);
   font-weight: 500;
   font-size: 14px;
 }
@@ -114,10 +114,10 @@
   gap: 16px;
   margin-top: 20px;
   font-size: 13px;
-  color: #6c7b71;
+  color: var(--muted);
 }
 .recharge-checkout strong {
-  color: #273d32;
+  color: var(--ink);
   font-size: 18px;
 }
 .recharge-checkout button {
@@ -126,19 +126,19 @@
   justify-content: center;
 }
 .billing-section {
-  border-top: 1px solid #e4e8e5;
+  border-top: 1px solid var(--line);
   margin-top: 24px;
   padding-top: 20px;
 }
 .billing-section h3 {
   margin: 0 0 14px;
-  color: #2f3e35;
+  color: var(--ink);
   font-size: 14px;
   font-weight: 600;
 }
 .recharge-order {
   padding: 14px 0;
-  border-bottom: 1px solid #edf0ee;
+  border-bottom: 1px solid var(--line);
 }
 .recharge-order:first-child {
   padding-top: 0;
@@ -162,24 +162,24 @@
 }
 .payment-status {
   font-size: 11px;
-  color: #7c847f;
+  color: var(--muted);
   flex-shrink: 0;
 }
 .payment-status[data-status="paid"] {
-  color: #19815d;
+  color: var(--success);
 }
 .payment-status[data-status="pending"],
 .payment-status[data-status="confirming"] {
-  color: #966c25;
+  color: var(--warning);
 }
 .payment-status[data-status="failed"] {
-  color: #b35050;
+  color: var(--danger);
 }
 .recharge-order-amount {
   font-size: 13px;
 }
 .recharge-order-amount small {
-  color: #7d8981;
+  color: var(--muted);
   font-size: 12px;
 }
 .recharge-order-amount a {
@@ -191,7 +191,7 @@
 }
 .recharge-order-detail {
   margin-top: 8px;
-  color: #87928b;
+  color: var(--muted);
   font-size: 11px;
 }
 .recharge-order-detail code {
@@ -210,7 +210,7 @@
 }
 .billing-pagination {
   margin-top: 14px;
-  color: #778079;
+  color: var(--muted);
   font-size: 12px;
 }
 .billing-ledger > div {
@@ -219,7 +219,7 @@
   align-items: center;
   gap: 16px;
   padding: 10px 0;
-  border-bottom: 1px solid #edf0ee;
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 .billing-ledger > div > span {
@@ -227,29 +227,21 @@
   gap: 4px;
 }
 .billing-ledger small {
-  color: #8a948e;
+  color: var(--muted);
   font-size: 11px;
 }
 .billing-ledger > div > small {
   text-align: right;
 }
 .billing-ledger strong {
-  color: #19815d;
+  color: var(--success);
   font-weight: 550;
   font-variant-numeric: tabular-nums;
 }
 .billing-ledger strong[data-negative="true"] {
-  color: #9c655e;
+  color: var(--danger);
 }
 @media (max-width: 520px) {
-  .account-tabs {
-    gap: 16px;
-    overflow-x: auto;
-  }
-  .account-tabs button {
-    flex-shrink: 0;
-    font-size: 12px;
-  }
   .recharge-options {
     grid-template-columns: 1fr;
   }
