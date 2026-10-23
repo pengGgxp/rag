@@ -1,7 +1,17 @@
 import { createParser } from "eventsource-parser";
 
-export const API_URL =
+const configuredApiUrl =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// Keep same-host deployments on the current page protocol even if a stale
+// build-time environment value still contains http://.
+export const API_URL =
+  typeof window !== "undefined" &&
+  window.location.protocol === "https:" &&
+  configuredApiUrl.startsWith("http://") &&
+  new URL(configuredApiUrl).hostname === window.location.hostname
+    ? configuredApiUrl.replace(/^http:\/\//, "https://")
+    : configuredApiUrl;
 
 let csrfToken = "";
 export function setCsrfToken(value: string) {
