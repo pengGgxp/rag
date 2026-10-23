@@ -1,5 +1,8 @@
 # 知识工作空间界面
 
+通用的视觉、组件、无障碍和动效规则以
+[知库设计系统规范](design-system.md) 为准；本文只记录 Issue #10 的历史设计与验收。
+
 本文件记录 Issue #10 的历史设计与验收。当前产品导航已按用户要求调整为
 RAGFlow / Dify 的工作流层级，见 [产品导航调整](product-navigation-acceptance.md)。
 
