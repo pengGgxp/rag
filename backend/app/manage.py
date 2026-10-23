@@ -2,10 +2,12 @@
 import secrets
 import sys
 from datetime import timedelta
+from urllib.parse import quote
 
 from sqlalchemy import delete, select
 
 from .auth import digest, now
+from .config import get_settings
 from .db import SessionLocal
 from .models import AuthToken, Membership, LEGACY_WORKSPACE_ID
 
@@ -22,6 +24,8 @@ def main():
         db.commit()
         print("One-time workspace setup token (valid for 1 hour):")
         print(token)
+        print("One-time workspace setup link:")
+        print(f"{get_settings().frontend_url.rstrip('/')}/?setup={quote(token)}")
 
 
 if __name__ == "__main__":

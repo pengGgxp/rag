@@ -176,32 +176,38 @@ def normalize_email(email):
     return str(email).strip().lower()
 
 
-def create_user(db, email, name, password=None):
+def create_user(db, email, name, password=None, workspace_id=None):
     name = name.strip()
     if not name:
         raise HTTPException(422, "请输入姓名")
     user = User(email=normalize_email(email), name=name, password_hash=passwords.hash(password) if password else None)
     db.add(user)
     db.flush()
-    workspace = Workspace(name=f"{name}的工作区"[:100])
-    db.add(workspace)
-    db.flush()
+    if workspace_id is None:
+        workspace = Workspace(name=f"{name}的工作区"[:100])
+        db.add(workspace)
+        db.flush()
+    else:
+        workspace = db.get(Workspace, workspace_id)
+        if workspace is None:
+            raise HTTPException(500, "默认工作区不存在")
     db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-    db.add(CreditAccount(
-        workspace_id=workspace.id,
-        balance=1000,
-        lifetime_granted=1000,
-        lifetime_spent=0,
-    ))
-    db.add(CreditLedgerEntry(
-        workspace_id=workspace.id,
-        actor_user_id=None,
-        amount=1000,
-        balance_after=1000,
-        kind="initial_grant",
-        idempotency_key=f"workspace:{workspace.id}:initial",
-        metadata_json={"reason": "workspace_created"},
-    ))
+    if db.get(CreditAccount, workspace.id) is None:
+        db.add(CreditAccount(
+            workspace_id=workspace.id,
+            balance=1000,
+            lifetime_granted=1000,
+            lifetime_spent=0,
+        ))
+        db.add(CreditLedgerEntry(
+            workspace_id=workspace.id,
+            actor_user_id=None,
+            amount=1000,
+            balance_after=1000,
+            kind="initial_grant",
+            idempotency_key=f"workspace:{workspace.id}:initial",
+            metadata_json={"reason": "workspace_created"},
+        ))
     db.flush()
     return user, workspace.id
 
@@ -265,6 +271,7 @@ def options(db: Session = Depends(get_db)):
         "oauth_name": settings.oidc_name if settings.oidc_configured else None,
         "password_reset": settings.mail_configured,
         "setup_available": not workspace_claimed and bootstrap_ready,
+        "first_run": not workspace_claimed,
     }
 
 
@@ -274,7 +281,17 @@ def register(payload: Registration, request: Request, db: Session = Depends(get_
     if db.scalar(select(User).where(User.email == normalize_email(payload.email))):
         raise HTTPException(409, "邮箱已被使用，请登录或找回密码")
     try:
-        user, workspace_id = create_user(db, payload.email, payload.name, payload.password)
+        # An empty deployment has no administrator yet. The first normal
+        # registration claims the reserved workspace so the product never
+        # depends on a hidden operator-only button for its primary onboarding.
+        db.scalar(select(Workspace).where(Workspace.id == LEGACY_WORKSPACE_ID).with_for_update())
+        legacy_claimed = db.scalar(
+            select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)
+        ) is not None
+        workspace_id = None if legacy_claimed else LEGACY_WORKSPACE_ID
+        user, workspace_id = create_user(
+            db, payload.email, payload.name, payload.password, workspace_id=workspace_id,
+        )
         response = login_response(db, user, request.cookies.get(COOKIE), workspace_id, request, "auth.register")
     except IntegrityError as exc:
         db.rollback()

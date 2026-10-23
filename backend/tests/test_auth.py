@@ -203,8 +203,6 @@ def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(account
     conversation = Conversation(title="Legacy chat")
     db.add(conversation)
     db.commit()
-    register(outsider, "other@example.com", "Other")
-    assert outsider.get("/knowledge-bases").json() == []
     raw = "bootstrap-test-secret-" + str(uuid4())
     db.add(AuthToken(token_hash=auth.digest(raw), purpose="bootstrap", expires_at=auth.now()+timedelta(hours=1)))
     db.commit()
@@ -218,7 +216,16 @@ def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(account
     assert owner.get("/conversations").json()[0]["title"] == "Legacy chat"
     assert owner.get("/auth/options").json()["setup_available"] is False
     assert db.get(AuthToken, auth.digest(raw)) is None
+    register(outsider, "other@example.com", "Other")
     assert outsider.get("/knowledge-bases").json() == []
+
+
+def test_first_registration_claims_legacy_workspace(accounts):
+    (owner, _, _), db = accounts
+    result = register(owner)
+    assert result["workspaces"][0]["id"] == str(LEGACY_WORKSPACE_ID)
+    assert result["workspaces"][0]["role"] == "admin"
+    assert owner.get("/auth/options").json()["first_run"] is False
 
 
 def test_oauth_error_state_cannot_create_session_or_link_identity(accounts, monkeypatch):

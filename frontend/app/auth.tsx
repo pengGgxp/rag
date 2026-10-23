@@ -14,6 +14,8 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Eye,
+  EyeOff,
   Layers3,
   Loader2,
   LogOut,
@@ -35,6 +37,7 @@ type AuthOptions = {
   oauth_name: string | null;
   password_reset: boolean;
   setup_available: boolean;
+  first_run: boolean;
 };
 type Member = { id: string; name: string; email: string; role: Role };
 type AuditLog = {
@@ -114,9 +117,10 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const [account, setAccount] = useState(false);
   const [mode, setMode] = useState<
-    "login" | "register" | "bootstrap" | "forgot" | "reset"
+    "login" | "register" | "setup" | "forgot" | "reset"
   >("login");
   const [resetToken, setResetToken] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const accept = useCallback((value: Session | null) => {
     setSession(value);
     setCsrfToken(value?.csrf_token ?? "");
@@ -138,6 +142,12 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   }, [accept]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    if (params.has("setup")) {
+      setSetupToken(params.get("setup") ?? "");
+      setMode("setup");
+      // Keep the one-time setup token out of browser history and referrers.
+      window.history.replaceState(null, "", "/");
+    }
     if (params.has("reset")) {
       setResetToken(params.get("reset") ?? "");
       setMode("reset");
@@ -181,10 +191,10 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
         </button>
       </main>
     );
-  if (!session || mode === "reset")
+  if (!session || mode === "reset" || mode === "setup")
     return (
       <LoginForm
-        {...{ options, mode, setMode, resetToken, error, setError }}
+        {...{ options, mode, setMode, resetToken, setupToken, error, setError }}
         onSession={accept}
       />
     );
@@ -232,16 +242,18 @@ function LoginForm({
   mode,
   setMode,
   resetToken,
+  setupToken,
   error,
   setError,
   onSession,
 }: {
   options: AuthOptions;
-  mode: "login" | "register" | "bootstrap" | "forgot" | "reset";
+  mode: "login" | "register" | "setup" | "forgot" | "reset";
   setMode: (
-    value: "login" | "register" | "bootstrap" | "forgot" | "reset",
+    value: "login" | "register" | "setup" | "forgot" | "reset",
   ) => void;
   resetToken: string;
+  setupToken: string;
   error: string;
   setError: (value: string) => void;
   onSession: (session: Session) => void;
@@ -250,13 +262,14 @@ function LoginForm({
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  const isSignup = mode === "register" || mode === "bootstrap";
+  const isSignup = mode === "register" || mode === "setup";
   const titles = {
     login: "登录知库",
     register: "创建账号",
-    bootstrap: "初始化工作区",
+    setup: "设置工作区",
     forgot: "找回密码",
     reset: "设置新密码",
   };
@@ -265,6 +278,7 @@ function LoginForm({
     setError("");
     setNotice("");
     setPassword("");
+    setShowPassword(false);
   };
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -289,12 +303,12 @@ function LoginForm({
       } else {
         onSession(
           await request<Session>(
-            `/auth/${mode}`,
+            mode === "setup" ? "/auth/bootstrap" : `/auth/${mode}`,
             json({
               email,
               password,
               ...(isSignup ? { name } : {}),
-              ...(mode === "bootstrap" ? { token } : {}),
+              ...(mode === "setup" ? { token: setupToken || token } : {}),
             }),
           ),
         );
@@ -321,14 +335,67 @@ function LoginForm({
   }
   return (
     <main className="auth-screen">
-      <section className="auth-form-region">
+      <aside className="auth-intro">
         <a className="auth-brand" href="/">
           <span className="brand-mark">
-            <Layers3 size={24} />
+            <Layers3 size={22} />
           </span>
-          知库
+          <span>知库</span>
         </a>
-        <h1>{titles[mode]}</h1>
+        <div className="auth-intro-copy">
+          <p className="auth-eyebrow">KNOWLEDGE WORKSPACE</p>
+          <h1>让知识成为可执行的工作流。</h1>
+          <p>
+            把资料、文档和对话放在同一个工作空间里，让每个答案都能回到它的来源。
+          </p>
+        </div>
+        <div className="auth-intro-meta">
+          <span>可追溯引用</span>
+          <span>工作区协作</span>
+          <span>智能检索</span>
+        </div>
+      </aside>
+      <section className="auth-form-region">
+        {["login", "register"].includes(mode) && (
+          <div className="auth-mode-tabs" role="tablist" aria-label="账号操作">
+            <button
+              className={mode === "login" ? "active" : ""}
+              onClick={() => changeMode("login")}
+              role="tab"
+              aria-selected={mode === "login"}
+              type="button"
+            >
+              登录
+            </button>
+            <button
+              className={mode === "register" ? "active" : ""}
+              onClick={() => changeMode("register")}
+              role="tab"
+              aria-selected={mode === "register"}
+              type="button"
+            >
+              创建账号
+            </button>
+          </div>
+        )}
+        <div className="auth-heading">
+          <h2>{titles[mode]}</h2>
+          <p>
+            {mode === "login" && "登录你的知识工作空间"}
+            {mode === "register" &&
+              (options.first_run
+                ? "创建第一个账号，这个账号将成为工作区所有者"
+                : "创建账号并开始使用知库")}
+            {mode === "setup" && "完成首次部署，创建工作区所有者账号"}
+            {mode === "forgot" && "我们会向你的邮箱发送重置链接"}
+            {mode === "reset" && "设置一个新的登录密码"}
+          </p>
+        </div>
+        {mode === "login" && options.first_run && (
+          <div className="auth-first-run-note" role="status">
+            这是知库的首次使用。还没有管理员，创建账号即可完成工作区设置。
+          </div>
+        )}
         <form className="auth-form" onSubmit={submit} key={mode}>
           {isSignup && (
             <label>
@@ -357,25 +424,36 @@ function LoginForm({
           {mode !== "forgot" && (
             <label>
               {mode === "reset" ? "新密码" : "密码"}
-              <input
-                required
-                type="password"
-                autoComplete={
-                  isSignup || mode === "reset"
-                    ? "new-password"
-                    : "current-password"
-                }
-                minLength={isSignup || mode === "reset" ? 12 : 1}
-                maxLength={128}
-                placeholder={
-                  isSignup || mode === "reset" ? "至少 12 个字符" : ""
-                }
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <span className="auth-password-field">
+                <input
+                  required
+                  type={showPassword ? "text" : "password"}
+                  autoComplete={
+                    isSignup || mode === "reset"
+                      ? "new-password"
+                      : "current-password"
+                  }
+                  minLength={isSignup || mode === "reset" ? 12 : 1}
+                  maxLength={128}
+                  placeholder={
+                    isSignup || mode === "reset" ? "至少 12 个字符" : ""
+                  }
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="auth-password-toggle"
+                  onClick={() => setShowPassword((value) => !value)}
+                  aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                  title={showPassword ? "隐藏密码" : "显示密码"}
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </span>
             </label>
           )}
-          {mode === "bootstrap" && (
+          {mode === "setup" && !setupToken && (
             <label>
               初始化口令
               <input
@@ -407,11 +485,14 @@ function LoginForm({
               ? "发送重置邮件"
               : mode === "reset"
                 ? "更新密码"
-                : mode === "bootstrap"
-                  ? "接管工作区"
+                : mode === "setup"
+                  ? "完成设置"
                   : titles[mode]}
           </button>
         </form>
+        {mode === "login" && options.oauth_name && (
+          <div className="auth-divider"><span>或</span></div>
+        )}
         {mode === "login" && options.oauth_name && (
           <button
             className="secondary oauth-button"
@@ -423,28 +504,29 @@ function LoginForm({
           </button>
         )}
         <div className="auth-links">
-          <button
-            className="text-button"
-            onClick={() => changeMode(mode === "login" ? "register" : "login")}
-          >
-            {mode === "login" ? "创建账号" : "返回登录"}
-          </button>
+          {mode !== "login" && mode !== "register" && (
+            <button
+              className="text-button"
+              onClick={() => changeMode("login")}
+              type="button"
+            >
+              返回登录
+            </button>
+          )}
           {mode === "login" && options.password_reset && (
             <button
               className="text-button"
               onClick={() => changeMode("forgot")}
+              type="button"
             >
               忘记密码
             </button>
           )}
         </div>
-        {mode === "login" && options.setup_available && (
-          <button
-            className="auth-setup-link"
-            onClick={() => changeMode("bootstrap")}
-          >
-            管理员初始化
-          </button>
+        {mode === "setup" && (
+          <p className="auth-private-note">
+            此页面仅适用于部署者提供的一次性设置链接。
+          </p>
         )}
       </section>
     </main>
