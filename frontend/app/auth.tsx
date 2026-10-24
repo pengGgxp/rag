@@ -141,8 +141,49 @@ export function AccountButton() {
 }
 
 function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  if (!error) {
+    return (
+      <main className="auth-bootstrap-shell" aria-busy="true" aria-label="知库工作区">
+        <aside className="auth-bootstrap-sidebar" aria-hidden="true">
+          <div className="auth-bootstrap-brand">
+            <span className="brand-mark">
+              <Layers3 size={20} />
+            </span>
+            <span>知库</span>
+          </div>
+          <div className="auth-bootstrap-nav">
+            <span className="auth-skeleton auth-skeleton-nav active" />
+            <span className="auth-skeleton auth-skeleton-nav" />
+            <span className="auth-skeleton auth-skeleton-nav" />
+            <span className="auth-skeleton auth-skeleton-nav short" />
+          </div>
+          <div className="auth-bootstrap-sidebar-footer">
+            <span className="auth-skeleton auth-skeleton-avatar" />
+            <span className="auth-skeleton auth-skeleton-footer-line" />
+          </div>
+        </aside>
+        <section className="auth-bootstrap-content" aria-hidden="true">
+          <header className="auth-bootstrap-toolbar">
+            <span className="auth-skeleton auth-skeleton-breadcrumb" />
+            <span className="auth-skeleton auth-skeleton-toolbar-action" />
+          </header>
+          <div className="auth-bootstrap-main">
+            <span className="auth-skeleton auth-skeleton-kicker" />
+            <span className="auth-skeleton auth-skeleton-title" />
+            <span className="auth-skeleton auth-skeleton-description" />
+            <div className="auth-bootstrap-blocks">
+              <span className="auth-skeleton auth-skeleton-block large" />
+              <span className="auth-skeleton auth-skeleton-block" />
+              <span className="auth-skeleton auth-skeleton-block" />
+            </div>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <main className="auth-bootstrap-screen" role={error ? "alert" : "status"} aria-live="polite">
+    <main className="auth-bootstrap-screen" role="alert" aria-live="polite">
       <section className="auth-bootstrap-panel">
         <div className="auth-bootstrap-brand">
           <span className="brand-mark">
@@ -159,16 +200,7 @@ function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () 
               重试连接
             </button>
           </>
-        ) : (
-          <>
-            <h1>正在恢复工作区</h1>
-            <p>正在验证登录状态并准备你的知识空间。</p>
-            <div className="auth-bootstrap-progress">
-              <Loader2 className="spin" size={18} />
-              <span>连接中</span>
-            </div>
-          </>
-        )}
+        ) : null}
       </section>
     </main>
   );
