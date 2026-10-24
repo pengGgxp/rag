@@ -1507,6 +1507,20 @@ thead {
   padding: 8px 32px 40px;
   max-width: 900px;
 }
+.configuration-intro {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 22px;
+}
+.configuration-intro h2 {
+  padding: 0;
+  border-bottom: 0;
+}
+.configuration-intro p,
+.configuration-muted {
+  color: var(--muted);
+  font-size: 13px;
+}
 .configuration-actions {
   display: flex;
   flex-wrap: wrap;

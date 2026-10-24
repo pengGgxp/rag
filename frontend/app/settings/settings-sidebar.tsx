@@ -4,8 +4,6 @@ import Link from "next/link";
 import {
   CreditCard,
   Layers3,
-  MessageSquare,
-  Puzzle,
   ScrollText,
   SlidersHorizontal,
   UserRound,
@@ -42,22 +40,7 @@ export function SettingsSidebar({
       </Link>
       <nav className="settings-global-nav">
         <div className="settings-nav-group">
-          <span className="settings-nav-group-label">工作台</span>
-          <Link href="/">
-            <Layers3 size={17} />
-            知识库
-          </Link>
-          <Link href="/?chat=1">
-            <MessageSquare size={17} />
-            知识问答
-          </Link>
-          <Link href="/?extensions=1">
-            <Puzzle size={17} />
-            Agent 扩展
-          </Link>
-        </div>
-        <div className="settings-nav-group settings-nav-group-management">
-          <span className="settings-nav-group-label">管理</span>
+          <span className="settings-nav-group-label">设置</span>
           <Link
             href={settingsPath("account")}
             data-active={activeSection === "account"}
