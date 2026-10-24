@@ -140,6 +140,40 @@ export function AccountButton() {
   );
 }
 
+function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+  return (
+    <main className="auth-bootstrap-screen" role={error ? "alert" : "status"} aria-live="polite">
+      <section className="auth-bootstrap-panel">
+        <div className="auth-bootstrap-brand">
+          <span className="brand-mark">
+            <Layers3 size={22} />
+          </span>
+          <span>知库</span>
+        </div>
+        {error ? (
+          <>
+            <h1>工作区暂时无法连接</h1>
+            <p>{error}</p>
+            <button className="primary auth-bootstrap-action" onClick={onRetry}>
+              <RefreshCw size={16} />
+              重试连接
+            </button>
+          </>
+        ) : (
+          <>
+            <h1>正在恢复工作区</h1>
+            <p>正在验证登录状态并准备你的知识空间。</p>
+            <div className="auth-bootstrap-progress">
+              <Loader2 className="spin" size={18} />
+              <span>连接中</span>
+            </div>
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
 export function AuthBoundary({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [options, setOptions] = useState<AuthOptions | null>(null);
@@ -239,20 +273,9 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     (item) => item.id === session.workspace_id,
   );
   if (loading)
-    return (
-      <main className="auth-screen">
-        <Loader2 className="spin" aria-label="正在加载账号" />
-      </main>
-    );
+    return <AuthBootstrapScreen />;
   if (!options)
-    return (
-      <main className="auth-screen">
-        <p role="alert">{error}</p>
-        <button className="secondary" onClick={() => void reload()}>
-          重试
-        </button>
-      </main>
-    );
+    return <AuthBootstrapScreen error={error || "服务暂时不可用"} onRetry={() => void reload()} />;
   if (!session || mode === "reset" || mode === "setup")
     return (
       <LoginForm

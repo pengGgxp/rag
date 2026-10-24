@@ -2,6 +2,7 @@ import { createParser } from "eventsource-parser";
 
 const configuredApiUrl =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 // Keep same-host deployments on the current page protocol even if a stale
 // build-time environment value still contains http://.
@@ -28,11 +29,30 @@ export async function request<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    credentials: "include",
-    headers: sessionHeaders(options),
-  });
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const upstreamSignal = options?.signal;
+  const abortFromCaller = () => controller.abort();
+  upstreamSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...options,
+      credentials: "include",
+      headers: sessionHeaders(options),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timedOut) throw new Error("连接服务超时，请检查服务状态后重试");
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    upstreamSignal?.removeEventListener("abort", abortFromCaller);
+  }
   if (response.status === 401 && !["/auth/me", "/auth/login", "/auth/register", "/auth/bootstrap"].includes(path))
     window.dispatchEvent(new Event("rag-session-expired"));
   if (response.status === 204) return undefined as T;
