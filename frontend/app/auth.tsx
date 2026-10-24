@@ -304,6 +304,9 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const workspace = session?.workspaces.find(
     (item) => item.id === session.workspace_id,
   );
+  const dedicatedSettings =
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/settings");
   if (loading)
     return <AuthBootstrapScreen />;
   if (!options)
@@ -336,7 +339,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
               setAccountTab(null);
               setMode("login");
             }}
-            embedded
+            embedded={!dedicatedSettings}
           />
         ) : null,
         openAccount,

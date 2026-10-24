@@ -98,6 +98,9 @@ function extension(filename: string) {
 
 export default function Home() {
   const { role, accountTab, accountView, openAccount, closeAccount } = useAuth();
+  const dedicatedSettings =
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/settings");
   const [routeAccountTab, setRouteAccountTab] = useState<typeof accountTab>(accountTab);
   useEffect(() => setRouteAccountTab(accountTab), [accountTab]);
   useEffect(() => {
@@ -548,6 +551,10 @@ export default function Home() {
         onExtensions={showExtensions}
       />
     );
+
+  if (dedicatedSettings && activeAccountTab && accountView) {
+    return accountView;
+  }
 
   return (
     <div className="workspace">
