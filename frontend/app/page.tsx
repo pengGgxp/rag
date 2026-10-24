@@ -102,7 +102,7 @@ function extension(filename: string) {
 }
 
 export default function Home() {
-  const { role, accountTab, accountView, openAccount } = useAuth();
+  const { role, accountTab, accountView, openAccount, closeAccount } = useAuth();
   const [routeAccountTab, setRouteAccountTab] = useState<typeof accountTab>(accountTab);
   useEffect(() => setRouteAccountTab(accountTab), [accountTab]);
   useEffect(() => {
@@ -572,6 +572,7 @@ export default function Home() {
           href="/"
           onClick={(event) => {
             event.preventDefault();
+            closeAccount("/");
             setScreen("catalog");
             setSidebarOpen(false);
           }}
@@ -585,6 +586,7 @@ export default function Home() {
           <button
             className={!activeAccountTab && screen === "catalog" ? "selected" : ""}
             onClick={() => {
+              closeAccount("/");
               setScreen("catalog");
               setSidebarOpen(false);
             }}
@@ -594,6 +596,7 @@ export default function Home() {
           </button>
           <button
             onClick={() => {
+              closeAccount("/?chat=1");
               if (selectedId) openLibrary(selectedId, "chat");
               else {
                 setScreen("chat");
@@ -604,7 +607,7 @@ export default function Home() {
             <MessageSquare size={18} />
             知识问答
           </button>
-          <button className={!activeAccountTab && screen === "extensions" ? "selected" : ""} onClick={showExtensions}><Puzzle size={18} />Agent 扩展</button>
+          <button className={!activeAccountTab && screen === "extensions" ? "selected" : ""} onClick={() => { closeAccount("/?extensions=1"); showExtensions(); }}><Puzzle size={18} />Agent 扩展</button>
           <div className="management-navigation">
             <span className="management-navigation-label">管理</span>
             <button className={activeAccountTab === "account" ? "selected" : ""} onClick={() => openAccount("account")}>

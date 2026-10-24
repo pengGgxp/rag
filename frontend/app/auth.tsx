@@ -80,6 +80,7 @@ type Auth = {
   accountTab: AccountTab | null;
   accountView: ReactNode;
   openAccount: (tab?: AccountTab) => void;
+  closeAccount: (path?: string) => void;
 };
 const AuthContext = createContext<Auth | null>(null);
 export function useAuth() {
@@ -228,11 +229,12 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     setAccount(true);
     setAccountTab(tab);
   }, []);
-  const closeAccount = useCallback(() => {
-    window.history.pushState(null, "", returnPath || "/");
+  const closeAccount = useCallback((path?: string) => {
+    if (!account) return;
+    window.history.pushState(null, "", path || returnPath || "/");
     setAccount(false);
     setAccountTab(null);
-  }, [returnPath]);
+  }, [account, returnPath]);
   const workspace = session?.workspaces.find(
     (item) => item.id === session.workspace_id,
   );
@@ -283,6 +285,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
           />
         ) : null,
         openAccount,
+        closeAccount,
       }}
     >
       <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
