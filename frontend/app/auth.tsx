@@ -27,7 +27,6 @@ import {
   RefreshCw,
   ScrollText,
   ShieldCheck,
-  Settings2,
   SlidersHorizontal,
   Trash2,
   UserRound,
@@ -37,7 +36,6 @@ import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
 import { BillingPanel, creditKind, type CreditUsage } from "./billing-panel";
 import { UsagePolicyPanel } from "./usage-policy-panel";
-import * as Tabs from "../components/ui/tabs";
 import "./auth.css";
 
 type Role = "admin" | "editor" | "viewer";
@@ -718,22 +716,48 @@ function AccountPage({
           <span>知库</span>
         </a>
         <nav className="settings-global-nav">
-          <a href="/">
+          <div className="settings-nav-group">
+            <span className="settings-nav-group-label">工作台</span>
+            <a href="/">
             <Layers3 size={17} />
             知识库
-          </a>
-          <a href="/?chat=1">
+            </a>
+            <a href="/?chat=1">
             <MessageSquare size={17} />
             知识问答
-          </a>
-          <a href="/?extensions=1">
+            </a>
+            <a href="/?extensions=1">
             <Puzzle size={17} />
             Agent 扩展
-          </a>
-          <a href="/settings">
-            <Settings2 size={17} />
-            账号与工作区
-          </a>
+            </a>
+          </div>
+          <div className="settings-nav-group settings-nav-group-management">
+            <span className="settings-nav-group-label">管理</span>
+            <a href={settingsPath("account")} data-active={tab === "account"} onClick={(event) => { event.preventDefault(); navigateTab("account"); }}>
+              <UserRound size={17} />
+              我的账号
+            </a>
+            <a href={settingsPath("billing")} data-active={tab === "billing"} onClick={(event) => { event.preventDefault(); navigateTab("billing"); }}>
+              <CreditCard size={17} />
+              积分与充值
+            </a>
+            {role === "admin" && (
+              <>
+                <a href={settingsPath("policies")} data-active={tab === "policies"} onClick={(event) => { event.preventDefault(); navigateTab("policies"); }}>
+                  <SlidersHorizontal size={17} />
+                  计费规则
+                </a>
+                <a href={settingsPath("members")} data-active={tab === "members"} onClick={(event) => { event.preventDefault(); navigateTab("members"); }}>
+                  <UsersRound size={17} />
+                  工作区成员
+                </a>
+                <a href={settingsPath("audit")} data-active={tab === "audit"} onClick={(event) => { event.preventDefault(); navigateTab("audit"); }}>
+                  <ScrollText size={17} />
+                  审计日志
+                </a>
+              </>
+            )}
+          </div>
         </nav>
         <div className="settings-global-footer">
           <div className="settings-user-summary">
@@ -746,57 +770,21 @@ function AccountPage({
             </span>
           </div>
           <div className="settings-current-label">当前页面</div>
-          <strong className="settings-current-page">账号与工作区</strong>
+          <strong className="settings-current-page">{tabMeta[tab].title}</strong>
         </div>
       </aside>
       <main className="account-page">
-      <Tabs.Root
-        className="account-settings"
-        value={tab}
-        onValueChange={(value) => navigateTab(value as AccountTab)}
-      >
+      <div className="account-settings">
         <header className="account-page-header">
           <div className="account-page-heading">
-            <p>工作区 / 设置与管理</p>
-            <h1>账号与工作区</h1>
+            <p>工作区 / 管理</p>
+            <h1>管理工作台</h1>
           </div>
           <button className="secondary account-back" onClick={onClose} disabled={busy}>
             <ArrowLeft size={16} />
             返回工作台
           </button>
         </header>
-        <div className="account-page-layout">
-          <aside className="account-page-nav" aria-label="账号与工作区设置">
-            <div className="account-page-nav-label">工作区设置</div>
-            <Tabs.List className="account-tabs" aria-label="账号设置">
-              <Tabs.Trigger value="account" disabled={busy}>
-                <UserRound size={16} />
-                我的账号
-              </Tabs.Trigger>
-              <Tabs.Trigger value="billing" disabled={busy}>
-                <CreditCard size={16} />
-                积分与充值
-              </Tabs.Trigger>
-              {role === "admin" && (
-                <Tabs.Trigger value="policies" disabled={busy}>
-                  <SlidersHorizontal size={16} />
-                  计费规则
-                </Tabs.Trigger>
-              )}
-              {role === "admin" && (
-                <Tabs.Trigger value="members" disabled={busy}>
-                  <UsersRound size={16} />
-                  工作区成员
-                </Tabs.Trigger>
-              )}
-              {role === "admin" && (
-                <Tabs.Trigger value="audit" disabled={busy}>
-                  <ScrollText size={16} />
-                  审计日志
-                </Tabs.Trigger>
-              )}
-            </Tabs.List>
-          </aside>
           <section className="account-page-content">
             <div className="account-content-heading">
               <h2>{tabMeta[tab].title}</h2>
@@ -1087,8 +1075,7 @@ function AccountPage({
           />
             )}
           </section>
-        </div>
-      </Tabs.Root>
+      </div>
       </main>
     </div>
   );
