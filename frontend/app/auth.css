@@ -392,17 +392,9 @@
 .settings-user-summary strong {
   font-size: 12px;
 }
-.settings-user-summary small,
-.settings-current-label {
+.settings-user-summary small {
   color: var(--muted);
   font-size: 11px;
-}
-.settings-current-label {
-  margin-top: 12px;
-}
-.settings-current-page {
-  color: var(--brand-hover);
-  font-size: 12px;
 }
 .account-page {
   min-height: 100dvh;
@@ -415,7 +407,7 @@
 .account-page-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 24px;
   padding: 22px clamp(24px, 5vw, 64px);
   border-bottom: 1px solid var(--line);
@@ -434,9 +426,6 @@
   margin: 0;
   font-size: 22px;
   font-weight: 650;
-}
-.account-back {
-  flex: 0 0 auto;
 }
 .account-page-layout {
   display: grid;

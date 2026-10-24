@@ -10,7 +10,6 @@ import {
   useState,
 } from "react";
 import {
-  ArrowLeft,
   ArrowRight,
   Check,
   ChevronLeft,
@@ -769,8 +768,6 @@ function AccountPage({
               <small>{session.workspaces.find((item) => item.id === session.workspace_id)?.name ?? "当前工作区"}</small>
             </span>
           </div>
-          <div className="settings-current-label">当前页面</div>
-          <strong className="settings-current-page">{tabMeta[tab].title}</strong>
         </div>
       </aside>
       <main className="account-page">
@@ -780,10 +777,6 @@ function AccountPage({
             <p>工作区 / 管理</p>
             <h1>管理工作台</h1>
           </div>
-          <button className="secondary account-back" onClick={onClose} disabled={busy}>
-            <ArrowLeft size={16} />
-            返回工作台
-          </button>
         </header>
           <section className="account-page-content">
             <div className="account-content-heading">
