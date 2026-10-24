@@ -296,6 +296,98 @@
   font-size: 11px;
   color: var(--muted);
 }
+.settings-shell {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--background);
+}
+.settings-global-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 20px 14px 16px;
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
+}
+.settings-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 24px;
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.settings-brand .brand-mark {
+  width: 34px;
+  height: 34px;
+}
+.settings-global-nav {
+  display: grid;
+  gap: 4px;
+}
+.settings-global-nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+}
+.settings-global-nav a:hover {
+  background: var(--surface);
+  color: var(--ink);
+}
+.settings-global-nav a:last-child {
+  margin-top: 18px;
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+  font-weight: 600;
+}
+.settings-global-footer {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+  padding: 14px 8px 0;
+  border-top: 1px solid var(--line);
+}
+.settings-user-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.settings-user-summary > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.settings-user-summary strong,
+.settings-user-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-user-summary strong {
+  font-size: 12px;
+}
+.settings-user-summary small,
+.settings-current-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+.settings-current-label {
+  margin-top: 12px;
+}
+.settings-current-page {
+  color: var(--brand-hover);
+  font-size: 12px;
+}
 .account-page {
   min-height: 100dvh;
   background: var(--background);
@@ -701,6 +793,12 @@
   .auth-form-region {
     width: min(100%, 460px);
     padding: 38px 24px 52px;
+  }
+  .settings-shell {
+    display: block;
+  }
+  .settings-global-sidebar {
+    display: none;
   }
   .account-page-layout {
     grid-template-columns: 1fr;

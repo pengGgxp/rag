@@ -21,10 +21,13 @@ import {
   Layers3,
   Loader2,
   LogOut,
+  MessageSquare,
   Plus,
+  Puzzle,
   RefreshCw,
   ScrollText,
   ShieldCheck,
+  Settings2,
   SlidersHorizontal,
   Trash2,
   UserRound,
@@ -38,6 +41,7 @@ import * as Tabs from "../components/ui/tabs";
 import "./auth.css";
 
 type Role = "admin" | "editor" | "viewer";
+type AccountTab = "account" | "billing" | "policies" | "members" | "audit";
 type AuthOptions = {
   oauth_name: string | null;
   password_reset: boolean;
@@ -92,6 +96,23 @@ const json = (body: unknown, method = "POST") => ({
 });
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "请求失败，请稍后重试";
+const ACCOUNT_TABS: AccountTab[] = [
+  "account",
+  "billing",
+  "policies",
+  "members",
+  "audit",
+];
+function settingsPath(tab: AccountTab) {
+  return tab === "account" ? "/settings" : `/settings/${tab}`;
+}
+function settingsTabFromLocation(): AccountTab {
+  if (typeof window === "undefined") return "account";
+  const segment = window.location.pathname.split("/").filter(Boolean)[1];
+  return ACCOUNT_TABS.includes(segment as AccountTab)
+    ? (segment as AccountTab)
+    : "account";
+}
 
 export function AccountButton() {
   const { session, openAccount } = useAuth();
@@ -121,6 +142,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [account, setAccount] = useState(false);
+  const [returnPath, setReturnPath] = useState("/");
   const [mode, setMode] = useState<
     "login" | "register" | "setup" | "forgot" | "reset"
   >("login");
@@ -159,7 +181,13 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       // Do not leave reset tokens in browser history or outgoing referrers.
       window.history.replaceState(null, "", "/");
     }
-    if (params.has("account")) setAccount(true);
+    if (window.location.pathname.startsWith("/settings")) {
+      setAccount(true);
+    } else if (params.has("account")) {
+      const legacyTab = params.has("billing") ? "billing" : "account";
+      window.history.replaceState(null, "", settingsPath(legacyTab));
+      setAccount(true);
+    }
     if (params.has("auth_error")) {
       setError(
         params.get("auth_error") === "link_required"
@@ -169,6 +197,8 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       window.history.replaceState(null, "", "/");
     }
     void reload();
+    const syncRoute = () => setAccount(window.location.pathname.startsWith("/settings"));
+    window.addEventListener("popstate", syncRoute);
     const expired = () => {
       accept(null);
       setAccount(false);
@@ -176,8 +206,20 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       setError("登录已过期，请重新登录");
     };
     window.addEventListener("rag-session-expired", expired);
-    return () => window.removeEventListener("rag-session-expired", expired);
+    return () => {
+      window.removeEventListener("popstate", syncRoute);
+      window.removeEventListener("rag-session-expired", expired);
+    };
   }, [accept, reload]);
+  const openAccount = useCallback(() => {
+    setReturnPath(`${window.location.pathname}${window.location.search}`);
+    window.history.pushState(null, "", settingsPath("account"));
+    setAccount(true);
+  }, []);
+  const closeAccount = useCallback(() => {
+    window.history.pushState(null, "", returnPath || "/");
+    setAccount(false);
+  }, [returnPath]);
   const workspace = session?.workspaces.find(
     (item) => item.id === session.workspace_id,
   );
@@ -208,7 +250,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       value={{
         session,
         role: workspace?.role,
-        openAccount: () => setAccount(true),
+        openAccount,
       }}
     >
       <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
@@ -220,7 +262,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
             key={session.workspace_id}
             session={session}
             options={options}
-            onClose={() => setAccount(false)}
+            onClose={closeAccount}
             onSession={accept}
             onLogout={() => {
               accept(null);
@@ -553,9 +595,7 @@ function AccountPage({
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   )?.role;
-  const [tab, setTab] = useState<"account" | "billing" | "policies" | "members" | "audit">(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("billing") ? "billing" : "account",
-  );
+  const [tab, setTab] = useState<AccountTab>(() => settingsTabFromLocation());
   const [members, setMembers] = useState<Member[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogPage>({
     items: [],
@@ -576,11 +616,14 @@ function AccountPage({
   const [notice, setNotice] = useState("");
   const [usage, setUsage] = useState<CreditUsage | null>(null);
   useEffect(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("account");
-    url.searchParams.delete("billing");
-    window.history.replaceState(null, "", url);
+    const syncTab = () => setTab(settingsTabFromLocation());
+    window.addEventListener("popstate", syncTab);
+    return () => window.removeEventListener("popstate", syncTab);
   }, []);
+  function navigateTab(next: AccountTab) {
+    setTab(next);
+    window.history.pushState(null, "", settingsPath(next));
+  }
   const load = useCallback(
     async () => setMembers(await request<Member[]>("/auth/members")),
     [],
@@ -666,17 +709,55 @@ function AccountPage({
     },
   } as const;
   return (
-    <main className="account-page">
+    <div className="settings-shell">
+      <aside className="settings-global-sidebar" aria-label="产品导航">
+        <a className="settings-brand" href="/">
+          <span className="brand-mark">
+            <Layers3 size={21} />
+          </span>
+          <span>知库</span>
+        </a>
+        <nav className="settings-global-nav">
+          <a href="/">
+            <Layers3 size={17} />
+            知识库
+          </a>
+          <a href="/?chat=1">
+            <MessageSquare size={17} />
+            知识问答
+          </a>
+          <a href="/?extensions=1">
+            <Puzzle size={17} />
+            Agent 扩展
+          </a>
+          <a href="/settings">
+            <Settings2 size={17} />
+            账号与工作区
+          </a>
+        </nav>
+        <div className="settings-global-footer">
+          <div className="settings-user-summary">
+            <span className="account-avatar">
+              <UserRound size={16} />
+            </span>
+            <span>
+              <strong>{session.user.name}</strong>
+              <small>{session.workspaces.find((item) => item.id === session.workspace_id)?.name ?? "当前工作区"}</small>
+            </span>
+          </div>
+          <div className="settings-current-label">当前页面</div>
+          <strong className="settings-current-page">账号与工作区</strong>
+        </div>
+      </aside>
+      <main className="account-page">
       <Tabs.Root
         className="account-settings"
         value={tab}
-        onValueChange={(value) =>
-          setTab(value as "account" | "billing" | "policies" | "members" | "audit")
-        }
+        onValueChange={(value) => navigateTab(value as AccountTab)}
       >
         <header className="account-page-header">
           <div className="account-page-heading">
-            <p>设置与管理</p>
+            <p>工作区 / 设置与管理</p>
             <h1>账号与工作区</h1>
           </div>
           <button className="secondary account-back" onClick={onClose} disabled={busy}>
@@ -767,7 +848,7 @@ function AccountPage({
                     ))}
                   </div>
                 )}
-                <button className="text-button credit-billing-link" onClick={() => setTab("billing")}>
+                <button className="text-button credit-billing-link" onClick={() => navigateTab("billing")}>
                   积分与充值<ArrowRight size={14} />
                 </button>
               </section>
@@ -1008,7 +1089,8 @@ function AccountPage({
           </section>
         </div>
       </Tabs.Root>
-    </main>
+      </main>
+    </div>
   );
 }
 

@@ -47,6 +47,172 @@
   font-size: 13px;
   border-top: 1px solid var(--line);
 }
+.policy-table {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.policy-table-header,
+.policy-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.6fr) minmax(120px, 1fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr) 44px;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+}
+.policy-table-header {
+  color: var(--muted);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 650;
+}
+.policy-row {
+  min-height: 70px;
+  border-bottom: 1px solid var(--line);
+}
+.policy-row:last-child {
+  border-bottom: 0;
+}
+.policy-capability {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.policy-capability strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.policy-capability small,
+.provider-section-heading small,
+.provider-form-heading p {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.policy-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.policy-field input,
+.provider-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.policy-field input:focus,
+.provider-form input:focus {
+  outline: 2px solid var(--brand-soft);
+  outline-offset: 1px;
+  border-color: var(--focus-ring);
+}
+.policy-action {
+  display: flex;
+  justify-content: flex-end;
+}
+.provider-form {
+  display: grid;
+  gap: 18px;
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.provider-form-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+.provider-form-heading h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+.provider-form-heading p {
+  margin: 6px 0 0;
+}
+.provider-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.provider-form-grid label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.provider-form-wide {
+  grid-column: 1 / -1;
+}
+.provider-submit {
+  justify-self: start;
+  min-height: 36px;
+}
+.provider-section {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.provider-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+.provider-section-heading > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.provider-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.provider-title-row strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+.provider-status {
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--reference-soft);
+  color: var(--reference);
+  font-size: 11px;
+  font-weight: 600;
+}
+.provider-price-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 140px 140px 36px;
+  align-items: end;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.provider-price-row:last-child {
+  border-bottom: 0;
+}
+.provider-price-row .icon-button {
+  margin-bottom: 1px;
+}
 .recharge-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -256,5 +422,58 @@
   .billing-ledger > div > small {
     grid-column: 2;
     margin-top: -6px;
+  }
+  .policy-table {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+  .policy-table-header {
+    display: none;
+  }
+  .policy-row {
+    grid-template-columns: minmax(0, 1fr) 42px 42px 36px;
+    gap: 8px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .policy-capability {
+    grid-row: span 2;
+  }
+  .policy-row .policy-field:first-of-type {
+    grid-column: 2 / -1;
+  }
+  .policy-row .policy-field:first-of-type::before {
+    content: "计量单位";
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .policy-row .policy-field:nth-of-type(2)::before {
+    content: "每单位";
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .policy-row .policy-field:nth-of-type(3)::before {
+    content: "积分";
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .provider-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .provider-form-wide {
+    grid-column: auto;
+  }
+  .provider-price-row {
+    grid-template-columns: minmax(0, 1fr) 42px 36px;
+    gap: 8px;
+  }
+  .provider-price-row .policy-capability {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+  .provider-section-heading {
+    flex-direction: column;
+    gap: 10px;
   }
 }

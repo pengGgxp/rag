@@ -156,76 +156,128 @@ export function UsagePolicyPanel({ onBusyChange }: { onBusyChange: (busy: boolea
       {error && <p className="form-error" role="alert">{error}</p>}
       {notice && <p className="billing-notice" role="status">{notice}</p>}
       {loading ? <div className="billing-empty"><Loader2 size={18} className="spin" />正在加载</div> : (
-        <div className="recharge-form">
+        <div className="policy-table" role="table" aria-label="基础计费规则">
+          <div className="policy-table-header" role="row">
+            <span role="columnheader">能力</span>
+            <span role="columnheader">计量单位</span>
+            <span role="columnheader">每单位大小</span>
+            <span role="columnheader">消耗积分</span>
+            <span role="columnheader">操作</span>
+          </div>
           {policies.map((policy) => (
-            <div className="recharge-option" key={policy.capability}>
-              <span>
-                {labels[policy.capability] ?? policy.capability}
+            <div className="policy-row" role="row" key={policy.capability}>
+              <div className="policy-capability" role="cell">
+                <strong>{labels[policy.capability] ?? policy.capability}</strong>
                 <small>版本 {policy.version}</small>
-              </span>
-              <input aria-label={`${policy.capability}计量单位`} value={policy.unit}
-                onChange={(e) => setPolicies((items) => items.map((item) =>
-                  item.capability === policy.capability ? { ...item, unit: e.target.value } : item))}
-                style={{ width: 100 }} />
-              <input aria-label={`${policy.capability}单位大小`} type="number" min={1}
-                value={policy.unit_size} onChange={(e) => setPolicies((items) => items.map((item) =>
-                  item.capability === policy.capability ? { ...item, unit_size: Number(e.target.value) } : item))}
-                style={{ width: 90 }} />
-              <input aria-label={`${policy.capability}积分`} type="number" min={0}
-                value={policy.credits_per_unit} onChange={(e) => setPolicies((items) => items.map((item) =>
-                  item.capability === policy.capability ? { ...item, credits_per_unit: Number(e.target.value) } : item))}
-                style={{ width: 90 }} />
-              <button className="icon-button" title="保存规则" aria-label="保存规则"
-                disabled={saving === policy.capability} onClick={() => void save(policy)}>
-                {saving === policy.capability ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-              </button>
+              </div>
+              <label className="policy-field" role="cell">
+                <span className="sr-only">{`${policy.capability}计量单位`}</span>
+                <input value={policy.unit}
+                  onChange={(e) => setPolicies((items) => items.map((item) =>
+                    item.capability === policy.capability ? { ...item, unit: e.target.value } : item))}
+                  placeholder="例如 token" />
+              </label>
+              <label className="policy-field" role="cell">
+                <span className="sr-only">{`${policy.capability}单位大小`}</span>
+                <input type="number" min={1} value={policy.unit_size}
+                  onChange={(e) => setPolicies((items) => items.map((item) =>
+                    item.capability === policy.capability ? { ...item, unit_size: Number(e.target.value) } : item))} />
+              </label>
+              <label className="policy-field" role="cell">
+                <span className="sr-only">{`${policy.capability}积分`}</span>
+                <input type="number" min={0} value={policy.credits_per_unit}
+                  onChange={(e) => setPolicies((items) => items.map((item) =>
+                    item.capability === policy.capability ? { ...item, credits_per_unit: Number(e.target.value) } : item))} />
+              </label>
+              <div className="policy-action" role="cell">
+                <button className="icon-button" title="保存规则" aria-label={`保存${labels[policy.capability] ?? policy.capability}规则`}
+                  disabled={saving === policy.capability} onClick={() => void save(policy)}>
+                  {saving === policy.capability ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
-      <form className="recharge-form" onSubmit={(event) => void createProvider(event)}>
-        <h3>添加对话模型供应商</h3>
-        <div className="recharge-option">
-          <input required placeholder="标识，如 qwen" value={newProvider.key}
-            onChange={(e) => setNewProvider({ ...newProvider, key: e.target.value })} />
-          <input required placeholder="名称" value={newProvider.name}
-            onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })} />
-          <input required placeholder="OpenAI 兼容 Base URL" value={newProvider.base_url}
-            onChange={(e) => setNewProvider({ ...newProvider, base_url: e.target.value })} />
-          <input required placeholder="模型名称" value={newProvider.model}
-            onChange={(e) => setNewProvider({ ...newProvider, model: e.target.value })} />
-          <input required type="password" placeholder="API Key" value={newProvider.api_key}
-            onChange={(e) => setNewProvider({ ...newProvider, api_key: e.target.value })} />
-          <button className="icon-button" title="添加供应商" aria-label="添加供应商" disabled={saving === "new"}>
-            {saving === "new" ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
-          </button>
+      <form className="provider-form" onSubmit={(event) => void createProvider(event)}>
+        <div className="provider-form-heading">
+          <div>
+            <h3>添加对话模型供应商</h3>
+            <p>仅支持 OpenAI 兼容接口，密钥会加密保存。</p>
+          </div>
         </div>
+        <div className="provider-form-grid">
+          <label>
+            标识
+            <input required placeholder="例如 qwen" value={newProvider.key}
+              onChange={(e) => setNewProvider({ ...newProvider, key: e.target.value })} />
+          </label>
+          <label>
+            显示名称
+            <input required placeholder="例如通义千问" value={newProvider.name}
+              onChange={(e) => setNewProvider({ ...newProvider, name: e.target.value })} />
+          </label>
+          <label className="provider-form-wide">
+            Base URL
+            <input required placeholder="https://api.example.com/v1" value={newProvider.base_url}
+              onChange={(e) => setNewProvider({ ...newProvider, base_url: e.target.value })} />
+          </label>
+          <label>
+            模型名称
+            <input required placeholder="例如 qwen-max" value={newProvider.model}
+              onChange={(e) => setNewProvider({ ...newProvider, model: e.target.value })} />
+          </label>
+          <label>
+            API Key
+            <input required type="password" placeholder="输入供应商密钥" value={newProvider.api_key}
+              onChange={(e) => setNewProvider({ ...newProvider, api_key: e.target.value })} />
+          </label>
+        </div>
+        <button className="secondary provider-submit" disabled={saving === "new"}>
+          {saving === "new" ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
+          添加供应商
+        </button>
       </form>
       {providers.map((provider) => (
-        <section className="billing-section" key={provider.id}>
-          <div className="billing-heading">
-            <div><strong>{provider.name}</strong><small>{provider.model} · {provider.key}</small></div>
-            {provider.active ? <span>当前使用</span> : (
+        <section className="provider-section" key={provider.id}>
+          <div className="provider-section-heading">
+            <div>
+              <div className="provider-title-row">
+                <strong>{provider.name}</strong>
+                {provider.active && <span className="provider-status">当前使用</span>}
+              </div>
+              <small>{provider.model} · {provider.key} · {provider.base_url}</small>
+            </div>
+            {!provider.active && (
               <button className="text-button" disabled={saving === provider.id}
                 onClick={() => void activate(provider)}>切换</button>
             )}
           </div>
           {(providerPricing[provider.id] ?? []).map((policy) => (
-            <div className="recharge-option" key={policy.capability}>
-              <span>{labels[policy.capability] ?? policy.capability}<small>版本 {policy.version}</small></span>
-              <input type="number" min={1} value={policy.unit_size}
-                aria-label="供应商价格单位大小"
+            <div className="provider-price-row" key={policy.capability}>
+              <div className="policy-capability">
+                <strong>{labels[policy.capability] ?? policy.capability}</strong>
+                <small>版本 {policy.version}</small>
+              </div>
+              <label className="policy-field">
+                <span>单位大小</span>
+                <input type="number" min={1} value={policy.unit_size}
+                  aria-label="供应商价格单位大小"
                 onChange={(e) => setProviderPricing((items) => ({
                   ...items, [provider.id]: items[provider.id].map((item) =>
                     item.capability === policy.capability ? { ...item, unit_size: Number(e.target.value) } : item),
-                }))} style={{ width: 90 }} />
-              <input type="number" min={0} value={policy.credits_per_unit}
-                aria-label="供应商价格积分"
+                }))} />
+              </label>
+              <label className="policy-field">
+                <span>积分</span>
+                <input type="number" min={0} value={policy.credits_per_unit}
+                  aria-label="供应商价格积分"
                 onChange={(e) => setProviderPricing((items) => ({
                   ...items, [provider.id]: items[provider.id].map((item) =>
                     item.capability === policy.capability ? { ...item, credits_per_unit: Number(e.target.value) } : item),
-                }))} style={{ width: 90 }} />
-              <button className="icon-button" title="保存供应商价格" aria-label="保存供应商价格"
+                }))} />
+              </label>
+              <button className="icon-button" title="保存供应商价格" aria-label={`保存${labels[policy.capability] ?? policy.capability}供应商价格`}
                 disabled={saving === `${provider.id}:${policy.capability}`}
                 onClick={() => void saveProviderPrice(provider.id, policy)}>
                 {saving === `${provider.id}:${policy.capability}` ? <Loader2 size={16} className="spin" /> : <Save size={16} />}
