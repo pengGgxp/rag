@@ -264,6 +264,24 @@ p {
   color: #7c858e;
   flex-shrink: 0;
 }
+.workspace-settings-entry {
+  width: 100%;
+  min-height: 38px;
+  justify-content: flex-start;
+  padding: 9px 8px;
+  border-radius: 6px;
+  color: #586174;
+  font-size: 13px;
+}
+.workspace-settings-entry:hover {
+  background: #eceff4;
+  color: var(--ink);
+}
+.workspace-settings-entry.selected {
+  background: #e9effc;
+  color: #245bd0;
+  font-weight: 600;
+}
 .status-dot {
   width: 5px;
   height: 5px;

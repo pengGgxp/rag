@@ -18,7 +18,6 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
-  CreditCard,
   FileText,
   FolderClosed,
   History,
@@ -31,13 +30,9 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  ScrollText,
   Settings2,
-  SlidersHorizontal,
   Trash2,
   Upload,
-  UserRound,
-  UsersRound,
   XCircle,
   X,
 } from "lucide-react";
@@ -608,28 +603,6 @@ export default function Home() {
             知识问答
           </button>
           <button className={!activeAccountTab && screen === "extensions" ? "selected" : ""} onClick={() => { closeAccount("/?extensions=1"); showExtensions(); }}><Puzzle size={18} />Agent 扩展</button>
-          <div className="management-navigation">
-            <span className="management-navigation-label">管理</span>
-            <button className={activeAccountTab === "account" ? "selected" : ""} onClick={() => openAccount("account")}>
-              <UserRound size={18} />我的账号
-            </button>
-            <button className={activeAccountTab === "billing" ? "selected" : ""} onClick={() => openAccount("billing")}>
-              <CreditCard size={18} />积分与充值
-            </button>
-            {role === "admin" && (
-              <>
-                <button className={activeAccountTab === "policies" ? "selected" : ""} onClick={() => openAccount("policies")}>
-                  <SlidersHorizontal size={18} />计费规则
-                </button>
-                <button className={activeAccountTab === "members" ? "selected" : ""} onClick={() => openAccount("members")}>
-                  <UsersRound size={18} />工作区成员
-                </button>
-                <button className={activeAccountTab === "audit" ? "selected" : ""} onClick={() => openAccount("audit")}>
-                  <ScrollText size={18} />审计日志
-                </button>
-              </>
-            )}
-          </div>
           <button
             className="icon-button mobile-only"
             aria-label="关闭导航"
@@ -750,6 +723,14 @@ export default function Home() {
           </>
         )}
         <div className="sidebar-footer">
+          <button
+            className={`workspace-settings-entry ${activeAccountTab ? "selected" : ""}`}
+            onClick={() => openAccount("account")}
+            title="工作区设置"
+          >
+            <Settings2 size={17} />
+            <span>工作区设置</span>
+          </button>
           <AccountButton />
         </div>
       </aside>
