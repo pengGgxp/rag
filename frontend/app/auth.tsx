@@ -7,12 +7,14 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Eye,
   EyeOff,
   Layers3,
@@ -20,6 +22,7 @@ import {
   LogOut,
   RefreshCw,
   ShieldCheck,
+  Settings2,
   UserRound,
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
@@ -68,24 +71,178 @@ const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "请求失败，请稍后重试";
 
 export function AccountButton() {
-  const { session } = useAuth();
+  const { session, refreshSession, logout } = useAuth();
   const workspace = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   );
+  const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const menuItems = useRef<Array<HTMLAnchorElement | HTMLButtonElement>>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        rootRef.current?.querySelector<HTMLButtonElement>("[aria-haspopup='menu']")?.focus();
+      }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+
+  function focusMenuItem(direction: 1 | -1) {
+    const items = menuItems.current.filter(
+      (item) => !(item instanceof HTMLButtonElement && item.disabled),
+    );
+    if (!items.length) return;
+    const current = document.activeElement;
+    const index = items.indexOf(current as HTMLAnchorElement | HTMLButtonElement);
+    items[(index + direction + items.length) % items.length]?.focus();
+  }
+
+  async function switchWorkspace(workspaceId: string) {
+    if (workspaceId === session.workspace_id) {
+      setOpen(false);
+      return;
+    }
+    setSwitching(true);
+    try {
+      await request(
+        "/auth/workspace",
+        json({ workspace_id: workspaceId }),
+      );
+      await refreshSession();
+      setOpen(false);
+    } finally {
+      setSwitching(false);
+    }
+  }
+
   return (
-    <Link
-      className="account-button"
-      href="/settings"
-      title="账号与工作区"
-    >
-      <span className="account-avatar">
-        <UserRound size={17} />
-      </span>
-      <span>
-        <strong>{session.user.name}</strong>
-        <small>{workspace?.name ?? "选择工作区"}</small>
-      </span>
-    </Link>
+    <div className="account-menu" ref={rootRef}>
+      <button
+        className="account-button"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="账号与工作区"
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+            requestAnimationFrame(() => menuItems.current[0]?.focus());
+          }
+        }}
+      >
+        <span className="account-avatar">
+          <UserRound size={17} />
+        </span>
+        <span>
+          <strong>{session.user.name}</strong>
+          <small>{workspace?.name ?? "选择工作区"}</small>
+        </span>
+        <ChevronDown className="account-menu-chevron" size={15} aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          className="account-menu-panel"
+          ref={menuRef}
+          role="menu"
+          aria-label="账号与工作区"
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              focusMenuItem(1);
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              focusMenuItem(-1);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              setOpen(false);
+              rootRef.current?.querySelector<HTMLButtonElement>("[aria-haspopup='menu']")?.focus();
+            }
+          }}
+        >
+          <Link
+            ref={(element) => {
+              if (element) menuItems.current[0] = element;
+            }}
+            className="account-menu-item"
+            href="/settings"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+          >
+            <UserRound size={16} />
+            我的账号
+          </Link>
+          <Link
+            ref={(element) => {
+              if (element) menuItems.current[1] = element;
+            }}
+            className="account-menu-item"
+            href="/settings"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+          >
+            <Settings2 size={16} />
+            工作区设置
+          </Link>
+          {session.workspaces.length > 1 && (
+            <>
+              <div className="account-menu-label">切换工作区</div>
+              {session.workspaces.map((item, index) => (
+                <button
+                  key={item.id}
+                  ref={(element) => {
+                    if (element) menuItems.current[index + 2] = element;
+                  }}
+                  className="account-menu-item"
+                  type="button"
+                  role="menuitem"
+                  disabled={switching}
+                  onClick={() => void switchWorkspace(item.id)}
+                >
+                  <span className="account-menu-item-icon">
+                    <Layers3 size={16} />
+                  </span>
+                  {item.name}
+                  {item.id === session.workspace_id && (
+                    <Check className="account-menu-check" size={15} />
+                  )}
+                </button>
+              ))}
+            </>
+          )}
+          <div className="account-menu-divider" />
+          <button
+            ref={(element) => {
+              menuItems.current[session.workspaces.length + 2] = element!;
+            }}
+            className="account-menu-item danger"
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              logout();
+            }}
+          >
+            <LogOut size={16} />
+            退出登录
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

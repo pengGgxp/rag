@@ -427,6 +427,10 @@
   color: var(--success);
   font-size: 13px;
 }
+.account-menu {
+  position: relative;
+  width: 100%;
+}
 .account-button {
   width: 100%;
   display: flex;
@@ -440,6 +444,14 @@
   cursor: pointer;
   color: var(--ink);
   text-decoration: none;
+}
+.account-button .account-menu-chevron {
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.account-button[aria-expanded="true"] .account-menu-chevron {
+  transform: rotate(180deg);
 }
 .sidebar-footer {
   flex-direction: column;
@@ -477,6 +489,63 @@
 .account-button small {
   font-size: 11px;
   color: var(--muted);
+}
+.account-menu-panel {
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(248px, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 16px 40px #172b4d1f, 0 2px 8px #172b4d12;
+}
+.account-menu-item {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+}
+.account-menu-item:hover,
+.account-menu-item:focus-visible {
+  background: var(--surface-muted);
+  color: var(--brand-hover);
+}
+.account-menu-item.danger {
+  color: var(--danger);
+}
+.account-menu-item.danger:hover,
+.account-menu-item.danger:focus-visible {
+  background: #fef2f2;
+  color: var(--danger);
+}
+.account-menu-item-icon {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.account-menu-check {
+  margin-left: auto;
+  color: var(--brand);
+}
+.account-menu-label {
+  padding: 8px 10px 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.account-menu-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--line);
 }
 .settings-shell {
   display: grid;

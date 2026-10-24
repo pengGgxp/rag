@@ -32,6 +32,7 @@ import { TraceInspector } from "./retrieval-panel";
 import { Motion } from "../components/ui/motion";
 import "./chat.css";
 import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
+import { useRouter } from "next/navigation";
 
 type Library = {
   id: string;
@@ -87,13 +88,6 @@ type Generation = {
   epoch: number;
 };
 
-function remember(id?: string) {
-  const url = new URL(window.location.href);
-  url.search = id
-    ? new URLSearchParams({ conversation: id }).toString()
-    : "chat=1";
-  window.history.replaceState(null, "", url);
-}
 function upsert(messages: Message[], message: Message) {
   return [...messages.filter((item) => item.id !== message.id), message].sort(
     (a, b) => a.sequence - b.sequence,
@@ -156,6 +150,7 @@ export function ChatWorkspace({
   onKnowledge: () => void;
   onExtensions: () => void;
 }) {
+  const router = useRouter();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [scope, setScope] = useState<string[]>(
@@ -237,19 +232,19 @@ export function ChatWorkspace({
         .catch((error) => {
           if (!controller.signal.aborted) {
             report(error);
-            remember();
+            router.replace("/?chat=1", { scroll: false });
           }
         })
         .finally(() => {
           if (!controller.signal.aborted) setLoading(false);
         });
-    } else remember();
+    } else router.replace("/?chat=1", { scroll: false });
     return () => {
       controller.abort();
       epoch.current++;
       void stopGeneration();
     };
-  }, [refreshList, report, stopGeneration]);
+  }, [refreshList, report, router, stopGeneration]);
   useEffect(() => {
     if (!draftScopeInitialized.current && libraries.length) {
       setScope([initialLibraryId || libraries[0].id]);
@@ -296,7 +291,9 @@ export function ChatWorkspace({
       if (epoch.current === currentEpoch) {
         follow.current = true;
         setConversation(detail);
-        remember(detail.id);
+        router.replace(`/?conversation=${encodeURIComponent(detail.id)}`, {
+          scroll: false,
+        });
       }
     } catch (error) {
       if (epoch.current === currentEpoch) report(error);
@@ -321,13 +318,11 @@ export function ChatWorkspace({
     setPreview(null);
     setTrace(null);
     follow.current = true;
-    remember();
+    router.replace("/?chat=1", { scroll: false });
   }
   function leave() {
     void stopGeneration();
-    const url = new URL(window.location.href);
-    url.search = "";
-    window.history.replaceState(null, "", url);
+    router.replace("/", { scroll: false });
     onKnowledge();
   }
   async function reloadCurrent(id: string, currentEpoch: number) {
@@ -385,7 +380,9 @@ export function ChatWorkspace({
         });
         if (epoch.current !== currentEpoch) return;
         setConversation(current);
-        remember(current.id);
+        router.replace(`/?conversation=${encodeURIComponent(current.id)}`, {
+          scroll: false,
+        });
       }
       active = {
         controller,
