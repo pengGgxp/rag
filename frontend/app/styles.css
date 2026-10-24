@@ -265,6 +265,9 @@ p {
   flex-shrink: 0;
 }
 .workspace-settings-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   min-height: 38px;
   justify-content: flex-start;
@@ -272,6 +275,7 @@ p {
   border-radius: 6px;
   color: #586174;
   font-size: 13px;
+  text-decoration: none;
 }
 .workspace-settings-entry:hover {
   background: #eceff4;
