@@ -302,6 +302,25 @@
   min-height: 100dvh;
   background: var(--background);
 }
+.settings-shell-embedded {
+  display: block;
+  min-height: 100%;
+}
+.settings-shell-embedded > .settings-global-sidebar {
+  display: none;
+}
+.settings-shell-embedded > .account-page {
+  min-height: 100%;
+}
+.settings-shell-embedded .account-page-header {
+  padding-left: clamp(24px, 4vw, 56px);
+  padding-right: clamp(24px, 4vw, 56px);
+}
+.settings-shell-embedded .account-page-content {
+  width: min(100%, 1080px);
+  padding-left: clamp(24px, 4vw, 56px);
+  padding-right: clamp(24px, 4vw, 56px);
+}
 .settings-global-sidebar {
   display: flex;
   flex-direction: column;

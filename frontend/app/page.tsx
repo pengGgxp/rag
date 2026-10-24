@@ -18,6 +18,7 @@ import {
   Check,
   ChevronRight,
   CircleAlert,
+  CreditCard,
   FileText,
   FolderClosed,
   History,
@@ -30,9 +31,13 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  ScrollText,
   Settings2,
+  SlidersHorizontal,
   Trash2,
   Upload,
+  UserRound,
+  UsersRound,
   XCircle,
   X,
 } from "lucide-react";
@@ -97,7 +102,23 @@ function extension(filename: string) {
 }
 
 export default function Home() {
-  const { role } = useAuth();
+  const { role, accountTab, accountView, openAccount } = useAuth();
+  const [routeAccountTab, setRouteAccountTab] = useState<typeof accountTab>(accountTab);
+  useEffect(() => setRouteAccountTab(accountTab), [accountTab]);
+  useEffect(() => {
+    const syncRoute = () => {
+      const segments = window.location.pathname.split("/").filter(Boolean);
+      const candidate = segments[0] === "settings" ? segments[1] || "account" : null;
+      setRouteAccountTab(
+        candidate && ["account", "billing", "policies", "members", "audit"].includes(candidate)
+          ? candidate as typeof accountTab
+          : null,
+      );
+    };
+    window.addEventListener("popstate", syncRoute);
+    return () => window.removeEventListener("popstate", syncRoute);
+  }, []);
+  const activeAccountTab = routeAccountTab ?? accountTab;
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -185,6 +206,7 @@ export default function Home() {
     }
   }, []);
   useEffect(() => {
+    if (accountTab) return;
     if (
       new URLSearchParams(window.location.search).has("conversation") ||
       new URLSearchParams(window.location.search).has("chat")
@@ -197,16 +219,18 @@ export default function Home() {
     request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
       "/ingestion/options",
     ).then(setIngestionOptions).catch(notifyError);
-  }, [loadLibraries, notifyError, refreshHealth]);
+  }, [accountTab, loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
+    if (accountTab) return;
     setDocuments([]);
     setPreview(null);
     setDocumentSearch("");
     setTrash(false);
     if (selectedId) loadDocuments(selectedId).catch(notifyError);
     else setLoading(false);
-  }, [selectedId, loadDocuments, notifyError]);
+  }, [accountTab, selectedId, loadDocuments, notifyError]);
   useEffect(() => {
+    if (accountTab) return;
     if (
       !selectedId ||
       !documents.some((doc) => ["queued", "processing"].includes(doc.status))
@@ -217,7 +241,7 @@ export default function Home() {
       loadLibraries().catch(notifyError);
     }, 3000);
     return () => clearInterval(timer);
-  }, [documents, selectedId, loadDocuments, loadLibraries, notifyError]);
+  }, [accountTab, documents, selectedId, loadDocuments, loadLibraries, notifyError]);
   useEffect(() => {
     if (!notice || notice.error) return;
     const timer = setTimeout(() => setNotice(null), 5000);
@@ -513,13 +537,13 @@ export default function Home() {
     setScreen("extensions");
     setSidebarOpen(false);
   }
-  if (screen === "extensions")
+  if (!activeAccountTab && screen === "extensions")
     return <AgentExtensions
       onKnowledge={() => { window.history.replaceState(null, "", "/"); setScreen("catalog"); }}
       onChat={() => { window.history.replaceState(null, "", "/?chat=1"); setChatEntry(value => value + 1); setScreen("chat"); }}
     />;
 
-  if (screen === "chat")
+  if (!activeAccountTab && screen === "chat")
     return (
       <ChatWorkspace
         key={chatEntry}
@@ -559,7 +583,7 @@ export default function Home() {
         </a>
         <nav className="primary-navigation" aria-label="产品导航">
           <button
-            className="selected"
+            className={!activeAccountTab && screen === "catalog" ? "selected" : ""}
             onClick={() => {
               setScreen("catalog");
               setSidebarOpen(false);
@@ -580,7 +604,29 @@ export default function Home() {
             <MessageSquare size={18} />
             知识问答
           </button>
-          <button onClick={showExtensions}><Puzzle size={18} />Agent 扩展</button>
+          <button className={!activeAccountTab && screen === "extensions" ? "selected" : ""} onClick={showExtensions}><Puzzle size={18} />Agent 扩展</button>
+          <div className="management-navigation">
+            <span className="management-navigation-label">管理</span>
+            <button className={activeAccountTab === "account" ? "selected" : ""} onClick={() => openAccount("account")}>
+              <UserRound size={18} />我的账号
+            </button>
+            <button className={activeAccountTab === "billing" ? "selected" : ""} onClick={() => openAccount("billing")}>
+              <CreditCard size={18} />积分与充值
+            </button>
+            {role === "admin" && (
+              <>
+                <button className={activeAccountTab === "policies" ? "selected" : ""} onClick={() => openAccount("policies")}>
+                  <SlidersHorizontal size={18} />计费规则
+                </button>
+                <button className={activeAccountTab === "members" ? "selected" : ""} onClick={() => openAccount("members")}>
+                  <UsersRound size={18} />工作区成员
+                </button>
+                <button className={activeAccountTab === "audit" ? "selected" : ""} onClick={() => openAccount("audit")}>
+                  <ScrollText size={18} />审计日志
+                </button>
+              </>
+            )}
+          </div>
           <button
             className="icon-button mobile-only"
             aria-label="关闭导航"
@@ -589,7 +635,7 @@ export default function Home() {
             <X size={18} />
           </button>
         </nav>
-        {screen !== "catalog" && (
+        {!activeAccountTab && screen !== "catalog" && (
           <>
             {screen === "knowledge" && selected && (
               <nav className="knowledge-navigation" aria-label="知识库管理">
@@ -705,6 +751,7 @@ export default function Home() {
         </div>
       </aside>
       <main className="main">
+        {activeAccountTab && accountView ? accountView : <>
         <header className="topbar">
           <div className="breadcrumbs">
             <button
@@ -1249,6 +1296,7 @@ export default function Home() {
             )}
           </div>
         )}
+        </>}
       </main>
       <AnimatePresence initial={false}>
         {notice && (

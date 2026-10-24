@@ -74,7 +74,13 @@ type Session = {
   workspace_id: string;
   csrf_token: string;
 };
-type Auth = { session: Session; role?: Role; openAccount: () => void };
+type Auth = {
+  session: Session;
+  role?: Role;
+  accountTab: AccountTab | null;
+  accountView: ReactNode;
+  openAccount: (tab?: AccountTab) => void;
+};
 const AuthContext = createContext<Auth | null>(null);
 export function useAuth() {
   const auth = useContext(AuthContext);
@@ -119,7 +125,7 @@ export function AccountButton() {
   return (
     <button
       className="account-button"
-      onClick={openAccount}
+      onClick={() => openAccount()}
       title="账号与工作区"
     >
       <span className="account-avatar">
@@ -139,6 +145,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [account, setAccount] = useState(false);
+  const [accountTab, setAccountTab] = useState<AccountTab | null>(null);
   const [returnPath, setReturnPath] = useState("/");
   const [mode, setMode] = useState<
     "login" | "register" | "setup" | "forgot" | "reset"
@@ -180,10 +187,12 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     }
     if (window.location.pathname.startsWith("/settings")) {
       setAccount(true);
+      setAccountTab(settingsTabFromLocation());
     } else if (params.has("account")) {
       const legacyTab = params.has("billing") ? "billing" : "account";
       window.history.replaceState(null, "", settingsPath(legacyTab));
       setAccount(true);
+      setAccountTab(legacyTab);
     }
     if (params.has("auth_error")) {
       setError(
@@ -194,11 +203,16 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       window.history.replaceState(null, "", "/");
     }
     void reload();
-    const syncRoute = () => setAccount(window.location.pathname.startsWith("/settings"));
+    const syncRoute = () => {
+      const isAccountRoute = window.location.pathname.startsWith("/settings");
+      setAccount(isAccountRoute);
+      setAccountTab(isAccountRoute ? settingsTabFromLocation() : null);
+    };
     window.addEventListener("popstate", syncRoute);
     const expired = () => {
       accept(null);
       setAccount(false);
+      setAccountTab(null);
       setMode("login");
       setError("登录已过期，请重新登录");
     };
@@ -208,14 +222,16 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       window.removeEventListener("rag-session-expired", expired);
     };
   }, [accept, reload]);
-  const openAccount = useCallback(() => {
+  const openAccount = useCallback((tab: AccountTab = "account") => {
     setReturnPath(`${window.location.pathname}${window.location.search}`);
-    window.history.pushState(null, "", settingsPath("account"));
+    window.history.pushState(null, "", settingsPath(tab));
     setAccount(true);
+    setAccountTab(tab);
   }, []);
   const closeAccount = useCallback(() => {
     window.history.pushState(null, "", returnPath || "/");
     setAccount(false);
+    setAccountTab(null);
   }, [returnPath]);
   const workspace = session?.workspaces.find(
     (item) => item.id === session.workspace_id,
@@ -247,27 +263,32 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       value={{
         session,
         role: workspace?.role,
-        openAccount,
-      }}
-    >
-      <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
-        <div className={account ? "app-view app-view-hidden" : "app-view"} aria-hidden={account}>
-          {children}
-        </div>
-        {account && (
+        accountTab,
+        accountView: account ? (
           <AccountPage
             key={session.workspace_id}
             session={session}
             options={options}
+            activeTab={accountTab}
             onClose={closeAccount}
             onSession={accept}
+            onTabChange={setAccountTab}
             onLogout={() => {
               accept(null);
               setAccount(false);
+              setAccountTab(null);
               setMode("login");
             }}
+            embedded
           />
-        )}
+        ) : null,
+        openAccount,
+      }}
+    >
+      <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
+        <div className="app-view">
+          {children}
+        </div>
       </div>
       {!workspace && !account && (
         <Modal title="工作区访问已变更" onClose={() => setAccount(true)}>
@@ -581,13 +602,19 @@ function AccountPage({
   options,
   onClose,
   onSession,
+  onTabChange,
   onLogout,
+  embedded = false,
+  activeTab,
 }: {
   session: Session;
   options: AuthOptions;
   onClose: () => void;
   onSession: (session: Session) => void;
+  onTabChange?: (tab: AccountTab) => void;
   onLogout: () => void;
+  embedded?: boolean;
+  activeTab?: AccountTab | null;
 }) {
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
@@ -613,12 +640,20 @@ function AccountPage({
   const [notice, setNotice] = useState("");
   const [usage, setUsage] = useState<CreditUsage | null>(null);
   useEffect(() => {
-    const syncTab = () => setTab(settingsTabFromLocation());
+    const syncTab = () => {
+      const next = settingsTabFromLocation();
+      setTab(next);
+      onTabChange?.(next);
+    };
     window.addEventListener("popstate", syncTab);
     return () => window.removeEventListener("popstate", syncTab);
-  }, []);
+  }, [onTabChange]);
+  useEffect(() => {
+    if (activeTab) setTab(activeTab);
+  }, [activeTab]);
   function navigateTab(next: AccountTab) {
     setTab(next);
+    onTabChange?.(next);
     window.history.pushState(null, "", settingsPath(next));
   }
   const load = useCallback(
@@ -706,7 +741,7 @@ function AccountPage({
     },
   } as const;
   return (
-    <div className="settings-shell">
+    <div className={`settings-shell${embedded ? " settings-shell-embedded" : ""}`}>
       <aside className="settings-global-sidebar" aria-label="产品导航">
         <a className="settings-brand" href="/">
           <span className="brand-mark">
@@ -770,7 +805,7 @@ function AccountPage({
           </div>
         </div>
       </aside>
-      <main className="account-page">
+      <div className="account-page">
       <div className="account-settings">
         <header className="account-page-header">
           <div className="account-page-heading">
@@ -1069,7 +1104,7 @@ function AccountPage({
             )}
           </section>
       </div>
-      </main>
+      </div>
     </div>
   );
 }
