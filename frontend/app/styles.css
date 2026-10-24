@@ -1247,6 +1247,7 @@ thead {
   flex-shrink: 0;
 }
 .primary-navigation > button:not(.icon-button),
+.management-navigation > button,
 .knowledge-navigation > button:not(.back-link) {
   width: 100%;
   min-height: 39px;
@@ -1257,10 +1258,12 @@ thead {
   font-size: 13px;
 }
 .primary-navigation > button:hover,
+.management-navigation > button:hover,
 .knowledge-navigation > button:hover {
   background: #eceff4;
 }
 .primary-navigation > button.selected,
+.management-navigation > button.selected,
 .knowledge-navigation > button.selected {
   background: #e9effc;
   color: #245bd0;
