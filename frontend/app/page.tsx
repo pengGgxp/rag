@@ -10,6 +10,7 @@ import { useUiStore } from "./ui-store";
 import { AnimatePresence } from "motion/react";
 import { Motion } from "../components/ui/motion";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   ArrowRight,
   ArrowLeft,
@@ -97,26 +98,7 @@ function extension(filename: string) {
 }
 
 export default function Home() {
-  const { role, accountTab, accountView, openAccount, closeAccount } = useAuth();
-  const dedicatedSettings =
-    typeof window !== "undefined" &&
-    window.location.pathname.startsWith("/settings");
-  const [routeAccountTab, setRouteAccountTab] = useState<typeof accountTab>(accountTab);
-  useEffect(() => setRouteAccountTab(accountTab), [accountTab]);
-  useEffect(() => {
-    const syncRoute = () => {
-      const segments = window.location.pathname.split("/").filter(Boolean);
-      const candidate = segments[0] === "settings" ? segments[1] || "account" : null;
-      setRouteAccountTab(
-        candidate && ["account", "billing", "policies", "members", "audit"].includes(candidate)
-          ? candidate as typeof accountTab
-          : null,
-      );
-    };
-    window.addEventListener("popstate", syncRoute);
-    return () => window.removeEventListener("popstate", syncRoute);
-  }, []);
-  const activeAccountTab = routeAccountTab ?? accountTab;
+  const { role } = useAuth();
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -204,7 +186,6 @@ export default function Home() {
     }
   }, []);
   useEffect(() => {
-    if (accountTab) return;
     if (
       new URLSearchParams(window.location.search).has("conversation") ||
       new URLSearchParams(window.location.search).has("chat")
@@ -217,18 +198,16 @@ export default function Home() {
     request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
       "/ingestion/options",
     ).then(setIngestionOptions).catch(notifyError);
-  }, [accountTab, loadLibraries, notifyError, refreshHealth]);
+  }, [loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
-    if (accountTab) return;
     setDocuments([]);
     setPreview(null);
     setDocumentSearch("");
     setTrash(false);
     if (selectedId) loadDocuments(selectedId).catch(notifyError);
     else setLoading(false);
-  }, [accountTab, selectedId, loadDocuments, notifyError]);
+  }, [selectedId, loadDocuments, notifyError]);
   useEffect(() => {
-    if (accountTab) return;
     if (
       !selectedId ||
       !documents.some((doc) => ["queued", "processing"].includes(doc.status))
@@ -239,7 +218,7 @@ export default function Home() {
       loadLibraries().catch(notifyError);
     }, 3000);
     return () => clearInterval(timer);
-  }, [accountTab, documents, selectedId, loadDocuments, loadLibraries, notifyError]);
+  }, [documents, selectedId, loadDocuments, loadLibraries, notifyError]);
   useEffect(() => {
     if (!notice || notice.error) return;
     const timer = setTimeout(() => setNotice(null), 5000);
@@ -535,13 +514,13 @@ export default function Home() {
     setScreen("extensions");
     setSidebarOpen(false);
   }
-  if (!activeAccountTab && screen === "extensions")
+  if (screen === "extensions")
     return <AgentExtensions
       onKnowledge={() => { window.history.replaceState(null, "", "/"); setScreen("catalog"); }}
       onChat={() => { window.history.replaceState(null, "", "/?chat=1"); setChatEntry(value => value + 1); setScreen("chat"); }}
     />;
 
-  if (!activeAccountTab && screen === "chat")
+  if (screen === "chat")
     return (
       <ChatWorkspace
         key={chatEntry}
@@ -551,10 +530,6 @@ export default function Home() {
         onExtensions={showExtensions}
       />
     );
-
-  if (dedicatedSettings && activeAccountTab && accountView) {
-    return accountView;
-  }
 
   return (
     <div className="workspace">
@@ -574,7 +549,6 @@ export default function Home() {
           href="/"
           onClick={(event) => {
             event.preventDefault();
-            closeAccount("/");
             setScreen("catalog");
             setSidebarOpen(false);
           }}
@@ -586,9 +560,8 @@ export default function Home() {
         </a>
         <nav className="primary-navigation" aria-label="产品导航">
           <button
-            className={!activeAccountTab && screen === "catalog" ? "selected" : ""}
+            className={screen === "catalog" ? "selected" : ""}
             onClick={() => {
-              closeAccount("/");
               setScreen("catalog");
               setSidebarOpen(false);
             }}
@@ -598,7 +571,6 @@ export default function Home() {
           </button>
           <button
             onClick={() => {
-              closeAccount("/?chat=1");
               if (selectedId) openLibrary(selectedId, "chat");
               else {
                 setScreen("chat");
@@ -609,7 +581,7 @@ export default function Home() {
             <MessageSquare size={18} />
             知识问答
           </button>
-          <button className={!activeAccountTab && screen === "extensions" ? "selected" : ""} onClick={() => { closeAccount("/?extensions=1"); showExtensions(); }}><Puzzle size={18} />Agent 扩展</button>
+          <button onClick={showExtensions}><Puzzle size={18} />Agent 扩展</button>
           <button
             className="icon-button mobile-only"
             aria-label="关闭导航"
@@ -618,7 +590,7 @@ export default function Home() {
             <X size={18} />
           </button>
         </nav>
-        {!activeAccountTab && screen !== "catalog" && (
+        {screen !== "catalog" && (
           <>
             {screen === "knowledge" && selected && (
               <nav className="knowledge-navigation" aria-label="知识库管理">
@@ -730,19 +702,18 @@ export default function Home() {
           </>
         )}
         <div className="sidebar-footer">
-          <button
-            className={`workspace-settings-entry ${activeAccountTab ? "selected" : ""}`}
-            onClick={() => openAccount("account")}
+          <Link
+            className="workspace-settings-entry"
+            href="/settings"
             title="工作区设置"
           >
             <Settings2 size={17} />
             <span>工作区设置</span>
-          </button>
+          </Link>
           <AccountButton />
         </div>
       </aside>
       <main className="main">
-        {activeAccountTab && accountView ? accountView : <>
         <header className="topbar">
           <div className="breadcrumbs">
             <button
@@ -1287,7 +1258,6 @@ export default function Home() {
             )}
           </div>
         )}
-        </>}
       </main>
       <AnimatePresence initial={false}>
         {notice && (

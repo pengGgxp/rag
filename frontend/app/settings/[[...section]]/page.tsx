@@ -1,7 +1,7 @@
 "use client";
 
-import Home from "../../page";
+import SettingsPage from "../settings-page";
 
 export default function SettingsRoute() {
-  return <Home />;
+  return <SettingsPage />;
 }
