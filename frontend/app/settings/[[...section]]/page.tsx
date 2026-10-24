@@ -1,5 +1,7 @@
 "use client";
 
+import Home from "../../page";
+
 export default function SettingsRoute() {
-  return null;
+  return <Home />;
 }
