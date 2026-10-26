@@ -34,7 +34,7 @@ export async function request<T>(
   const timer = window.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, REQUEST_TIMEOUT_MS);
+  }, path.startsWith("/auth/") || path.startsWith("/site/settings/auth") ? 60_000 : REQUEST_TIMEOUT_MS);
   const upstreamSignal = options?.signal;
   const abortFromCaller = () => controller.abort();
   upstreamSignal?.addEventListener("abort", abortFromCaller, { once: true });

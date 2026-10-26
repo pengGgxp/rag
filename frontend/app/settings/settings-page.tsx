@@ -271,6 +271,16 @@ function AccountPage({
                     <p>{session.user.email}</p>
                   </div>
                 </div>
+                <div className="account-oauth"><span>邮箱验证</span>{session.user.email_verified ? <span className="auth-success">已验证</span> : <button className="secondary" onClick={() => router.push("/auth/verify-email?returnTo=%2Fsettings")}><ShieldCheck size={15} />验证邮箱</button>}</div>
+                {(options.wechat || session.user.wechat_linked) && <div className="account-oauth"><span>微信</span><button className="secondary" disabled={busy} onClick={() => void action(async () => {
+                  if (session.user.wechat_linked) {
+                    const result = await request<{ message: string }>("/auth/wechat/unlink", json({}));
+                    setNotice(result.message); onSession(await request<Session>("/auth/me"));
+                  } else {
+                    const result = await request<{ url: string }>("/auth/wechat/start", json({ link: true, return_to: "/settings" }));
+                    window.location.assign(result.url);
+                  }
+                })}><ShieldCheck size={15} />{session.user.wechat_linked ? "解除微信绑定" : "绑定微信"}</button></div>}
                 <form
                   className="account-password auth-form"
                   onSubmit={(event) => {

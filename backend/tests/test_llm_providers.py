@@ -28,7 +28,7 @@ def test_admin_can_create_and_switch_chat_model_providers(accounts, monkeypatch)
     switched = owner.post(f"/settings/llm-providers/{second.json()['id']}/activate")
     assert switched.status_code == 200 and switched.json()["active"] is True
     listed = owner.get("/settings/llm-providers").json()
-    assert [item["active"] for item in listed] == [False, True]
+    assert {item["id"]: item["active"] for item in listed} == {first_data["id"]: False, second.json()["id"]: True}
     assert "secret-1" not in owner.get("/settings/llm-providers").text
 
 

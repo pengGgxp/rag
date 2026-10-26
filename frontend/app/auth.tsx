@@ -11,7 +11,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Check,
@@ -28,6 +28,8 @@ import {
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
+import { Authentication } from "./authentication";
+import { AuthFrame } from "./auth-frame";
 import "./auth.css";
 
 export type Role = "admin" | "editor" | "viewer";
@@ -36,6 +38,9 @@ export type AuthOptions = {
   password_reset: boolean;
   setup_available: boolean;
   first_run: boolean;
+  email_code?: boolean;
+  wechat?: boolean;
+  require_verified_email?: boolean;
 };
 type Member = { id: string; name: string; email: string; role: Role };
 export type Session = {
@@ -45,6 +50,9 @@ export type Session = {
     email: string;
     has_password: boolean;
     oauth_linked: boolean;
+    email_verified?: boolean;
+    wechat_linked?: boolean;
+    is_site_admin?: boolean;
   };
   workspaces: { id: string; name: string; role: Role }[];
   workspace_id: string;
@@ -207,6 +215,7 @@ export function AccountButton() {
             <Settings2 size={16} />
             工作区设置
           </Link>
+          {session.user.is_site_admin && <Link className="account-menu-item" href="/admin/auth" role="menuitem" ref={(element) => { if (element) menuItems.current[session.workspaces.length + 2] = element; }} onClick={() => setOpen(false)}><ShieldCheck size={16} />站点管理</Link>}
           {session.workspaces.length > 1 && (
             <>
               <div className="account-menu-label">切换工作区</div>
@@ -236,7 +245,7 @@ export function AccountButton() {
           <div className="account-menu-divider" />
           <button
             ref={(element) => {
-              menuItems.current[session.workspaces.length + 2] = element!;
+              menuItems.current[session.workspaces.length + (session.user.is_site_admin ? 3 : 2)] = element!;
             }}
             className="account-menu-item danger"
             type="button"
@@ -255,7 +264,7 @@ export function AccountButton() {
   );
 }
 
-function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {
+export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {
   if (!error) {
     return (
       <main className="auth-bootstrap-shell" aria-busy="true" aria-label="知库工作区">
@@ -322,6 +331,9 @@ function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () 
 }
 
 export function AuthBoundary({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [session, setSession] = useState<Session | null>(null);
   const [options, setOptions] = useState<AuthOptions | null>(null);
   const [loading, setLoading] = useState(true);
@@ -392,13 +404,24 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     return next;
   }, [accept]);
   const logout = useCallback(() => {
-    accept(null);
-    setMode("login");
-  }, [accept]);
+    void request("/auth/logout", { method: "POST" }).then(() => {
+      accept(null);
+      setMode("login");
+      router.replace("/auth/login");
+    }).catch((e) => setError(errorMessage(e)));
+  }, [accept, router]);
+  useEffect(() => {
+    if (!loading && options && !session && mode !== "reset" && mode !== "setup" && !pathname.startsWith("/auth/")) {
+      const returnTo = `${pathname}${searchParams.size ? `?${searchParams.toString()}` : ""}`;
+      router.replace(`/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+    }
+  }, [loading, options, session, mode, pathname, searchParams, router]);
   if (loading)
     return <AuthBootstrapScreen />;
   if (!options)
     return <AuthBootstrapScreen error={error || "服务暂时不可用"} onRetry={() => void reload()} />;
+  if (mode !== "reset" && mode !== "setup" && (!session || (pathname.startsWith("/auth/") && pathname !== "/auth/login")))
+    return <Authentication options={options} session={session} onSession={accept} />;
   if (!session || mode === "reset" || mode === "setup")
     return (
       <LoginForm
@@ -529,28 +552,7 @@ function LoginForm({
     }
   }
   return (
-    <main className="auth-screen">
-      <aside className="auth-intro">
-        <a className="auth-brand" href="/">
-          <span className="brand-mark">
-            <Layers3 size={22} />
-          </span>
-          <span>知库</span>
-        </a>
-        <div className="auth-intro-copy">
-          <p className="auth-eyebrow">KNOWLEDGE WORKSPACE</p>
-          <h1>让知识成为可执行的工作流。</h1>
-          <p>
-            把资料、文档和对话放在同一个工作空间里，让每个答案都能回到它的来源。
-          </p>
-        </div>
-        <div className="auth-intro-meta">
-          <span>可追溯引用</span>
-          <span>工作区协作</span>
-          <span>智能检索</span>
-        </div>
-      </aside>
-      <section className="auth-form-region">
+    <AuthFrame>
         {["login", "register"].includes(mode) && (
           <div className="auth-mode-tabs" role="tablist" aria-label="账号操作">
             <button
@@ -723,8 +725,7 @@ function LoginForm({
             此页面仅适用于部署者提供的一次性设置链接。
           </p>
         )}
-      </section>
-    </main>
+    </AuthFrame>
   );
 }
 

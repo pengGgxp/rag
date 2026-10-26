@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     smtp_from: str | None = None
     smtp_starttls: bool = True
+    site_config_encryption_key: SecretStr | None = None
     zhifux_enabled: bool = False
     zhifux_api_base_url: str = ""
     zhifux_merchant_num: str = ""

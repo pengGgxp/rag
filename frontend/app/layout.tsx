@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import "./styles.css";
-import { AuthBoundary } from "./auth";
+import { AuthBoundary, AuthBootstrapScreen } from "./auth";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { MotionProvider } from "../components/ui/motion-provider";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: "知库 · 知识工作空间",
@@ -20,10 +20,10 @@ export default function RootLayout({
       <body>
         <MotionProvider>
           <TooltipProvider>
-            <AuthBoundary>
+            <Suspense fallback={<AuthBootstrapScreen />}><AuthBoundary>
               {children}
               {settings}
-            </AuthBoundary>
+            </AuthBoundary></Suspense>
           </TooltipProvider>
         </MotionProvider>
       </body>

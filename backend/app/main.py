@@ -17,6 +17,10 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import SessionLocal, engine, get_db, init_db
 from .auth import Access, BrowserRequestGuard, get_access, permissions_router, router as auth_router
+from .email_auth import router as email_auth_router
+from .wechat_auth import router as wechat_auth_router
+from .site_auth import router as site_auth_router
+from . import auth_logging  # noqa: F401
 from .embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from .llm import (
     LLMConfigurationError,
@@ -1016,6 +1020,9 @@ def answer_knowledge_base(
 
 
 app.include_router(auth_router)
+app.include_router(email_auth_router)
+app.include_router(wechat_auth_router)
+app.include_router(site_auth_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)

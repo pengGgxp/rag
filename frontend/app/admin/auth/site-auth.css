@@ -1,0 +1,18 @@
+.site-auth-console { width: min(100%, 1040px); margin: 0 auto; padding: var(--space-8, 32px); }
+.site-auth-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
+.site-auth-header span, .site-auth-help { color: var(--muted); font-size: 13px; line-height: 1.7; }
+.site-auth-header h1 { font-size: 24px; margin: 8px 0 0; letter-spacing: 0; }
+.site-auth-tabs { display: flex; gap: 8px; margin: 24px 0; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.site-auth-tabs button { display: inline-flex; align-items: center; gap: 8px; padding: 12px; color: var(--muted); border-bottom: 2px solid transparent; }
+.site-auth-tabs button[data-state="active"] { color: var(--brand); border-color: var(--brand); }
+.site-auth-form, .site-auth-test { max-width: 640px; }
+.site-auth-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.site-auth-form [data-state="active"], .site-auth-form fieldset { display: grid; gap: 20px; }
+.site-auth-form h2, .site-auth-test h2 { margin: 0; font-size: 18px; letter-spacing: 0; }
+.site-auth-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.auth-form .site-auth-toggle { display: flex; align-items: center; gap: 10px; }
+.auth-form .site-auth-toggle input { width: 16px; min-height: 16px; height: 16px; accent-color: var(--brand); flex: 0 0 auto; }
+.site-auth-test { margin-top: 36px; padding-top: 24px; border-top: 1px solid var(--line); }
+.site-auth-form button, .site-auth-test button { width: fit-content; min-height: 40px; }
+.site-auth-denied { display: grid; gap: 16px; place-content: center; min-height: 100dvh; padding: 24px; }
+@media (max-width: 600px) { .site-auth-console { padding: 20px 16px; } .site-auth-grid { grid-template-columns: minmax(0, 1fr); } .site-auth-tabs button { padding: 10px 6px; font-size: 13px; } }

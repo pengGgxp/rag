@@ -182,7 +182,10 @@ def test_reset_is_single_use_and_revokes_all_sessions(accounts, monkeypatch):
     settings = auth.get_settings().model_copy(update={"smtp_host": "smtp.example.com", "smtp_from": "rag@example.com"})
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
     sent = []
-    monkeypatch.setattr(auth, "send_reset", lambda email, token: sent.append((email, token)))
+    from app import site_auth, email_auth
+    monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
+    monkeypatch.setattr(email_auth, "email_rate_limit", lambda *_a, **_k: None)
+    monkeypatch.setattr(auth, "send_reset", lambda email, token, db=None: sent.append((email, token)))
     response = owner.post("/auth/forgot-password", json={"email": "owner@example.com"})
     unknown = owner.post("/auth/forgot-password", json={"email": "unknown@example.com"})
     assert response.json() == unknown.json()
@@ -357,6 +360,18 @@ def test_oidc_does_not_merge_by_email_but_supports_explicit_link(accounts, monke
     assert db.scalars(select(ExternalIdentity)).all() == []
     logged_in = owner.post("/auth/login", json={"email": "owner@example.com", "password": PASSWORD})
     owner.headers["X-CSRF-Token"] = logged_in.json()["csrf_token"]
+    # Linking now requires a real mailbox proof even while rollout policy is off.
+    from app import email_auth, site_auth
+    mail_settings = auth.get_settings().model_copy(update={"smtp_host": "smtp.example.com", "smtp_from": "mail@example.com"})
+    monkeypatch.setattr(site_auth, "get_settings", lambda: mail_settings)
+    monkeypatch.setattr(email_auth, "get_settings", lambda: mail_settings)
+    monkeypatch.setattr(email_auth, "email_rate_limit", lambda *_a, **_k: None)
+    codes = []
+    monkeypatch.setattr(email_auth, "send_code_mail", lambda db, email, code, purpose="verify": codes.append(code))
+    assert owner.post("/auth/email/send-code", json={"purpose": "verify"}).status_code == 200
+    verified = owner.post("/auth/email/verify", json={"code": codes[-1]})
+    assert verified.status_code == 200
+    owner.headers["X-CSRF-Token"] = verified.json()["csrf_token"]
     start = owner.post("/auth/oauth/start", json={"link": True})
     state.update(parse_qs(urlparse(start.json()["url"]).query))
     response = owner.get("/auth/oauth/callback", params={"state": state["state"][0], "code": "test-code"}, follow_redirects=False)

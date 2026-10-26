@@ -4,7 +4,6 @@ import secrets
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 from typing import Literal
 from uuid import UUID
 
@@ -220,7 +219,10 @@ def session_info(db, session):
     return {
         "user": {"id": str(user.id), "name": user.name, "email": user.email,
                  "has_password": user.password_hash is not None,
-                 "oauth_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id)))},
+                 "email_verified": user.email_verified_at is not None,
+                 "is_site_admin": user.is_site_admin,
+                 "wechat_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ExternalIdentity.provider.like("senyu:%")))),
+                 "oauth_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ~ExternalIdentity.provider.like("senyu:%"))))},
         "workspaces": [{"id": str(workspace.id), "name": workspace.name, "role": role} for workspace, role in rows],
         "workspace_id": str(session.workspace_id), "csrf_token": session.csrf_token,
     }
@@ -254,6 +256,7 @@ def login_response(db, user, previous=None, workspace_id=None, request=None, act
 
 @router.get("/options")
 def options(db: Session = Depends(get_db)):
+    from .site_auth import email_enabled, verification_required, wechat_enabled
     settings = get_settings()
     # The setup link is only useful while a server-issued one-time token is
     # active. Do not advertise a dead public entry point when setup has not
@@ -269,7 +272,10 @@ def options(db: Session = Depends(get_db)):
     ) is not None
     return {
         "oauth_name": settings.oidc_name if settings.oidc_configured else None,
-        "password_reset": settings.mail_configured,
+        "password_reset": email_enabled(db),
+        "email_code": email_enabled(db),
+        "wechat": wechat_enabled(db),
+        "require_verified_email": verification_required(db),
         "setup_available": not workspace_claimed and bootstrap_ready,
         "first_run": not workspace_claimed,
     }
@@ -277,6 +283,13 @@ def options(db: Session = Depends(get_db)):
 
 @router.post("/register", status_code=201)
 def register(payload: Registration, request: Request, db: Session = Depends(get_db)):
+    from .site_auth import verification_required, email_enabled
+    from .email_auth import complete_registration, CompleteRegistration, find_flow
+    if verification_required(db) or email_enabled(db):
+        flow = find_flow(request, db)
+        if flow.purpose != "register" or flow.data.get("stage") != "profile" or flow.email != normalize_email(payload.email):
+            raise HTTPException(409, "注册邮箱与验证邮箱不一致")
+        return complete_registration(CompleteRegistration(name=payload.name, password=payload.password), request, db)
     rate_limit(request, "register", limit=5)
     if db.scalar(select(User).where(User.email == normalize_email(payload.email))):
         raise HTTPException(409, "邮箱已被使用，请登录或找回密码")
@@ -308,6 +321,10 @@ def login(payload: Credentials, request: Request, db: Session = Depends(get_db))
     valid = passwords.verify(payload.password, user.password_hash if user and user.password_hash else DUMMY_HASH)
     if not user or not user.password_hash or not valid:
         raise HTTPException(401, "邮箱或密码不正确")
+    from .site_auth import verification_required
+    if verification_required(db) and not user.email_verified_at:
+        from .email_auth import password_verification
+        return password_verification(request, db, user, password_proven=True)
     return login_response(db, user, request.cookies.get(COOKIE), request=request)
 
 
@@ -339,6 +356,9 @@ def change_password(payload: PasswordChange, request: Request,
                     session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
     rate_limit(request, "password", limit=10)
     user = db.get(User, session.user_id)
+    from .site_auth import verification_required
+    if verification_required(db) and not user.email_verified_at:
+        raise HTTPException(409, "请先验证邮箱，再设置密码")
     if user.password_hash and not passwords.verify(payload.current_password, user.password_hash):
         raise HTTPException(400, "当前密码不正确")
     user.password_hash = passwords.hash(payload.password)
@@ -388,27 +408,22 @@ class ResetPassword(BaseModel):
     password: str = Field(min_length=12, max_length=128)
 
 
-def send_reset(email, token):
-    settings = get_settings()
-    message = EmailMessage()
-    message["From"] = settings.smtp_from
-    message["To"] = email
-    message["Subject"] = "知库 - 重置密码"
-    message.set_content(f"请在 30 分钟内打开链接重置密码：\n{settings.frontend_url}/?reset={token}\n"
-                        "如果不是你本人操作，请忽略此邮件。")
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
-        if settings.smtp_starttls:
-            smtp.starttls()
-        if settings.smtp_username:
-            smtp.login(settings.smtp_username, settings.smtp_password.get_secret_value() if settings.smtp_password else "")
-        smtp.send_message(message)
+def send_reset(email, token, db=None):
+    from html import escape
+    from .site_auth import send_mail
+    url = f"{get_settings().frontend_url.rstrip('/')}/?reset={token}"
+    send_mail(db, email, "知库 - 重置密码", f"请在 30 分钟内打开链接重置密码：\n{url}\n如果不是你本人操作，请忽略此邮件。",
+              f'<h1>重置知库密码</h1><p><a href="{escape(url, quote=True)}">设置新密码</a></p><p>30 分钟内有效。非本人操作请忽略。</p>')
 
 
 @router.post("/forgot-password")
 def forgot(payload: EmailRequest, request: Request, db: Session = Depends(get_db)):
-    if not get_settings().mail_configured:
+    from .site_auth import email_enabled
+    from .email_auth import email_rate_limit
+    if not email_enabled(db):
         raise HTTPException(503, "管理员尚未配置密码找回邮件服务")
     rate_limit(request, "forgot", limit=5)
+    email_rate_limit(request, db, normalize_email(payload.email), "password-reset")
     user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
     if user:
         raw = secrets.token_urlsafe(48)
@@ -416,8 +431,8 @@ def forgot(payload: EmailRequest, request: Request, db: Session = Depends(get_db
         db.add(AuthToken(token_hash=digest(raw), purpose="reset", user_id=user.id, expires_at=now()+timedelta(minutes=30)))
         db.commit()
         try:
-            send_reset(user.email, raw)
-        except (OSError, smtplib.SMTPException):
+            send_reset(user.email, raw, db)
+        except (OSError, smtplib.SMTPException, HTTPException):
             # Same public result for existing/unknown email, including delivery failures.
             db.execute(delete(AuthToken).where(AuthToken.token_hash == digest(raw)))
             db.commit()
@@ -435,7 +450,7 @@ def reset(payload: ResetPassword, request: Request, db: Session = Depends(get_db
     if user_id is None:
         db.rollback()
         raise HTTPException(400, "重置链接无效或已过期")
-    db.execute(update(User).where(User.id == user_id).values(password_hash=new_hash))
+    db.execute(update(User).where(User.id == user_id).values(password_hash=new_hash, email_verified_at=now()))
     db.execute(delete(AuthToken).where(AuthToken.user_id == user_id, AuthToken.purpose == "reset"))
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
     for workspace_id in db.scalars(select(Membership.workspace_id).where(Membership.user_id == user_id)):
@@ -561,6 +576,9 @@ async def oauth_start(payload: OAuthStart, request: Request, db: Session = Depen
     request.session.clear()
     if payload.link:
         session = current_session(request, db)
+        from .site_auth import verification_required
+        if verification_required(db) and not db.get(User, session.user_id).email_verified_at:
+            raise HTTPException(409, "请先验证邮箱，再绑定登录方式")
         request.session["link_session"] = session.token_hash
     response = await client.authorize_redirect(request, f"{get_settings().api_public_url}/auth/oauth/callback")
     return {"url": response.headers["location"]}
@@ -597,7 +615,16 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
             if db.scalar(select(User).where(User.email == email)):
                 return RedirectResponse(f"{settings.frontend_url}/?auth_error=link_required", status_code=303)
             user, _ = create_user(db, email, (info.get("name") or email.split("@")[0])[:100])
+            user.email_verified_at = now()
             db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=user.id))
+        from .site_auth import verification_required
+        if verification_required(db) and not user.email_verified_at:
+            from .email_auth import password_verification
+            pending = password_verification(request, db, user)
+            response = RedirectResponse(f"{settings.frontend_url}/auth/verify-email", status_code=303)
+            for cookie in pending.headers.getlist("set-cookie"):
+                response.headers.append("set-cookie", cookie)
+            return response
         signed_in = login_response(db, user, request.cookies.get(COOKIE), request=request)
         response = RedirectResponse(settings.frontend_url, status_code=303)
         for cookie in signed_in.headers.getlist("set-cookie"):
