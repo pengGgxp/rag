@@ -12,12 +12,16 @@ export function Dialog({
   onClose,
   busy = false,
   wide = false,
+  fullScreen = false,
+  restoreFocusSelector,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
   wide?: boolean;
+  fullScreen?: boolean;
+  restoreFocusSelector?: string;
 }) {
   return (
     <DialogPrimitive.Root
@@ -29,7 +33,14 @@ export function Dialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="modal-overlay" />
         <DialogPrimitive.Content
-          className={`modal ${wide ? "modal-wide" : ""}`}
+          className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""}`}
+          onCloseAutoFocus={(event) => {
+            if (!restoreFocusSelector) return;
+            event.preventDefault();
+            requestAnimationFrame(() => {
+              document.querySelector<HTMLElement>(restoreFocusSelector)?.focus();
+            });
+          }}
           onEscapeKeyDown={(event) => {
             if (busy) event.preventDefault();
           }}
@@ -38,8 +49,8 @@ export function Dialog({
           }}
         >
           <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: 6 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
+            initial={fullScreen ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+            animate={fullScreen ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
           >
             <div className="modal-heading">
@@ -50,7 +61,6 @@ export function Dialog({
                     className="icon-button"
                     aria-label="关闭"
                     disabled={busy}
-                    onClick={onClose}
                   >
                     <X size={18} />
                   </button>

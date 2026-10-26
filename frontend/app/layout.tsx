@@ -3,6 +3,7 @@ import "./styles.css";
 import { AuthBoundary } from "./auth";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { MotionProvider } from "../components/ui/motion-provider";
+import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
   title: "知库 · 知识工作空间",
@@ -12,13 +13,17 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+  settings,
+}: Readonly<{ children: ReactNode; settings: ReactNode }>) {
   return (
     <html lang="zh-CN">
       <body>
         <MotionProvider>
           <TooltipProvider>
-            <AuthBoundary>{children}</AuthBoundary>
+            <AuthBoundary>
+              {children}
+              {settings}
+            </AuthBoundary>
           </TooltipProvider>
         </MotionProvider>
       </body>

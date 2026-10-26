@@ -991,6 +991,55 @@ tbody tr:hover {
 .modal-wide {
   width: 720px;
 }
+.modal-fullscreen {
+  inset: 0;
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  transform: none;
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+.modal-fullscreen > div {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.modal-fullscreen .modal-heading {
+  flex: 0 0 60px;
+  padding: 0 24px;
+  background: var(--surface);
+}
+.modal-fullscreen .settings-shell {
+  min-height: 0;
+  height: calc(100% - 60px);
+  overflow: auto;
+}
+.account-page-layer,
+.account-page-layer .account-settings {
+  min-height: 0;
+  height: 100%;
+}
+.modal-fullscreen .account-page-layer {
+  overflow: auto;
+}
+.workspace-settings-overview {
+  display: grid;
+  gap: 20px;
+  max-width: 700px;
+}
+.workspace-settings-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+.workspace-settings-links button {
+  justify-content: space-between;
+  min-height: 48px;
+}
 .modal-heading {
   display: flex;
   align-items: center;

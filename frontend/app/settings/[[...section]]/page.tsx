@@ -1,7 +1,5 @@
-"use client";
-
-import SettingsPage from "../settings-page";
+import StandaloneSettings from "../standalone-settings";
 
 export default function SettingsRoute() {
-  return <SettingsPage />;
+  return <StandaloneSettings />;
 }
