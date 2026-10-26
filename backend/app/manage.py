@@ -13,6 +13,13 @@ from .models import AuthToken, Membership, User, SiteAuthAudit, LEGACY_WORKSPACE
 
 
 def main():
+    if sys.argv[1:] == ["site-audit", "prune"]:
+        from .site_audit import prune
+        with SessionLocal() as db:
+            count = prune(db)
+            db.commit()
+            print(f"Pruned {count} expired site audit events.")
+        return
     if len(sys.argv) == 5 and sys.argv[1] == "site-admin" and sys.argv[2] in ("grant", "revoke") and sys.argv[3] == "--email":
         with SessionLocal() as db:
             user = db.scalar(select(User).where(User.email == sys.argv[4].strip().lower()).with_for_update())
@@ -20,6 +27,8 @@ def main():
                 raise SystemExit("User not found; create the account before granting site administration.")
             user.is_site_admin = sys.argv[2] == "grant"
             db.add(SiteAuthAudit(actor_user_id=user.id, action=f"auth.site_admin_{sys.argv[2]}", details={"source": "server_console"}))
+            from .site_audit import record
+            record(db, user, f"auth.site_admin_{sys.argv[2]}", "user", user.id, details={"source": "server_console"})
             db.commit()
             print(f"Site administration {sys.argv[2]} completed.")
         return

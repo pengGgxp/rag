@@ -114,12 +114,14 @@ def send_code_mail(db, email, code, purpose="verify"):
 def site_admin(session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
     user = db.get(User, session.user_id, populate_existing=True)
     if not user or not user.is_site_admin:
-        raise HTTPException(403, "仅站点管理员可以管理认证服务")
+        raise HTTPException(403, "仅站点管理员可以访问站点管理")
     return user
 
 
 def audit(db, actor, action, details):
     db.add(SiteAuthAudit(actor_user_id=actor.id, action=action, details=details))
+    from .site_audit import record
+    record(db, actor, action, "auth_settings", result="failed" if details.get("accepted") is False else "success", details=details)
 
 
 class SMTPInput(BaseModel):

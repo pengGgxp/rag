@@ -104,6 +104,8 @@ def pending(row, raw=None):
 
 
 def password_verification(request, db, user, *, password_proven=False, return_to="/"):
+    if db.scalar(select(User.is_suspended).where(User.id == user.id)):
+        raise HTTPException(403, "账号已停用，请联系站点管理员")
     row, raw = new_flow(request, db, "verify", user=user, email=user.email,
         data={"password_proven": password_proven, "return_to": safe_return(return_to)})
     db.commit()
@@ -186,6 +188,8 @@ def send_code(payload: SendCode, request: Request, db: Session = Depends(get_db)
     except HTTPException:
         row.code_hash = None
         row.sent_at = None
+        from .site_audit import record
+        record(db, None, "auth.email_delivery_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         response = JSONResponse({"detail": "邮件发送失败，请稍后重试"}, status_code=503)
         if raw:
@@ -211,11 +215,16 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     row = find_flow(request, db)
     email_rate_limit(request, db, row.email or "", row.token_hash, sending=False)
     if row.data.get("stage") != "code" or not row.code_hash or not row.code_expires_at or auth.aware(row.code_expires_at) <= auth.now() or row.attempts >= 5:
+        from .site_audit import record
+        record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
+        db.commit()
         raise HTTPException(400, "验证码已失效，请重新发送")
     row.attempts += 1
     if not secrets.compare_digest(row.code_hash, code_digest(row, payload.code)):
         if row.attempts >= 5:
             row.code_hash = None
+        from .site_audit import record
+        record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         raise HTTPException(400, "验证码不正确")
     row.code_hash = None
@@ -226,6 +235,8 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     user = db.scalar(select(User).where(User.id == row.user_id).with_for_update()) if row.user_id else db.scalar(select(User).where(User.email == row.email).with_for_update())
     if not user or user.email != row.email:
         raise HTTPException(409, "账号状态已改变，请重新开始")
+    if user.is_suspended:
+        raise HTTPException(403, "账号已停用，请联系站点管理员")
     session_hash = row.data.get("session_hash")
     if session_hash:
         current = auth.current_session(request, db)
@@ -236,7 +247,39 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
             user.password_hash = None
         db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
         user.email_verified_at = auth.now()
+        from .site_audit import record
+        record(db, user, "auth.email_verified", "user", user.id, request=request)
     return finish_login(request, db, row, user)
+
+
+class ConfirmEmail(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+@router.post("/email/confirm-link")
+def confirm_link(payload: ConfirmEmail, request: Request, db: Session = Depends(get_db)):
+    from .site_audit import record
+    auth.rate_limit(request, "confirm-email", limit=15)
+    candidate = db.get(AuthToken, auth.digest(payload.token))
+    if not candidate or candidate.purpose != "site_verify" or auth.aware(candidate.expires_at) <= auth.now():
+        record(db, None, "auth.email_verification_failed", "user", request=request, result="failed")
+        db.commit()
+        raise HTTPException(400, "验证链接无效或已过期")
+    user = db.scalar(select(User).where(User.id == candidate.user_id).with_for_update())
+    if not user or user.is_suspended:
+        raise HTTPException(403, "账号不可用，请联系站点管理员")
+    consumed = db.execute(delete(AuthToken).where(AuthToken.token_hash == auth.digest(payload.token),
+        AuthToken.purpose == "site_verify", AuthToken.expires_at > auth.now()).returning(AuthToken.user_id).execution_options(synchronize_session="fetch")).scalar_one_or_none()
+    if consumed is None:
+        raise HTTPException(400, "验证链接无效或已过期")
+    if not user.email_verified_at:
+        user.email_verified_at = auth.now()
+        # This proves email ownership, not the old unverified password.
+        user.password_hash = None
+        db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
+    record(db, user, "auth.email_verified", "user", user.id, request=request, details={"source": "site_admin_resend"})
+    db.commit()
+    return {"message": "邮箱验证成功，请使用邮箱验证码登录后设置密码"}
 
 
 class CompleteRegistration(BaseModel):

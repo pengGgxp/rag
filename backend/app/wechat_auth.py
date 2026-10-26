@@ -128,6 +128,8 @@ def callback(state: str, request: Request, db: Session = Depends(get_db)):
             if not identity:
                 db.add(ExternalIdentity(provider=provider, subject=uid, user_id=current.user_id))
             db.delete(row)
+            from .site_audit import record
+            record(db, db.get(User, current.user_id), "auth.wechat_linked", "user", current.user_id, request=request)
             db.commit()
             response = redirect(safe_return(data.get("return_to")))
             response.delete_cookie(FLOW_COOKIE, path="/")
@@ -149,10 +151,12 @@ def callback(state: str, request: Request, db: Session = Depends(get_db)):
     except (HTTPException, IntegrityError):
         # Consume the callback even on failure; retry always starts a new authorization.
         db.rollback()
+        from .site_audit import record
+        record(db, None, "auth.wechat_failed", "user", request=request, result="failed")
         row = find_flow(request, db, required=False)
         if row:
             row.data = {"stage": "failed", "return_to": safe_return(data.get("return_to"))}
-            db.commit()
+        db.commit()
         return redirect("/auth/login?error=wechat_failed")
 
 
@@ -165,6 +169,8 @@ def unlink(request: Request, db: Session = Depends(get_db), session=Depends(auth
     for row in rows:
         db.delete(row)
     from .audit_log import record_audit
+    from .site_audit import record
+    record(db, user, "auth.wechat_unlinked", "user", user.id, request=request)
     record_audit(db, workspace_id=session.workspace_id, actor_user_id=user.id,
                  action="auth.wechat_unlinked", resource_type="user", resource_id=user.id, request=request)
     db.commit()
