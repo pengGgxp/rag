@@ -23,6 +23,14 @@ export function Dialog({
   fullScreen?: boolean;
   restoreFocusSelector?: string;
 }) {
+  const closeButton = (
+    <DialogPrimitive.Close asChild>
+      <button className="icon-button" aria-label="关闭" title="关闭" disabled={busy}>
+        <X size={18} />
+      </button>
+    </DialogPrimitive.Close>
+  );
+
   return (
     <DialogPrimitive.Root
       open
@@ -55,17 +63,7 @@ export function Dialog({
           >
             <div className="modal-heading">
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-              <Tooltip content="关闭">
-                <DialogPrimitive.Close asChild>
-                  <button
-                    className="icon-button"
-                    aria-label="关闭"
-                    disabled={busy}
-                  >
-                    <X size={18} />
-                  </button>
-                </DialogPrimitive.Close>
-              </Tooltip>
+              {fullScreen ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
             </div>
             <DialogPrimitive.Description className="sr-only">
               {title}

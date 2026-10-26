@@ -136,7 +136,7 @@ function AccountPage({
       !returnTo.startsWith("//") && !returnTo.includes("\\") &&
       !returnTo.startsWith("/settings");
     const query = validReturnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : "";
-    router.push(`${settingsPath(next)}${query}`);
+    router.replace(`${settingsPath(next)}${query}`, { scroll: false });
   }
 
   const load = useCallback(

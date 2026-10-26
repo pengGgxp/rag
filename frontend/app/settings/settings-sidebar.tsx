@@ -52,6 +52,8 @@ export function SettingsSidebar({
         <div className="settings-nav-group">
           <span className="settings-nav-group-label">工作区</span>
           <Link
+            replace
+            scroll={false}
             href={settingsPath("workspace", returnTo)}
             data-active={activeSection === "workspace"}
           >
@@ -59,6 +61,8 @@ export function SettingsSidebar({
             工作区概览
           </Link>
           <Link
+            replace
+            scroll={false}
             href={settingsPath("billing", returnTo)}
             data-active={activeSection === "billing"}
           >
@@ -67,13 +71,13 @@ export function SettingsSidebar({
           </Link>
           {role === "admin" && (
             <>
-              <Link href={settingsPath("policies", returnTo)} data-active={activeSection === "policies"}>
+              <Link replace scroll={false} href={settingsPath("policies", returnTo)} data-active={activeSection === "policies"}>
                 <SlidersHorizontal size={17} />计费规则
               </Link>
-              <Link href={settingsPath("members", returnTo)} data-active={activeSection === "members"}>
+              <Link replace scroll={false} href={settingsPath("members", returnTo)} data-active={activeSection === "members"}>
                 <UsersRound size={17} />工作区成员
               </Link>
-              <Link href={settingsPath("audit", returnTo)} data-active={activeSection === "audit"}>
+              <Link replace scroll={false} href={settingsPath("audit", returnTo)} data-active={activeSection === "audit"}>
                 <ScrollText size={17} />审计日志
               </Link>
             </>
@@ -82,6 +86,8 @@ export function SettingsSidebar({
         <div className="settings-nav-group settings-nav-group-management">
           <span className="settings-nav-group-label">账号</span>
           <Link
+            replace
+            scroll={false}
             href={settingsPath("account", returnTo)}
             data-active={activeSection === "account"}
           >
