@@ -23,7 +23,7 @@ def layout(page=0, text="Contract term is one year.", index=0, **kwargs):
     }
 
 
-def test_stream_upload_is_bounded_and_does_not_enable_vlm():
+def test_stream_upload_has_no_former_page_cap_and_does_not_enable_vlm():
     calls = []
 
     def submit(request, runtime):
@@ -32,16 +32,16 @@ def test_stream_upload_is_bounded_and_does_not_enable_vlm():
         assert runtime.autoretry is False
         return response(SimpleNamespace(id="remote-job"))
 
-    provider = AliyunDocMind(configured(docmind_max_pages=2), SimpleNamespace(
+    provider = AliyunDocMind(configured(), SimpleNamespace(
         submit_doc_parser_job_advance=submit,
     ))
-    assert provider.submit(b"private pdf", 2) == "remote-job"
-    assert calls[0].page_index == "1-2"
+    assert provider.submit(b"private pdf", 501) == "remote-job"
+    assert calls[0].page_index == "1-501"
     assert calls[0].output_format == ["markdown", "visualLayoutInfo"]
     assert calls[0].llm_enhancement is False
     assert calls[0].formula_enhancement is False
-    with pytest.raises(DocMindError, match="页数"):
-        provider.submit(b"private pdf", 3)
+    with pytest.raises(DocMindError, match="没有可解析"):
+        provider.submit(b"private pdf", 0)
     assert len(calls) == 1
 
 
@@ -134,3 +134,48 @@ def test_missing_credentials_are_rejected():
             aliyun_access_key_id=None,
             aliyun_access_key_secret=None,
         ))
+
+
+def test_pdf_batch_preflight_covers_every_page_and_respects_size(monkeypatch):
+    import io
+    from pypdf import PdfReader, PdfWriter
+    from app import docmind
+
+    writer = PdfWriter()
+    for _ in range(5):
+        writer.add_blank_page(width=600, height=800)
+    stream = io.BytesIO()
+    writer.write(stream)
+    content = stream.getvalue()
+    pages = PdfReader(io.BytesIO(content)).pages
+    one_page_size = len(docmind.pdf_part(pages, 0, 1))
+    monkeypatch.setattr(docmind, "MAX_SUBMISSION_BYTES", one_page_size + 10)
+    monkeypatch.setattr(docmind, "MAX_SUBMISSION_PAGES", 3)
+    ranges = docmind.submission_ranges(content, pages)
+    assert ranges == [(i, i + 1) for i in range(5)]
+    for start, end in ranges:
+        assert len(PdfReader(io.BytesIO(docmind.pdf_part(pages, start, end))).pages) == 1
+    monkeypatch.setattr(docmind, "MAX_SUBMISSION_BYTES", 1)
+    assert docmind.submission_ranges(content, pages) == [(i, i + 1) for i in range(5)]
+
+
+def test_repeated_result_batch_stops_without_truncating_large_documents():
+    client = SimpleNamespace(
+        query_doc_parser_status_with_options=lambda *_: response(SimpleNamespace(status="Success")),
+        get_doc_parser_result_with_options=lambda *_: response({"layouts": [layout(index=i) for i in range(100)]}),
+    )
+    with pytest.raises(DocMindError, match="重复返回"):
+        AliyunDocMind(configured(), client).collect("remote-job", 1, lambda: None)
+
+
+def test_more_than_50000_layouts_are_not_rejected():
+    def result(request, runtime):
+        return response({"layouts": [layout(text="evidence", index=i)
+                                     for i in range(request.layout_num, min(request.layout_num + 100, 50101))]})
+
+    client = SimpleNamespace(
+        query_doc_parser_status_with_options=lambda *_: response(SimpleNamespace(status="Success")),
+        get_doc_parser_result_with_options=result,
+    )
+    parsed = AliyunDocMind(configured(), client).collect("remote-job", 501, lambda: None)
+    assert len(parsed.pages[0]["blocks"]) == 50101

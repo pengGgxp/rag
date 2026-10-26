@@ -34,7 +34,7 @@ def pdf_job(accounts, monkeypatch):
     writer.write(content)
     monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
-    settings = tasks.get_settings().model_copy(update={"pdf_parser": "aliyun", "docmind_max_pages": 50})
+    settings = tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"})
     monkeypatch.setattr(tasks, "get_settings", lambda: settings)
     embedded = []
     monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: embedded.append(args))
@@ -76,6 +76,8 @@ def test_mixed_pdf_ingestion_is_idempotent_and_page_metadata_reaches_retrieval(p
     db.expire_all()
     assert db.get(IngestionJob, job_id).state == JobState.SUCCEEDED
     assert len(embedded) == 1
+
+
     assert calls == [("submit", 2), ("collect", "known-remote-job")]
     doc = db.get(Document, doc_id)
     assert doc.parsing_metadata["status"] == "complete"
@@ -114,6 +116,11 @@ def test_timeout_retry_reuses_remote_task_instead_of_submitting_again(pdf_job, m
     assert calls == [("submit", 2), ("collect", "known-remote-job")]
     assert reused == [("collect", "known-remote-job")]
     assert len(embedded) == 1
+
+    from app.models import UsageEvent
+    events = db.scalars(select(UsageEvent).where(UsageEvent.capability == "ocr_pages")).all()
+    assert len(events) == 1
+    assert events[0].units == 2
 
 
 @pytest.mark.parametrize("action", ["cancel", "delete"])
@@ -172,16 +179,41 @@ def test_completed_parse_cache_is_reused_on_retry(pdf_job, monkeypatch):
     assert calls == [("submit", 2), ("collect", "known-remote-job")]
 
 
-def test_page_limit_prevents_any_cloud_request(pdf_job, monkeypatch):
-    _, _, db, _, _, job_id, _ = pdf_job
-    settings = tasks.get_settings().model_copy(update={"docmind_max_pages": 1})
-    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
-    calls = fake_provider(monkeypatch)
-    with pytest.raises(DocMindError, match="未提交云端"):
-        tasks.process_document.run(str(job_id))
-    assert not calls
+def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
+    _, _, db, _, doc_id, job_id, _ = pdf_job
+    from app.credits import ensure_account
+    account = ensure_account(db, db.get(Document, doc_id).knowledge_base.workspace_id)
+    account.balance += 10000
+    account.lifetime_granted += 10000
+    db.commit()
+    writer = PdfWriter()
+    for _ in range(501):
+        writer.add_blank_page(width=600, height=800)
+    content = io.BytesIO()
+    writer.write(content)
+    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
+    calls = []
+
+    class Provider:
+        def __init__(self, *_):
+            pass
+
+        def submit(self, content, page_count):
+            calls.append(page_count)
+            return f"long-pdf-job-{len(calls)}"
+
+        def collect(self, task_id, page_count, check):
+            check()
+            return normalize_layouts([{"pageNum": page_count - 1, "text": "Last page evidence"}], page_count)
+
+    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    tasks.process_document.run(str(job_id))
+    assert calls == [500, 1]
     db.expire_all()
-    assert db.get(IngestionJob, job_id).state == JobState.FAILED
+    assert db.get(IngestionJob, job_id).state == JobState.SUCCEEDED
+    chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    assert [chunk.page_number for chunk in chunks] == [500, 501]
+    assert chunks[-1].text == "Last page evidence"
 
 
 def test_ingestion_options_are_authenticated_and_never_include_keys(accounts, monkeypatch):
@@ -192,5 +224,103 @@ def test_ingestion_options_are_authenticated_and_never_include_keys(accounts, mo
     monkeypatch.setattr(main, "get_settings", lambda: tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"}))
     data = owner.get("/ingestion/options").json()
     assert data == {
-        "pdf_parser": "aliyun", "max_pdf_pages": 50, "third_party_processor": "阿里云 DocMind",
+        "pdf_parser": "aliyun", "max_pdf_pages": None, "max_upload_bytes": 200 * 1024 * 1024,
+        "third_party_processor": "阿里云 DocMind",
     }
+
+
+@pytest.mark.parametrize("failure", ["timeout", "uncertain", "rejected"])
+def test_batch_retry_keeps_completed_results_task_ids_and_original_pages(pdf_job, monkeypatch, failure):
+    from app import docmind
+    owner, _, db, _, doc_id, job_id, embedded = pdf_job
+    monkeypatch.setattr(docmind, "MAX_SUBMISSION_PAGES", 1)
+    calls = []
+    failed = False
+
+    class Provider:
+        def __init__(self, *_):
+            pass
+
+        def submit(self, content, page_count):
+            nonlocal failed
+            number = len([call for call in calls if call[0] == "submit"]) + 1
+            calls.append(("submit", number))
+            assert page_count == 1
+            if number == 2 and failure in ("uncertain", "rejected"):
+                failed = True
+                raise DocMindError("submission failed", uncertain=failure == "uncertain")
+            return f"batch-{number}"
+
+        def collect(self, task_id, page_count, check):
+            nonlocal failed
+            calls.append(("collect", task_id))
+            check()
+            if task_id == "batch-2" and failure == "timeout" and not failed:
+                failed = True
+                raise DocMindError("wait timed out")
+            return normalize_layouts([{"pageNum": 0, "text": f"Evidence {task_id}",
+                                      "pos": [{"x": 10, "y": 20}, {"x": 30, "y": 40}]}], page_count)
+
+    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    with pytest.raises(DocMindError):
+        tasks.process_document.run(str(job_id))
+    db.expire_all()
+    metadata = db.get(Document, doc_id).parsing_metadata
+    assert metadata["parts"][0]["status"] == "complete"
+    next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
+    before_retry = list(calls)
+    if failure == "uncertain":
+        with pytest.raises(DocMindError, match="阻止重复"):
+            tasks.process_document.run(str(next_id))
+        assert calls == before_retry
+        assert not embedded
+        return
+    tasks.process_document.run(str(next_id))
+    assert calls.count(("collect", "batch-1")) == 1
+    assert len([call for call in calls if call[0] == "submit"]) == (2 if failure == "timeout" else 3)
+    db.expire_all()
+    doc = db.get(Document, doc_id)
+    assert doc.parsing_metadata["status"] == "complete"
+    assert all("text" not in part for part in doc.parsing_metadata["parts"])
+    chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    assert [chunk.page_number for chunk in chunks] == [1, 2]
+    for chunk in chunks:
+        assert doc.parsed_text[chunk.char_start:chunk.char_end] == chunk.text
+        assert chunk.source_locations[0]["bbox"] == [10, 20, 30, 40]
+    assert len(embedded) == 1
+    from app.models import UsageEvent
+    events = db.scalars(select(UsageEvent).where(UsageEvent.capability == "ocr_pages")).all()
+    assert len(events) == 1
+    assert events[0].units == 2
+
+
+@pytest.mark.parametrize("action", ["cancel", "delete"])
+def test_batch_interruption_does_not_submit_next_part_or_create_chunks(pdf_job, monkeypatch, action):
+    from app import docmind
+    owner, _, db, _, doc_id, job_id, embedded = pdf_job
+    monkeypatch.setattr(docmind, "MAX_SUBMISSION_PAGES", 1)
+    calls = []
+
+    class Provider:
+        def __init__(self, *_):
+            pass
+
+        def submit(self, content, page_count):
+            calls.append("submit")
+            return "first-batch"
+
+        def collect(self, task_id, page_count, check):
+            calls.append("collect")
+            response = (owner.post(f"/jobs/{job_id}/cancel") if action == "cancel"
+                        else owner.delete(f"/documents/{doc_id}"))
+            assert response.status_code == 200
+            check()
+            raise AssertionError("Cancelled work continued")
+
+    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    tasks.process_document.run(str(job_id))
+    db.expire_all()
+    assert calls == ["submit", "collect"]
+    assert db.get(IngestionJob, job_id).state == JobState.CANCELLED
+    assert db.get(Document, doc_id).parsed_text is None
+    assert not embedded

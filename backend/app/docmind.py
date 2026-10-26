@@ -1,6 +1,8 @@
 """Alibaba Cloud DocMind adapter. Credentials and signed URLs never leave this module."""
 
 import io
+import hashlib
+import json
 import math
 from time import monotonic, sleep
 from typing import Callable
@@ -12,8 +14,41 @@ from alibabacloud_tea_util.models import RuntimeOptions
 
 from .config import Settings, get_settings
 from .parsed_document import ParsedDocument, assemble_pages
+from pypdf import PdfWriter
 
 PARSER_NAME = "aliyun-docmind-v1"
+# Conservative submission budgets; these are not document acceptance limits.
+MAX_SUBMISSION_BYTES = 100 * 1024 * 1024
+MAX_SUBMISSION_PAGES = 500
+
+
+def pdf_part(pages, start: int, end: int) -> bytes:
+    writer = PdfWriter()
+    try:
+        for index in range(start, end):
+            writer.add_page(pages[index])
+        output = io.BytesIO()
+        writer.write(output)
+        return output.getvalue()
+    finally:
+        writer.close()
+
+
+def submission_ranges(content: bytes, pages) -> list[tuple[int, int]]:
+    """Preflight every batch before making any paid submission."""
+    def split(start, end):
+        part = pdf_part(pages, start, end)
+        fits = len(part) <= MAX_SUBMISSION_BYTES
+        del part
+        if fits or end - start == 1:
+            return [(start, end)]
+        middle = (start + end) // 2
+        return split(start, middle) + split(middle, end)
+
+    if len(content) <= MAX_SUBMISSION_BYTES and len(pages) <= MAX_SUBMISSION_PAGES:
+        return [(0, len(pages))]
+    return [part for start in range(0, len(pages), MAX_SUBMISSION_PAGES)
+            for part in split(start, min(start + MAX_SUBMISSION_PAGES, len(pages)))]
 
 
 class DocMindError(ValueError):
@@ -68,8 +103,8 @@ class AliyunDocMind:
         return body.data
 
     def submit(self, content: bytes, page_count: int) -> str:
-        if not 1 <= page_count <= self.settings.docmind_max_pages:
-            raise DocMindError(f"PDF 超过云端解析页数限制（{self.settings.docmind_max_pages} 页）")
+        if page_count < 1:
+            raise DocMindError("PDF 没有可解析页面")
         data = self._request(self.client.submit_doc_parser_job_advance,
                              models.SubmitDocParserJobAdvanceRequest(
                                  file_name="document.pdf", file_name_extension="pdf",
@@ -102,6 +137,7 @@ class AliyunDocMind:
             sleep(self.settings.docmind_poll_seconds)
         layouts = []
         offset, step = 0, 100
+        seen_batches = set()
         while True:
             check()
             data = self._request(self.client.get_doc_parser_result_with_options,
@@ -111,16 +147,19 @@ class AliyunDocMind:
             batch = data.get("layouts", []) if isinstance(data, dict) else None
             if not isinstance(batch, list):
                 raise DocMindError("阿里云返回了无法识别的版面结构")
+            if batch:
+                fingerprint = hashlib.sha256(json.dumps(batch, sort_keys=True).encode()).digest()
+                if fingerprint in seen_batches:
+                    raise DocMindError("阿里云重复返回同一批版面，请重试查询原任务")
+                seen_batches.add(fingerprint)
             layouts.extend(batch)
-            if len(layouts) > 50000:
-                raise DocMindError("阿里云解析结果超过版面数量限制")
             if len(batch) < step:
                 break
             offset += len(batch)
-        return normalize_layouts(layouts, page_count)
+        return normalize_layouts(layouts, page_count, allow_empty=True)
 
 
-def normalize_layouts(layouts: list[dict], page_count: int) -> ParsedDocument:
+def normalize_layouts(layouts: list[dict], page_count: int, *, allow_empty: bool = False) -> ParsedDocument:
     pages: dict[int, list[dict]] = {page: [] for page in range(1, page_count + 1)}
     seen = set()
     for layout in sorted(layouts, key=lambda row: (row.get("pageNum", 0), row.get("index", 0))):
@@ -149,6 +188,6 @@ def normalize_layouts(layouts: list[dict], page_count: int) -> ParsedDocument:
                 pass
         pages[page + 1].append({"text": text, "block_type": kind, "bbox": bbox})
     parsed = assemble_pages(list(pages.items()), PARSER_NAME)
-    if not parsed.text.strip():
+    if not parsed.text.strip() and not allow_empty:
         raise DocMindError("阿里云解析未返回可检索文字，请检查扫描清晰度或文档类型")
     return parsed

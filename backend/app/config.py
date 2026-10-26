@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     pdf_parser: Literal["local", "aliyun"] = "local"
     aliyun_access_key_id: SecretStr | None = None
     aliyun_access_key_secret: SecretStr | None = None
-    docmind_max_pages: int = Field(default=50, ge=1, le=500)
     docmind_timeout_seconds: float = Field(default=300, ge=1, le=1800)
     docmind_poll_seconds: float = Field(default=3, ge=0.1, le=30)
     frontend_url: str = "http://localhost:3000"

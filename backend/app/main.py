@@ -1,5 +1,4 @@
 import hashlib
-import io
 import math
 import re
 import secrets
@@ -75,6 +74,24 @@ from .extensions import router as extensions_router
 from .payments import build_router as build_payment_router
 from .llm_providers import router as llm_providers_router
 from .llm_providers import active_provider_config
+
+MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
+
+
+def inspect_upload(fileobj) -> tuple[int, str]:
+    """Hash the spooled upload without allocating another full-file buffer."""
+    size = 0
+    digest = hashlib.sha256()
+    fileobj.seek(0)
+    while block := fileobj.read(1024 * 1024):
+        size += len(block)
+        if size > MAX_DOCUMENT_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds 200 MB limit")
+        digest.update(block)
+    if not size:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    fileobj.seek(0)
+    return size, digest.hexdigest()
 
 
 @asynccontextmanager
@@ -155,7 +172,8 @@ def ingestion_options(access: Access = Depends(get_access)):
     settings = get_settings()
     return {
         "pdf_parser": settings.pdf_parser,
-        "max_pdf_pages": settings.docmind_max_pages if settings.pdf_parser == "aliyun" else None,
+        "max_pdf_pages": None,
+        "max_upload_bytes": MAX_DOCUMENT_BYTES,
         "third_party_processor": "阿里云 DocMind" if settings.pdf_parser == "aliyun" else None,
     }
 
@@ -324,13 +342,7 @@ def upload_document(
     if file.content_type not in allowed and suffix not in allowed_suffixes:
         raise HTTPException(status_code=415, detail="Unsupported document type")
 
-    content = file.file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(content) > 100 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 100 MB limit")
-
-    digest = hashlib.sha256(content).hexdigest()
+    size_bytes, digest = inspect_upload(file.file)
     existing = db.scalar(
         select(Document).where(
             Document.knowledge_base_id == knowledge_base_id,
@@ -355,7 +367,7 @@ def upload_document(
 
     object_key = f"{knowledge_base_id}/{uuid4()}-{file.filename}"
     upload_fileobj(
-        fileobj=io.BytesIO(content),
+        fileobj=file.file,
         object_key=object_key,
         content_type=file.content_type,
     )
@@ -367,7 +379,7 @@ def upload_document(
         supersedes_id=previous.id if previous else None,
         filename=file.filename or "untitled",
         content_type=file.content_type,
-        size_bytes=len(content),
+        size_bytes=size_bytes,
         object_key=object_key,
         content_hash=digest,
     )

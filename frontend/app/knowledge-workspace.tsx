@@ -344,13 +344,13 @@ export default function KnowledgeWorkspace() {
     }
     const candidates = versionTarget ? selectedFiles.slice(0, 1) : selectedFiles;
     const oversized = selectedFiles.filter(
-      (item) => item.size > 100 * 1024 * 1024,
+      (item) => item.size > 200 * 1024 * 1024,
     );
     if (oversized.length) {
-      setModalError(`${oversized.map((item) => item.name).join("、")} 超过 100 MB`);
+      setModalError(`${oversized.map((item) => item.name).join("、")} 超过 200 MB`);
     }
     setFiles(
-      candidates.filter((item) => item.size <= 100 * 1024 * 1024),
+      candidates.filter((item) => item.size <= 200 * 1024 * 1024),
     );
     setUploadFailures([]);
   }
@@ -1323,14 +1323,14 @@ export default function KnowledgeWorkspace() {
               </span>
               <small>
                 {versionTarget
-                  ? "单个文件最大 100 MB"
-                  : "可一次选择多个文件，单个文件最大 100 MB"}
+                  ? "单个文件最大 200 MB"
+                  : "可一次选择多个文件，单个文件最大 200 MB"}
               </small>
             </label>
             {ingestionOptions?.third_party_processor && (
               <p className="field-hint">
-                PDF 将上传至{ingestionOptions.third_party_processor}进行文字与版面解析，
-                每份最多 {ingestionOptions.max_pdf_pages} 页。请确认你有权上传相关资料。
+                PDF 将上传至{ingestionOptions.third_party_processor}进行文字与版面解析。
+                请确认你有权上传相关资料。
               </p>
             )}
             {files.length > 0 && (

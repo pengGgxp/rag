@@ -4,8 +4,11 @@ from uuid import UUID
 
 from .config import get_settings
 from .db import SessionLocal
-from .docmind import AliyunDocMind, DocMindError, PARSER_NAME, ParsingCancelled
-from .parsed_document import ParsedDocument, parsed_chunks
+from .docmind import (
+    AliyunDocMind, DocMindError, PARSER_NAME, ParsingCancelled,
+    MAX_SUBMISSION_BYTES, pdf_part, submission_ranges,
+)
+from .parsed_document import ParsedDocument, assemble_pages, parsed_chunks
 from .embedding import EmbeddingConfigurationError, OpenAICompatibleEmbeddingProvider
 from .models import (
     Chunk,
@@ -34,12 +37,16 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     metadata = document.parsing_metadata or {}
     if metadata.get("status") == "complete" and document.parsed_text:
         return ParsedDocument(document.parsed_text, document.parser_name, metadata["pages"])
-    if settings.pdf_parser == "local" and not metadata.get("task_id"):
+    if settings.pdf_parser == "local" and not metadata.get("task_id") and not metadata.get("parts"):
         return parse_local_pdf(content)
 
-    page_count = len(pdf_pages(content))
-    if page_count > settings.docmind_max_pages:
-        raise DocMindError(f"PDF 超过云端解析页数限制（{settings.docmind_max_pages} 页），未提交云端")
+    pages = pdf_pages(content)
+    page_count = len(pages)
+    if not metadata.get("task_id") and metadata.get("status") != "submitting":
+        ranges = ([(part["start"], part["end"]) for part in metadata["parts"]]
+                  if metadata.get("parts") else submission_ranges(content, pages))
+        if len(ranges) > 1 or len(content) > MAX_SUBMISSION_BYTES or metadata.get("parts"):
+            return parse_batched_pdf(session, job, document, pages, ranges, settings)
     provider = AliyunDocMind(settings)
     workspace_id = document.knowledge_base.workspace_id
     ocr_hold = False
@@ -102,6 +109,88 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     document.parsing_metadata = {**metadata, "status": "complete", "pages": parsed.pages}
     session.commit()
     return parsed
+
+
+def parse_batched_pdf(session, job, document, pages, ranges, settings) -> ParsedDocument:
+    """Persist each paid submission and its result before moving to the next batch."""
+    import copy
+
+    provider = AliyunDocMind(settings)
+    workspace_id = document.knowledge_base.workspace_id
+    metadata = copy.deepcopy(document.parsing_metadata or {
+        "provider": PARSER_NAME, "status": "processing", "page_count": len(pages),
+        "parts": [{"start": start, "end": end, "status": "pending"} for start, end in ranges],
+        "config": {"llm_enhancement": False, "formula_enhancement": False,
+                   "output_format": ["markdown", "visualLayoutInfo"]},
+    })
+
+    def check_active():
+        session.refresh(job)
+        session.refresh(document)
+        if job.state != JobState.RUNNING or document.status == DocumentStatus.DELETED:
+            raise ParsingCancelled()
+
+    def save():
+        document.parsing_metadata = copy.deepcopy(metadata)
+        session.commit()
+
+    check_active()
+    if any(part["status"] == "submitting" and not part.get("task_id") for part in metadata["parts"]):
+        raise DocMindError("上次云端提交结果未知，已阻止重复付费提交，请由管理员核对云端任务")
+    hold_amount = authorization_hold_amount()
+    authorization_hold(session, workspace_id, None, job.id, hold_amount)
+    session.commit()
+    combined = []
+    try:
+        for part in metadata["parts"]:
+            check_active()
+            if part["status"] != "complete":
+                if not part.get("task_id"):
+                    content = pdf_part(pages, part["start"], part["end"])
+                    part["status"] = "submitting"
+                    save()
+                    try:
+                        part["task_id"] = provider.submit(content, part["end"] - part["start"])
+                    except DocMindError as exc:
+                        if not exc.uncertain:
+                            part["status"] = "pending"
+                            save()
+                        raise
+                    finally:
+                        del content
+                    part["status"] = "processing"
+                    save()
+                parsed = provider.collect(part["task_id"], part["end"] - part["start"], check_active)
+                check_active()
+                part.update(status="complete", text=parsed.text, pages=parsed.pages)
+                save()
+            for page in part["pages"]:
+                combined.append((part["start"] + page["page_number"], [
+                    {**block, "text": part["text"][block["char_start"]:block["char_end"]]}
+                    for block in page["blocks"]
+                ]))
+        check_active()
+        parsed = assemble_pages(combined, PARSER_NAME)
+        if not parsed.text.strip():
+            raise DocMindError("阿里云解析未返回可检索文字，请检查扫描清晰度或文档类型")
+        event = settle_usage(
+            session, workspace_id, None, job.id, "ocr_pages", len(pages), event_key="ocr",
+            metadata={"document_id": str(document.id), "provider": PARSER_NAME},
+        )
+        reconcile_hold(session, workspace_id, None, job.id, event.credits, hold_amount)
+        document.parsed_text = parsed.text
+        document.parser_name = parsed.parser_name
+        # Final text/locations replace the temporary per-batch caches.
+        for part in metadata["parts"]:
+            part.pop("text", None)
+            part.pop("pages", None)
+        metadata.update(status="complete", pages=parsed.pages)
+        save()
+        return parsed
+    except Exception:
+        release_hold(session, workspace_id, None, job.id, hold_amount)
+        session.commit()
+        raise
 
 
 @celery_app.task(bind=True, autoretry_for=(ConnectionError,), retry_backoff=True, max_retries=3)

@@ -31,10 +31,14 @@ export async function request<T>(
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
+  const timeout = options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
+    ? 30 * 60_000
+    : path.startsWith("/auth/") || path.startsWith("/site/settings/auth") || path.endsWith("/resend-verification")
+      ? 60_000 : REQUEST_TIMEOUT_MS;
   const timer = window.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, path.startsWith("/auth/") || path.startsWith("/site/settings/auth") || path.endsWith("/resend-verification") ? 60_000 : REQUEST_TIMEOUT_MS);
+  }, timeout);
   const upstreamSignal = options?.signal;
   const abortFromCaller = () => controller.abort();
   upstreamSignal?.addEventListener("abort", abortFromCaller, { once: true });
