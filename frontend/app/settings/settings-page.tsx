@@ -1,13 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Check,
   ChevronLeft,
   ChevronRight,
-  LogOut,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -54,6 +53,7 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 const ACCOUNT_TABS: AccountTab[] = [
   "account",
+  "workspace",
   "billing",
   "policies",
   "members",
@@ -76,14 +76,14 @@ function settingsTabFromPath(pathname: string): AccountTab {
     : "account";
 }
 
-export default function SettingsPage() {
-  const { session, options, refreshSession, logout } = useAuth();
+export default function SettingsPage({ standalone = true }: { standalone?: boolean }) {
+  const { session, options, refreshSession } = useAuth();
   return (
     <AccountPage
       session={session}
       options={options}
       onSession={refreshSession}
-      onLogout={logout}
+      standalone={standalone}
     />
   );
 }
@@ -92,15 +92,16 @@ function AccountPage({
   session,
   options,
   onSession,
-  onLogout,
+  standalone,
 }: {
   session: Session;
   options: AuthOptions;
   onSession: (session: Session) => void;
-  onLogout: () => void;
+  standalone: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   )?.role;
@@ -130,7 +131,12 @@ function AccountPage({
   }, [pathname]);
 
   function navigateTab(next: AccountTab) {
-    router.push(settingsPath(next));
+    const returnTo = searchParams.get("returnTo");
+    const validReturnTo = returnTo && returnTo.startsWith("/") &&
+      !returnTo.startsWith("//") && !returnTo.includes("\\") &&
+      !returnTo.startsWith("/settings");
+    const query = validReturnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : "";
+    router.push(`${settingsPath(next)}${query}`);
   }
 
   const load = useCallback(
@@ -181,7 +187,7 @@ function AccountPage({
   }, []);
 
   useEffect(() => {
-    if (tab === "account") void loadUsage().catch((e) => setError(errorMessage(e)));
+    if (tab === "workspace") void loadUsage().catch((e) => setError(errorMessage(e)));
   }, [tab, loadUsage]);
 
   async function action(run: () => Promise<void>) {
@@ -206,7 +212,11 @@ function AccountPage({
   const tabMeta = {
     account: {
       title: "我的账号",
-      description: "管理登录方式、当前工作区和账号安全设置。",
+      description: "管理个人资料、登录方式和账号安全。",
+    },
+    workspace: {
+      title: "工作区概览",
+      description: "查看当前工作区，并进入积分、成员和管理设置。",
     },
     billing: {
       title: "积分与充值",
@@ -229,12 +239,12 @@ function AccountPage({
   return (
     <div className="settings-shell">
       <SettingsSidebar session={session} role={role} activeSection={tab} />
-      <div className="account-page">
+      <div className={`account-page ${standalone ? "" : "account-page-layer"}`}>
         <div className="account-settings">
           <header className="account-page-header">
             <div className="account-page-heading">
-              <p>工作区 / 管理</p>
-              <h1>管理工作台</h1>
+              <p>{tab === "account" ? "账号" : "工作区"}</p>
+              <h1>{tabMeta[tab].title}</h1>
             </div>
           </header>
           <section className="account-page-content">
@@ -261,66 +271,6 @@ function AccountPage({
                     <p>{session.user.email}</p>
                   </div>
                 </div>
-                {usage && (
-                  <section className="credit-usage" aria-label="积分用量">
-                    <div className="credit-usage-heading">
-                      <div>
-                        <span className="credit-label">工作区积分</span>
-                        <strong>{usage.balance.toLocaleString("zh-CN")}</strong>
-                      </div>
-                      <small>
-                        已使用 {usage.lifetime_spent.toLocaleString("zh-CN")} ·
-                        累计获得 {usage.lifetime_granted.toLocaleString("zh-CN")}
-                      </small>
-                    </div>
-                    {usage.entries.length > 0 && (
-                      <div className="credit-entry-list" aria-label="最近积分流水">
-                        {usage.entries.slice(0, 5).map((entry) => (
-                          <div className="credit-entry" key={entry.id}>
-                            <span>{creditKind(entry.kind)}</span>
-                            <strong className={entry.amount < 0 ? "negative" : ""}>
-                              {entry.amount > 0 ? "+" : ""}
-                              {entry.amount}
-                            </strong>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <button
-                      className="text-button credit-billing-link"
-                      onClick={() => navigateTab("billing")}
-                    >
-                      积分与充值
-                      <ArrowRight size={14} />
-                    </button>
-                  </section>
-                )}
-                <label className="account-field">
-                  当前工作区
-                  <select
-                    value={session.workspace_id}
-                    disabled={busy}
-                    onChange={(event) =>
-                      void action(async () => {
-                        onSession(
-                          await request<Session>(
-                            "/auth/workspace",
-                            json({ workspace_id: event.target.value }),
-                          ),
-                        );
-                      })
-                    }
-                  >
-                    {!role && (
-                      <option value={session.workspace_id}>无权访问</option>
-                    )}
-                    {session.workspaces.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} · {ROLE_LABELS[item.role]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <form
                   className="account-password auth-form"
                   onSubmit={(event) => {
@@ -402,20 +352,57 @@ function AccountPage({
                     )}
                   </div>
                 )}
-                <button
-                  className="secondary account-logout"
-                  disabled={busy}
-                  onClick={() =>
-                    void action(async () => {
-                      await request("/auth/logout", { method: "POST" });
-                      onLogout();
-                    })
-                  }
-                >
-                  <LogOut size={16} />
-                  退出登录
-                </button>
               </>
+            ) : tab === "workspace" ? (
+              <div className="workspace-settings-overview">
+                <label className="account-field">
+                  当前工作区
+                  <select
+                    value={session.workspace_id}
+                    disabled={busy}
+                    onChange={(event) => void action(async () => onSession(await request<Session>("/auth/workspace", json({ workspace_id: event.target.value }))))}
+                  >
+                    {session.workspaces.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} · {ROLE_LABELS[item.role]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {usage && (
+                  <section className="credit-usage" aria-label="积分用量">
+                    <div className="credit-usage-heading">
+                      <div>
+                        <span className="credit-label">可用积分</span>
+                        <strong>{usage.balance.toLocaleString("zh-CN")}</strong>
+                      </div>
+                      <small>已使用 {usage.lifetime_spent.toLocaleString("zh-CN")} · 累计获得 {usage.lifetime_granted.toLocaleString("zh-CN")}</small>
+                    </div>
+                    {usage.entries.length > 0 && (
+                      <div className="credit-entry-list" aria-label="最近积分流水">
+                        {usage.entries.slice(0, 5).map((entry) => (
+                          <div className="credit-entry" key={entry.id}>
+                            <span>{creditKind(entry.kind)}</span>
+                            <strong className={entry.amount < 0 ? "negative" : ""}>
+                              {entry.amount > 0 ? "+" : ""}{entry.amount}
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button className="text-button credit-billing-link" onClick={() => navigateTab("billing")}>
+                      积分与充值 <ArrowRight size={14} />
+                    </button>
+                  </section>
+                )}
+                <div className="workspace-settings-links">
+                  {(["billing", ...(role === "admin" ? ["policies", "members", "audit"] : [])] as AccountTab[]).map((section) => (
+                    <button className="secondary" key={section} onClick={() => navigateTab(section)}>
+                      {tabMeta[section].title}<ArrowRight size={14} />
+                    </button>
+                  ))}
+                </div>
+              </div>
             ) : tab === "billing" ? (
               <BillingPanel
                 workspaceName={

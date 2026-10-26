@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Check,
@@ -79,6 +80,13 @@ export function AccountButton() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const returnTo = pathname?.startsWith("/settings")
+    ? "/"
+    : `${pathname || "/"}${searchParams.size ? `?${searchParams.toString()}` : ""}`;
+  const personalSettingsHref = `/settings?returnTo=${encodeURIComponent(returnTo)}`;
+  const workspaceSettingsHref = `/settings/workspace?returnTo=${encodeURIComponent(returnTo)}`;
   const menuItems = useRef<Array<HTMLAnchorElement | HTMLButtonElement>>([]);
 
   useEffect(() => {
@@ -134,6 +142,7 @@ export function AccountButton() {
         className="account-button"
         type="button"
         aria-haspopup="menu"
+        data-account-trigger="true"
         aria-expanded={open}
         title="账号与工作区"
         onClick={() => setOpen((value) => !value)}
@@ -179,7 +188,7 @@ export function AccountButton() {
               if (element) menuItems.current[0] = element;
             }}
             className="account-menu-item"
-            href="/settings"
+            href={personalSettingsHref}
             role="menuitem"
             onClick={() => setOpen(false)}
           >
@@ -191,7 +200,7 @@ export function AccountButton() {
               if (element) menuItems.current[1] = element;
             }}
             className="account-menu-item"
-            href="/settings"
+            href={workspaceSettingsHref}
             role="menuitem"
             onClick={() => setOpen(false)}
           >
