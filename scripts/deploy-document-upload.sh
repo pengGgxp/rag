@@ -44,5 +44,13 @@ fi
 sha256sum -c "$release/env.sha256"
 docker compose exec -T db psql -U rag -d rag -Atc 'SELECT md5(config::text) FROM site_auth_settings ORDER BY id' > "$release/auth-config.after"
 cmp "$release/auth-config.before" "$release/auth-config.after"
-docker compose exec -T worker celery -A app.tasks.celery_app inspect ping --timeout 10
+worker_ready=0
+for attempt in 1 2 3; do
+  if docker compose exec -T worker celery -A app.tasks.celery_app inspect ping --timeout 10; then
+    worker_ready=1
+    break
+  fi
+  sleep 2
+done
+test "$worker_ready" = 1
 docker compose ps
