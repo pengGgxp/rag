@@ -1,5 +1,6 @@
 // Run through playwright-cli run-code --filename=scripts/check-settings-navigation.js.
 async (page) => {
+  const base = new URL(page.url()).origin;
   await page.unrouteAll({ behavior: 'wait' });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -15,8 +16,8 @@ async (page) => {
     '/payments/catalog': { enabled: false, packages: [] },
     '/payments/orders': { items: [], total: 0, page: 1, page_size: 10 },
   };
-  await page.route('http://localhost:8000/**', async route => {
-    const path = new URL(route.request().url()).pathname;
+  await page.route(url => url.origin === 'http://localhost:8000' || (url.origin === base && url.pathname.startsWith('/api/')), async route => {
+    const path = new URL(route.request().url()).pathname.replace(/^\/api/, '');
     if (!(path in fixtures)) throw new Error(`Missing API fixture: ${path}`);
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixtures[path]) });
   });
@@ -42,7 +43,7 @@ async (page) => {
     await page.locator('.modal-fullscreen').waitFor({ state: 'detached' });
   };
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('http://localhost:3000/');
+  await page.goto(base);
   const search = page.getByRole('textbox', { name: '搜索知识库', exact: true });
   await search.fill('preserved search');
   await open();
@@ -52,7 +53,7 @@ async (page) => {
   await closed('/');
   check(await search.inputValue() === 'preserved search', 'Knowledge search state lost');
   results.push('desktop: six sections, one close, preserved knowledge search');
-  await page.goto('http://localhost:3000/?chat=1');
+  await page.goto(`${base}/?chat=1`);
   const draft = page.getByRole('textbox', { name: '向知识库提问', exact: true });
   await draft.fill('preserved draft');
   await open();
@@ -63,7 +64,7 @@ async (page) => {
   await closed('/?chat=1');
   check(await draft.inputValue() === 'preserved draft', 'Chat draft lost');
   results.push('chat: overview button and sidebar, Escape, preserved draft');
-  await page.goto('http://localhost:3000/?extensions=1');
+  await page.goto(`${base}/?extensions=1`);
   const extensionSearch = page.getByRole('textbox', { name: '搜索扩展', exact: true });
   await extensionSearch.fill('preserved extension');
   await open();
@@ -79,7 +80,7 @@ async (page) => {
   await closed('/?extensions=1');
   results.push('Agent: back closes, forward reopens final section, close restores Agent');
   for (const [section, name] of sections) {
-    await page.goto(`http://localhost:3000/settings${section ? `/${section}` : ''}?returnTo=%2F%3Fchat%3D1`);
+    await page.goto(`${base}/settings${section ? `/${section}` : ''}?returnTo=%2F%3Fchat%3D1`);
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
     await page.reload();
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
@@ -90,13 +91,15 @@ async (page) => {
   }
   results.push('direct access: all six routes, reload, internal navigation and returnTo close');
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('http://localhost:3000/');
+  await page.goto(base);
   await open();
+  check(await page.getByRole('dialog').count() === 1, 'Mobile settings stacked above drawer');
   for (const [section, name] of sections) await setting(section, name);
   check(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Mobile horizontal overflow');
   await page.screenshot({ path: 'output/playwright/settings-mobile.png' });
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await closed('/');
+  await page.waitForFunction(() => document.querySelector('[data-workspace-menu]') === document.activeElement);
   results.push('mobile 390px: six sections, one close, no horizontal overflow');
   check(errors.length === 0, `Browser exceptions: ${errors.join('; ')}`);
   return { passed: results, pageErrors: errors };

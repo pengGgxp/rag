@@ -350,6 +350,8 @@ p {
 .modal-side-panel .sidebar { flex: 1; position: static; width: 100%; visibility: visible; transform: none; padding-top: 16px; }
 .workspace-skeleton { display: grid; gap: 16px; padding: 24px var(--workspace-content-padding); }
 .workspace-skeleton .skeleton { height: 48px; margin: 0; }
+.workspace-request-error { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 16px var(--workspace-content-padding); color: var(--danger); }
+.workspace-request-error > span { flex: 1; min-width: 100px; overflow-wrap: anywhere; }
 .page-heading {
   display: flex;
   gap: 17px;
@@ -499,7 +501,7 @@ th.date-column {
   width: 126px;
 }
 th.actions-column {
-  width: 82px;
+  width: 170px;
   border-radius: 0 5px 5px 0;
 }
 td {
@@ -1761,9 +1763,24 @@ thead {
   th:nth-child(2) {
     width: 82px;
   }
-  th.actions-column {
-    width: 35px;
+  .document-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
+  .document-table tbody,
+  .document-table tr { display: block; }
+  .document-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-bottom: 1px solid var(--line);
+    padding-top: 12px;
+  }
+  .document-table td { height: auto; min-width: 0; border: 0; }
+  .document-table td:last-child { grid-column: 1 / -1; padding-block: 4px; }
+  .document-table .row-actions { flex-wrap: wrap; }
   .document-name {
     gap: 9px;
   }

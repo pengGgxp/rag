@@ -6,7 +6,7 @@ import {
   Loader2, Pencil, Plug, Plus, Puzzle, RefreshCw, Search, Trash2, Upload,
 } from "lucide-react";
 import * as Tabs from "../components/ui/tabs";
-import { WorkspaceHeader } from "./workspace-header";
+import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import { downloadFile, request } from "./api";
 import { Modal } from "./modal";
 import { SkillBundleEditor } from "./skill-bundle-editor";
@@ -193,7 +193,7 @@ export function AgentExtensions() {
             }} />
             {error && <p className="extensions-alert" role="alert"><CircleAlert size={16} />{error}</p>}
             {notice && <p className="extensions-success" role="status"><CheckCircle2 size={16} />{notice}</p>}
-            {loading ? <div className="extensions-empty"><Loader2 className="spin" size={24} />正在加载扩展…</div> : <>
+            {loading ? <WorkspaceSkeleton /> : <>
               <Tabs.Content value="mcp">
                 {visibleServers.map(server => (
                   <div className="extension-row" key={server.id}>
@@ -211,7 +211,7 @@ export function AgentExtensions() {
                     </div>
                   </div>
                 ))}
-                {!visibleServers.length && <div className="extensions-empty"><Plug size={28} /><h2>{search ? "未找到连接" : "还没有 MCP 连接"}</h2></div>}
+                {!error && !visibleServers.length && <div className="extensions-empty"><Plug size={28} /><h2>{search ? "未找到连接" : "还没有 MCP 连接"}</h2></div>}
               </Tabs.Content>
               <Tabs.Content value="skill">
                 {visibleSkills.map(skill => (
@@ -229,7 +229,7 @@ export function AgentExtensions() {
                     </div>
                   </div>
                 ))}
-                {!visibleSkills.length && <div className="extensions-empty"><FileCode2 size={28} /><h2>{search ? "未找到 Skill" : "还没有 Skill"}</h2></div>}
+                {!error && !visibleSkills.length && <div className="extensions-empty"><FileCode2 size={28} /><h2>{search ? "未找到 Skill" : "还没有 Skill"}</h2></div>}
               </Tabs.Content>
             </>}
           </section>

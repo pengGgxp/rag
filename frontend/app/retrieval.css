@@ -306,7 +306,7 @@
 }
 @media (max-width: 700px) {
   .retrieval-view {
-    padding: 24px 17px 30px;
+    padding: 24px var(--workspace-content-padding) 30px;
   }
   .retrieval-search-row {
     align-items: stretch;

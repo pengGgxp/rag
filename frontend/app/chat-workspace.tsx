@@ -26,7 +26,7 @@ import {
 import { API_URL, request, streamRequest } from "./api";
 import { Modal } from "./modal";
 import { WorkspaceNavigation } from "./workspace-shell";
-import { WorkspaceHeader } from "./workspace-header";
+import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import { useUiStore } from "./ui-store";
 import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
@@ -143,10 +143,12 @@ function AnswerMarkdown({
 export function ChatWorkspace({
   libraries,
   initialLibraryId,
+  conversationId,
   onExtensions,
 }: {
   libraries: Library[];
   initialLibraryId: string;
+  conversationId: string | null;
   onExtensions: () => void;
 }) {
   const router = useRouter();
@@ -162,6 +164,8 @@ export function ChatWorkspace({
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [conversationError, setConversationError] = useState("");
+  const [reloadAttempt, setReloadAttempt] = useState(0);
   const [asking, setAsking] = useState(false);
   const [phase, setPhase] = useState("");
   const setSidebar = useUiStore((state) => state.setSidebarOpen);
@@ -217,33 +221,46 @@ export function ChatWorkspace({
     }).catch(() => {});
   }, []);
   useEffect(() => {
-    const controller = new AbortController();
     void refreshList();
-    const id = new URLSearchParams(window.location.search).get("conversation");
-    if (id) {
-      setLoading(true);
-      request<Conversation>(`/conversations/${id}`, {
-        signal: controller.signal,
-      })
-        .then((item) => {
-          if (!controller.signal.aborted) setConversation(item);
-        })
-        .catch((error) => {
-          if (!controller.signal.aborted) {
-            report(error);
-            router.replace("/?chat=1", { scroll: false });
-          }
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoading(false);
-        });
-    } else router.replace("/?chat=1", { scroll: false });
     return () => {
-      controller.abort();
       epoch.current++;
       void stopGeneration();
     };
-  }, [refreshList, report, router, stopGeneration]);
+  }, [refreshList, stopGeneration]);
+  useEffect(() => {
+    // Creating a conversation replaces the URL while its stream is already active.
+    if (conversationId && viewRef.current?.id === conversationId) return;
+    const controller = new AbortController();
+    const currentEpoch = ++epoch.current;
+    void stopGeneration();
+    generation.current = null;
+    sending.current = false;
+    setAsking(false);
+    setQuestion("");
+    setPreview(null);
+    setTrace(null);
+    if (viewRef.current) {
+      setScope(viewRef.current.knowledge_bases.map(item => item.id));
+      setDraftExtensions({ skill_ids: viewRef.current.skill_ids ?? [], mcp_server_ids: viewRef.current.mcp_server_ids ?? [] });
+    }
+    setConversation(null);
+    setConversationError("");
+    follow.current = true;
+    setLoading(!!conversationId);
+    if (conversationId) void request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`, { signal: controller.signal })
+      .then(item => {
+        if (!controller.signal.aborted && epoch.current === currentEpoch) setConversation(item);
+      })
+      .catch(error => {
+        if (!controller.signal.aborted && epoch.current === currentEpoch) {
+          setConversationError(error instanceof Error ? error.message : "对话加载失败");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && epoch.current === currentEpoch) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [conversationId, reloadAttempt, stopGeneration]);
   useEffect(() => {
     if (!draftScopeInitialized.current && libraries.length) {
       setScope([initialLibraryId || libraries[0].id]);
@@ -274,31 +291,10 @@ export function ChatWorkspace({
     return () => clearInterval(timer);
   }, [conversation?.id, conversation?.active_request_id, asking]);
 
-  async function select(item: Conversation) {
-    const currentEpoch = ++epoch.current;
-    sending.current = false;
-    setAsking(false);
-    setLoading(true);
+  function select(item: Conversation) {
     setSidebar(false);
-    setQuestion("");
-    setPreview(null);
-    setTrace(null);
-    await stopGeneration();
-    generation.current = null;
-    try {
-      const detail = await request<Conversation>(`/conversations/${item.id}`);
-      if (epoch.current === currentEpoch) {
-        follow.current = true;
-        setConversation(detail);
-        router.replace(`/?conversation=${encodeURIComponent(detail.id)}`, {
-          scroll: false,
-        });
-      }
-    } catch (error) {
-      if (epoch.current === currentEpoch) report(error);
-    } finally {
-      if (epoch.current === currentEpoch) setLoading(false);
-    }
+    if (item.id !== conversationId)
+      router.push(`/?conversation=${encodeURIComponent(item.id)}`, { scroll: false });
   }
   function newChat() {
     ++epoch.current;
@@ -306,6 +302,7 @@ export function ChatWorkspace({
     generation.current = null;
     sending.current = false;
     setConversation(null);
+    setConversationError("");
     if (conversation)
       setScope(conversation.knowledge_bases.map((item) => item.id));
     if (conversation)
@@ -317,7 +314,7 @@ export function ChatWorkspace({
     setPreview(null);
     setTrace(null);
     follow.current = true;
-    router.replace("/?chat=1", { scroll: false });
+    if (conversationId) router.push("/?chat=1", { scroll: false });
   }
   async function reloadCurrent(id: string, currentEpoch: number) {
     try {
@@ -374,6 +371,7 @@ export function ChatWorkspace({
         });
         if (epoch.current !== currentEpoch) return;
         setConversation(current);
+        viewRef.current = current;
         router.replace(`/?conversation=${encodeURIComponent(current.id)}`, {
           scroll: false,
         });
@@ -623,7 +621,7 @@ export function ChatWorkspace({
           )}
         </nav>
       </WorkspaceNavigation>
-        <WorkspaceHeader title={conversation?.title || "新对话"} actions={conversation && (
+        <WorkspaceHeader title={conversation?.title || conversations.find(item => item.id === conversationId)?.title || (conversationId ? "知识问答" : "新对话")} actions={conversation && (
             <>
               <button
                 className="icon-button"
@@ -648,6 +646,11 @@ export function ChatWorkspace({
             </>
           )} />
       <div className="chat-main">
+        {conversationError && <div className="workspace-request-error" role="alert">
+          <CircleAlert size={16} /><span>{conversationError}</span>
+          <button className="secondary" onClick={() => setReloadAttempt(value => value + 1)}><RefreshCw size={15} />重试</button>
+          <button className="secondary" onClick={newChat}><Plus size={15} />新建对话</button>
+        </div>}
         <div className="chat-scope">
           <details className="scope-menu">
             <summary>
@@ -719,15 +722,7 @@ export function ChatWorkspace({
           }}
         >
           {loading ? (
-            <Motion.div
-              className="chat-loading"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-            >
-              <Loader2 size={21} className="spin" />
-              正在加载对话…
-            </Motion.div>
+            <WorkspaceSkeleton />
           ) : !conversation?.messages.length ? (
             <Motion.div
               className="answer-empty"
@@ -976,7 +971,7 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    !question.trim() || loading || extensionsBusy
+                    !question.trim() || loading || extensionsBusy || !!conversationError
                   }
                   type="submit"
                 >

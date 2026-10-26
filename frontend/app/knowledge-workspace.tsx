@@ -9,7 +9,7 @@ import { RetrievalPanel } from "./retrieval-panel";
 import { useUiStore } from "./ui-store";
 import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
 import { KnowledgeNavigation } from "./knowledge-navigation";
-import { WorkspaceHeader } from "./workspace-header";
+import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import type {
   Health,
   KnowledgeBase,
@@ -18,7 +18,7 @@ import type {
   SourceDocument,
   WorkspaceScreen,
 } from "./workspace-types";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence } from "motion/react";
 import { Motion } from "../components/ui/motion";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -72,7 +72,12 @@ function extension(filename: string) {
 
 export default function KnowledgeWorkspace() {
   const router = useRouter();
-  const params = useSearchParams();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const workspaceParams = useRef(searchParams);
+  // Intercepted settings routes keep the workspace mounted beneath the dialog.
+  if (pathname === "/") workspaceParams.current = searchParams;
+  const params = workspaceParams.current;
   const { role } = useAuth();
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
@@ -89,11 +94,20 @@ export default function KnowledgeWorkspace() {
   const requestedView = params.get("view");
   const view: KnowledgeView = requestedView === "retrieval" || requestedView === "permissions" || requestedView === "settings"
     ? requestedView : "documents";
+  useEffect(() => {
+    if (pathname !== "/" || screen !== "knowledge" || !requestedView ||
+        ["documents", "retrieval", "permissions", "settings"].includes(requestedView)) return;
+    const corrected = new URLSearchParams(params.toString());
+    corrected.set("view", "documents");
+    router.replace(`/?${corrected.toString()}`, { scroll: false });
+  }, [pathname, screen, requestedView, params, router]);
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
+  const [libraryError, setLibraryError] = useState("");
+  const [documentError, setDocumentError] = useState("");
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [modal, setModal] = useState<
     "create" | "edit" | "upload" | "versions" | null
@@ -138,6 +152,10 @@ export default function KnowledgeWorkspace() {
     try {
       const data = await request<KnowledgeBase[]>("/knowledge-bases");
       setLibraries(data);
+      setLibraryError("");
+    } catch (error) {
+      setLibraryError(error instanceof Error ? error.message : "知识库加载失败");
+      throw error;
     } finally {
       setLibraryLoading(false);
     }
@@ -149,8 +167,14 @@ export default function KnowledgeWorkspace() {
       const data = await request<SourceDocument[]>(
         `/knowledge-bases/${id}/documents`,
       );
-      if (sequence === documentRequest.current && selectedRef.current === id)
+      if (sequence === documentRequest.current && selectedRef.current === id) {
         setDocuments(data);
+        setDocumentError("");
+      }
+    } catch (error) {
+      if (sequence === documentRequest.current && selectedRef.current === id)
+        setDocumentError(error instanceof Error ? error.message : "文档加载失败");
+      throw error;
     } finally {
       if (sequence === documentRequest.current && selectedRef.current === id)
         setLoading(false);
@@ -165,6 +189,7 @@ export default function KnowledgeWorkspace() {
   }, [loadLibraries, notifyError, refreshHealth]);
   useEffect(() => {
     setDocuments([]);
+    setDocumentError("");
     setPreview(null);
     setDocumentSearch("");
     setTrash(false);
@@ -480,7 +505,8 @@ export default function KnowledgeWorkspace() {
     <>
       <WorkspaceShell screen={screen}>
       {screen === "extensions" ? <AgentExtensions /> : screen === "chat" ? (
-        <ChatWorkspace libraries={libraries} initialLibraryId={selectedId} onExtensions={showExtensions} />
+        <ChatWorkspace libraries={libraries} initialLibraryId={selectedId}
+          conversationId={params.get("conversation")} onExtensions={showExtensions} />
       ) : <>
       <WorkspaceNavigation>
         <KnowledgeNavigation
@@ -527,6 +553,10 @@ export default function KnowledgeWorkspace() {
             </button>
           )} />
         <div className="workspace-body">
+        {libraryError && <div className="workspace-request-error" role="alert">
+          <CircleAlert size={16} /><span>{libraryError}</span>
+          <button className="secondary" onClick={() => void loadLibraries().catch(notifyError)}><RefreshCw size={15} />重试</button>
+        </div>}
         {screen === "catalog" ? (
           <Motion.section
             className="catalog"
@@ -549,6 +579,7 @@ export default function KnowledgeWorkspace() {
                 />
               </label>
             </div>
+            {libraryLoading && <WorkspaceSkeleton />}
             <Motion.div layout className="library-grid">
               {filteredLibraries.map((library, index) => (
                 <Motion.button
@@ -593,7 +624,7 @@ export default function KnowledgeWorkspace() {
                 </Motion.button>
               ))}
             </Motion.div>
-            {!filteredLibraries.length && (
+            {!libraryLoading && !libraryError && !filteredLibraries.length && (
               <Motion.div
                 className="empty-state"
                 initial={{ opacity: 0 }}
@@ -601,9 +632,7 @@ export default function KnowledgeWorkspace() {
               >
                 <BookOpen size={30} />
                 <h2>
-                  {libraryLoading
-                    ? "正在加载…"
-                    : librarySearch
+                  {librarySearch
                       ? "没有匹配的知识库"
                       : "暂无知识库"}
                 </h2>
@@ -758,6 +787,10 @@ export default function KnowledgeWorkspace() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
               >
+                {documentError && <div className="workspace-request-error" role="alert">
+                  <CircleAlert size={16} /><span>{documentError}</span>
+                  <button className="secondary" onClick={() => void loadDocuments(selectedId).catch(notifyError)}><RefreshCw size={15} />重试</button>
+                </div>}
                 <div className="document-toolbar">
                   <div className="document-filters">
                     <button
@@ -816,7 +849,7 @@ export default function KnowledgeWorkspace() {
                     </button>
                   </div>
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap document-table">
                   <table>
                     <thead>
                       <tr>
@@ -975,7 +1008,7 @@ export default function KnowledgeWorkspace() {
                           ))}
                     </tbody>
                   </table>
-                  {!loading && !visibleDocuments.length && (
+                  {!loading && !documentError && !visibleDocuments.length && (
                     <div className="empty-state">
                       <span className="empty-icon">
                         {trash ? (
@@ -1014,20 +1047,17 @@ export default function KnowledgeWorkspace() {
               </Motion.section>
             )}
           </>
-        ) : (
+        ) : libraryLoading ? <WorkspaceSkeleton /> : !libraryError && (
           <div className="workspace-empty">
             <Layers3 size={36} strokeWidth={1.4} />
-            <h1>{libraryLoading ? "正在加载工作空间…" : "我的知识库"}</h1>
-            {!libraryLoading && (
+            <h2>无法访问这个知识库</h2>
+            <p>知识库可能已删除，或你没有访问权限。</p>
               <button
-                className="primary"
-                disabled={!canEdit}
-                onClick={() => openModal("create")}
+                className="secondary"
+                onClick={() => router.replace("/", { scroll: false })}
               >
-                <Plus size={16} />
-                新建知识库
+                查看全部知识库
               </button>
-            )}
           </div>
         )}
         </div>

@@ -200,14 +200,6 @@
   padding: 12px var(--workspace-content-padding) 0;
   scroll-behavior: smooth;
 }
-.chat-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  min-height: 300px;
-  color: #8490a2;
-}
 .chat-messages .answer-empty {
   height: 90%;
   min-height: 180px;

@@ -48,7 +48,9 @@ export function Dialog({
             if (!restoreFocusSelector) return;
             event.preventDefault();
             requestAnimationFrame(() => {
-              document.querySelector<HTMLElement>(restoreFocusSelector)?.focus();
+              const target = Array.from(document.querySelectorAll<HTMLElement>(restoreFocusSelector))
+                .find(element => element.getClientRects().length > 0);
+              (target ?? document.querySelector<HTMLElement>("[data-workspace-menu]"))?.focus();
             });
           }}
           onEscapeKeyDown={(event) => {
@@ -65,7 +67,7 @@ export function Dialog({
           >
             <div className="modal-heading">
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-              {fullScreen ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
+              {fullScreen || sidePanel ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
             </div>
             <DialogPrimitive.Description className="sr-only">
               {title}

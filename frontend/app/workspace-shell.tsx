@@ -6,6 +6,7 @@ import { Dialog } from "../components/ui/dialog";
 import { WorkspaceSidebar } from "./workspace-sidebar";
 import { useUiStore } from "./ui-store";
 import type { WorkspaceScreen } from "./workspace-types";
+import { usePathname } from "next/navigation";
 
 const NavigationSlot = createContext<HTMLDivElement | null>(null);
 
@@ -26,6 +27,8 @@ export function WorkspaceShell({
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [mobile, setMobile] = useState(false);
   const [target, setTarget] = useState<HTMLDivElement | null>(null);
+  const pathname = usePathname();
+  useEffect(() => { setSidebarOpen(false); }, [pathname, setSidebarOpen]);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 700px)");
     const update = () => { setMobile(query.matches); setSidebarOpen(false); };

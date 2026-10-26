@@ -24,3 +24,10 @@ export function WorkspaceHeader({ title, context, actions }: {
     {actions && <div className="workspace-header-actions">{actions}</div>}
   </header>;
 }
+
+export function WorkspaceSkeleton() {
+  return <div className="workspace-skeleton" role="status" aria-label="正在加载">
+    <span className="sr-only">正在加载</span>
+    {Array.from({ length: 3 }, (_, index) => <div className="skeleton" aria-hidden="true" key={index} />)}
+  </div>;
+}
