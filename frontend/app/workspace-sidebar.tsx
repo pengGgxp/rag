@@ -1,204 +1,37 @@
 "use client";
 
-import {
-  ArrowLeft,
-  BookOpen,
-  FolderClosed,
-  Layers3,
-  MessageSquare,
-  Plus,
-  Puzzle,
-  Search,
-  Settings2,
-  X,
-} from "lucide-react";
+import Link from "next/link";
+import type { ReactNode } from "react";
+import { BookOpen, Layers3, MessageSquare, Puzzle } from "lucide-react";
 import { AccountButton } from "./auth";
-import type {
-  KnowledgeBase,
-  KnowledgeView,
-  WorkspaceScreen,
-} from "./workspace-types";
+import type { WorkspaceScreen } from "./workspace-types";
 
-export function WorkspaceSidebar({
-  screen,
-  view,
-  selected,
-  libraries,
-  filteredLibraries,
-  activeDocumentCount,
-  librarySearch,
-  libraryLoading,
-  canEdit,
-  canManagePermissions,
-  onClose,
-  onCatalog,
-  onChat,
-  onExtensions,
-  onViewChange,
-  onLibrarySearchChange,
-  onOpenLibrary,
-  onCreateLibrary,
-}: {
+const destinations = [
+  { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
+  { mode: "chat", href: "/?chat=1", label: "知识问答", icon: MessageSquare },
+  { mode: "extensions", href: "/?extensions=1", label: "Agent 扩展", icon: Puzzle },
+] as const;
+
+export function WorkspaceSidebar({ screen, children, onNavigate }: {
   screen: WorkspaceScreen;
-  view: KnowledgeView;
-  selected?: KnowledgeBase;
-  libraries: KnowledgeBase[];
-  filteredLibraries: KnowledgeBase[];
-  activeDocumentCount: number;
-  librarySearch: string;
-  libraryLoading: boolean;
-  canEdit: boolean;
-  canManagePermissions: boolean;
-  onClose: () => void;
-  onCatalog: () => void;
-  onChat: () => void;
-  onExtensions: () => void;
-  onViewChange: (view: KnowledgeView) => void;
-  onLibrarySearchChange: (value: string) => void;
-  onOpenLibrary: (id: string) => void;
-  onCreateLibrary: () => void;
+  children: ReactNode;
+  onNavigate: () => void;
 }) {
-  return (
-    <>
-      <a className="brand" href="/" onClick={(event) => {
-        event.preventDefault();
-        onCatalog();
-      }}>
-        <span className="brand-mark">
-          <Layers3 size={23} />
-        </span>
-        <span>知库</span>
-      </a>
-      <nav className="primary-navigation" aria-label="产品导航">
-        <button
-          className={screen === "catalog" ? "selected" : ""}
-          onClick={onCatalog}
-        >
-          <BookOpen size={18} />
-          知识库
-        </button>
-        <button onClick={onChat}>
-          <MessageSquare size={18} />
-          知识问答
-        </button>
-        <button onClick={onExtensions}>
-          <Puzzle size={18} />
-          Agent 扩展
-        </button>
-        <button
-          className="icon-button mobile-only"
-          aria-label="关闭导航"
-          onClick={onClose}
-        >
-          <X size={18} />
-        </button>
-      </nav>
-      {screen === "knowledge" && selected && (
-        <nav className="knowledge-navigation" aria-label="知识库管理">
-          <button className="back-link" onClick={onCatalog}>
-            <ArrowLeft size={15} />
-            全部知识库
-          </button>
-          <div className="knowledge-navigation-title">
-            <BookOpen size={18} />
-            <strong>{selected.name}</strong>
-          </div>
-          <button
-            className={view === "documents" ? "selected" : ""}
-            onClick={() => onViewChange("documents")}
-            aria-current={view === "documents" ? "page" : undefined}
-          >
-            <FolderClosed size={16} />
-            文档<span>{activeDocumentCount}</span>
-          </button>
-          <button
-            className={view === "retrieval" ? "selected" : ""}
-            disabled={selected.status === "archived"}
-            onClick={() => onViewChange("retrieval")}
-            aria-current={view === "retrieval" ? "page" : undefined}
-          >
-            <Search size={16} />
-            检索测试
-          </button>
-          {canManagePermissions && (
-            <button
-              className={view === "permissions" ? "selected" : ""}
-              onClick={() => onViewChange("permissions")}
-              aria-current={view === "permissions" ? "page" : undefined}
-            >
-              <Settings2 size={16} />
-              访问权限
-            </button>
-          )}
-          <button
-            className={view === "settings" ? "selected" : ""}
-            onClick={() => onViewChange("settings")}
-            aria-current={view === "settings" ? "page" : undefined}
-          >
-            <Settings2 size={16} />
-            配置
-          </button>
-        </nav>
-      )}
-      {screen !== "catalog" && (
-        <>
-          <div className="sidebar-section-heading">
-            <span>切换知识库</span>
-            <span className="sidebar-heading-actions">
-              <span>{libraries.length}</span>
-              <button
-                className="icon-button"
-                title="新建知识库"
-                aria-label="新建知识库"
-                disabled={!canEdit}
-                onClick={onCreateLibrary}
-              >
-                <Plus size={16} />
-              </button>
-            </span>
-          </div>
-          <label className="search-field sidebar-search">
-            <Search size={15} />
-            <input
-              aria-label="搜索知识库"
-              placeholder="搜索知识库"
-              value={librarySearch}
-              onChange={(event) => onLibrarySearchChange(event.target.value)}
-            />
-          </label>
-          <nav className="library-list" aria-label="知识库">
-            {filteredLibraries.map((library) => (
-              <button
-                key={library.id}
-                className={`library-item ${selected?.id === library.id ? "selected" : ""}`}
-                aria-current={selected?.id === library.id ? "page" : undefined}
-                onClick={() => onOpenLibrary(library.id)}
-              >
-                <BookOpen size={17} />
-                <span>{library.name}</span>
-                <small>{library.document_count}</small>
-              </button>
-            ))}
-            {libraryLoading && <p className="sidebar-empty">正在加载…</p>}
-            {!libraryLoading && !filteredLibraries.length && (
-              <p className="sidebar-empty">
-                {librarySearch ? "没有匹配的知识库" : "暂无知识库"}
-              </p>
-            )}
-          </nav>
-          <button
-            className="create-library"
-            disabled={!canEdit}
-            onClick={onCreateLibrary}
-          >
-            <Plus size={16} />
-            新建知识库
-          </button>
-        </>
-      )}
-      <div className="sidebar-footer">
-        <AccountButton />
-      </div>
-    </>
-  );
+  const mode = screen === "knowledge" ? "catalog" : screen;
+  return <>
+    <Link className="brand" href="/" onClick={onNavigate}>
+      <span className="brand-mark"><Layers3 size={23} /></span><span>知库</span>
+    </Link>
+    <nav className="primary-navigation" aria-label="产品导航">
+      {destinations.map(({ mode: itemMode, href, label, icon: Icon }) => (
+        <Link key={itemMode} href={href} scroll={false} onClick={onNavigate}
+          className={mode === itemMode ? "selected" : undefined}
+          aria-current={mode === itemMode ? "page" : undefined}>
+          <Icon size={18} />{label}
+        </Link>
+      ))}
+    </nav>
+    {children}
+    <div className="sidebar-footer"><AccountButton /></div>
+  </>;
 }

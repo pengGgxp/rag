@@ -167,6 +167,16 @@
 
 ### 4.2 知识库与文档
 
+工作台布局统一约定（Issue #34）：
+
+- 知识库、知识问答、Agent 扩展共用 `WorkspaceShell`、`WorkspaceSidebar` 和 `WorkspaceHeader`；业务模块通过 `WorkspaceNavigation` 将局部导航放进公共侧栏，业务状态仍由所属模块管理。
+- 桌面侧栏 232px，701–1100px 为 218px；700px 以下使用 260px 的 Radix Dialog 抽屉，复用现有 Dialog 的焦点约束、Escape 和关闭后焦点恢复。
+- 公共标题栏桌面 60px、移动端 56px；标题 18px/600，左右间距桌面 32px、移动端 16px。对应 CSS Token 为 `--workspace-sidebar-width`、`--workspace-drawer-width`、`--workspace-header-height`、`--workspace-title-size`、`--workspace-content-padding`。
+- 每页只有一个公共 h1：知识库列表为“知识库”，内部为当前库名称及分区；问答为会话标题或“新对话”；扩展为“Agent 扩展”。不在内容区重复标题。
+- 操作区靠右固定，长标题省略并提供可聚焦 Tooltip；局部状态、搜索、页签和编辑器留在内容区。手机图标操作至少 44px 点击区域。
+- 业务内容局部滚动、加载及重试，公共侧栏与标题不随请求隐藏。聊天输入框固定在聊天区域底部，消息列表独立滚动。
+- 设置浮层及站点后台保留原布局，不新增依赖。新增 Header 是现有三套标题的唯一入口；导航插槽只负责 DOM 放置，不负责加载数据或管理业务状态。
+
 - 知识库列表优先支持搜索、选择和进入。
 - 文档列表以文件名、处理状态、版本和更新时间为核心。
 - 处理中、失败、已删除和已归档必须有清晰且可读的状态。

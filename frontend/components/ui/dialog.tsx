@@ -13,6 +13,7 @@ export function Dialog({
   busy = false,
   wide = false,
   fullScreen = false,
+  sidePanel = false,
   restoreFocusSelector,
 }: {
   title: string;
@@ -21,6 +22,7 @@ export function Dialog({
   busy?: boolean;
   wide?: boolean;
   fullScreen?: boolean;
+  sidePanel?: boolean;
   restoreFocusSelector?: string;
 }) {
   const closeButton = (
@@ -41,7 +43,7 @@ export function Dialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="modal-overlay" />
         <DialogPrimitive.Content
-          className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""}`}
+          className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""} ${sidePanel ? "modal-side-panel" : ""}`}
           onCloseAutoFocus={(event) => {
             if (!restoreFocusSelector) return;
             event.preventDefault();

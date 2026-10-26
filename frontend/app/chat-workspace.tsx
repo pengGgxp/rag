@@ -13,11 +13,10 @@ import {
   FileText,
   Layers3,
   Loader2,
-  Menu,
   MessageSquare,
-  Puzzle,
   Pencil,
   Plus,
+  Puzzle,
   RefreshCw,
   Search,
   Square,
@@ -26,7 +25,9 @@ import {
 } from "lucide-react";
 import { API_URL, request, streamRequest } from "./api";
 import { Modal } from "./modal";
-import { AccountButton } from "./auth";
+import { WorkspaceNavigation } from "./workspace-shell";
+import { WorkspaceHeader } from "./workspace-header";
+import { useUiStore } from "./ui-store";
 import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
 import { Motion } from "../components/ui/motion";
@@ -142,12 +143,10 @@ function AnswerMarkdown({
 export function ChatWorkspace({
   libraries,
   initialLibraryId,
-  onKnowledge,
   onExtensions,
 }: {
   libraries: Library[];
   initialLibraryId: string;
-  onKnowledge: () => void;
   onExtensions: () => void;
 }) {
   const router = useRouter();
@@ -165,7 +164,7 @@ export function ChatWorkspace({
   const [loading, setLoading] = useState(false);
   const [asking, setAsking] = useState(false);
   const [phase, setPhase] = useState("");
-  const [sidebar, setSidebar] = useState(false);
+  const setSidebar = useUiStore((state) => state.setSidebarOpen);
   const [notice, setNotice] = useState<{
     text: string;
     error?: boolean;
@@ -319,11 +318,6 @@ export function ChatWorkspace({
     setTrace(null);
     follow.current = true;
     router.replace("/?chat=1", { scroll: false });
-  }
-  function leave() {
-    void stopGeneration();
-    router.replace("/", { scroll: false });
-    onKnowledge();
   }
   async function reloadCurrent(id: string, currentEpoch: number) {
     try {
@@ -565,47 +559,8 @@ export function ChatWorkspace({
     item.title.toLowerCase().includes(search.toLowerCase()),
   );
   return (
-    <div className="chat-shell">
-      {sidebar && (
-        <button
-          className="sidebar-backdrop"
-          aria-label="收起对话列表"
-          onClick={() => setSidebar(false)}
-        />
-      )}
-      <aside
-        className={`chat-sidebar ${sidebar ? "is-open" : ""}`}
-        aria-label="对话导航"
-      >
-        <button className="brand" onClick={leave}>
-          <span className="brand-mark">
-            <Layers3 size={23} />
-          </span>
-          <span>知库</span>
-        </button>
-        <nav className="primary-navigation" aria-label="产品导航">
-          <button onClick={leave}>
-            <BookOpen size={18} />
-            知识库
-          </button>
-          <button
-            className="selected"
-            aria-current="page"
-            onClick={() => setSidebar(false)}
-          >
-            <MessageSquare size={18} />
-            知识问答
-          </button>
-          <button onClick={onExtensions}><Puzzle size={18} />Agent 扩展</button>
-          <button
-            className="icon-button mobile-only"
-            title="关闭导航"
-            aria-label="关闭导航"
-            onClick={() => setSidebar(false)}
-          >
-            <X size={18} />
-          </button>
-        </nav>
+    <>
+      <WorkspaceNavigation>
         <button className="secondary new-chat" onClick={newChat}>
           <Plus size={16} />
           新建对话
@@ -667,23 +622,9 @@ export function ChatWorkspace({
             </p>
           )}
         </nav>
-        <div className="sidebar-footer">
-          <AccountButton />
-        </div>
-      </aside>
-      <main className="chat-main">
-        <header className="chat-header">
-          <button
-            className="icon-button mobile-only"
-            title="打开导航"
-            aria-label="打开导航"
-            onClick={() => setSidebar(true)}
-          >
-            <Menu size={19} />
-          </button>
-          <h1>{conversation?.title || "新对话"}</h1>
-          {conversation && (
-            <div className="chat-header-actions">
+      </WorkspaceNavigation>
+        <WorkspaceHeader title={conversation?.title || "新对话"} actions={conversation && (
+            <>
               <button
                 className="icon-button"
                 title="重命名对话"
@@ -704,9 +645,9 @@ export function ChatWorkspace({
               >
                 <Download size={17} />
               </button>
-            </div>
-          )}
-        </header>
+            </>
+          )} />
+      <div className="chat-main">
         <div className="chat-scope">
           <details className="scope-menu">
             <summary>
@@ -1048,7 +989,7 @@ export function ChatWorkspace({
             <span>AI 回答仅供参考，请核对来源</span>
           </div>
         </div>
-      </main>
+      </div>
       {notice && (
         <div
           className={`toast ${notice.error ? "error" : ""}`}
@@ -1167,6 +1108,6 @@ export function ChatWorkspace({
           </div>
         </Modal>
       )}
-    </div>
+    </>
   );
 }

@@ -2,11 +2,11 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
-  BookOpen, Check, CheckCircle2, CircleAlert, Download, FileCode2, FolderUp, Layers3,
-  Loader2, Menu, MessageSquare, Pencil, Plug, Plus, Puzzle, RefreshCw, Search, Trash2, Upload,
+  Check, CheckCircle2, CircleAlert, Download, FileCode2, FolderUp,
+  Loader2, Pencil, Plug, Plus, Puzzle, RefreshCw, Search, Trash2, Upload,
 } from "lucide-react";
 import * as Tabs from "../components/ui/tabs";
-import { AccountButton } from "./auth";
+import { WorkspaceHeader } from "./workspace-header";
 import { downloadFile, request } from "./api";
 import { Modal } from "./modal";
 import { SkillBundleEditor } from "./skill-bundle-editor";
@@ -111,7 +111,7 @@ export function AgentExtensionPicker({
   );
 }
 
-export function AgentExtensions({ onKnowledge, onChat }: { onKnowledge: () => void; onChat: () => void }) {
+export function AgentExtensions() {
   const [tab, setTab] = useState("mcp");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [servers, setServers] = useState<MCPConnection[]>([]);
@@ -120,7 +120,6 @@ export function AgentExtensions({ onKnowledge, onChat }: { onKnowledge: () => vo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [sidebar, setSidebar] = useState(false);
   const [editor, setEditor] = useState<
     { kind: "skill"; data?: Skill } | { kind: "mcp"; data?: MCPConnection } | null
   >(null);
@@ -160,22 +159,9 @@ export function AgentExtensions({ onKnowledge, onChat }: { onKnowledge: () => vo
   const visibleServers = servers.filter(item => `${item.name} ${item.url}`.toLowerCase().includes(search.toLowerCase()));
   const visibleSkills = skills.filter(item => `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
   return (
-    <div className="workspace extensions-workspace">
-      {sidebar && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebar(false)} />}
-      <aside className={`sidebar ${sidebar ? "is-open" : ""}`}>
-        <button className="brand" onClick={onKnowledge}><span className="brand-mark"><Layers3 size={23} /></span><span>知库</span></button>
-        <nav className="primary-navigation" aria-label="产品导航">
-          <button onClick={onKnowledge}><BookOpen size={18} />知识库</button>
-          <button onClick={onChat}><MessageSquare size={18} />知识问答</button>
-          <button className="selected" aria-current="page"><Puzzle size={18} />Agent 扩展</button>
-        </nav>
-        <div className="extensions-account"><AccountButton /></div>
-      </aside>
-      <main className="extensions-main">
-        <header className="extensions-header">
-          <button className="icon-button mobile-only" title="打开导航" aria-label="打开导航" onClick={() => setSidebar(true)}><Menu size={18} /></button>
-          <Puzzle size={19} /><h1>Agent 扩展</h1>
-        </header>
+    <>
+      <WorkspaceHeader title="Agent 扩展" />
+      <div className="workspace-body">
         <Tabs.Root value={tab} onValueChange={(value) => { setTab(value); setSearch(""); setError(""); setNotice(""); }}>
           <div className="extensions-tabs">
             <Tabs.List className="tab-list" aria-label="扩展类型">
@@ -248,7 +234,7 @@ export function AgentExtensions({ onKnowledge, onChat }: { onKnowledge: () => vo
             </>}
           </section>
         </Tabs.Root>
-      </main>
+      </div>
       {editor?.kind === "skill" && <SkillBundleEditor key={editor.data?.id ?? "new"} skill={editor.data} onClose={() => setEditor(null)} onSaved={async () => { await reload(); setEditor(null); setNotice("已保存"); }} />}
       {editor?.kind === "mcp" && <ExtensionEditor key={editor.data?.id ?? "new"} editor={editor} onClose={() => setEditor(null)} onSaved={async () => { await reload(); setEditor(null); setNotice("已保存"); }} />}
       {deleting && <Modal title="删除扩展" busy={busy} onClose={() => setDeleting(null)}>
@@ -260,7 +246,7 @@ export function AgentExtensions({ onKnowledge, onChat }: { onKnowledge: () => vo
         }, "已删除")}><Trash2 size={15} />删除</button></div>
         </div>
       </Modal>}
-    </div>
+    </>
   );
 }
 

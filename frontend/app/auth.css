@@ -1,3 +1,7 @@
+@media (max-width: 700px) {
+  .auth-bootstrap-shell { grid-template-columns: minmax(0, 1fr); }
+  .auth-bootstrap-sidebar { display: none; }
+}
 .authenticated-app {
   min-height: 100dvh;
 }
@@ -28,7 +32,7 @@
 .auth-bootstrap-shell {
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: 236px minmax(0, 1fr);
+  grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);
   background: var(--background);
   color: var(--ink);
 }
@@ -81,8 +85,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  min-height: 72px;
-  padding: 0 clamp(24px, 5vw, 64px);
+  min-height: var(--workspace-header-height);
+  padding: 0 var(--workspace-content-padding);
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
@@ -477,7 +481,7 @@
   background: var(--surface-muted);
   border-radius: 6px;
 }
-.account-button > span:last-child {
+.account-button > span:nth-child(2) {
   min-width: 0;
   display: grid;
   gap: 3px;
@@ -1036,25 +1040,12 @@
   justify-content: center;
 }
 @media (max-width: 860px) {
-  .auth-bootstrap-shell {
-    display: block;
-  }
-  .auth-bootstrap-sidebar {
-    min-height: 68px;
-    padding: 14px 18px 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
   .auth-bootstrap-brand {
     padding: 0 4px;
   }
-  .auth-bootstrap-nav,
-  .auth-bootstrap-sidebar-footer {
-    display: none;
-  }
   .auth-bootstrap-toolbar {
-    min-height: 60px;
-    padding: 0 20px;
+    min-height: var(--workspace-header-height);
+    padding: 0 var(--workspace-content-padding);
   }
   .auth-bootstrap-main {
     padding: 36px 20px 56px;

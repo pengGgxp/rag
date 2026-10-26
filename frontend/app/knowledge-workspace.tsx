@@ -7,8 +7,9 @@ import { request } from "./api";
 import { LibraryAccess, useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
 import { useUiStore } from "./ui-store";
-import { WorkspaceShell } from "./workspace-shell";
-import { WorkspaceSidebar } from "./workspace-sidebar";
+import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
+import { KnowledgeNavigation } from "./knowledge-navigation";
+import { WorkspaceHeader } from "./workspace-header";
 import type {
   Health,
   KnowledgeBase,
@@ -17,7 +18,7 @@ import type {
   SourceDocument,
   WorkspaceScreen,
 } from "./workspace-types";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence } from "motion/react";
 import { Motion } from "../components/ui/motion";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -34,7 +35,6 @@ import {
   Layers3,
   Loader2,
   MessageSquare,
-  Puzzle,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -42,7 +42,6 @@ import {
   Settings2,
   Trash2,
   Upload,
-  Menu,
   XCircle,
   X,
 } from "lucide-react";
@@ -73,10 +72,11 @@ function extension(filename: string) {
 
 export default function KnowledgeWorkspace() {
   const router = useRouter();
+  const params = useSearchParams();
   const { role } = useAuth();
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const selectedId = params.get("library") || "";
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [ingestionOptions, setIngestionOptions] = useState<{
@@ -84,19 +84,16 @@ export default function KnowledgeWorkspace() {
     max_pdf_pages: number | null;
   } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [screen, setScreen] = useState<WorkspaceScreen>(
-    "catalog",
-  );
-  const [chatEntry, setChatEntry] = useState(0);
-  const [view, setView] = useState<KnowledgeView>(
-    "documents",
-  );
+  const screen: WorkspaceScreen = params.has("conversation") || params.has("chat")
+    ? "chat" : params.has("extensions") ? "extensions" : selectedId ? "knowledge" : "catalog";
+  const requestedView = params.get("view");
+  const view: KnowledgeView = requestedView === "retrieval" || requestedView === "permissions" || requestedView === "settings"
+    ? requestedView : "documents";
   const [librarySearch, setLibrarySearch] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
   const [loading, setLoading] = useState(true);
   const [libraryLoading, setLibraryLoading] = useState(true);
-  const sidebarOpen = useUiStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [modal, setModal] = useState<
     "create" | "edit" | "upload" | "versions" | null
@@ -141,13 +138,6 @@ export default function KnowledgeWorkspace() {
     try {
       const data = await request<KnowledgeBase[]>("/knowledge-bases");
       setLibraries(data);
-      const requestedId = new URLSearchParams(window.location.search).get("library");
-      if (requestedId && data.some((item) => item.id === requestedId)) {
-        setSelectedId(requestedId);
-        setScreen("knowledge");
-      } else {
-        setSelectedId((id) => id || data[0]?.id || "");
-      }
     } finally {
       setLibraryLoading(false);
     }
@@ -167,20 +157,6 @@ export default function KnowledgeWorkspace() {
     }
   }, []);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("conversation") || params.has("chat"))
-      setScreen("chat");
-    if (params.has("extensions"))
-      setScreen("extensions");
-    const requestedView = params.get("view");
-    if (
-      requestedView === "documents" ||
-      requestedView === "retrieval" ||
-      requestedView === "permissions" ||
-      requestedView === "settings"
-    ) {
-      setView(requestedView);
-    }
     loadLibraries().catch(notifyError);
     void refreshHealth();
     request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
@@ -322,9 +298,7 @@ export default function KnowledgeWorkspace() {
         }),
       });
       setLibraries((items) => [created, ...items]);
-      setSelectedId(created.id);
-      setScreen("knowledge");
-      setView("documents");
+      openLibrary(created.id);
       setName("");
       setDescription("");
       setTagsInput("");
@@ -478,17 +452,11 @@ export default function KnowledgeWorkspace() {
     id: string,
     destination: "knowledge" | "chat" = "knowledge",
   ) {
-    setSelectedId(id);
-    if (destination === "chat") setChatEntry((value) => value + 1);
-    setScreen(destination);
-    setView("documents");
     setSidebarOpen(false);
-    if (destination === "knowledge") {
-      const params = new URLSearchParams();
-      params.set("library", id);
-      params.set("view", "documents");
-      router.replace(`/?${params.toString()}`);
-    }
+    const next = new URLSearchParams();
+    next.set("library", id);
+    next.set(destination === "knowledge" ? "view" : "chat", destination === "knowledge" ? "documents" : "1");
+    router.push(`/?${next.toString()}`, { scroll: false });
   }
   const selected = libraries.find((item) => item.id === selectedId);
   const activeDocuments = documents.filter((doc) => doc.status !== "deleted");
@@ -504,44 +472,18 @@ export default function KnowledgeWorkspace() {
       .includes(librarySearch.toLowerCase()),
   );
   function showExtensions() {
-    router.replace("/?extensions=1");
-    setScreen("extensions");
+    router.push("/?extensions=1", { scroll: false });
     setSidebarOpen(false);
   }
-  if (screen === "extensions")
-    return <AgentExtensions
-      onKnowledge={() => {
-        router.replace("/");
-        setScreen("catalog");
-      }}
-      onChat={() => {
-        router.replace("/?chat=1");
-        setChatEntry((value) => value + 1);
-        setScreen("chat");
-      }}
-    />;
-
-  if (screen === "chat")
-    return (
-      <ChatWorkspace
-        key={chatEntry}
-        libraries={libraries}
-        initialLibraryId={selectedId}
-        onKnowledge={() => {
-          router.replace("/");
-          setScreen("catalog");
-        }}
-        onExtensions={showExtensions}
-      />
-    );
 
   return (
     <>
-      <WorkspaceShell
-      sidebarOpen={sidebarOpen}
-      onClose={() => setSidebarOpen(false)}
-      sidebar={
-        <WorkspaceSidebar
+      <WorkspaceShell screen={screen}>
+      {screen === "extensions" ? <AgentExtensions /> : screen === "chat" ? (
+        <ChatWorkspace libraries={libraries} initialLibraryId={selectedId} onExtensions={showExtensions} />
+      ) : <>
+      <WorkspaceNavigation>
+        <KnowledgeNavigation
           screen={screen}
           view={view}
           selected={selected}
@@ -552,29 +494,17 @@ export default function KnowledgeWorkspace() {
           libraryLoading={libraryLoading}
           canEdit={canEdit}
           canManagePermissions={role === "admin"}
-          onClose={() => setSidebarOpen(false)}
           onCatalog={() => {
-            setScreen("catalog");
-            router.replace("/");
+            router.push("/", { scroll: false });
             setSidebarOpen(false);
           }}
-          onChat={() => {
-            if (selectedId) openLibrary(selectedId, "chat");
-            else {
-              router.replace("/?chat=1");
-              setScreen("chat");
-              setSidebarOpen(false);
-            }
-          }}
-          onExtensions={showExtensions}
           onViewChange={(nextView) => {
-            setView(nextView);
             setSidebarOpen(false);
             if (selectedId) {
               const params = new URLSearchParams();
               params.set("library", selectedId);
               params.set("view", nextView);
-              router.replace(`/?${params.toString()}`);
+              router.push(`/?${params.toString()}`, { scroll: false });
             }
             if (nextView === "settings") void refreshHealth();
           }}
@@ -582,35 +512,12 @@ export default function KnowledgeWorkspace() {
           onOpenLibrary={openLibrary}
           onCreateLibrary={() => openModal("create")}
         />
-      }
-    >
-        <header className="topbar">
-          <div className="breadcrumbs">
-            <button
-              className="icon-button mobile-only"
-              title="打开导航"
-              aria-label="打开导航"
-              onClick={() => setSidebarOpen(true)}
-            >
-              <Menu size={19} />
-            </button>
-            <button
-              className="breadcrumb-link"
-              onClick={() => {
-                setScreen("catalog");
-                router.replace("/");
-              }}
-            >
-              知识库
-            </button>
-            {screen !== "catalog" && (
-              <>
-                <ChevronRight size={14} />
-                <strong>{selected?.name || "知识库"}</strong>
-              </>
-            )}
-          </div>
-          {screen === "knowledge" && selected && (
+      </WorkspaceNavigation>
+        <WorkspaceHeader title={screen === "catalog" ? "知识库" : selected?.name || "知识库"}
+          context={screen === "knowledge" ? ({ documents: "文档", retrieval: "检索测试", permissions: "访问权限", settings: "配置" }[view]) : undefined}
+          actions={screen === "catalog" ? <button className="primary" disabled={!canEdit} onClick={() => openModal("create")}>
+            <Plus size={16} />新建知识库
+          </button> : selected && (
             <button
               className="secondary"
               onClick={() => openLibrary(selectedId, "chat")}
@@ -618,8 +525,8 @@ export default function KnowledgeWorkspace() {
               <MessageSquare size={15} />
               前往问答
             </button>
-          )}
-        </header>
+          )} />
+        <div className="workspace-body">
         {screen === "catalog" ? (
           <Motion.section
             className="catalog"
@@ -628,17 +535,6 @@ export default function KnowledgeWorkspace() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
           >
-            <div className="catalog-heading">
-              <h1>知识库</h1>
-              <button
-                className="primary"
-                disabled={!canEdit}
-                onClick={() => openModal("create")}
-              >
-                <Plus size={16} />
-                新建知识库
-              </button>
-            </div>
             <div className="catalog-toolbar">
               <span>
                 全部知识库 <span className="count">{libraries.length}</span>
@@ -727,16 +623,6 @@ export default function KnowledgeWorkspace() {
               </div>
               <div>
                 <div className="title-line">
-                  <h1>{selected.name}</h1>
-                  <span className="subtle-label">
-                    {view === "retrieval"
-                      ? "检索测试"
-                      : view === "permissions"
-                        ? "访问权限"
-                        : view === "settings"
-                          ? "配置"
-                          : "文档"}
-                  </span>
                   <span className={`subtle-label library-status ${selected.status}`}>
                     {LIBRARY_STATUS[selected.status] || selected.status}
                   </span>
@@ -1144,6 +1030,8 @@ export default function KnowledgeWorkspace() {
             )}
           </div>
         )}
+        </div>
+      </>}
       </WorkspaceShell>
       <AnimatePresence initial={false}>
         {notice && (
