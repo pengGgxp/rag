@@ -45,3 +45,12 @@ npx --yes --package @playwright/cli playwright-cli --session settings-regression
 ```
 
 脚本仅拦截 localhost:8000 的测试 API；线上验收使用真实登录会话另行验证。
+
+## 线上验证结果（2026-10-26）
+
+- 部署修复提交 `d4f1aa5`，仅重建并更新 web；源码和镜像备份位于服务器 `/data1/rag-releases/settings-history-fix/`。
+- 使用现有管理员真实会话从首页打开设置，依次进入积分、计费规则、成员、审计、账号；每一步设置 Dialog 数量均为 1，一次关闭后 URL 为 `/` 且 Dialog 数量为 0。
+- 前进重新打开最后账号页，Escape 一次关闭返回首页。
+- 积分页刷新后进入成员页，一次关闭按 returnTo 返回首页，Dialog 数量为 0。
+- 首页与全部六个设置路由 HTTP 均为 200。
+- 部署前后 .env 校验值、API 与数据库容器 ID 及启动时间完全一致。
