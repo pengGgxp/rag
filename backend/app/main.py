@@ -3,7 +3,9 @@ import io
 import math
 import re
 import secrets
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -20,6 +22,7 @@ from .auth import Access, BrowserRequestGuard, get_access, permissions_router, r
 from .email_auth import router as email_auth_router
 from .wechat_auth import router as wechat_auth_router
 from .site_auth import router as site_auth_router
+from .site_admin import router as site_admin_router
 from . import auth_logging  # noqa: F401
 from .embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from .llm import (
@@ -79,8 +82,29 @@ async def lifespan(_: FastAPI):
     init_db()
     ensure_bucket()
     with SessionLocal() as db:
+        from .site_audit import prune
+        prune(db)
+        db.commit()
         recover_interrupted_conversations(db)
-    yield
+    async def audit_retention():
+        def cleanup():
+            from .site_audit import prune
+            with SessionLocal() as db:
+                prune(db)
+                db.commit()
+        while True:
+            await asyncio.sleep(86400)
+            try:
+                await asyncio.to_thread(cleanup)
+            except Exception:
+                logging.getLogger(__name__).warning("Site audit retention failed; retrying on next daily run")
+    retention = asyncio.create_task(audit_retention())
+    try:
+        yield
+    finally:
+        retention.cancel()
+        with suppress(asyncio.CancelledError):
+            await retention
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
@@ -1023,6 +1047,7 @@ app.include_router(auth_router)
 app.include_router(email_auth_router)
 app.include_router(wechat_auth_router)
 app.include_router(site_auth_router)
+app.include_router(site_admin_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
