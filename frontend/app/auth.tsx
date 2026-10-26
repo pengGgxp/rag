@@ -215,7 +215,7 @@ export function AccountButton() {
             <Settings2 size={16} />
             工作区设置
           </Link>
-          {session.user.is_site_admin && <Link className="account-menu-item" href="/admin/auth" role="menuitem" ref={(element) => { if (element) menuItems.current[session.workspaces.length + 2] = element; }} onClick={() => setOpen(false)}><ShieldCheck size={16} />站点管理</Link>}
+          {session.user.is_site_admin && <Link className="account-menu-item" href="/admin" role="menuitem" ref={(element) => { if (element) menuItems.current[session.workspaces.length + 2] = element; }} onClick={() => setOpen(false)}><ShieldCheck size={16} />站点管理</Link>}
           {session.workspaces.length > 1 && (
             <>
               <div className="account-menu-label">切换工作区</div>

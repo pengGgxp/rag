@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { Check, ExternalLink, Mail, MessageCircle, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { Check, ExternalLink, Mail, MessageCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import * as Tabs from "../../../components/ui/tabs";
 import { request } from "../../api";
 import { useAuth } from "../../auth";
@@ -49,8 +49,8 @@ export function SiteAuthConsole() {
     });
   }
   if (!session.user.is_site_admin) return <main className="site-auth-denied"><ShieldCheck size={28} /><h1>无权访问站点管理</h1><Link className="secondary" href="/">关闭</Link></main>;
-  return <main className="site-auth-console">
-    <header className="site-auth-header"><div><span>知库 / 站点管理</span><h1>认证与登录</h1></div><Link href="/" className="icon-button" aria-label="关闭站点管理" title="关闭"><X size={20} /></Link></header>
+  return <div className="site-auth-console">
+    <header className="site-auth-header"><h1>认证与登录</h1></header>
     {error && <div role="alert" className="form-error">{error}{!config && <button className="text-button" onClick={() => void load()}><RefreshCw size={14} />重试</button>}</div>}
     {notice && <p role="status" className="auth-success">{notice}</p>}
     {!config ? !error && <div className="auth-flow-skeleton" aria-label="加载配置" role="status"><span className="auth-skeleton" /><span className="auth-skeleton" /><span className="auth-skeleton" /></div> : <Tabs.Root value={tab} onValueChange={(value) => { setTab(value); setNotice(""); setError(""); }}>
@@ -70,5 +70,5 @@ export function SiteAuthConsole() {
       </fieldset></form>
       {tab === "smtp" && <form className="auth-form site-auth-test" onSubmit={(e) => { e.preventDefault(); void action(async () => { const result = await request<{ message: string }>("/site/settings/auth/test-email", json({ email }, "POST")); setNotice(result.message); }); }}><h2>测试投递</h2><label>收件邮箱<input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label><button className="secondary" disabled={busy}><Mail size={16} />发送测试邮件</button></form>}
     </Tabs.Root>}
-  </main>;
+  </div>;
 }

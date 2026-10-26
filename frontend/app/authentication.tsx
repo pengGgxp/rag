@@ -16,7 +16,7 @@ function safeReturn(value: string | null) {
   return value?.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && !value.startsWith("/auth") && !/[\x00-\x1f]/.test(value) ? value : "/";
 }
 
-export function Authentication({ options, session, onSession }: { options: AuthOptions; session: Session | null; onSession: (session: Session) => void }) {
+export function Authentication({ options, session, onSession }: { options: AuthOptions; session: Session | null; onSession: (session: Session | null) => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -32,6 +32,15 @@ export function Authentication({ options, session, onSession }: { options: AuthO
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [confirmationToken, setConfirmationToken] = useState("");
+  useEffect(() => {
+    if (step !== "confirm-email") return;
+    const token = new URLSearchParams(window.location.hash.slice(1)).get("token") || "";
+    if (token) {
+      setConfirmationToken(token);
+      window.history.replaceState(window.history.state, "", window.location.pathname);
+    }
+  }, [step]);
   const [countdown, setCountdown] = useState(0);
   const returnTo = safeReturn(params.get("returnTo"));
   const purpose = verifying ? flow?.purpose || "verify" : step === "register" ? "register" : "login";
@@ -97,6 +106,16 @@ export function Authentication({ options, session, onSession }: { options: AuthO
   }
   const title = profile ? "完成账号设置" : verifying ? "验证你的邮箱" : step === "register" ? "创建知库账号" : step === "forgot" ? "找回密码" : "登录知库";
   const passwordInput = !verifying && step !== "forgot" && (method === "password" || (step === "register" && !options.email_code));
+  if (step === "confirm-email") return <AuthFrame>
+    <div className="auth-heading"><h2>确认邮箱所有权</h2><p>确认后可通过邮箱验证码登录，并重新设置密码。原有设备将退出登录。</p></div>
+    {error && <p role="alert" className="form-error">{error}</p>}
+    {notice ? <p role="status" className="auth-success">{notice}</p> : <button className="primary auth-submit" disabled={busy || !confirmationToken} onClick={() => void action(async () => {
+      const result = await request<{ message: string }>("/auth/email/confirm-link", json({ token: confirmationToken }));
+      setConfirmationToken(""); setNotice(result.message);
+    })}><Mail size={16} />确认验证邮箱</button>}
+    {!confirmationToken && !notice && <p className="form-error">请从验证邮件中重新打开链接。</p>}
+    <div className="auth-links"><a href="/auth/login">前往登录</a></div>
+  </AuthFrame>;
   return <AuthFrame>
     <div className="auth-heading"><h2>{title}</h2><p>{profile ? "邮箱已验证，完善资料即可开始使用。" : verifying ? "验证邮箱所有权后继续。" : "进入你的知识工作空间。"}</p></div>
     {loading ? <div className="auth-flow-skeleton" aria-label="加载中" role="status"><span className="auth-skeleton" /><span className="auth-skeleton" /><span className="auth-skeleton" /></div> : <>
