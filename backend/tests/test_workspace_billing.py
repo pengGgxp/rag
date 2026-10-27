@@ -158,6 +158,44 @@ def test_missing_or_disabled_blocks_without_fallback_but_explicit_zero_is_valid(
     assert db.get(CreditAccount, workspace).balance == 1000
 
 
+def test_pending_amount_keeps_original_prices_and_multiplier(shared_billing):
+    _, db, workspace, user, provider_id = shared_billing
+    db.get(Workspace, workspace).billing_multiplier_percent = 125
+    db.commit()
+    request = uuid4()
+    billing.start_request(db, workspace, user, request, binding(db, workspace).id, 1)
+    call = billing.begin_call(db, request, model(db, workspace))
+    billing.finish_call(db, request, call, {"input_tokens": 1000000, "completion_tokens": 0}, "completed")
+    assert billing.finalize_request(db, request, "completed") == 1250
+    db.commit()
+    assert db.get(ModelUsageRequest, request).status == "pending"
+    db.get(Workspace, workspace).billing_multiplier_percent = 1
+    db.get(SiteModelProvider, provider_id).prices = {p["capability"]: p for p in prices(0)}
+    db.get(CreditAccount, workspace).balance = 1300
+    db.commit()
+    assert billing.finalize_request(db, request, "completed") == 1250
+    billing.start_request(db, workspace, user, uuid4(), binding(db, workspace).id, 1)
+    db.commit()
+    assert db.get(ModelUsageRequest, request).status == "settled"
+    assert db.get(CreditAccount, workspace).balance == 49
+
+
+def test_provider_disable_blocks_next_call_without_losing_confirmed_usage(shared_billing):
+    _, db, workspace, user, provider_id = shared_billing
+    request = uuid4()
+    billing.start_request(db, workspace, user, request, binding(db, workspace).id, 1)
+    call = billing.begin_call(db, request, model(db, workspace))
+    billing.finish_call(db, request, call, {"input_tokens": 1000, "completion_tokens": 0}, "completed")
+    db.get(SiteModelProvider, provider_id).enabled = False
+    db.commit()
+    with pytest.raises(HTTPException, match="停用"):
+        billing.begin_call(db, request, model(db, workspace))
+    db.rollback()
+    assert billing.finalize_request(db, request, "failed") == 1
+    db.commit()
+    assert db.get(CreditAccount, workspace).balance == 999
+
+
 def test_maintenance_blocks_new_operations_but_resumes_existing_snapshot(shared_billing):
     _, db, workspace, _, _ = shared_billing
     identifier = uuid4()

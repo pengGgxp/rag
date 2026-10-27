@@ -26,3 +26,10 @@ Independent workspace price write endpoints return 410 after site-admin authoriz
 6. Run `python -m app.manage pricing resume`, resume Workers, and verify controlled consumption. Configuration gaps or unreviewed commercial changes mean activation must remain pending.
 
 After shared consumption exists, do not roll back to an API that ignores snapshots or shared providers. Keep all added structures and pending amounts; use compatible fixes or a UI-only rollback. Never recalculate historical consumption or pending charges from current prices.
+
+## Verification and release status
+
+- Backend full regression: 323 passed and 14 environment-dependent skips; the additional pending-price and provider-disable regressions pass in the 27-test multiplier suite.
+- Disposable PostgreSQL: fresh upgrade through revision `0025_workspace_billing`; five management, settlement and snapshot concurrency tests pass. Snapshots remain unique and immutable, and concurrent multiplier updates return one success and two version conflicts without creating price copies.
+- Frontend production build and `git diff --check` pass. Playwright fixtures cover 1440, 700 and 390px layouts, decimal previews, keyboard save, refresh persistence, invalid values, 409 conflicts, unsaved-input guards and local failure/retry. Screenshots are retained under untracked `output/playwright/issue39-*`.
+- Fixture browser checks are not proof of real provider settlement. Production deployment must retain the old price-source and #36 gates until the operator reviews the migration preview. Controlled live calls and post-activation shared billing remain separate acceptance items; Issue #39 stays open until these are confirmed.

@@ -12,7 +12,7 @@ from app.models import ModelBillingSettings, UsagePolicy, User, Workspace
 from test_auth_postgres import auth_postgres
 
 
-def test_template_concurrent_save_and_transactional_copy(auth_postgres):
+def test_template_concurrent_save_and_registration_without_price_copies(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
         row = pricing.settings_locked(db)
@@ -36,9 +36,8 @@ def test_template_concurrent_save_and_transactional_copy(auth_postgres):
     with Session(engine) as db:
         _, workspace = create_user(db, f"copy-{uuid4().hex}@example.com", "Copy")
         copied = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace)).all()
-        assert len(copied) == 2
-        assert {row.template_version for row in copied} == {version+1}
-        assert len({row.credits_per_unit for row in copied}) == 1
+        assert copied == []
+        assert db.get(Workspace, workspace).billing_multiplier_percent == 100
         db.rollback()
     with Session(engine) as db:
         assert db.get(Workspace, workspace) is None
