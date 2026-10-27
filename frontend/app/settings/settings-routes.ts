@@ -4,6 +4,7 @@ export const settingsSections = [
   { key: "account", title: "个人资料", path: "/settings", group: "personal" },
   { key: "security", title: "登录与安全", path: "/settings/security", group: "personal" },
   { key: "workspace", title: "基本信息", path: "/settings/workspace", group: "workspace" },
+  { key: "models", title: "模型选择", path: "/settings/models", group: "workspace" },
   { key: "members", title: "成员管理", path: "/settings/members", group: "workspace", admin: true },
   { key: "billing", title: "积分与充值", path: "/settings/billing", group: "workspace" },
   { key: "audit", title: "操作记录", path: "/settings/audit", group: "workspace", admin: true },

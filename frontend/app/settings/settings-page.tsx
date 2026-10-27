@@ -20,6 +20,7 @@ import {
   useAuth,
 } from "../auth";
 import { BillingPanel } from "../billing-panel";
+import { ModelSelectionPanel } from "../model-selection-panel";
 import { sectionFromPath } from "./settings-routes";
 import { useSettingsForm } from "./standalone-settings";
 type Member = { id: string; name: string; email: string; role: Role };
@@ -177,6 +178,7 @@ function AccountPage({
     onSession(await request<Session>("/auth/me"));
   }
 
+  if (tab === "models") return <ModelSelectionPanel key={session.workspace_id} editable={role === "admin"} onDirty={setDirty} onBusy={setFrameBusy} />;
   if (!tab) return <div className="settings-empty" role="status">
     {pathname === "/settings/policies"
       ? session.user.is_site_admin ? "正在打开站点管理…" : "计费规则由站点管理员管理，你无权访问。"

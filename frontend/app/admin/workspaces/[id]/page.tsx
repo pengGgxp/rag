@@ -2,6 +2,9 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
+import { ModelSelectionPanel } from "../../../model-selection-panel";
+import { useAdminChanges } from "../../admin-changes";
 import type { AdminWorkspace } from "../page";
 import {
   AdminHeading,
@@ -12,6 +15,9 @@ import {
 } from "../../admin-ui";
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useAdminChanges(dirty, busy);
   const { data, loading, error, reload } = useAdminResource<AdminWorkspace>(
     `/site/admin/workspaces/${id}`,
   );
@@ -23,7 +29,7 @@ export default function WorkspaceDetailPage() {
       </Link>
       <AdminHeading title={data?.name || "工作区详情"}>
         {data && <div className="provider-form-actions">
-          <Link className="secondary" href={`/admin/models?workspace=${data.id}`}>模型供应商</Link>
+          <Link className="secondary" href="/admin/models">模型供应商</Link>
           <Link className="secondary" href={`/admin/pricing?workspace=${data.id}`}>计费规则</Link>
         </div>}
       </AdminHeading>
@@ -50,6 +56,10 @@ export default function WorkspaceDetailPage() {
                 </dd>
               </div>
             </dl>
+            <section className="admin-section">
+              <h2>工作区模型</h2>
+              <ModelSelectionPanel key={id} endpoint={`/site/admin/workspaces/${id}/model`} editable onDirty={setDirty} onBusy={setBusy} />
+            </section>
             <section className="admin-section">
               <h2>积分摘要</h2>
               <CreditSummary credits={data.credits} />
