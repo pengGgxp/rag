@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from .db import get_db
 from .management_access import ManagementAccess, management_access
-from .model_pricing import settings_locked
+from .model_pricing import ModelPrice, settings_locked
 from .models import (BillingSnapshot, Conversation, IngestionJob, JobState, LLMProviderConfig,
                      ModelUsageRequest, SiteModelProvider, UsagePolicy, Workspace)
 from .site_auth import site_admin
@@ -59,18 +59,29 @@ def effective_prices(db, workspace, binding, shared=True):
 
 def settings_read(db, workspace_id):
     from .models import ModelBillingSettings
+    from .shared_providers import unavailable_reason, visible_providers
     workspace = db.get(Workspace, workspace_id)
     row = db.get(ModelBillingSettings, 1)
-    bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id)
-                         .order_by(LLMProviderConfig.id)).all()
     models = []
-    for binding in bindings:
-        provider = db.get(SiteModelProvider, binding.site_provider_id) if binding.site_provider_id else None
-        prices = effective_prices(db, workspace, binding)
-        models.append({"binding_id": str(binding.id), "provider_id": str(binding.site_provider_id) if binding.site_provider_id else None,
-            "name": provider.name if provider else binding.name, "model": provider.model if provider else binding.model,
-            "active": binding.active, "enabled": bool(provider and provider.enabled),
-            "policies": [p for p in prices if p["capability"] in MODEL_CAPABILITIES]})
+    for provider in visible_providers(db, workspace_id):
+        prices = []
+        for capability in MODEL_CAPABILITIES:
+            value = provider.prices.get(capability)
+            try:
+                price = ModelPrice.model_validate(value).model_dump()
+                if price["capability"] != capability:
+                    raise ValueError("Mismatched capability")
+                configured = True
+            except (ValueError, TypeError):
+                price = {"capability": capability, "unit": "tokens", "unit_size": 1000,
+                         "credits_per_unit": None, "enabled": False}
+                configured = False
+            prices.append(price_read({**price, "configured": configured, "version": provider.version,
+                "source": "model_provider", "source_id": str(provider.id)}, workspace.billing_multiplier_percent))
+        reason = unavailable_reason(db, provider, None, True)
+        models.append({"provider_id": str(provider.id), "name": provider.name, "model": provider.model,
+            "available": reason is None, "unavailable_reason": reason, "published": provider.published,
+            "policies": prices})
     return {"workspace_id": str(workspace_id), "version": workspace.billing_version,
             "multiplier": display_rate(workspace.billing_multiplier_percent),
             "multiplier_percent": workspace.billing_multiplier_percent,

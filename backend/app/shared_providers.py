@@ -64,12 +64,14 @@ def lock_provider(db, identifier, version=None):
 
 def read_provider(db, row):
     settings = db.get(ModelBillingSettings, 1)
+    reason = unavailable_reason(db, row, None, True)
     return {"id": str(row.id), "key": row.key, "name": row.name, "model": row.model,
         "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
         "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled,
         "published": row.published, "version": row.version,
         "is_default": bool(settings and settings.default_provider_id == row.id),
         "configured": complete(row.prices), "prices": list(row.prices.values()),
+        "available": reason is None, "unavailable_reason": reason,
         "workspace_count": db.scalar(select(func.count()).select_from(LLMProviderConfig).where(
             LLMProviderConfig.site_provider_id == row.id)),
         "updated_at": row.updated_at.isoformat()}
@@ -93,6 +95,14 @@ def apply_provider(row, payload):
 @router.get("")
 def list_global(db=Depends(get_db), actor=Depends(site_admin)):
     return [read_provider(db, row) for row in db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.created_at))]
+
+
+@router.get("/{identifier}")
+def read_global(identifier: UUID, db=Depends(get_db), actor=Depends(site_admin)):
+    row = db.get(SiteModelProvider, identifier)
+    if row is None:
+        raise HTTPException(404, "模型配置不存在")
+    return read_provider(db, row)
 
 
 @router.post("", status_code=201)
@@ -177,12 +187,16 @@ def unavailable_reason(db, provider, binding, shared):
     return None if complete(prices) else "pricing_unconfigured"
 
 
-def choices(db, workspace_id):
+def visible_providers(db, workspace_id):
     bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id)).all()
     ids = [row.site_provider_id for row in bindings if row.site_provider_id]
-    rows = db.scalars(select(SiteModelProvider).where(or_(SiteModelProvider.published.is_(True), SiteModelProvider.id.in_(ids))).order_by(SiteModelProvider.created_at)).all()
+    return db.scalars(select(SiteModelProvider).where(or_(SiteModelProvider.published.is_(True),
+        SiteModelProvider.id.in_(ids))).order_by(SiteModelProvider.created_at)).all()
+
+
+def choices(db, workspace_id):
     providers = []
-    for row in rows:
+    for row in visible_providers(db, workspace_id):
         reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
             "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})
