@@ -36,6 +36,14 @@ def context_for_workspace(db, workspace_id):
 
 def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=None, required=True):
     context = context or context_for_workspace(db, workspace_id)
+    if (context.get("model_provider_id") == str(provider_id) and context.get("model_prices")
+            and all(key in context["model_prices"] for key in capabilities)):
+        if required and provider_id is not None:
+            binding = db.get(LLMProviderConfig, provider_id)
+            provider = db.get(SiteModelProvider, binding.site_provider_id, populate_existing=True) if binding else None
+            if binding is None or binding.workspace_id != workspace_id or provider is None or not provider.enabled:
+                raise HTTPException(503, "当前模型已停用，请选择其他模型")
+        return {key: deepcopy(context["model_prices"][key]) for key in capabilities}
     shared = context["source_mode"] == "shared"
     source, version, identifier, values = "legacy_workspace", 0, str(workspace_id), {}
     source_enabled = True
@@ -50,7 +58,7 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
         source, version, identifier, values = "model_provider", provider.version, str(provider.id), provider.prices
     elif shared:
         if any(key in MODEL_CAPABILITIES for key in capabilities):
-            raise HTTPException(503, "回答模型尚未配置，请在工作区设置中选择模型")
+            raise HTTPException(503, "请在问答输入区选择可用模型")
         settings = db.get(ModelBillingSettings, 1, populate_existing=True)
         source, version, values = "platform_documents", settings.version, settings.template
         identifier = "1"
@@ -86,6 +94,8 @@ def operation_snapshot(db, workspace_id, request_id, event_key, *, capabilities=
         return existing
     context = deepcopy(context or context_for_workspace(db, workspace_id))
     prices = resolve_prices(db, workspace_id, capabilities, provider_id, context=context) if capabilities else {}
+    if event_key == "model" and prices:
+        context.update(model_provider_id=str(provider_id), model_prices=deepcopy(prices))
     row = BillingSnapshot(workspace_id=workspace_id, request_id=request_id, event_key=event_key,
                           context={**context, "prices": prices})
     try:

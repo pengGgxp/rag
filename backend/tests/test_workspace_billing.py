@@ -33,8 +33,7 @@ def shared_billing(accounts, monkeypatch):
 
 def binding(db, workspace):
     from app.models import LLMProviderConfig
-    return db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace,
-                                                   LLMProviderConfig.active.is_(True)))
+    return db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace))
 
 
 def model(db, workspace):
@@ -74,7 +73,7 @@ def test_request_exact_multiplier_applied_once(shared_billing, percent):
     assert billing.finalize_request(db, request, "completed") == total
 
 
-def test_call_base_price_live_but_request_multiplier_frozen(shared_billing):
+def test_request_base_price_and_multiplier_are_frozen(shared_billing):
     _, db, workspace, user, provider_id = shared_billing
     db.get(Workspace, workspace).billing_multiplier_percent = 125
     db.commit()
@@ -88,7 +87,7 @@ def test_call_base_price_live_but_request_multiplier_frozen(shared_billing):
     db.commit()
     second = billing.begin_call(db, request, model(db, workspace))
     billing.finish_call(db, request, second, {"input_tokens": 1000, "completion_tokens": 0}, "completed")
-    assert billing.finalize_request(db, request, "completed") == 5  # (1 + 3) * 1.25
+    assert billing.finalize_request(db, request, "completed") == 3  # ceil((1 + 1) * 1.25)
     db.commit()
     assert db.get(ModelUsageRequest, request).billing_context["multiplier_percent"] == 125
 

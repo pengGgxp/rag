@@ -12,16 +12,27 @@ def configured_model(db, workspace_id, monkeypatch=None):
     from app.credits import DEFAULT_USAGE_POLICIES
     if monkeypatch:
         monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _value: "test-only")
+    prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000,
+        "credits_per_unit": 1, "enabled": True} for key in (
+            "llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")}
     provider = SiteModelProvider(key=f"test-{workspace_id}", name="Test", model="test-model",
-        base_url="https://example.test/v1", encrypted_api_key="test-only", enabled=True, prices={})
+        base_url="https://example.test/v1", encrypted_api_key="test-only", enabled=True, prices=prices)
     db.add(provider); db.flush()
     binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=provider.id,
         key="test", name="Test", model="test-model", base_url="", encrypted_api_key="", active=True)
     db.add(binding)
+    db.flush()
     for policy in DEFAULT_USAGE_POLICIES:
         db.add(UsagePolicy(workspace_id=workspace_id, **policy))
+        db.add(UsagePolicy(workspace_id=workspace_id, provider_id=binding.id, **policy))
+    db.add(UsagePolicy(workspace_id=workspace_id, provider_id=binding.id, capability="llm_cached_input_tokens",
+        unit="tokens", unit_size=1000, credits_per_unit=0))
     db.commit()
     return binding
+
+
+def model_id(http):
+    return next(item["id"] for item in http.get("/models/available").json()["providers"] if item["available"])
 
 
 def authenticate(http, db):

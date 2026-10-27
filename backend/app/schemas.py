@@ -172,6 +172,7 @@ class RetrievalRead(BaseModel):
 
 
 class AnswerRequest(BaseModel):
+    provider_id: UUID
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=6, ge=1, le=12)
 
@@ -190,6 +191,9 @@ class CitationRead(BaseModel):
 
 
 class AnswerRead(BaseModel):
+    provider_id: UUID | None = None
+    provider_name: str | None = None
+    model: str | None = None
     trace_id: UUID
     answer: str
     refused: bool

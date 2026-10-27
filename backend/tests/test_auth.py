@@ -123,8 +123,8 @@ def test_cross_workspace_id_guesses_do_not_expose_any_resource(accounts):
         assert outsider.get(path).status_code == 404, path
     for path, payload in (
         (f"/knowledge-bases/{id}/retrieval", {"query": "needle"}),
-        (f"/knowledge-bases/{id}/answer", {"query": "needle"}),
-        (f"/conversations/{conv}/messages", {"query": "needle", "request_id": str(uuid4())}),
+        (f"/knowledge-bases/{id}/answer", {"query": "needle", "provider_id": str(uuid4())}),
+        (f"/conversations/{conv}/messages", {"query": "needle", "provider_id": str(uuid4()), "request_id": str(uuid4())}),
         (f"/conversations/{conv}/stop", {"request_id": str(uuid4())}),
     ):
         assert outsider.post(path, json=payload).status_code == 404, path
@@ -262,7 +262,8 @@ def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
                 session.commit()
             return ToolResponse(content="SECRET AFTER REVOKE", tool_calls=[])
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: RevokingProvider())
-    response = viewer.post(f"/conversations/{conv}/messages", json={"query": "needle", "request_id": str(uuid4())})
+    from auth_helpers import model_id
+    response = viewer.post(f"/conversations/{conv}/messages", json={"provider_id": model_id(viewer), "query": "needle", "request_id": str(uuid4())})
     assert response.status_code == 200
     assert "SECRET AFTER REVOKE" not in response.text
     events = [(event.event, event.json()) for event in EventSource(response).iter_sse()]

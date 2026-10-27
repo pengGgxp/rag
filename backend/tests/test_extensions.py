@@ -71,8 +71,9 @@ def authorize(owner, item, monkeypatch):
 
 
 def turn(owner, identifier, query="Do the task"):
+    from auth_helpers import model_id
     response = owner.post(f"/conversations/{identifier}/messages", json={
-        "query": query, "request_id": str(uuid4()),
+        "query": query, "request_id": str(uuid4()), "provider_id": model_id(owner),
     })
     assert response.status_code == 200, response.text
     return [(event.event, event.json()) for event in EventSource(response).iter_sse()]

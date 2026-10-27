@@ -43,7 +43,8 @@ def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold
     if existing:
         raise HTTPException(409, "模型请求已存在，请勿重复提交")
     context = context_for_workspace(db, workspace_id)
-    price_snapshot(db, workspace_id, provider_id, context=context)
+    prices = price_snapshot(db, workspace_id, provider_id, context=context)
+    context.update(model_provider_id=str(provider_id), model_prices=prices)
     debts = db.scalars(select(ModelUsageRequest).where(
         ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
     ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()

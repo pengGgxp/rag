@@ -1,9 +1,9 @@
-"""Site connections and workspace selections, with shared base prices."""
+"""Site connections and request-scoped accounting associations with shared prices."""
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 
 from .auth import Access, get_access
 from .db import get_db
@@ -178,34 +178,38 @@ def unavailable_reason(db, provider, binding, shared):
 
 
 def choices(db, workspace_id):
-    from .workspace_billing import shared_enabled
-    shared = shared_enabled(db)
-    workspace = db.get(Workspace, workspace_id)
     bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id)).all()
     ids = [row.site_provider_id for row in bindings if row.site_provider_id]
     rows = db.scalars(select(SiteModelProvider).where(or_(SiteModelProvider.published.is_(True), SiteModelProvider.id.in_(ids))).order_by(SiteModelProvider.created_at)).all()
-    active = next((row for row in bindings if row.active), None)
-    by_provider = {binding.site_provider_id: binding for binding in bindings}
     providers = []
     for row in rows:
-        reason = unavailable_reason(db, row, by_provider.get(row.id), shared)
+        reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
             "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})
-    return {"version": workspace.model_version, "provider_id": str(active.site_provider_id) if active and active.site_provider_id else None,
-        "providers": providers}
+    return providers
 
 
-def select_model(db, workspace_id, identifier):
-    # Workspace lock precedes provider lock for all selection/default initialization paths.
+@selection_router.get("/models/available")
+def available_models(db=Depends(get_db), access: Access = Depends(get_access)):
+    providers = choices(db, access.workspace_id)
+    settings = db.get(ModelBillingSettings, 1)
+    default = str(settings.default_provider_id) if settings and settings.default_provider_id else None
+    if not any(item["id"] == default and item["available"] for item in providers):
+        default = None
+    return {"default_provider_id": default, "providers": providers}
+
+
+def request_binding(db, workspace_id, identifier):
+    # Match administrator writes: settings before workspace/provider locks.
+    db.scalar(select(ModelBillingSettings).where(ModelBillingSettings.id == 1).with_for_update(read=True))
     db.get(Workspace, workspace_id, with_for_update=True, populate_existing=True)
     row = lock_provider(db, identifier)
-    binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id,
+    binding = db.scalar(select(LLMProviderConfig).where(
+        LLMProviderConfig.workspace_id == workspace_id,
         LLMProviderConfig.site_provider_id == identifier))
-    from .workspace_billing import shared_enabled
-    shared = shared_enabled(db)
     if not row.published and binding is None:
         raise HTTPException(404, "模型不存在或不可用")
-    reason = unavailable_reason(db, row, binding, shared)
+    reason = unavailable_reason(db, row, binding, True)
     if reason:
         messages = {"model_disabled": "模型已停用，请选择其他模型",
             "pricing_unconfigured": "模型价格尚未配置完整，请联系站点管理员",
@@ -214,55 +218,31 @@ def select_model(db, workspace_id, identifier):
     if binding is None:
         binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=row.id,
             key=f"shared-{row.id}", name=row.name, base_url="", model=row.model,
-            encrypted_api_key="", enabled=True, active=False, source_price_version=row.version)
+            encrypted_api_key="", enabled=True, active=False)
         db.add(binding)
         db.flush()
-    db.execute(update(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id).values(active=False))
-    binding.active = True
-    db.get(Workspace, workspace_id).model_version += 1
-    db.flush()
+    return binding, row
 
 
 @selection_router.get("/settings/models")
 def workspace_models(db=Depends(get_db), access: Access = Depends(get_access)):
-    return choices(db, access.workspace_id)
+    raise HTTPException(410, "请在问答输入区为每次请求选择模型")
 
 
 @selection_router.put("/settings/models")
 def select_workspace_model(payload: SelectionInput, db=Depends(get_db), access: Access = Depends(get_access)):
     access.admin()
-    workspace = db.get(Workspace, access.workspace_id, with_for_update=True, populate_existing=True)
-    if payload.version != workspace.model_version:
-        raise HTTPException(409, "工作区模型已更新，请重新加载")
-    select_model(db, workspace.id, payload.provider_id)
-    from .audit_log import record_audit
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action="workspace.model_selected", resource_type="model_provider", resource_id=payload.provider_id)
-    db.commit()
-    return choices(db, workspace.id)
+    raise HTTPException(410, "工作区不再设置当前模型，请在问答输入区选择")
 
 
 @selection_router.get("/site/admin/workspaces/{workspace_id}/model")
 def admin_workspace_model(db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    return choices(db, access.workspace_id)
+    raise HTTPException(410, "工作区不再设置当前模型")
 
 
 @selection_router.put("/site/admin/workspaces/{workspace_id}/model")
 def admin_select_model(payload: SelectionInput, db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    if payload.version != db.get(Workspace, access.workspace_id).model_version:
-        raise HTTPException(409, "工作区模型已更新，请重新加载")
-    select_model(db, access.workspace_id, payload.provider_id)
-    access.audit(db, "workspace.model_selected", target_id=payload.provider_id)
-    db.commit()
-    return choices(db, access.workspace_id)
-
-
-def initialize_default(db, workspace_id):
-    settings = db.get(ModelBillingSettings, 1)
-    row = db.get(SiteModelProvider, settings.default_provider_id) if settings and settings.default_provider_id else None
-    from .workspace_billing import shared_enabled
-    if shared_enabled(db) and row and row.published and row.enabled and complete(row.prices):
-        select_model(db, workspace_id, row.id)
+    raise HTTPException(410, "工作区不再设置当前模型")
 
 
 def assert_available(identifier):

@@ -14,7 +14,7 @@ from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import ChatMessage, Conversation, CreditAccount, DocumentStatus
 from test_retrieval import add_document, add_library
-from auth_helpers import authenticate
+from auth_helpers import authenticate, model_id
 
 
 @pytest.fixture
@@ -70,7 +70,8 @@ def create(http, libraries):
 
 
 def turn(http, id, query="needle", **extra):
-    payload = {"request_id": str(uuid4()), **({"query": query} if query is not None else {}), **extra}
+    payload = {"request_id": str(uuid4()), "provider_id": model_id(http),
+        **({"query": query} if query is not None else {}), **extra}
     response = http.post(f"/conversations/{id}/messages", json=payload)
     assert response.status_code == 200, response.text
     events = [(event.event, event.json()) for event in EventSource(response).iter_sse()]
@@ -206,7 +207,7 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
     assert completed[-1][1]["status"] == "completed"
     assert len(http.get(f"/conversations/{conversation['id']}").json()["messages"]) == 2
     invalid = http.post(f"/conversations/{conversation['id']}/messages", json={
-        "request_id": str(uuid4()), "retry_message_id": failed["id"],
+        "request_id": str(uuid4()), "provider_id": model_id(http), "retry_message_id": failed["id"],
     })
     assert invalid.status_code == 409
 
@@ -226,7 +227,7 @@ def test_stop_conflict_delete_and_restart_recovery(client):
     )
     db.add(pending)
     db.commit()
-    blocked = http.post(f"/conversations/{id}/messages", json={"request_id": str(uuid4()), "query": "needle"})
+    blocked = http.post(f"/conversations/{id}/messages", json={"provider_id": model_id(http), "request_id": str(uuid4()), "query": "needle"})
     assert blocked.status_code == 409
     assert http.post(f"/conversations/{id}/stop", json={"request_id": str(uuid4())}).status_code == 404
     stopped = http.post(f"/conversations/{id}/stop", json={"request_id": str(request_id)})
@@ -244,7 +245,7 @@ def test_stop_conflict_delete_and_restart_recovery(client):
     assert http.delete(f"/conversations/{id}").status_code == 204
     assert http.get(f"/conversations/{id}").status_code == 404
     assert http.get("/conversations").json() == []
-    assert http.post(f"/conversations/{id}/messages", json={"request_id": str(uuid4()), "query": "needle"}).status_code == 404
+    assert http.post(f"/conversations/{id}/messages", json={"provider_id": model_id(http), "request_id": str(uuid4()), "query": "needle"}).status_code == 404
 
 
 def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, monkeypatch):

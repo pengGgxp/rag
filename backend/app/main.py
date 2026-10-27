@@ -75,7 +75,7 @@ from .extensions import router as extensions_router
 from .payments import build_router as build_payment_router
 from .llm_providers import router as llm_providers_router, site_router as site_llm_providers_router
 from .credits import site_router as site_usage_policies_router
-from .llm_providers import active_provider_config
+from .llm_providers import request_provider_config
 from .model_pricing import router as model_pricing_router
 
 MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
@@ -1002,7 +1002,7 @@ def answer_knowledge_base(
             "content": f"Question:\n{payload.query}\n\nSources:\n{context}",
         },
     ]
-    provider_config = active_provider_config(db, access.workspace_id)
+    provider_config = request_provider_config(db, access.workspace_id, payload.provider_id)
     provider = OpenAICompatibleChatProvider(config=provider_config)
     reservation_id = uuid4()
     metered = model_billing.enabled(db)
@@ -1012,7 +1012,8 @@ def answer_knowledge_base(
             UUID(provider_config.provider_id), hold)
     else:
         from .workspace_billing import operation_snapshot
-        admission = operation_snapshot(db, access.workspace_id, reservation_id, "model")
+        admission = operation_snapshot(db, access.workspace_id, reservation_id, "model",
+            capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
         authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
     db.commit()
     def finalize_model(outcome):
@@ -1076,6 +1077,9 @@ def answer_knowledge_base(
     return AnswerRead(
         trace_id=trace_id,
         answer=answer,
+        provider_id=UUID(provider_config.provider_id),
+        provider_name=provider_config.provider_name,
+        model=provider_config.model,
         refused=False,
         refusal_reason=None,
         citations=citations,

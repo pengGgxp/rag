@@ -27,7 +27,9 @@ def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, 
     db.commit()
     base = f"/site/admin/workspaces/{b['workspace_id']}"
     result = admin.put(base + "/model", json={"provider_id": p["id"], "version": 0})
-    assert result.status_code == 200, result.text
+    assert result.status_code == 410, result.text
+    shared_providers.request_binding(db, UUID(b["workspace_id"]), UUID(p["id"]))
+    db.commit()
     assert admin.get("/auth/me").json()["workspace_id"] == a["workspace_id"]
     binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(b["workspace_id"])))
     own = f"/site/admin/workspaces/{a['workspace_id']}"
@@ -45,7 +47,8 @@ def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch
     db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
     db.commit()
     base = f"/site/admin/workspaces/{b['workspace_id']}"
-    admin.put(base + "/model", json={"provider_id": p["id"], "version": 0})
+    shared_providers.request_binding(db, UUID(b["workspace_id"]), UUID(p["id"]))
+    db.commit()
     binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(b["workspace_id"])))
     request_id = uuid4()
     authorization_hold(db, binding.workspace_id, UUID(b["user"]["id"]), request_id)
@@ -60,7 +63,7 @@ def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch
     assert admin.put(path, json=payload).status_code == 410
     db.refresh(old)
     assert old.credits == 4 and old.policy_snapshot == snapshot
-    assert llm_providers.active_provider_config(db, binding.workspace_id).api_key == "secret"
+    assert llm_providers.request_provider_config(db, binding.workspace_id, UUID(p["id"])).api_key == "secret"
     assert "enc:secret" not in admin.get(base + "/llm-providers").text
     failures = db.scalars(select(SiteAuditEvent).where(SiteAuditEvent.result == "failure")).all()
     assert failures and "secret" not in str([e.details for e in failures])
@@ -73,5 +76,5 @@ def test_ordinary_member_cannot_use_management_apis(accounts):
     switch(member, b["workspace_id"])
     for path in ("/usage/policies", "/settings/llm-providers", "/site/admin/llm-providers"):
         assert member.get(path).status_code == 403
-    assert member.get("/settings/models").status_code == 200
+    assert member.get("/models/available").status_code == 200
     assert member.put("/settings/models", json={"provider_id": str(uuid4()), "version": 0}).status_code == 403

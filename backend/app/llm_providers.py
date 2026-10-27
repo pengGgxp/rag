@@ -9,7 +9,7 @@ from . import mcp_client
 from .management_access import ManagementAccess, management_access
 from .credits import ensure_policies
 from .db import get_db
-from .llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider
+from .llm import ChatProviderConfig
 from .models import LLMProviderConfig, UsagePolicy, SiteModelProvider
 from .model_pricing import prices_read, serialize_policy
 
@@ -64,27 +64,18 @@ def _decrypt_api_key(value):
     return mcp_client.decrypt_headers(value).get("api_key", "")
 
 
-def active_provider_config(db, workspace_id):
-    row = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id,
-        LLMProviderConfig.active.is_(True)))
-    if row is None or row.site_provider_id is None:
-        raise HTTPException(503, "回答模型尚未配置，请在工作区设置中选择模型")
-    shared = db.get(SiteModelProvider, row.site_provider_id)
-    if shared is None or not shared.enabled:
-        raise HTTPException(503, "当前模型已停用，请选择其他模型")
+def request_provider_config(db, workspace_id, site_provider_id):
+    from .shared_providers import request_binding
+    row, shared = request_binding(db, workspace_id, site_provider_id)
     try:
         api_key = _decrypt_api_key(shared.encrypted_api_key)
     except Exception as exc:
-        raise LLMConfigurationError("当前模型供应商密钥无法解密，请联系站点管理员") from exc
+        raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员") from exc
     if not api_key:
-        raise LLMConfigurationError("当前模型供应商密钥未配置")
+        raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员")
     return ChatProviderConfig(base_url=shared.base_url, api_key=api_key, model=shared.model,
         timeout_seconds=shared.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
         provider_name=shared.name, site_provider_id=str(shared.id))
-
-
-def provider_for_workspace(db, workspace_id):
-    return OpenAICompatibleChatProvider(config=active_provider_config(db, workspace_id))
 
 
 @site_router.get("")
@@ -111,7 +102,7 @@ def current_provider(db=Depends(get_db), access: ManagementAccess = Depends(mana
 @site_router.delete("/{identifier}")
 @router.delete("/{identifier}")
 def retired_connection_write(access: ManagementAccess = Depends(management_access)):
-    raise HTTPException(410, "供应商连接已迁移至站点后台；切换模型请使用工作区模型选择")
+    raise HTTPException(410, "供应商连接在站点后台配置；使用模型请在问答输入区选择")
 
 
 def scoped_provider(db, access, identifier):

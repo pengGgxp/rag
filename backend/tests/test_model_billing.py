@@ -13,6 +13,7 @@ from app.llm import LLMProviderError, LLMUsage, ToolResponse
 from app.models import (CreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelCallUsage,
                         ModelUsageRequest, UsageEvent, UsagePolicy)
 from test_auth import register
+from auth_helpers import model_id
 
 
 @pytest.fixture
@@ -24,7 +25,8 @@ def metered(accounts, monkeypatch):
     from app import llm_providers
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: "test-only")
     shared = SiteModelProvider(key="meter-test", name="Test", base_url="https://example.test/v1", model="test",
-        encrypted_api_key="test-only", enabled=True, prices={})
+        encrypted_api_key="test-only", enabled=True, prices={key: {"capability": key, "unit": "tokens",
+            "unit_size": 1000, "credits_per_unit": 1, "enabled": True} for key in billing.CAPABILITIES})
     db.add(shared); db.flush()
     binding = LLMProviderConfig(workspace_id=workspace, site_provider_id=shared.id, key="meter-test", name="Test",
         model="test", base_url="", encrypted_api_key="", active=True)
@@ -123,11 +125,11 @@ def test_snapshots_survive_price_change_and_recovery_keeps_completed_calls(meter
     call(db, request_id, input=1000, output=0)
     unfinished = billing.begin_call(db, request_id, provider()); db.commit()
     billing.recover_requests(db)
-    assert db.get(ModelUsageRequest, request_id).credits == 11
+    assert db.get(ModelUsageRequest, request_id).credits == 2
     assert db.get(ModelCallUsage, unfinished).status == "interrupted"
     assert db.get(ModelCallUsage, first).prices["llm_input_tokens"]["version"] == 1
     billing.recover_requests(db)
-    assert db.get(CreditAccount, workspace).balance == 989
+    assert db.get(CreditAccount, workspace).balance == 998
 
 
 def test_meter_persists_reported_usage_on_failure_but_does_not_estimate(metered):
@@ -199,7 +201,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     created = owner.post("/conversations", json={"knowledge_base_ids":[]}).json()
     request_id = uuid4()
-    response = owner.post(f"/conversations/{created['id']}/messages", json={"query":"hello", "request_id":str(request_id)})
+    response = owner.post(f"/conversations/{created['id']}/messages", json={"provider_id": model_id(owner), "query":"hello", "request_id":str(request_id)})
     assert response.status_code == 200, response.text
     db.expire_all()
     row = db.get(ModelUsageRequest, request_id)
@@ -207,7 +209,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     assert db.scalar(select(func.count()).select_from(ModelCallUsage).where(
         ModelCallUsage.request_id==request_id)) == 2
     assert db.get(CreditAccount, workspace).balance == 999
-    duplicate = owner.post(f"/conversations/{created['id']}/messages", json={"query":"hello", "request_id":str(request_id)})
+    duplicate = owner.post(f"/conversations/{created['id']}/messages", json={"provider_id": model_id(owner), "query":"hello", "request_id":str(request_id)})
     assert duplicate.status_code in (200,409)
     assert db.get(CreditAccount, workspace).balance == 999
 
@@ -244,7 +246,7 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
     identifier = uuid4()
-    response = owner.post(f"/conversations/{conversation['id']}/messages", json={"query": "Hello", "request_id": str(identifier)})
+    response = owner.post(f"/conversations/{conversation['id']}/messages", json={"provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)})
     assert response.status_code == 200
     db.expire_all()
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == identifier)).all()
@@ -271,7 +273,7 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
     identifier = uuid4()
-    payload = json.dumps({"query": "Hello", "request_id": str(identifier)}).encode()
+    payload = json.dumps({"provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)}).encode()
     async def request():
         disconnected = asyncio.Event()
         sent = False

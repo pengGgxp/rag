@@ -126,7 +126,7 @@ class OpenAICompatibleChatProvider:
 
     def check_available(self):
         if not self.configured:
-            raise LLMConfigurationError("回答模型尚未配置，请在工作区设置中选择模型")
+            raise LLMConfigurationError("请在问答输入区选择可用模型")
         if self.config.site_provider_id:
             from .shared_providers import assert_available
             assert_available(self.config.site_provider_id)
@@ -148,7 +148,7 @@ class OpenAICompatibleChatProvider:
         self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
-                "回答模型尚未配置，请在工作区设置中选择模型"
+                "请在问答输入区选择可用模型"
             )
         url = self._chat_url(self.base_url)
         headers = {

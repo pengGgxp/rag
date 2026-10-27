@@ -242,10 +242,10 @@ def test_no_evidence_answer_keeps_its_own_trace(retrieval_client):
     client, session = retrieval_client
     library = add_library(session)
     first = client.post(
-        f"/knowledge-bases/{library.id}/answer", json={"query": "missing"}
+        f"/knowledge-bases/{library.id}/answer", json={"query": "missing", "provider_id": str(uuid4())}
     )
     second = client.post(
-        f"/knowledge-bases/{library.id}/answer", json={"query": "missing"}
+        f"/knowledge-bases/{library.id}/answer", json={"query": "missing", "provider_id": str(uuid4())}
     )
     assert first.status_code == second.status_code == 200
     assert first.json()["trace_id"] != second.json()["trace_id"]

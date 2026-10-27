@@ -46,10 +46,12 @@ def provider(client, key="one", rate=4, published=True):
 
 
 def choose(client, identifier):
-    selection = client.get("/settings/models").json()
-    result = client.put("/settings/models", json={"provider_id": identifier, "version": selection["version"]})
-    assert result.status_code == 200, result.text
-    return result.json()
+    from app.main import app, get_db
+    db = app.dependency_overrides[get_db]()
+    workspace_id = UUID(client.get("/auth/me").json()["workspace_id"])
+    binding, _ = shared.request_binding(db, workspace_id, UUID(identifier))
+    db.commit()
+    return binding
 
 
 def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts, monkeypatch):
@@ -72,7 +74,7 @@ def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts
         assert db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == a.id)).all() == []
     from app.model_billing import price_snapshot
     assert price_snapshot(db, associations[0].workspace_id, associations[0].id)["llm_input_tokens"]["credits_per_unit"] == 20
-    config = llm_providers.active_provider_config(db, UUID(other_session["workspace_id"]))
+    config = llm_providers.request_provider_config(db, UUID(other_session["workspace_id"]), UUID(p["id"]))
     assert config.model == "model-one" and config.api_key == "secret"
     assert config.site_provider_id == p["id"]
 
@@ -84,16 +86,20 @@ def test_permissions_private_visibility_versions_and_secrets(accounts, monkeypat
     (_, other, anonymous), _ = accounts
     register(other, "viewer@example.com")
     assert other.get("/site/admin/llm-providers").status_code == 403
-    assert anonymous.get("/settings/models").status_code == 401
-    choices = other.get("/settings/models")
+    assert anonymous.get("/models/available").status_code == 401
+    choices = other.get("/models/available")
     assert "secret" not in choices.text and "base_url" not in choices.text and "prices" not in choices.text
     assert private["id"] not in choices.text
-    assert other.put("/settings/models", json={"provider_id": private["id"], "version": 0}).status_code == 404
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        shared.request_binding(db, UUID(other.get("/auth/me").json()["workspace_id"]), UUID(private["id"]))
+    assert exc.value.status_code == 404
+    db.rollback()
     share(owner, "viewer@example.com", "viewer")
     switch(other, session["workspace_id"])
     assert other.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 403
     choose(owner, p["id"])
-    assert owner.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 409
+    assert owner.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 410
     assert owner.post("/settings/llm-providers", json={}).status_code == 410
     assert owner.request("DELETE", f"/site/admin/llm-providers/{p['id']}", json={"version": p["version"]}).status_code == 409
 
@@ -111,7 +117,8 @@ def test_template_documents_drafts_default_and_no_backfill(accounts, monkeypatch
     workspace = UUID(registered["workspace_id"])
     policies = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
     assert len(policies) == 0
-    assert other.get("/settings/models").json()["provider_id"] == p["id"]
+    assert other.get("/models/available").json()["default_provider_id"] == p["id"]
+    assert not db.scalar(select(LLMProviderConfig.id).where(LLMProviderConfig.workspace_id == workspace))
     assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == UUID(first["workspace_id"]))).all() == []
     draft = owner.put("/site/admin/pricing-template", json={"version": 1, "policies": []})
     assert draft.status_code == 200 and not draft.json()["configured"]
@@ -163,13 +170,13 @@ def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
     db.commit()
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
-        llm_providers.active_provider_config(db, UUID(session["workspace_id"]))
+        llm_providers.request_provider_config(db, UUID(session["workspace_id"]), UUID(p["id"]))
 
 
 @pytest.mark.parametrize("mode,reason", [
     ("ready", None), ("zero", None), ("missing", "pricing_unconfigured"),
     ("disabled", "model_disabled"), ("connection", "service_not_ready"),
-    ("legacy_new", "service_not_ready"),
+    ("legacy_new", None),
 ])
 def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason):
     owner, db, session = setup_site(accounts, monkeypatch)
@@ -184,12 +191,18 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
     elif mode == "legacy_new":
         db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
     db.commit()
-    result = owner.get("/settings/models").json()
+    result = owner.get("/models/available").json()
     choice = next(item for item in result["providers"] if item["id"] == p["id"])
     assert choice["unavailable_reason"] == reason
     assert choice["available"] is (reason is None)
-    saved = owner.put("/settings/models", json={"provider_id": p["id"], "version": result["version"]})
-    assert saved.status_code == (200 if reason is None else 409), saved.text
+    if reason:
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            shared.request_binding(db, UUID(session["workspace_id"]), UUID(p["id"]))
+        assert exc.value.status_code == 409
+        db.rollback()
+    else:
+        choose(owner, p["id"])
     assert db.get(ModelBillingSettings, 1).enabled is False
 
 
@@ -199,7 +212,7 @@ def test_legacy_binding_missing_prices_cannot_be_selected(accounts, monkeypatch)
     choose(owner, p["id"])
     db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
     db.commit()
-    result = owner.get("/settings/models").json()
-    assert result["providers"][0]["unavailable_reason"] == "pricing_unconfigured"
+    result = owner.get("/models/available").json()
+    assert result["providers"][0]["unavailable_reason"] is None
     assert owner.put("/settings/models", json={"provider_id": p["id"],
-        "version": result["version"]}).status_code == 409
+        "version": 0}).status_code == 410

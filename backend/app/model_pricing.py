@@ -67,11 +67,6 @@ def complete(template):
         return False
 
 
-def copy_workspace_template(db, workspace_id):
-    from .shared_providers import initialize_default
-    initialize_default(db, workspace_id)
-
-
 def settings_locked(db):
     row = db.get(ModelBillingSettings, 1, with_for_update=True, populate_existing=True)
     if row is None:

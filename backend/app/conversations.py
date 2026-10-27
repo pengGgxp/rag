@@ -30,7 +30,7 @@ from .credits import (
     release_hold, settle_model_usage,
 )
 from .extensions import ExtensionRuntime, validate_selection
-from .llm_providers import active_provider_config
+from .llm_providers import request_provider_config
 from . import model_billing
 from .models import ModelUsageRequest
 
@@ -55,6 +55,7 @@ class ConversationRename(BaseModel):
 class TurnRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     request_id: UUID
+    provider_id: UUID
     query: str | None = Field(default=None, min_length=1)
     retry_message_id: UUID | None = None
 
@@ -74,6 +75,8 @@ def message_read(message: ChatMessage) -> dict:
         "id": str(message.id), "sequence": message.sequence, "role": message.role,
         "content": message.content, "status": message.status,
         "request_id": str(message.request_id) if message.request_id else None,
+        "provider_id": str(message.provider_id) if message.provider_id else None,
+        "provider_name": message.provider_name, "model": message.model,
         "citations": message.citations, "traces": message.traces,
         "tool_events": message.tool_events,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
@@ -312,13 +315,14 @@ def chat_router(get_db, retrieve):
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
-            provider_config = active_provider_config(db, access.workspace_id)
+            provider_config = request_provider_config(db, access.workspace_id, payload.provider_id)
             if metered:
                 model_billing.start_request(db, access.workspace_id, access.user_id,
                     payload.request_id, UUID(provider_config.provider_id), hold_amount)
             else:
                 from .workspace_billing import operation_snapshot
-                operation_snapshot(db, access.workspace_id, payload.request_id, "model")
+                operation_snapshot(db, access.workspace_id, payload.request_id, "model",
+                    capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
                 authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
         except CreditError:
             db.rollback()
@@ -357,6 +361,9 @@ def chat_router(get_db, retrieve):
             db.add(message)
             if next_sequence == 2 and conversation.title == "新对话":
                 conversation.title = payload.query[:40]
+        message.provider_id = UUID(provider_config.provider_id)
+        message.provider_name = provider_config.provider_name
+        message.model = provider_config.model
         db.commit()
         db.refresh(message)
         message_id = message.id
