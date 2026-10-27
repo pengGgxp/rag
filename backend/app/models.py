@@ -101,6 +101,7 @@ class UsagePolicy(Base):
     credits_per_unit: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),

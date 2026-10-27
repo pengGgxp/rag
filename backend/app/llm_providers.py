@@ -14,6 +14,7 @@ from .credits import ensure_policies
 from .db import get_db
 from .llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider
 from .models import LLMProviderConfig, UsagePolicy
+from .model_pricing import copy_provider_prices, prices_read, serialize_policy
 
 router = APIRouter(prefix="/settings/llm-providers", tags=["llm-providers"])
 site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/llm-providers", tags=["site-admin"])
@@ -32,10 +33,10 @@ class ProviderInput(BaseModel):
 
 class ProviderPricingInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    capability: str = Field(pattern=r"^llm_(input|output)_tokens$")
+    capability: str = Field(pattern=r"^llm_(input|cached_input|output)_tokens$")
     unit: str = Field(min_length=1, max_length=40)
-    unit_size: int = Field(default=1000, ge=1)
-    credits_per_unit: int = Field(default=0, ge=0)
+    unit_size: int = Field(default=1000, ge=1, le=2_147_483_647, strict=True)
+    credits_per_unit: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
     enabled: bool = True
 
 
@@ -152,6 +153,7 @@ def create_provider(payload: ProviderInput, db: Session = Depends(get_db), acces
         row.active = True
     db.add(row)
     db.flush()
+    copy_provider_prices(db, access.workspace_id, row.id)
     access.audit(db, "workspace.model_provider_created", target_id=row.id, fields=payload.model_fields_set)
     db.commit()
     db.refresh(row)
@@ -232,11 +234,7 @@ def list_provider_pricing(identifier: UUID, db: Session = Depends(get_db),
         raise HTTPException(404, "模型供应商不存在")
     policies = ensure_policies(db, access.workspace_id, row.id)
     db.commit()
-    return [{
-        "capability": item.capability, "unit": item.unit,
-        "unit_size": item.unit_size, "credits_per_unit": item.credits_per_unit,
-        "enabled": item.enabled, "version": item.version,
-    } for item in policies if item.capability.startswith("llm_")]
+    return prices_read([item for item in policies if item.capability.startswith("llm_")])
 
 
 @site_router.put("/{identifier}/pricing/{capability}")
@@ -269,8 +267,4 @@ def update_provider_pricing(identifier: UUID, capability: str, payload: Provider
     policy.updated_by = access.user_id
     access.audit(db, "workspace.model_pricing_updated", target_id=row.id, fields=payload.model_fields_set)
     db.commit()
-    return {
-        "capability": policy.capability, "unit": policy.unit,
-        "unit_size": policy.unit_size, "credits_per_unit": policy.credits_per_unit,
-        "enabled": policy.enabled, "version": policy.version,
-    }
+    return serialize_policy(policy)

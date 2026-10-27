@@ -76,6 +76,7 @@ from .payments import build_router as build_payment_router
 from .llm_providers import router as llm_providers_router, site_router as site_llm_providers_router
 from .credits import site_router as site_usage_policies_router
 from .llm_providers import active_provider_config
+from .model_pricing import router as model_pricing_router
 
 MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
 
@@ -1081,6 +1082,7 @@ app.include_router(feedback_router)
 app.include_router(audit_router)
 app.include_router(build_usage_router(get_db))
 app.include_router(site_usage_policies_router)
+app.include_router(model_pricing_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 app.include_router(extensions_router)

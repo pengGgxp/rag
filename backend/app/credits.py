@@ -35,8 +35,8 @@ class CreditError(HTTPException):
 class UsagePolicyUpdate(BaseModel):
     capability: str = Field(min_length=1, max_length=80)
     unit: str = Field(min_length=1, max_length=40)
-    unit_size: int = Field(default=1, ge=1)
-    credits_per_unit: int = Field(default=0, ge=0)
+    unit_size: int = Field(default=1, ge=1, le=2_147_483_647, strict=True)
+    credits_per_unit: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
     enabled: bool = True
 
 
@@ -389,13 +389,10 @@ def build_router(get_db):
     @site_router.get("")
     @router.get("/policies")
     def read_policies(db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
+        from .model_pricing import prices_read
         policies = ensure_policies(db, access.workspace_id)
         db.commit()
-        return [{
-            "capability": item.capability, "unit": item.unit,
-            "unit_size": item.unit_size, "credits_per_unit": item.credits_per_unit,
-            "enabled": item.enabled, "version": item.version,
-        } for item in sorted(policies, key=lambda row: row.capability)]
+        return prices_read(policies)
 
     @site_router.put("/{capability}")
     @router.put("/policies/{capability}")
@@ -426,11 +423,8 @@ def build_router(get_db):
             policy.enabled = payload.enabled
         access.audit(db, "workspace.usage_policy_updated", fields=payload.model_fields_set)
         db.commit()
-        return {
-            "capability": policy.capability, "unit": policy.unit,
-            "unit_size": policy.unit_size, "credits_per_unit": policy.credits_per_unit,
-            "enabled": policy.enabled, "version": policy.version,
-        }
+        from .model_pricing import serialize_policy
+        return serialize_policy(policy)
 
     @router.post("/credits")
     def add_credits(access: Access = Depends(get_access)):

@@ -7,6 +7,7 @@ import "./billing.css";
 
 export type CreditUsage = {
   balance: number;
+  pending_credits?: number;
   lifetime_granted: number;
   lifetime_spent: number;
   usage?: {
@@ -58,6 +59,7 @@ export function creditKind(kind: string) {
 }
 const usageLabel: Record<string, string> = {
   llm_input_tokens: "模型输入量",
+  llm_cached_input_tokens: "模型缓存读取量",
   llm_output_tokens: "模型输出量",
   embedding_tokens: "知识库处理量",
   ocr_pages: "文档解析页数",
@@ -181,6 +183,7 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
         </button>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
+      {Boolean(usage?.pending_credits) && <p className="form-error" role="status">有 {count(usage!.pending_credits!)} 积分待结算，请充值补足。下次使用模型前将先结清。</p>}
       {notice && <p className="billing-notice" role="status"><Info size={16} />{notice}</p>}
       {loading && !catalog ? (
         <div className="settings-skeleton" role="status" aria-label="加载中"><span /><span /><span /></div>

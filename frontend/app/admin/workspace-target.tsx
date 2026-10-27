@@ -5,10 +5,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Building2, Search } from "lucide-react";
 import { AdminLoad, Pagination, useAdminResource, type Page } from "./admin-ui";
 import type { AdminWorkspace } from "./workspaces/page";
+import { useAdminChanges } from "./admin-changes";
 
 const Changes = createContext({ setDirty: (_value: boolean) => {}, setBusy: (_value: boolean) => {} });
 
 export function useWorkspaceChanges(dirty: boolean, busy: boolean) {
+  useAdminChanges(dirty, busy);
   const { setDirty, setBusy } = useContext(Changes);
   useEffect(() => { setDirty(dirty); }, [dirty, setDirty]);
   useEffect(() => { setBusy(busy); }, [busy, setBusy]);

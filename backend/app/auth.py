@@ -192,6 +192,8 @@ def create_user(db, email, name, password=None, workspace_id=None):
         workspace = Workspace(name=f"{name}的工作区"[:100])
         db.add(workspace)
         db.flush()
+        from .model_pricing import copy_workspace_template
+        copy_workspace_template(db, workspace.id)
     else:
         workspace = db.get(Workspace, workspace_id)
         if workspace is None:

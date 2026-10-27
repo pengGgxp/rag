@@ -196,3 +196,100 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     duplicate = owner.post(f"/conversations/{created['id']}/messages", json={"query":"hello", "request_id":str(request_id)})
     assert duplicate.status_code in (200,409)
     assert db.get(CreditAccount, workspace).balance == 999
+
+
+def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatch):
+    from app import conversations
+    from app.llm import ToolCall
+    owner, db, workspace, user = metered
+    seen = []
+    class Extensions:
+        skills = []
+        tools = [{"type": "function", "function": {"name": "load_skill"}},
+                 {"type": "function", "function": {"name": "mcp_test"}}]
+        def __init__(self, *_args):
+            pass
+        def execute(self, name, arguments, check_active):
+            return {"content": "SKILL_TEXT" if name == "load_skill" else "MCP_RESULT"}
+        def label(self, name):
+            return name
+    class Provider:
+        status = provider().status
+        last_usage = None
+        def complete_with_tools(self, messages, tools, tool_choice):
+            seen.append(str(messages))
+            number = len(seen)
+            if number == 1:
+                return ToolResponse(None, [ToolCall("skill", "load_skill", {})], LLMUsage(prompt_tokens=100, completion_tokens=10))
+            assert "SKILL_TEXT" in str(messages)
+            if number == 2:
+                return ToolResponse(None, [ToolCall("mcp", "mcp_test", {})], LLMUsage(prompt_tokens=200, completion_tokens=20))
+            assert "MCP_RESULT" in str(messages)
+            return ToolResponse("Done", [], LLMUsage(prompt_tokens=300, completion_tokens=30))
+    monkeypatch.setattr(conversations, "ExtensionRuntime", Extensions)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
+    identifier = uuid4()
+    response = owner.post(f"/conversations/{conversation['id']}/messages", json={"query": "Hello", "request_id": str(identifier)})
+    assert response.status_code == 200
+    db.expire_all()
+    events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == identifier)).all()
+    assert {row.capability for row in events} == set(billing.CAPABILITIES)
+    assert sum(row.units for row in events if row.capability == "llm_input_tokens") == 600
+    assert sum(row.units for row in events if row.capability == "llm_output_tokens") == 60
+    assert db.get(ModelUsageRequest, identifier).credits == 1
+
+
+def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeypatch):
+    import asyncio
+    import json
+    from threading import Event
+    from app import auth, conversations, main
+    owner, db, workspace, user = metered
+    entered, release = Event(), Event()
+    class Provider:
+        status = provider().status
+        last_usage = None
+        def complete_with_tools(self, messages, tools, tool_choice):
+            entered.set()
+            assert release.wait(5), "test did not release model call"
+            return ToolResponse("confirmed after disconnect", [], LLMUsage(prompt_tokens=2000, completion_tokens=100))
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
+    identifier = uuid4()
+    payload = json.dumps({"query": "Hello", "request_id": str(identifier)}).encode()
+    async def request():
+        disconnected = asyncio.Event()
+        sent = False
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": payload, "more_body": False}
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+        async def send(_message):
+            pass
+        path = f"/conversations/{conversation['id']}/messages"
+        scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.0"},
+            "http_version": "1.1", "method": "POST", "scheme": "http", "path": path,
+            "raw_path": path.encode(), "query_string": b"", "server": ("testserver", 80),
+            "client": ("127.0.0.1", 1234), "root_path": "", "headers": [
+                (b"host", b"testserver"), (b"content-type", b"application/json"),
+                (b"x-rag-request", b"1"), (b"x-csrf-token", owner.headers["X-CSRF-Token"].encode()),
+                (b"cookie", f"{auth.COOKIE}={owner.cookies.get(auth.COOKIE)}".encode())]}
+        task = asyncio.create_task(main.app(scope, receive, send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            disconnected.set()
+            await asyncio.sleep(0.02)
+        finally:
+            release.set()
+        await asyncio.wait_for(task, 5)
+    asyncio.run(request())
+    db.expire_all()
+    row = db.get(ModelUsageRequest, identifier)
+    assert row.status == "settled" and row.credits == 3
+    assert db.get(CreditAccount, workspace).balance == 997
+    calls = db.scalars(select(ModelCallUsage).where(ModelCallUsage.request_id == identifier)).all()
+    assert len(calls) == 1 and calls[0].usage["prompt_tokens"] == 2000

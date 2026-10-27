@@ -2,7 +2,7 @@ import httpx
 import json
 from collections.abc import AsyncIterator
 from httpx_sse import aconnect_sse, SSEError
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from .config import Settings, get_settings
@@ -62,7 +62,8 @@ def measured_usage(usage, messages, output, tools=None, *, success=True):
             values["completion_tokens"] = estimate_tokens([output])
             estimated.append("output")
     values["estimated_fields"] = estimated
-    values["source"] = "estimate" if usage is None and success else "mixed" if estimated else "provider"
+    values["source"] = ("unavailable" if usage is None and not success else
+        "estimate" if usage is None else "mixed" if estimated else "provider")
     return values
 
 
@@ -294,7 +295,14 @@ class OpenAICompatibleChatProvider:
                         body = event.json()
                         parsed_usage = _parse_usage(body.get("usage"))
                         if parsed_usage is not None:
-                            self.last_usage = parsed_usage
+                            if (self.last_usage is not None
+                                    and self.last_usage.prompt_tokens is not None
+                                    and self.last_usage.completion_tokens is not None
+                                    and (parsed_usage.prompt_tokens is None or parsed_usage.completion_tokens is None)):
+                                self.last_usage = replace(self.last_usage, diagnostics=(
+                                    *self.last_usage.diagnostics, "ignored_incomplete_stream_usage"))
+                            else:
+                                self.last_usage = parsed_usage
                         if body.get("error"):
                             raise LLMProviderError("回答服务返回错误")
                         choices = body.get("choices", [])

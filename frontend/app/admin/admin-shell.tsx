@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth } from "../auth";
+import { AdminChangesBoundary } from "./admin-changes";
 
 const navigation = [
   { href: "/admin", label: "概览", icon: LayoutDashboard },
@@ -43,7 +44,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       </main>
     );
   return (
-    <div className="admin-shell">
+    <AdminChangesBoundary><div className="admin-shell">
       <aside className="admin-sidebar" aria-label="站点管理">
         <Link className="admin-brand" href="/admin">
           <span className="brand-mark">
@@ -78,6 +79,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </footer>
       </aside>
       <main className="admin-main">{children}</main>
-    </div>
+    </div></AdminChangesBoundary>
   );
 }

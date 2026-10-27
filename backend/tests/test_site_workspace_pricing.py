@@ -58,7 +58,9 @@ def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, 
     assert admin.post(own + f"/llm-providers/{identifier}/activate").status_code == 404
     assert admin.delete(own + f"/llm-providers/{identifier}").status_code == 404
     prices = admin.get(base + f"/llm-providers/{identifier}/pricing").json()
-    assert len(prices) == 2
+    assert len(prices) == 3
+    missing_cache = next(row for row in prices if row["capability"] == "llm_cached_input_tokens")
+    assert missing_cache["configured"] is False and missing_cache["credits_per_unit"] is None
     assert admin.put(base + f"/llm-providers/{identifier}/pricing/llm_input_tokens", json=PRICE).json()["version"] == 2
     updated = admin.put(base + "/usage-policies/llm_input_tokens", json=PRICE)
     assert updated.status_code == 200 and updated.json()["version"] == 2

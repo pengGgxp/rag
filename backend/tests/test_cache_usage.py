@@ -37,6 +37,7 @@ def test_estimate_includes_tools_but_never_guesses_cache_or_failed_usage():
     assert b["cached_input_tokens"] is None and b["source"] == "estimate"
     failed = measured_usage(None, [], {}, success=False)
     assert failed["input_tokens"] is None and failed["completion_tokens"] is None
+    assert failed["source"] == "unavailable"
 
 
 def test_usage_survives_malformed_tool_arguments_and_resets_between_calls(monkeypatch):
@@ -53,12 +54,16 @@ def test_usage_survives_malformed_tool_arguments_and_resets_between_calls(monkey
     assert provider.last_usage is None
 
 
-def test_stream_keeps_last_usage_only_even_with_empty_choices(monkeypatch):
+@pytest.mark.parametrize("tail", [None, {"prompt_tokens": True, "completion_tokens": 20}, {"total_tokens": 120}])
+def test_stream_keeps_last_usage_only_even_with_empty_choices(monkeypatch, tail):
+    import json
     payloads = [
         '{"choices":[{"delta":{"content":"ok"}}],"usage":{"prompt_tokens":50}}',
         '{"choices":[{"finish_reason":"stop","delta":{}}]}',
         '{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40}}}',
     ]
+    if tail:
+        payloads.append(json.dumps({"choices": [], "usage": tail}))
     transport = httpx.MockTransport(lambda req: httpx.Response(200,
         headers={"content-type":"text/event-stream"},
         text="".join(f"data: {item}\n\n" for item in payloads)+"data: [DONE]\n\n"))

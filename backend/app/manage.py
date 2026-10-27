@@ -13,6 +13,18 @@ from .models import AuthToken, Membership, User, SiteAuthAudit, LEGACY_WORKSPACE
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "model-billing" and sys.argv[2] in ("status", "enable", "disable"):
+        from .model_pricing import switch_billing
+        from fastapi import HTTPException
+        with SessionLocal() as db:
+            try:
+                status = switch_billing(db, sys.argv[2])
+                db.commit()
+            except (ValueError, HTTPException) as exc:
+                raise SystemExit(getattr(exc, "detail", str(exc))) from exc
+            print(f"Model request billing: {'enabled' if status['billing_enabled'] else 'disabled'}; "
+                f"template version: {status['version']}; complete: {status['configured']}")
+        return
     if sys.argv[1:] == ["site-audit", "prune"]:
         from .site_audit import prune
         with SessionLocal() as db:
@@ -33,7 +45,7 @@ def main():
             print(f"Site administration {sys.argv[2]} completed.")
         return
     if sys.argv[1:] != ["bootstrap"]:
-        raise SystemExit("Usage: python -m app.manage bootstrap | site-admin grant|revoke --email <email>")
+        raise SystemExit("Usage: python -m app.manage bootstrap | site-admin grant|revoke --email <email> | model-billing status|enable|disable")
     with SessionLocal() as db:
         if db.scalar(select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)):
             raise SystemExit("The existing workspace has already been claimed.")
