@@ -18,19 +18,17 @@ def test_site_admin_can_create_and_switch_chat_model_providers(accounts, monkeyp
         "key": "qwen", "name": "通义千问", "base_url": "https://dash.example/v1",
         "model": "qwen-plus", "api_key": "secret-1",
     })
-    assert first.status_code == 201, first.text
-    first_data = first.json()
-    assert first_data["active"] is True and first_data["has_api_key"] is True
+    assert first.status_code == 410, first.text
 
     second = owner.post("/settings/llm-providers", json={
         "key": "deepseek", "name": "DeepSeek", "base_url": "https://deep.example/v1",
         "model": "deepseek-chat", "api_key": "secret-2",
     })
-    assert second.status_code == 201
-    switched = owner.post(f"/settings/llm-providers/{second.json()['id']}/activate")
-    assert switched.status_code == 200 and switched.json()["active"] is True
+    assert second.status_code == 410
+    switched = owner.post(f"/settings/llm-providers/{uuid4()}/activate")
+    assert switched.status_code == 410
     listed = owner.get("/settings/llm-providers").json()
-    assert {item["id"]: item["active"] for item in listed} == {first_data["id"]: False, second.json()["id"]: True}
+    assert listed == []
     assert "secret-1" not in owner.get("/settings/llm-providers").text
 
 

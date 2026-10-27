@@ -28,6 +28,7 @@ class Workspace(Base):
     __tablename__ = "workspaces"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(100))
+    model_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -58,14 +59,35 @@ class CreditLedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class SiteModelProvider(Base):
+    __tablename__ = "site_model_providers"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    key: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    base_url: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(200))
+    encrypted_api_key: Mapped[str] = mapped_column(Text)
+    timeout_seconds: Mapped[float] = mapped_column(default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    published: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    prices: Mapped[dict] = mapped_column(JSON, default=dict)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class LLMProviderConfig(Base):
     __tablename__ = "llm_provider_configs"
     __table_args__ = (
         UniqueConstraint("workspace_id", "key", name="uq_llm_provider_workspace_key"),
+        UniqueConstraint("workspace_id", "site_provider_id", name="uq_workspace_site_provider"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    site_provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True, index=True)
+    source_price_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     key: Mapped[str] = mapped_column(String(80))
     name: Mapped[str] = mapped_column(String(120))
     base_url: Mapped[str] = mapped_column(Text)
@@ -138,6 +160,8 @@ class ModelBillingSettings(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     template: Mapped[dict] = mapped_column(JSON, default=dict)
     version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    default_provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True)
+    connections_migrated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class ModelUsageRequest(Base):

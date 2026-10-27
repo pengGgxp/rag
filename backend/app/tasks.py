@@ -22,7 +22,7 @@ from .models import (
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
 from .credits import (
-    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold,
+    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold, require_policy,
 )
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
@@ -49,6 +49,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
             return parse_batched_pdf(session, job, document, pages, ranges, settings)
     provider = AliyunDocMind(settings)
     workspace_id = document.knowledge_base.workspace_id
+    require_policy(session, workspace_id, "ocr_pages")
     ocr_hold = False
     hold_amount = authorization_hold_amount()
 
@@ -117,6 +118,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
 
     provider = AliyunDocMind(settings)
     workspace_id = document.knowledge_base.workspace_id
+    require_policy(session, workspace_id, "ocr_pages")
     metadata = copy.deepcopy(document.parsing_metadata or {
         "provider": PARSER_NAME, "status": "processing", "page_count": len(pages),
         "parts": [{"start": start, "end": end, "status": "pending"} for start, end in ranges],
@@ -365,6 +367,7 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
         provider = OpenAICompatibleEmbeddingProvider()
         workspace_id = document.knowledge_base.workspace_id
         metering_id = UUID(str(job.id if job is not None else document.id))
+        require_policy(session, workspace_id, "embedding_tokens")
         hold_amount = authorization_hold_amount()
         authorization_hold(session, workspace_id, None, metering_id, hold_amount)
         session.commit()

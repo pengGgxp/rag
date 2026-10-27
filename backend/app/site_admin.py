@@ -13,7 +13,7 @@ from .db import get_db
 from .email_auth import email_rate_limit
 from .models import (
     CreditAccount, ExternalIdentity, LLMProviderConfig, LoginSession, Membership,
-    SiteAuditEvent, User, Workspace,
+    SiteAuditEvent, SiteModelProvider, User, Workspace,
 )
 from .site_auth import site_admin, send_mail
 from .site_audit import record, RETENTION_DAYS
@@ -56,8 +56,9 @@ def user_summary(db: Session, user: User):
 
 def workspace_summary(db: Session, workspace: Workspace):
     account = db.get(CreditAccount, workspace.id)
-    providers = db.scalars(select(LLMProviderConfig.name).where(
-        LLMProviderConfig.workspace_id == workspace.id, LLMProviderConfig.enabled.is_(True))).all()
+    providers = db.scalars(select(SiteModelProvider.name).join(LLMProviderConfig,
+        LLMProviderConfig.site_provider_id == SiteModelProvider.id).where(
+        LLMProviderConfig.workspace_id == workspace.id, SiteModelProvider.enabled.is_(True))).all()
     return {
         "id": str(workspace.id), "name": workspace.name, "created_at": workspace.created_at.isoformat(),
         "member_count": db.scalar(select(func.count()).select_from(Membership).where(

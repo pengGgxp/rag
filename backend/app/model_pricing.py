@@ -1,6 +1,6 @@
 """Explicit model prices and one-time defaults; no implicit cache discounts."""
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,6 +11,8 @@ from .site_auth import site_admin
 from .site_audit import record
 
 router = APIRouter(prefix="/site/admin/pricing-template", tags=["site-admin"])
+DOCUMENT_CAPABILITIES = ("ocr_pages", "embedding_tokens")
+TEMPLATE_CAPABILITIES = (*CAPABILITIES, *DOCUMENT_CAPABILITIES)
 
 
 class ModelPrice(BaseModel):
@@ -22,10 +24,21 @@ class ModelPrice(BaseModel):
     enabled: bool = True
 
 
+class TemplatePrice(ModelPrice):
+    capability: str = Field(pattern=r"^(llm_(input|cached_input|output)_tokens|ocr_pages|embedding_tokens)$")
+    unit: str = Field(pattern=r"^(tokens|pages)$")
+
+    @model_validator(mode="after")
+    def valid_unit(self):
+        if self.unit != ("pages" if self.capability == "ocr_pages" else "tokens"):
+            raise ValueError("Unit does not match capability")
+        return self
+
+
 class TemplateUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     version: int = Field(ge=0)
-    policies: list[ModelPrice] = Field(min_length=3, max_length=3)
+    policies: list[TemplatePrice] = Field(max_length=5)
 
 
 def serialize_policy(row):
@@ -56,20 +69,13 @@ def complete(template):
 
 def copy_workspace_template(db, workspace_id):
     row = db.get(ModelBillingSettings, 1)
-    if row and complete(row.template):
-        for key in CAPABILITIES:
-            db.add(UsagePolicy(workspace_id=workspace_id, template_version=row.version, **row.template[key]))
+    if row:
+        for key in DOCUMENT_CAPABILITIES:
+            if key in row.template:
+                db.add(UsagePolicy(workspace_id=workspace_id, template_version=row.version, **row.template[key]))
         db.flush()
-
-
-def copy_provider_prices(db, workspace_id, provider_id):
-    from .credits import ensure_policies
-    for policy in ensure_policies(db, workspace_id):
-        if policy.capability in CAPABILITIES:
-            db.add(UsagePolicy(workspace_id=workspace_id, provider_id=provider_id,
-                template_version=policy.template_version,
-                **{key: getattr(policy, key) for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled")}))
-    db.flush()
+    from .shared_providers import initialize_default
+    initialize_default(db, workspace_id)
 
 
 def settings_locked(db):
@@ -83,11 +89,11 @@ def settings_locked(db):
 
 def template_read(row):
     policies = []
-    for key in CAPABILITIES:
-        policies.append({**row.template.get(key, {"capability": key, "unit": "tokens",
-            "unit_size": 1000, "credits_per_unit": None, "enabled": True}),
+    for key in TEMPLATE_CAPABILITIES:
+        policies.append({**row.template.get(key, {"capability": key, "unit": "pages" if key == "ocr_pages" else "tokens",
+            "unit_size": 1 if key == "ocr_pages" else 1000, "credits_per_unit": None, "enabled": True}),
             "configured": key in row.template, "version": row.version, "template_version": None})
-    return {"version": row.version, "configured": complete(row.template),
+    return {"version": row.version, "configured": set(row.template) == set(TEMPLATE_CAPABILITIES),
         "billing_enabled": row.enabled, "policies": policies}
 
 
@@ -103,7 +109,7 @@ def template_writer(request: Request, db: Session = Depends(get_db), actor: User
     except Exception:
         db.rollback()
         record(db, actor, "billing.template_update_failed", "pricing_template", 1,
-            request=request, result="failure", details={"fields": list(CAPABILITIES)})
+            request=request, result="failure", details={"fields": list(TEMPLATE_CAPABILITIES)})
         db.commit()
         raise
 
@@ -111,13 +117,13 @@ def template_writer(request: Request, db: Session = Depends(get_db), actor: User
 @router.put("")
 def update_template(payload: TemplateUpdate, db: Session = Depends(get_db), actor: User = Depends(template_writer)):
     template = {item.capability: item.model_dump() for item in payload.policies}
-    if not complete(template):
-        raise HTTPException(422, "请完整配置并启用输入、缓存读取和输出价格，免费请明确填写 0")
+    if len(template) != len(payload.policies):
+        raise HTTPException(422, "计费能力不能重复")
     row = settings_locked(db)
     if payload.version != row.version:
         raise HTTPException(409, "价格模板已更新，请重新加载后保存")
     row.template, row.version = template, row.version + 1
-    record(db, actor, "billing.template_updated", "pricing_template", 1, details={"fields": list(CAPABILITIES)})
+    record(db, actor, "billing.template_updated", "pricing_template", 1, details={"fields": list(TEMPLATE_CAPABILITIES)})
     db.commit()
     return template_read(row)
 
@@ -132,7 +138,7 @@ def switch_billing(db, operation):
         select(ModelUsageRequest.request_id).where(ModelUsageRequest.status == "running").limit(1)):
         raise ValueError("Drain active model requests before switching billing.")
     if operation == "enable":
-        if not complete(row.template):
+        if not complete({k: v for k, v in row.template.items() if k in CAPABILITIES}):
             raise ValueError("Configure the complete model pricing template first.")
         for workspace in db.scalars(select(Workspace)):
             active = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id,

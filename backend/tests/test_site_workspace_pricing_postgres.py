@@ -32,17 +32,17 @@ def test_parallel_management_keeps_default_rows_and_policy_versions_unique(auth_
             with TestClient(main.app, headers={"X-RAG-Request":"1", "X-CSRF-Token":csrf}) as client:
                 client.cookies.set(auth.COOKIE, raw)
                 barrier.wait(timeout=10)
-                response = client.get(path) if method == "GET" else client.put(path+"/llm_input_tokens", json={
-                    "capability":"llm_input_tokens", "unit":"tokens", "unit_size":1000, "credits_per_unit":4, "enabled":True,
+                response = client.get(path) if method == "GET" else client.put(path+"/embedding_tokens", json={
+                    "capability":"embedding_tokens", "unit":"tokens", "unit_size":1000, "credits_per_unit":4, "enabled":True, "version":0,
                 })
-                assert response.status_code == 200, response.text
-                return response.json()
+                assert response.status_code in (200, 409), response.text
+                return response.status_code
         with ThreadPoolExecutor(max_workers=3) as pool:
             return list(pool.map(run, range(3)))
     parallel("GET")
     updates = parallel("PUT")
-    assert sorted(row["version"] for row in updates) == [2,3,4]
+    assert sorted(updates) == [200,409,409]
     with Session(engine) as db:
-        assert db.scalar(select(func.count()).select_from(UsagePolicy).where(UsagePolicy.workspace_id == target_id)) == 4
+        assert db.scalar(select(func.count()).select_from(UsagePolicy).where(UsagePolicy.workspace_id == target_id)) == 1
         assert db.scalar(select(func.count()).select_from(SiteAuditEvent).where(
-            SiteAuditEvent.target_id == str(target_id), SiteAuditEvent.action == "workspace.usage_policy_updated")) == 3
+            SiteAuditEvent.target_id == str(target_id), SiteAuditEvent.action == "workspace.usage_policy_updated")) == 1

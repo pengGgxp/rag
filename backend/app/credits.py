@@ -38,6 +38,7 @@ class UsagePolicyUpdate(BaseModel):
     unit_size: int = Field(default=1, ge=1, le=2_147_483_647, strict=True)
     credits_per_unit: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
     enabled: bool = True
+    version: int = Field(default=0, ge=0)
 
 
 def ensure_policies(
@@ -50,20 +51,15 @@ def ensure_policies(
             UsagePolicy.provider_id == provider_id,
         )).all()
     }
-    for defaults in DEFAULT_USAGE_POLICIES:
-        if provider_id is None and defaults["capability"].startswith("llm_"):
-            # Keep the environment-configured legacy provider compatible.
-            pass
-        elif provider_id is None and not defaults["capability"].startswith("llm_"):
-            pass
-        elif provider_id is not None and not defaults["capability"].startswith("llm_"):
-            continue
-        if defaults["capability"] not in existing:
-            policy = UsagePolicy(workspace_id=workspace_id, provider_id=provider_id, **defaults)
-            db.add(policy)
-            existing[policy.capability] = policy
-    db.flush()
     return list(existing.values())
+
+
+def require_policy(db, workspace_id, capability):
+    row = db.scalar(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace_id,
+        UsagePolicy.provider_id.is_(None), UsagePolicy.capability == capability))
+    if row is None or not row.enabled:
+        raise HTTPException(503, "服务暂不可用，请联系站点管理员完善计费配置")
+    return row
 
 
 def ensure_account(db: Session, workspace_id: UUID, *, initial: int = INITIAL_CREDITS) -> CreditAccount:
@@ -241,7 +237,7 @@ def settle_usage(
     policies = ensure_policies(db, workspace_id, provider_id)
     policy = next((item for item in policies if item.capability == capability), None)
     if policy is None or not policy.enabled:
-        raise CreditError()
+        raise HTTPException(503, "服务暂不可用，请联系站点管理员完善计费配置")
     credits = ceil(units / policy.unit_size) * policy.credits_per_unit if units else 0
     account = ensure_account(db, workspace_id)
     if credits:
@@ -392,7 +388,14 @@ def build_router(get_db):
         from .model_pricing import prices_read
         policies = ensure_policies(db, access.workspace_id)
         db.commit()
-        return prices_read(policies)
+        from .model_pricing import DOCUMENT_CAPABILITIES
+        result = prices_read([p for p in policies if p.capability in DOCUMENT_CAPABILITIES], all_model=False)
+        for key in DOCUMENT_CAPABILITIES:
+            if not any(p["capability"] == key for p in result):
+                result.append({"capability": key, "unit": "pages" if key == "ocr_pages" else "tokens",
+                    "unit_size": 1 if key == "ocr_pages" else 1000, "credits_per_unit": None,
+                    "enabled": True, "configured": False, "version": 0})
+        return result
 
     @site_router.put("/{capability}")
     @router.put("/policies/{capability}")
@@ -400,8 +403,13 @@ def build_router(get_db):
                       db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
         if capability != payload.capability:
             raise HTTPException(422, "能力标识不一致")
+        from .model_pricing import DOCUMENT_CAPABILITIES
+        if capability not in DOCUMENT_CAPABILITIES or payload.unit != ("pages" if capability == "ocr_pages" else "tokens"):
+            raise HTTPException(422, "请通过模型价格接口配置模型规则")
         policies = ensure_policies(db, access.workspace_id)
         policy = next((item for item in policies if item.capability == capability), None)
+        if payload.version != (policy.version if policy else 0):
+            raise HTTPException(409, "价格已更新，请重新加载")
         if policy is None:
             policy = UsagePolicy(
                 workspace_id=access.workspace_id,

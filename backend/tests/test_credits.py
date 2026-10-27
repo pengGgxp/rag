@@ -62,8 +62,11 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
     workspace_id = UUID(session["workspace_id"])
     user_id = UUID(session["user"]["id"])
     request_id = uuid4()
-
     authorization_hold(db, workspace_id, user_id, request_id, amount=1)
+    from app.models import UsagePolicy
+    db.add_all([UsagePolicy(workspace_id=workspace_id, capability=key, unit="tokens", unit_size=1000, credits_per_unit=rate)
+        for key, rate in (("llm_input_tokens", 1), ("llm_output_tokens", 3))])
+    db.flush()
     settle_model_usage(db, workspace_id, user_id, request_id, [{
         "prompt_tokens": 1500,
         "completion_tokens": 600,
@@ -98,14 +101,14 @@ def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts
     db.get(User, UUID(session["user"]["id"])).is_site_admin = True
     db.commit()
     assert owner.get("/usage/policies").status_code == 200
-    updated = owner.put("/usage/policies/llm_output_tokens", json={
-        "capability": "llm_output_tokens",
+    updated = owner.put("/usage/policies/embedding_tokens", json={
+        "capability": "embedding_tokens",
         "unit": "tokens",
         "unit_size": 500,
         "credits_per_unit": 4,
         "enabled": True,
     })
     assert updated.status_code == 200
-    assert updated.json()["version"] == 2
+    assert updated.json()["version"] == 1
     usage = owner.get("/usage").json()
     assert "credits_per_unit" not in usage

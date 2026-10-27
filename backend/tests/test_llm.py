@@ -7,15 +7,15 @@ from app.llm import (
     LLMConfigurationError,
     LLMProviderError,
     OpenAICompatibleChatProvider,
+    ChatProviderConfig,
 )
 
 
-def configured_settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        llm_base_url="https://provider.example/v1",
-        llm_api_key="secret",
-        llm_model="chat-model",
+def configured_settings() -> ChatProviderConfig:
+    return ChatProviderConfig(
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model="chat-model",
     )
 
 
@@ -32,7 +32,7 @@ def test_chat_provider_uses_openai_compatible_shape(monkeypatch):
         )
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    result = OpenAICompatibleChatProvider(configured_settings()).complete(
+    result = OpenAICompatibleChatProvider(config=configured_settings()).complete(
         [{"role": "user", "content": "Question"}]
     )
 
@@ -76,7 +76,7 @@ def test_chat_provider_parses_openai_compatible_tool_calls(monkeypatch):
         })
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    response = OpenAICompatibleChatProvider(configured_settings()).complete_with_tools(
+    response = OpenAICompatibleChatProvider(config=configured_settings()).complete_with_tools(
         [{"role": "user", "content": "Question"}],
         [{"type": "function", "function": {
             "name": "search_knowledge_base",
@@ -110,7 +110,7 @@ def test_streaming_and_non_streaming_compatible_provider(monkeypatch, body, cont
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs))
 
     async def collect():
-        return [part async for part in OpenAICompatibleChatProvider(configured_settings()).stream([{"role": "user", "content": "问题"}])]
+        return [part async for part in OpenAICompatibleChatProvider(config=configured_settings()).stream([{"role": "user", "content": "问题"}])]
 
     assert asyncio.run(collect()) == expected
     assert captured["stream"] is True
@@ -132,7 +132,7 @@ def test_stream_errors_are_not_silently_marked_complete(monkeypatch, body):
     ))
 
     async def collect():
-        return [part async for part in OpenAICompatibleChatProvider(configured_settings()).stream([])]
+        return [part async for part in OpenAICompatibleChatProvider(config=configured_settings()).stream([])]
 
     with pytest.raises(LLMProviderError):
         asyncio.run(collect())

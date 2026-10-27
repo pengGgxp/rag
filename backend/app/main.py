@@ -166,7 +166,7 @@ def health():
         "database": "ok" if db_ok else "error",
         "redis": "ok" if redis_ok else "error",
         "embedding": OpenAICompatibleEmbeddingProvider().status.__dict__,
-        "llm": OpenAICompatibleChatProvider().status.__dict__,
+        "llm": {"configuration_source": "database"},
     }
 
 
@@ -1003,16 +1003,13 @@ def answer_knowledge_base(
         },
     ]
     provider_config = active_provider_config(db, access.workspace_id)
-    provider = (
-        OpenAICompatibleChatProvider(config=provider_config)
-        if provider_config else OpenAICompatibleChatProvider()
-    )
+    provider = OpenAICompatibleChatProvider(config=provider_config)
     reservation_id = uuid4()
     metered = model_billing.enabled(db)
     hold = authorization_hold_amount()
     if metered:
         model_billing.start_request(db, access.workspace_id, access.user_id, reservation_id,
-            UUID(provider_config.provider_id) if provider_config else None, hold)
+            UUID(provider_config.provider_id), hold)
     else:
         authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
     db.commit()
@@ -1088,4 +1085,7 @@ app.include_router(chat_router(get_db, retrieve_knowledge_base))
 app.include_router(extensions_router)
 app.include_router(llm_providers_router)
 app.include_router(site_llm_providers_router)
+from .shared_providers import router as shared_providers_router, selection_router
+app.include_router(shared_providers_router)
+app.include_router(selection_router)
 

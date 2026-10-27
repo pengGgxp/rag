@@ -18,7 +18,8 @@ def setup(engine):
         workspace = Workspace(name="Concurrent metering")
         user = User(email=f"meter-{uuid4().hex}@example.com", name="Meter test")
         db.add_all([workspace,user]); db.flush()
-        ensure_policies(db, workspace.id)
+        for capability, rate in (("llm_input_tokens", 1), ("llm_output_tokens", 3)):
+            db.add(UsagePolicy(workspace_id=workspace.id, capability=capability, unit="tokens", unit_size=1000, credits_per_unit=rate))
         db.add(UsagePolicy(workspace_id=workspace.id, capability="llm_cached_input_tokens",
             unit="tokens", unit_size=1000, credits_per_unit=0))
         db.commit()

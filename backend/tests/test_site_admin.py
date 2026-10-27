@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app import auth, site_admin
-from app.models import AuthToken, ExternalIdentity, LLMProviderConfig, LoginSession, SiteAuditEvent, SiteAuthSettings, User
+from app.models import AuthToken, ExternalIdentity, LLMProviderConfig, LoginSession, SiteAuditEvent, SiteAuthSettings, SiteModelProvider, User
 from app.site_audit import prune, record
 from test_auth import PASSWORD, register, share
 
@@ -42,7 +42,11 @@ def test_lists_filters_paging_and_read_only_redaction(accounts):
     target = db.get(User, UUID(b["user"]["id"]))
     target.email_verified_at = auth.now()
     db.add(ExternalIdentity(provider="senyu:test:wx", subject="private-social-id", user_id=target.id))
-    db.add(LLMProviderConfig(workspace_id=UUID(b["workspace_id"]), key="test", name="Provider",
+    provider = SiteModelProvider(key="test", name="Provider", model="private-model",
+        base_url="https://secret-host", encrypted_api_key="never-return-this", enabled=True)
+    db.add(provider)
+    db.flush()
+    db.add(LLMProviderConfig(workspace_id=UUID(b["workspace_id"]), site_provider_id=provider.id, key="test", name="Old name",
         model="private-model", base_url="https://secret-host", encrypted_api_key="never-return-this"))
     db.commit()
     share(admin, target.email)
@@ -58,6 +62,9 @@ def test_lists_filters_paging_and_read_only_redaction(accounts):
     workspace = admin.get(f"/site/admin/workspaces/{b['workspace_id']}")
     assert workspace.json()["credits"]["balance"] == 1000
     assert workspace.json()["configuration"]["provider_names"] == ["Provider"]
+    provider.enabled = False
+    db.commit()
+    assert admin.get(f"/site/admin/workspaces/{b['workspace_id']}").json()["configuration"]["provider_names"] == []
     for secret in ("password_hash", "private-social-id", "never-return-this", "private-model", "secret-host", "csrf_token"):
         assert secret not in detail.text + workspace.text
     assert admin.put(f"/site/admin/workspaces/{b['workspace_id']}", json={"balance": 999}).status_code == 405

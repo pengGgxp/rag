@@ -16,11 +16,25 @@ from test_auth import register
 
 
 @pytest.fixture
-def metered(accounts):
+def metered(accounts, monkeypatch):
     (owner, _, _), db = accounts
     session = register(owner)
     workspace, user = UUID(session["workspace_id"]), UUID(session["user"]["id"])
-    ensure_policies(db, workspace)
+    from app.models import LLMProviderConfig, SiteModelProvider
+    from app import llm_providers
+    monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: "test-only")
+    shared = SiteModelProvider(key="meter-test", name="Test", base_url="https://example.test/v1", model="test",
+        encrypted_api_key="test-only", enabled=True, prices={})
+    db.add(shared); db.flush()
+    binding = LLMProviderConfig(workspace_id=workspace, site_provider_id=shared.id, key="meter-test", name="Test",
+        model="test", base_url="", encrypted_api_key="", active=True)
+    db.add(binding); db.flush()
+    for provider_id in (None, binding.id):
+        for capability, rate in (("llm_input_tokens", 1), ("llm_output_tokens", 3)):
+            db.add(UsagePolicy(workspace_id=workspace, provider_id=provider_id, capability=capability,
+                unit="tokens", unit_size=1000, credits_per_unit=rate))
+    db.add(UsagePolicy(workspace_id=workspace, provider_id=binding.id, capability="llm_cached_input_tokens",
+        unit="tokens", unit_size=1000, credits_per_unit=0))
     db.add_all([UsagePolicy(workspace_id=workspace, capability="llm_cached_input_tokens",
         unit="tokens", unit_size=1000, credits_per_unit=0), ModelBillingSettings(id=1, enabled=True)])
     db.commit()
@@ -67,7 +81,7 @@ def test_multiple_rounds_sum_once_and_allocations_equal_one_debit(metered):
 def test_missing_cache_price_blocks_before_hold_or_model(metered):
     _, db, workspace, user = metered
     row = db.scalar(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace,
-        UsagePolicy.capability=="llm_cached_input_tokens"))
+        UsagePolicy.capability=="llm_cached_input_tokens", UsagePolicy.provider_id.is_(None)))
     db.delete(row); db.commit()
     with pytest.raises(HTTPException) as exc:
         start(db, workspace, user)
@@ -165,7 +179,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     class Provider:
         status = provider().status
         last_usage = None
-        def __init__(self):
+        def __init__(self, **_kwargs):
             self.round = 0
         def complete_with_tools(self, messages, tools, tool_choice):
             self.round += 1
@@ -182,7 +196,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
                     row.active_request_id = None
                     session.commit()
             return ToolResponse("done", [], self.last_usage)
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     created = owner.post("/conversations", json={"knowledge_base_ids":[]}).json()
     request_id = uuid4()
     response = owner.post(f"/conversations/{created['id']}/messages", json={"query":"hello", "request_id":str(request_id)})
@@ -227,7 +241,7 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
             assert "MCP_RESULT" in str(messages)
             return ToolResponse("Done", [], LLMUsage(prompt_tokens=300, completion_tokens=30))
     monkeypatch.setattr(conversations, "ExtensionRuntime", Extensions)
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
     identifier = uuid4()
     response = owner.post(f"/conversations/{conversation['id']}/messages", json={"query": "Hello", "request_id": str(identifier)})
@@ -254,7 +268,7 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
             entered.set()
             assert release.wait(5), "test did not release model call"
             return ToolResponse("confirmed after disconnect", [], LLMUsage(prompt_tokens=2000, completion_tokens=100))
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
     identifier = uuid4()
     payload = json.dumps({"query": "Hello", "request_id": str(identifier)}).encode()

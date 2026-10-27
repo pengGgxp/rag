@@ -5,6 +5,25 @@ from app.auth import COOKIE, digest, now
 from app.models import LoginSession, Membership, User, Workspace, LEGACY_WORKSPACE_ID
 
 
+def configured_model(db, workspace_id, monkeypatch=None):
+    """Seed persisted configuration for workflow tests; never bypass provider resolution."""
+    from app.models import SiteModelProvider, LLMProviderConfig, UsagePolicy
+    from app import llm_providers
+    from app.credits import DEFAULT_USAGE_POLICIES
+    if monkeypatch:
+        monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _value: "test-only")
+    provider = SiteModelProvider(key=f"test-{workspace_id}", name="Test", model="test-model",
+        base_url="https://example.test/v1", encrypted_api_key="test-only", enabled=True, prices={})
+    db.add(provider); db.flush()
+    binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=provider.id,
+        key="test", name="Test", model="test-model", base_url="", encrypted_api_key="", active=True)
+    db.add(binding)
+    for policy in DEFAULT_USAGE_POLICIES:
+        db.add(UsagePolicy(workspace_id=workspace_id, **policy))
+    db.commit()
+    return binding
+
+
 def authenticate(http, db):
     """Seed a real server-side session; do not bypass authorization dependencies."""
     db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="test workspace"))

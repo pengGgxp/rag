@@ -41,7 +41,7 @@ def test_estimate_includes_tools_but_never_guesses_cache_or_failed_usage():
 
 
 def test_usage_survives_malformed_tool_arguments_and_resets_between_calls(monkeypatch):
-    provider = OpenAICompatibleChatProvider(configured_settings())
+    provider = OpenAICompatibleChatProvider(config=configured_settings())
     monkeypatch.setattr(httpx, "post", lambda *a, **kw: httpx.Response(200, json={
         "usage": {"prompt_tokens": 100, "completion_tokens": 5},
         "choices": [{"message": {"tool_calls": [{"function": {"name": "x", "arguments": "bad"}}]}}]}))
@@ -69,7 +69,7 @@ def test_stream_keeps_last_usage_only_even_with_empty_choices(monkeypatch, tail)
         text="".join(f"data: {item}\n\n" for item in payloads)+"data: [DONE]\n\n"))
     original = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=transport, **kw))
-    provider = OpenAICompatibleChatProvider(configured_settings())
+    provider = OpenAICompatibleChatProvider(config=configured_settings())
     async def run():
         return [part async for part in provider.stream([])]
     assert asyncio.run(run()) == ["ok"]

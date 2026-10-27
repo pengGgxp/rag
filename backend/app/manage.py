@@ -13,6 +13,13 @@ from .models import AuthToken, Membership, User, SiteAuthAudit, LEGACY_WORKSPACE
 
 
 def main():
+    if sys.argv[1:] == ["models", "migrate"]:
+        from .shared_providers import migrate_connections
+        with SessionLocal() as db:
+            count = migrate_connections(db, get_settings())
+            db.commit()
+            print(f"Migrated {count} model associations; credentials were not printed.")
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "model-billing" and sys.argv[2] in ("status", "enable", "disable"):
         from .model_pricing import switch_billing
         from fastapi import HTTPException

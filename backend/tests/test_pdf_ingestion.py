@@ -16,7 +16,10 @@ from test_retrieval import add_document
 @pytest.fixture
 def pdf_job(accounts, monkeypatch):
     (owner, outsider, _), db = accounts
-    register(owner)
+    identity = register(owner)
+    from app.models import UsagePolicy
+    db.add(UsagePolicy(workspace_id=UUID(identity["workspace_id"]), capability="ocr_pages", unit="pages", unit_size=1, credits_per_unit=10))
+    db.commit()
     register(outsider, "outsider@example.com")
     kb = library(owner)
     doc = add_document(db, db.get(KnowledgeBase, kb), "old chunk")

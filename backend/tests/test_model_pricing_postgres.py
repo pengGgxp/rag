@@ -22,8 +22,8 @@ def test_template_concurrent_save_and_transactional_copy(auth_postgres):
     barrier = Barrier(3)
     def update(rate):
         with Session(engine) as db:
-            payload = pricing.TemplateUpdate(version=version, policies=[pricing.ModelPrice(
-                capability=key, unit="tokens", unit_size=1000, credits_per_unit=rate) for key in pricing.CAPABILITIES])
+            payload = pricing.TemplateUpdate(version=version, policies=[pricing.TemplatePrice(
+                capability=key, unit="pages" if key == "ocr_pages" else "tokens", unit_size=1000, credits_per_unit=rate) for key in pricing.TEMPLATE_CAPABILITIES])
             barrier.wait(timeout=10)
             try:
                 pricing.update_template(payload, db, db.get(User, actor_id))
@@ -36,7 +36,7 @@ def test_template_concurrent_save_and_transactional_copy(auth_postgres):
     with Session(engine) as db:
         _, workspace = create_user(db, f"copy-{uuid4().hex}@example.com", "Copy")
         copied = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace)).all()
-        assert len(copied) == 3
+        assert len(copied) == 2
         assert {row.template_version for row in copied} == {version+1}
         assert len({row.credits_per_unit for row in copied}) == 1
         db.rollback()

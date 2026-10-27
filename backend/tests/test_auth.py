@@ -247,6 +247,8 @@ def test_oauth_error_state_cannot_create_session_or_link_identity(accounts, monk
 def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
     (owner, viewer, _), db = accounts
     a = register(owner)
+    from auth_helpers import configured_model
+    configured_model(db, UUID(a["workspace_id"]), monkeypatch)
     b = register(viewer, "viewer@example.com", "Viewer")
     id = library(owner)
     add_document(db, db.get(KnowledgeBase, id), "needle")
@@ -259,7 +261,7 @@ def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
                 session.delete(session.get(Membership, (UUID(a["workspace_id"]), UUID(b["user"]["id"]))))
                 session.commit()
             return ToolResponse(content="SECRET AFTER REVOKE", tool_calls=[])
-    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", RevokingProvider)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: RevokingProvider())
     response = viewer.post(f"/conversations/{conv}/messages", json={"query": "needle", "request_id": str(uuid4())})
     assert response.status_code == 200
     assert "SECRET AFTER REVOKE" not in response.text

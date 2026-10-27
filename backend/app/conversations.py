@@ -303,10 +303,10 @@ def chat_router(get_db, retrieve):
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
+            provider_config = active_provider_config(db, access.workspace_id)
             if metered:
-                config = active_provider_config(db, access.workspace_id)
                 model_billing.start_request(db, access.workspace_id, access.user_id,
-                    payload.request_id, UUID(config.provider_id) if config else None, hold_amount)
+                    payload.request_id, UUID(provider_config.provider_id), hold_amount)
             else:
                 authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
         except CreditError:
@@ -351,12 +351,12 @@ def chat_router(get_db, retrieve):
         message_id = message.id
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         return StreamingResponse(
-            generate(factory, conversation.id, message_id, payload.request_id, access, hold_amount),
+            generate(factory, conversation.id, message_id, payload.request_id, access, hold_amount, provider_config),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def generate(factory, conversation_id, message_id, request_id, access, hold_amount):
+    async def generate(factory, conversation_id, message_id, request_id, access, hold_amount, provider_config):
         final_status = "cancelled"
         error_detail = None
         content = ""
@@ -432,12 +432,7 @@ def chat_router(get_db, retrieve):
                 history = [{"role": row.role, "content": row.content} for row in rows]
             yield event_text(event("message", message_read(message)))
             yield event_text(event("phase", {"phase": "planning"}))
-            with factory() as provider_db:
-                provider_config = active_provider_config(provider_db, access.workspace_id)
-            provider = (
-                OpenAICompatibleChatProvider(config=provider_config)
-                if provider_config else OpenAICompatibleChatProvider()
-            )
+            provider = OpenAICompatibleChatProvider(config=provider_config)
             retrieval_query = query
             if not hasattr(provider, "complete_with_tools"):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")

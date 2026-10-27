@@ -44,13 +44,16 @@ def client(monkeypatch):
             )
             return ToolResponse(content=text, tool_calls=[])
 
-    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
         status=SimpleNamespace(configured=False, provider=None, model=None, dimension=1024),
     ))
     main.app.dependency_overrides[main.get_db] = lambda: db
     http = TestClient(main.app)
     authenticate(http, db)
+    from auth_helpers import configured_model
+    from app.models import LEGACY_WORKSPACE_ID
+    configured_model(db, LEGACY_WORKSPACE_ID, monkeypatch)
     try:
         yield http, db, captured
     finally:
@@ -150,7 +153,7 @@ def test_agent_direct_answer_does_not_require_retrieval_evidence(client, monkeyp
             raise AssertionError("direct ReAct answers must not call the answer stream")
             yield ""
 
-    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", DirectAnswerProvider)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: DirectAnswerProvider())
     events, _ = turn(http, conversation["id"], "你好")
     done = events[-1][1]
     assert done["status"] == "completed"
@@ -187,7 +190,7 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
             raise AssertionError("must not fall back to fixed RAG")
 
     original = chat.OpenAICompatibleChatProvider
-    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", Failing)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Failing())
     events, payload = turn(http, conversation["id"])
     failed = events[-1][1]
     assert failed["status"] == "failed"
@@ -262,7 +265,7 @@ def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, mon
                 other.commit()
             return ToolResponse(content="不应覆盖取消状态", tool_calls=[])
 
-    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", LateProvider)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: LateProvider())
     turn(http, conversation["id"])
     detail = http.get(f"/conversations/{conversation['id']}").json()
     assert detail["active_request_id"] is None

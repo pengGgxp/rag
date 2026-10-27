@@ -91,6 +91,7 @@ class ChatProviderConfig:
     provider_id: str | None = None
     provider_key: str | None = None
     provider_name: str | None = None
+    site_provider_id: str | None = None
 
     @property
     def llm_configured(self) -> bool:
@@ -105,25 +106,30 @@ class OpenAICompatibleChatProvider:
 
     @property
     def configured(self) -> bool:
-        return self.config.llm_configured if self.config else self.settings.llm_configured
+        return bool(self.config and self.config.llm_configured)
 
     @property
     def base_url(self) -> str:
-        return self.config.base_url if self.config else self.settings.llm_base_url or ""
+        return self.config.base_url if self.config else ""
 
     @property
     def api_key(self) -> str:
-        return self.config.api_key if self.config else (
-            self.settings.llm_api_key.get_secret_value() if self.settings.llm_api_key else ""
-        )
+        return self.config.api_key if self.config else ""
 
     @property
     def model(self) -> str:
-        return self.config.model if self.config else self.settings.llm_model or ""
+        return self.config.model if self.config else ""
 
     @property
     def timeout_seconds(self) -> float:
-        return self.config.timeout_seconds if self.config else self.settings.llm_timeout_seconds
+        return self.config.timeout_seconds if self.config else 60.0
+
+    def check_available(self):
+        if not self.configured:
+            raise LLMConfigurationError("回答模型尚未配置，请在工作区设置中选择模型")
+        if self.config.site_provider_id:
+            from .shared_providers import assert_available
+            assert_available(self.config.site_provider_id)
 
     @property
     def status(self) -> LLMStatus:
@@ -138,10 +144,11 @@ class OpenAICompatibleChatProvider:
         )
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
+        self.check_available()
         self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
-                "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
+                "回答模型尚未配置，请在工作区设置中选择模型"
             )
         url = self._chat_url(self.base_url)
         headers = {
@@ -194,10 +201,11 @@ class OpenAICompatibleChatProvider:
         runtime does not depend on a vendor SDK or on provider-specific
         message classes.
         """
+        self.check_available()
         self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
-                "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
+                "回答模型尚未配置，请在工作区设置中选择模型"
             )
         payload = {
             "model": self.model,
@@ -258,6 +266,7 @@ class OpenAICompatibleChatProvider:
         )
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        self.check_available()
         self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")

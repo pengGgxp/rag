@@ -34,6 +34,8 @@ TOOL = {
 def users(accounts, monkeypatch):
     (owner, other, _), db = accounts
     identity = register(owner)
+    from auth_helpers import configured_model
+    configured_model(db, UUID(identity["workspace_id"]), monkeypatch)
     register(other, "other@example.com", "Other")
     settings = mcp_client.get_settings().model_copy(update={
         "mcp_credential_key": SecretStr(Fernet.generate_key().decode()),
@@ -167,7 +169,7 @@ def test_agent_loads_selected_skill_progressively_and_persists_tool_summary(user
             assert "Use headings:" in json.loads(messages[-1]["content"])["instructions"]
             return ToolResponse(content="Findings\nEvidence\nNext steps", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     events = turn(owner, conversation["id"])
     final = events[-1][1]
     assert final["status"] == "completed"
@@ -199,7 +201,7 @@ def test_agent_calls_only_selected_and_authorized_mcp_tools(users, monkeypatch):
             assert json.loads(messages[-1]["content"])["content"][0]["text"] == "7"
             return ToolResponse(content="7", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     events = turn(owner, conversation["id"])
     final = events[-1][1]
     assert final["content"] == "7"
@@ -226,7 +228,7 @@ def test_revoked_mcp_is_not_executed_even_after_model_selected_it(users, monkeyp
             assert "error" in json.loads(messages[-1]["content"])
             return ToolResponse(content="The connection was disabled.", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     final = turn(owner, conversation["id"])[-1][1]
     assert final["status"] == "completed"
     assert final["tool_events"][0]["status"] == "error"
@@ -269,7 +271,7 @@ def test_authorization_revoked_during_mcp_connection_blocks_actual_execution(use
             assert "授权已变化" in json.loads(messages[-1]["content"])["error"]
             return ToolResponse(content="The tool was not executed.", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     final = turn(owner, conversation["id"])[-1][1]
     assert final["status"] == "completed"
     assert final["tool_events"][0]["status"] == "error"
@@ -296,7 +298,7 @@ def test_mcp_invalid_arguments_and_unselected_tool_are_not_executed(users, monke
             assert all("error" in json.loads(message["content"]) for message in messages[-2:])
             return ToolResponse(content="No tools were executed.", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     final = turn(owner, conversation["id"])[-1][1]
     assert final["status"] == "completed"
     assert all(event["status"] == "error" for event in final["tool_events"])
@@ -456,7 +458,7 @@ def test_agent_reads_relevant_supporting_file_progressively(users, monkeypatch):
             assert result["next_line"] == 2
             return ToolResponse(content="The code is ORCHID-527.", tool_calls=[])
 
-    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Provider)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     final = turn(owner, conversation["id"])[-1][1]
     assert final["content"] == "The code is ORCHID-527."
     assert len(final["tool_events"]) == 2
