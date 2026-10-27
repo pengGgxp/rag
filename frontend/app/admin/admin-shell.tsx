@@ -79,7 +79,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               <Link
                 key={href}
                 className="navigation-item"
-                href={workspaceId && (href === "/admin/models" || href === "/admin/pricing") ? `${href}?workspace=${encodeURIComponent(workspaceId)}` : href}
+                href={workspaceId && href === "/admin/pricing" ? `${href}?workspace=${encodeURIComponent(workspaceId)}` : href}
                 aria-current={active ? "page" : undefined}
               >
                 <Icon size={18} />

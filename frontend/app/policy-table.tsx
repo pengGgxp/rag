@@ -5,7 +5,7 @@ import { Tooltip } from "../components/ui/tooltip";
 import { policyLabels, type Policy } from "./model-types";
 
 // Shared by workspace prices and the atomic new-workspace template form.
-export function PolicyTable({ name, policies, busy, saving, update, save, isChanged }: {
+export function PolicyTable({ name, policies, busy, saving, update, save, isChanged, requirePrices = true }: {
   name: string;
   policies: Policy[];
   busy: boolean;
@@ -13,6 +13,7 @@ export function PolicyTable({ name, policies, busy, saving, update, save, isChan
   update: (policy: Policy, patch: Partial<Policy>) => void;
   save?: (policy: Policy) => void;
   isChanged?: (policy: Policy) => boolean;
+  requirePrices?: boolean;
 }) {
   return <div className="policy-table" data-row-save={Boolean(save)} role="table" aria-label={name}>
     <div className="policy-table-header" role="row"><span role="columnheader">能力</span><span role="columnheader">每单位用量</span><span role="columnheader">消耗积分</span><span role="columnheader">规则状态</span>{save && <span role="columnheader" className="sr-only">操作</span>}</div>
@@ -27,7 +28,7 @@ export function PolicyTable({ name, policies, busy, saving, update, save, isChan
           {policy.template_version ? ` · 来源模板 v${policy.template_version}` : ""}{changed && <span className="policy-unsaved">未保存</span>}</small>
         </div>
         <label className="policy-field" role="cell"><span className="policy-field-label">每单位用量</span><span className="policy-input"><input aria-label={`${name}${label}单位大小`} required type="number" min={1} max={2147483647} step={1} value={policy.unit_size} disabled={busy} onChange={event => update(policy, { unit_size: Number(event.target.value) })} /><span aria-hidden="true">{unit}</span></span></label>
-        <label className="policy-field" role="cell"><span className="policy-field-label">消耗积分</span><span className="policy-input"><input aria-label={`${name}${label}积分`} required type="number" min={0} max={2147483647} step={1} placeholder="待配置" value={policy.credits_per_unit ?? ""} disabled={busy} onChange={event => update(policy, { credits_per_unit: event.target.value === "" ? null : Number(event.target.value) })} /><span aria-hidden="true">积分</span></span></label>
+        <label className="policy-field" role="cell"><span className="policy-field-label">消耗积分</span><span className="policy-input"><input aria-label={`${name}${label}积分`} required={requirePrices} type="number" min={0} max={2147483647} step={1} placeholder="待配置" value={policy.credits_per_unit ?? ""} disabled={busy} onChange={event => update(policy, { credits_per_unit: event.target.value === "" ? null : Number(event.target.value) })} /><span aria-hidden="true">积分</span></span></label>
         <div className="policy-state" role="cell"><label className="policy-toggle"><input type="checkbox" aria-label={`${name}${label}启用规则`} checked={policy.enabled} disabled={busy} onChange={event => update(policy, { enabled: event.target.checked })} />启用</label></div>
         {save && <div className="policy-action" role="cell"><Tooltip content={`保存${label}规则`}><button className="icon-button" aria-label={`保存${name}${label}规则`} disabled={busy || !valid || !changed}>{saving === policy.capability ? <Loader2 size={16} className="spin" /> : <Save size={16} />}</button></Tooltip></div>}
       </>;

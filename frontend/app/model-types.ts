@@ -19,6 +19,12 @@ export type ModelProvider = {
   enabled: boolean;
   active: boolean;
   has_api_key: boolean;
+  published: boolean;
+  version: number;
+  is_default: boolean;
+  configured: boolean;
+  prices: Policy[];
+  workspace_count: number;
 };
 
 export const policyLabels: Record<string, string> = {

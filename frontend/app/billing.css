@@ -176,19 +176,20 @@
   color: var(--muted);
   font-size: var(--form-label-size);
 }
-.provider-form input {
+.provider-form input:not([type="checkbox"]), .provider-form-grid select {
   width: 100%;
   min-width: 0;
-  min-height: 36px;
+  min-height: var(--form-control-height);
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
   color: var(--ink);
   font: inherit;
+  font-size: var(--form-font-size);
   font-variant-numeric: tabular-nums;
 }
-.provider-form input:focus {
+.provider-form input:focus, .provider-form-grid select:focus {
   outline: 2px solid var(--brand-soft);
   outline-offset: 1px;
   border-color: var(--focus-ring);
@@ -200,9 +201,7 @@
 .provider-form {
   display: grid;
   gap: 18px;
-  margin-top: 28px;
-  padding-top: 24px;
-  border-top: 1px solid var(--line);
+  margin-top: var(--form-gap);
 }
 .provider-form-heading {
   display: flex;
@@ -249,11 +248,14 @@
   gap: 18px;
   margin-bottom: 14px;
 }
-.provider-section-heading > div {
+.provider-section-heading > div:not(.provider-form-actions) {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
+.provider-section-heading > .provider-form-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.provider-form-grid .provider-enabled { display: flex; align-items: center; gap: 8px; min-height: var(--form-touch-height); }
+.provider-form-grid .provider-enabled input { flex: 0 0 16px; width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; }
 .provider-title-row {
   display: flex;
   align-items: center;
@@ -517,6 +519,7 @@
   }
 }
 @media (max-width: 760px) {
+  .provider-form input:not([type="checkbox"]), .provider-form-grid select, .provider-form-actions button { min-height: var(--form-touch-height); }
   .policy-input input, .policy-toggle, .policy-action .icon-button, .pricing-footer .primary { min-height: var(--form-touch-height); }
   .policy-action .icon-button { width: var(--form-touch-height); }
   .pricing-group-heading { flex-wrap: wrap; gap: 8px; }

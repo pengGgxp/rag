@@ -26,7 +26,7 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
     if (!providers) return;
     let active = true;
     setPricesLoading(true); setPriceLoadError("");
-    const targets = [{ id: "base", name: "环境默认模型与文档处理", path: `${base}/usage-policies` },
+    const targets = [{ id: "base", name: "文档处理", path: `${base}/usage-policies` },
       ...providers.map(item => ({ id: item.id, name: `${item.name} · ${item.model}`, path: `${base}/llm-providers/${item.id}/pricing` }))];
     Promise.all(targets.map(async item => ({ ...item, policies: await request<Policy[]>(item.path) })))
       .then(items => { if (active) { setGroups(items); setOriginal(items); } })
@@ -42,7 +42,7 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
   async function save(group: PriceGroup, policy: Policy) {
     setSaving(`${group.id}:${policy.capability}`); setError(""); setNotice("");
     try {
-      const updated = await request<Policy>(`${group.path}/${policy.capability}`, json(policyPayload(policy), "PUT"));
+      const updated = await request<Policy>(`${group.path}/${policy.capability}`, json({ ...policyPayload(policy), version: policy.version }, "PUT"));
       const apply = (items: PriceGroup[]) => items.map(item => item.id !== group.id ? item : {
         ...item, policies: item.policies.map(row => row.capability === updated.capability ? updated : row) });
       setGroups(apply); setOriginal(apply);
