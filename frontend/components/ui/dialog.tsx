@@ -69,7 +69,7 @@ export function Dialog({
           >
             <div className={settingsWindow ? "settings-dialog-heading" : "modal-heading"}>
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-              {fullScreen || sidePanel ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
+              {fullScreen || sidePanel || settingsWindow ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
             </div>
             <DialogPrimitive.Description className="sr-only">
               {title}

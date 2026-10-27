@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import current_session
@@ -38,6 +39,16 @@ def management_access(request: Request, actor: User = Depends(site_admin),
         workspace_id = UUID(str(raw)) if raw is not None else session.workspace_id
     except (TypeError, ValueError):
         raise HTTPException(422, "工作区 ID 不合法") from None
-    if db.get(Workspace, workspace_id) is None:
+    # Serialize management writes/default creation without changing billing snapshots.
+    if db.scalar(select(Workspace).where(Workspace.id == workspace_id).with_for_update()) is None:
         raise HTTPException(404, "工作区不存在")
-    return ManagementAccess(actor, workspace_id, request)
+    access = ManagementAccess(actor, workspace_id, request)
+    try:
+        yield access
+    except Exception:
+        db.rollback()
+        if request.method in {"POST", "PUT", "DELETE", "PATCH"}:
+            action = "workspace.pricing_management_failed" if "/pricing" in request.url.path or "/usage" in request.url.path else "workspace.model_management_failed"
+            access.audit(db, action, result="failure")
+            db.commit()
+        raise

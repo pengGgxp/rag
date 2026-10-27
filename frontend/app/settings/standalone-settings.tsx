@@ -23,6 +23,7 @@ export default function SettingsFrame({ intercepted = false, children }: { inter
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<(() => void) | null>(null);
   const confirmation = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const role = session.workspaces.find(item => item.id === session.workspace_id)?.role;
   const workspaceName = session.workspaces.find(item => item.id === session.workspace_id)?.name ?? "当前工作区";
   const section = sectionFromPath(pathname);
@@ -30,7 +31,7 @@ export default function SettingsFrame({ intercepted = false, children }: { inter
   const hrefFor = (path: string) => `${path}?returnTo=${encodeURIComponent(returnTo)}`;
   const run = (action: () => void) => {
     if (busy) return;
-    if (dirty) setPending(() => action);
+    if (dirty) { returnFocus.current = document.activeElement as HTMLElement; setPending(() => action); }
     else action();
   };
   const close = () => run(() => origin.current ? router.back() : router.replace(returnTo));
@@ -65,7 +66,7 @@ export default function SettingsFrame({ intercepted = false, children }: { inter
           </header>
           {pending && <div className="settings-discard" role="alert" tabIndex={-1} ref={confirmation}>
             <span>有尚未保存的修改，要放弃吗？</span>
-            <button className="secondary" onClick={() => setPending(null)}>继续编辑</button>
+            <button className="secondary" onClick={() => { setPending(null); returnFocus.current?.focus(); }}>继续编辑</button>
             <button className="danger" onClick={() => { const action = pending; setPending(null); setDirty(false); action(); }}>放弃修改</button>
           </div>}
           <div className="settings-body">{children}</div>

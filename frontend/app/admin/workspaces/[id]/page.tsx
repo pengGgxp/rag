@@ -21,7 +21,12 @@ export default function WorkspaceDetailPage() {
         <ArrowLeft size={15} />
         工作区
       </Link>
-      <AdminHeading title={data?.name || "工作区详情"} />
+      <AdminHeading title={data?.name || "工作区详情"}>
+        {data && <div className="provider-form-actions">
+          <Link className="secondary" href={`/admin/models?workspace=${data.id}`}>模型供应商</Link>
+          <Link className="secondary" href={`/admin/pricing?workspace=${data.id}`}>计费规则</Link>
+        </div>}
+      </AdminHeading>
       <AdminLoad loading={loading} error={error} retry={reload}>
         {data && (
           <>

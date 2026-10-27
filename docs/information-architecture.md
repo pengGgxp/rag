@@ -3,7 +3,9 @@
 - 状态：已确认，作为前端重构约束
 - 适用范围：主工作台、知识库内部导航、知识问答、Agent 扩展、账号与工作区设置
 - 关联 Issue：[#30](https://github.com/pengGgxp/rag/issues/30)
-- 最后更新：2026-10-24
+- 最后更新：2026-10-27
+
+> Issue #37 更新账号与工作区设置约定：设置使用可持续挂载的居中窗口，手机全屏；个人资料、登录与安全和工作区协作分别组织。模型与计费配置归属独立站点后台，具体容器和导航规则以 `design-system.md` 4.4 及 `settings-rebuild-implementation.md` 为准。
 
 ## 1. 产品层级
 
@@ -26,15 +28,17 @@ Agent 内部
 ├── MCP 服务
 └── Skill
 
-工作区设置
-├── 我的账号
-├── 积分与充值
-├── 计费规则
-├── 工作区成员
-└── 审计日志
+设置窗口
+├── 个人：个人资料、登录与安全
+└── 当前工作区：基本信息、成员管理、积分与充值、操作记录
+
+站点后台
+├── 概览、用户、工作区
+├── 模型供应商、计费规则（显式选择目标工作区）
+└── 站点审计、认证与登录
 ```
 
-主工作台、知识库内部和工作区设置不得互相嵌套。一个页面只负责一个层级，导航不能同时表达两个层级。
+设置窗口保留底层工作区上下文；窗口内仅显示设置导航，站点后台保持独立页面。导航不能混淆产品工作模式和设置层级。
 
 ## 2. URL 与导航
 
@@ -44,11 +48,15 @@ Agent 内部
 /                         知识库工作台
 /?chat=1                  知识问答
 /?extensions=1            Agent 扩展
-/settings                 我的账号
+/settings                 个人资料
+/settings/security        登录与安全
+/settings/workspace       工作区基本信息
 /settings/billing         积分与充值
-/settings/policies        计费规则
-/settings/members         工作区成员
-/settings/audit           审计日志
+/settings/policies        旧链接：站点管理员跳转目标工作区后台，其他人拒绝
+/settings/members         成员管理
+/settings/audit           操作记录
+/admin/models?workspace=… 模型供应商
+/admin/pricing?workspace=… 计费规则
 ```
 
 导航规则：

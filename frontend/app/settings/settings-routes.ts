@@ -17,6 +17,10 @@ export function visibleSections(role?: Role) {
 }
 export function safeReturnTo(value: string | null) {
   if (!value || !value.startsWith("/") || value.startsWith("//") ||
-      /[\\\r\n]/.test(value) || value.startsWith("/settings")) return "/";
-  return value;
+      /[\\\u0000-\u0020]/.test(value)) return "/";
+  try {
+    const parsed = new URL(value, "https://internal.invalid");
+    if (parsed.origin !== "https://internal.invalid" || parsed.pathname.startsWith("/settings")) return "/";
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch { return "/"; }
 }
