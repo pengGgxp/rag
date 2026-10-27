@@ -22,8 +22,8 @@ const navigation = [
   { href: "/admin", label: "概览", icon: LayoutDashboard },
   { href: "/admin/users", label: "用户", icon: UsersRound },
   { href: "/admin/workspaces", label: "工作区", icon: Building2 },
-  { href: "/admin/models", label: "模型供应商", icon: Cpu },
-  { href: "/admin/pricing", label: "计费规则", icon: Coins },
+  { href: "/admin/models", label: "模型管理", icon: Cpu },
+  { href: "/admin/pricing", label: "计费管理", icon: Coins },
   { href: "/admin/audit", label: "站点审计", icon: ScrollText },
   { href: "/admin/auth", label: "认证与登录", icon: Settings2 },
 ];

@@ -27,7 +27,16 @@ export type ModelProvider = {
   configured: boolean;
   prices: Policy[];
   workspace_count: number;
+  available: boolean;
+  unavailable_reason: string | null;
 };
+
+export function availabilityLabel(reason: string | null) {
+  return reason === "model_disabled" ? "已停用"
+    : reason === "pricing_unconfigured" ? "价格待配置"
+    : reason === "service_not_ready" ? "连接未就绪"
+    : reason ? "暂不可用" : "可用";
+}
 
 export const policyLabels: Record<string, string> = {
   llm_input_tokens: "模型输入 Token",

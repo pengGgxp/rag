@@ -308,6 +308,24 @@
 .provider-enabled input { width: 16px; height: 16px; accent-color: var(--brand); }
 .provider-section-heading small { display: block; overflow-wrap: anywhere; }
 .admin-main .policy-row { margin: 0; }
+.admin-section-nav { display: flex; gap: 24px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+.admin-section-nav a { display: inline-flex; align-items: center; min-height: var(--form-touch-height); color: var(--muted); font-size: var(--form-font-size); border-bottom: 2px solid transparent; }
+.admin-section-nav a[aria-current="page"] { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
+.admin-target-context { display: flex; align-items: flex-start; gap: var(--form-gap); padding-bottom: var(--form-section-gap); margin-bottom: var(--form-section-gap); border-bottom: 1px solid var(--line); }
+.admin-target-context > svg { flex-shrink: 0; margin-top: 4px; color: var(--muted); }
+.admin-target-context > div { display: grid; gap: 5px; min-width: 0; flex: 1; }
+.admin-target-context strong { font-size: 16px; overflow-wrap: anywhere; }
+.admin-target-context > button { flex-shrink: 0; min-height: var(--form-control-height); }
+.admin-target-id { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; min-width: 0; }
+.admin-target-id code { overflow-wrap: anywhere; min-width: 0; }
+.admin-target-id .icon-button { flex-shrink: 0; width: var(--form-control-height); height: var(--form-control-height); }
+.workspace-option { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.workspace-option > span { min-width: 0; overflow-wrap: anywhere; }
+.workspace-option input { flex-shrink: 0; accent-color: var(--brand); }
+.target-picker-actions { justify-content: flex-end; }
+.admin-workspace-picker .admin-filters input { width: 100%; min-width: 0; }
+.admin-workspace-picker .admin-filters { margin-top: 0; }
+.admin-workspace-picker .admin-filters button { min-height: var(--form-control-height); }
 @media (max-width: 760px) {
   .admin-shell {
     grid-template-columns: minmax(0, 1fr);
@@ -377,4 +395,7 @@
     min-width: 180px;
   }
   .admin-main .provider-form input:not([type="checkbox"]) { min-height: var(--form-touch-height); }
+  .admin-target-context > svg { display: none; }
+  .admin-target-context > button, .admin-target-id .icon-button, .target-picker-actions button, .admin-workspace-picker button { min-height: var(--form-touch-height); }
+  .workspace-option { min-height: var(--form-touch-height); }
 }

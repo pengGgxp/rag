@@ -150,6 +150,17 @@
 .policy-action .icon-button { width: var(--form-control-height); height: var(--form-control-height); color: var(--brand); }
 .policy-action .icon-button:hover { background: var(--brand-soft); }
 .pricing-editor { container-type: inline-size; }
+.model-price-table { border-block: 1px solid var(--line); }
+.model-price-heading, .model-price-row { display: grid; grid-template-columns: minmax(150px, 1.25fr) repeat(3, minmax(110px, 1fr)); gap: var(--form-gap); padding: var(--form-gap) 0; }
+.model-price-heading { font-size: var(--form-label-size); color: var(--muted); border-bottom: 1px solid var(--line); }
+.model-price-row + .model-price-row { border-top: 1px solid var(--line); }
+.model-price-identity, .model-price-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; overflow-wrap: anywhere; font-size: var(--form-font-size); }
+.model-price-identity small, .model-price-cell small { color: var(--muted); font-size: var(--form-label-size); font-weight: 400; }
+.model-price-cell strong { font-variant-numeric: tabular-nums; font-size: var(--form-font-size); }
+.model-price-label { display: none; font-size: var(--form-label-size); color: var(--muted); }
+.model-availability { color: var(--muted); font-size: var(--form-label-size); }
+.model-availability[data-warning="true"] { color: var(--warning-foreground); }
+.pricing-cache-note { color: var(--muted); border-left: 2px solid var(--line); padding-left: 12px; font-size: var(--form-label-size); line-height: 1.7; margin-bottom: var(--form-gap); }
 .pricing-description { color: var(--muted); font-size: var(--form-font-size); line-height: 1.7; margin-bottom: var(--form-section-gap); }
 .pricing-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: var(--form-gap); }
 .pricing-status { display: inline-flex; align-items: center; gap: 8px; font-size: var(--form-font-size); color: var(--ink); font-weight: 500; }
@@ -168,6 +179,10 @@
 .billing-pending strong { display: block; font-size: var(--form-font-size); font-weight: 600; }
 .billing-pending p { margin-top: 4px; font-size: var(--form-label-size); line-height: 1.7; }
 @container (max-width: 700px) {
+  .model-price-heading { display: none; }
+  .model-price-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .model-price-identity { grid-column: 1 / -1; }
+  .model-price-label { display: block; }
   .policy-table-header { display: none; }
   .policy-table .policy-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px var(--form-gap); padding: var(--form-gap) 0; }
   .policy-capability { grid-column: 1 / -1; }
