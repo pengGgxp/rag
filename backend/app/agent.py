@@ -114,6 +114,7 @@ def stream_retrieval_agent(
     provider: OpenAICompatibleChatProvider,
     is_active: Callable[[], bool] | None = None,
     extensions=None,
+    meter=None,
 ) -> Iterator[tuple[str, Any]]:
     """Run model/tool rounds until the model answers, the user stops, or a request fails."""
 
@@ -146,11 +147,10 @@ def stream_retrieval_agent(
 
     def plan(state: AgentState) -> AgentState:
         check_active()
-        response = provider.complete_with_tools(
-            state["messages"],
-            ([SEARCH_TOOL] if allowed else []) + (extensions.tools if extensions else []),
-            tool_choice="auto",
-        )
+        tools = ([SEARCH_TOOL] if allowed else []) + (extensions.tools if extensions else [])
+        def invoke():
+            return provider.complete_with_tools(state["messages"], tools, tool_choice="auto")
+        response = meter.invoke(provider, invoke, state["messages"], tools) if meter else invoke()
         check_active()
         calls = response.tool_calls
         usage_events = list(state.get("usage_events", []))

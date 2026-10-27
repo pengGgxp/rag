@@ -348,6 +348,7 @@ def build_router(get_db):
 
     @router.get("")
     def read_usage(db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        from .model_billing import pending_credits
         account = ensure_account(db, access.workspace_id)
         ensure_policies(db, access.workspace_id)
         db.commit()
@@ -364,6 +365,7 @@ def build_router(get_db):
             "balance": account.balance,
             "lifetime_granted": account.lifetime_granted,
             "lifetime_spent": account.lifetime_spent,
+            "pending_credits": pending_credits(db, access.workspace_id),
             "usage": {
                 "events": sum(1 for item in entries if item.kind == "usage_settlement"),
                 "units": {

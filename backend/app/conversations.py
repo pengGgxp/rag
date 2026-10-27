@@ -31,6 +31,8 @@ from .credits import (
 )
 from .extensions import ExtensionRuntime, validate_selection
 from .llm_providers import active_provider_config
+from . import model_billing
+from .models import ModelUsageRequest
 
 
 class ExtensionSelection(BaseModel):
@@ -107,6 +109,7 @@ def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Con
 
 
 def recover_interrupted_conversations(db: Session):
+    model_billing.recover_requests(db)
     db.execute(update(ChatMessage).where(ChatMessage.status == "streaming").values(
         status="interrupted", error_detail="服务重启，回答已中断，可以重试",
     ))
@@ -299,13 +302,13 @@ def chat_router(get_db, retrieve):
                 raise HTTPException(409, "只能重试最后一条未完成的回答")
         try:
             hold_amount = authorization_hold_amount()
-            authorization_hold(
-                db,
-                access.workspace_id,
-                access.user_id,
-                payload.request_id,
-                hold_amount,
-            )
+            metered = model_billing.enabled(db)
+            if metered:
+                config = active_provider_config(db, access.workspace_id)
+                model_billing.start_request(db, access.workspace_id, access.user_id,
+                    payload.request_id, UUID(config.provider_id) if config else None, hold_amount)
+            else:
+                authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
         except CreditError:
             db.rollback()
             raise
@@ -364,6 +367,9 @@ def chat_router(get_db, retrieve):
         refused = False
         refusal_reason = None
         usage_settled = False
+        with factory() as metering_db:
+            metered = metering_db.get(ModelUsageRequest, request_id) is not None
+        meter = model_billing.ModelMeter(factory, request_id) if metered else None
 
         def save(status="streaming"):
             with factory() as db:
@@ -444,6 +450,7 @@ def chat_router(get_db, retrieve):
                 factory=factory, access=access, retrieve=retrieve, provider=provider,
                 is_active=still_authorized,
                 extensions=extension_runtime,
+                meter=meter,
             )
             async for name, data in iterate_in_threadpool(execution):
                 if not await run_in_threadpool(still_authorized):
@@ -468,13 +475,14 @@ def chat_router(get_db, retrieve):
             if agent_run is None:
                 raise LLMProviderError("Agent 未完成回答，请重试")
             citations, traces = agent_run.citations, agent_run.traces
-            with factory() as usage_db:
-                settle_model_usage(
-                    usage_db, access.workspace_id, access.user_id, request_id,
-                    agent_run.usage_events, hold_amount,
-                )
-                usage_db.commit()
-            usage_settled = True
+            if not meter:
+                with factory() as usage_db:
+                    settle_model_usage(
+                        usage_db, access.workspace_id, access.user_id, request_id,
+                        agent_run.usage_events, hold_amount,
+                    )
+                    usage_db.commit()
+                usage_settled = True
             _, active = await run_in_threadpool(save)
             if not active:
                 return
@@ -508,8 +516,13 @@ def chat_router(get_db, retrieve):
         finally:
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
+                if meter:
+                    with factory() as usage_db:
+                        model_billing.finalize_request(usage_db, request_id, final_status)
+                        usage_db.commit()
+                    usage_settled = True
                 saved, _ = await run_in_threadpool(save, final_status)
-                if final_status != "completed" or not usage_settled:
+                if not meter and (final_status != "completed" or not usage_settled):
                     with factory() as credit_db:
                         try:
                             release_hold(

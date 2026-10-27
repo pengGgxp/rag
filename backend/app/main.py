@@ -30,6 +30,7 @@ from .llm import (
     OpenAICompatibleChatProvider,
     estimate_tokens,
 )
+from . import model_billing
 from .models import (
     Document,
     DocumentStatus,
@@ -1006,21 +1007,35 @@ def answer_knowledge_base(
         if provider_config else OpenAICompatibleChatProvider()
     )
     reservation_id = uuid4()
-    authorization_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
+    metered = model_billing.enabled(db)
+    hold = authorization_hold_amount()
+    if metered:
+        model_billing.start_request(db, access.workspace_id, access.user_id, reservation_id,
+            UUID(provider_config.provider_id) if provider_config else None, hold)
+    else:
+        authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
     db.commit()
-    try:
-        answer = provider.complete(messages)
-    except LLMConfigurationError as exc:
-        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
+    def finalize_model(outcome):
+        if metered:
+            model_billing.finalize_request(db, reservation_id, outcome)
+        else:
+            release_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
         db.commit()
+    try:
+        if metered:
+            from sqlalchemy.orm import sessionmaker
+            meter = model_billing.ModelMeter(sessionmaker(bind=db.get_bind()), reservation_id)
+            answer = meter.invoke(provider, lambda: provider.complete(messages), messages)
+        else:
+            answer = provider.complete(messages)
+    except LLMConfigurationError as exc:
+        finalize_model("failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except LLMProviderError as exc:
-        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
-        db.commit()
+        finalize_model("failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception:
-        release_hold(db, access.workspace_id, access.user_id, reservation_id, authorization_hold_amount())
-        db.commit()
+        finalize_model("failed")
         raise
     usage = provider.last_usage
     if usage is not None:
@@ -1039,11 +1054,11 @@ def answer_knowledge_base(
             "provider_id": provider.status.provider_id,
             "provider_key": provider.status.provider_key,
         }
-    settle_model_usage(
-        db, access.workspace_id, access.user_id, reservation_id, [usage_event],
-        authorization_hold_amount(),
-    )
-    db.commit()
+    if metered:
+        finalize_model("completed")
+    else:
+        settle_model_usage(db, access.workspace_id, access.user_id, reservation_id, [usage_event], hold)
+        db.commit()
 
     db.expire_all()
     access.revalidate(db).library(db, knowledge_base_id)
