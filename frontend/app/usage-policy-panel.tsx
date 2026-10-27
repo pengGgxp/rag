@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CircleAlert, Loader2, RefreshCw, Save } from "lucide-react";
+import { CircleAlert, Loader2, Save } from "lucide-react";
 import { request } from "./api";
 import { AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useWorkspaceChanges } from "./admin/workspace-target";
@@ -13,12 +13,6 @@ type BillingSettings = {
   version: number; multiplier: string; shared_pricing_enabled: boolean; billing_enabled: boolean;
   document_policies: Policy[];
   models: { binding_id: string; name: string; model: string; active: boolean; policies: Policy[] }[];
-};
-type Migration = {
-  fingerprint: string; ready: boolean;
-  workspaces: { id: string; single_multiplier_preserves_prices: boolean; missing: string[];
-    old_policies: Policy[]; new_policies: Policy[];
-    samples: { label: string; old_credits: number | null; new_credits: number | null; difference: number | null }[] }[];
 };
 
 function ratePercent(value: string) {
@@ -39,7 +33,6 @@ function effective(policies: Policy[], percent: number | null): Policy[] {
 export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
   const endpoint = `/site/admin/workspaces/${encodeURIComponent(workspaceId)}/billing-settings`;
   const { data, loading, error: loadError, reload } = useAdminResource<BillingSettings>(endpoint);
-  const migration = useAdminResource<Migration>("/site/admin/pricing-migration");
   const [multiplier, setMultiplier] = useState("");
   const [saved, setSaved] = useState<BillingSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,7 +42,6 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
   const percent = ratePercent(multiplier);
   const dirty = Boolean(saved && (percent === null || percent !== ratePercent(saved.multiplier)));
   useWorkspaceChanges(dirty, busy);
-  const comparison = migration.data?.workspaces.find(w => w.id === workspaceId);
 
   async function save() {
     if (!saved || percent === null) return;
@@ -58,7 +50,6 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
       const updated = await request<BillingSettings>(endpoint, json({ version: saved.version, multiplier }, "PUT"));
       setSaved(updated); setMultiplier(updated.multiplier);
       setNotice(updated.shared_pricing_enabled ? "消费倍率已保存，后续新请求生效" : "倍率已保存，共享计费启用后生效");
-      await migration.reload();
     } catch (e) { setError(e instanceof Error ? e.message : "保存倍率失败，请重试"); }
     finally { setBusy(false); }
   }
@@ -82,17 +73,6 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
           <PolicyTable name={`${model.name}价格预览`} readOnly policies={effective(model.policies, percent)} busy={busy} />
         </section>)}
         {!saved.models.length && <p className="billing-empty">尚未关联模型</p>}
-        {!saved.shared_pricing_enabled && <section className="pricing-group">
-          <div className="pricing-group-heading"><h2>切换价差</h2><button type="button" className="secondary" disabled={migration.loading || busy} onClick={() => void migration.reload()}><RefreshCw size={15} />重新预览</button></div>
-          <AdminLoad loading={migration.loading} error={migration.error} retry={migration.reload}>
-            {comparison && <>
-              <p className="billing-muted">{comparison.missing.length ? "共享基准价尚未配置完整，暂不能启用。" : migration.data?.ready ? "全站基准价检查通过，等待确认切换。" : "其他工作区仍有未完成配置。"}
-                {!comparison.single_multiplier_preserves_prices && " 原价格比例不同，无法通过一个倍率完全保持旧价。"}{dirty && " 以下样例按已保存倍率计算。"}</p>
-              <div className="admin-table-wrap pricing-samples"><table className="admin-table"><thead><tr><th>固定用量</th><th>旧规则积分</th><th>共享规则积分</th><th>变化</th></tr></thead><tbody>{comparison.samples.map(row => <tr key={row.label}><td>{row.label}</td><td>{row.old_credits ?? "未配置"}</td><td>{row.new_credits ?? "未配置"}</td><td>{row.difference === null ? "—" : row.difference > 0 ? `+${row.difference}` : row.difference}</td></tr>)}</tbody></table></div>
-              <details className="pricing-comparison"><summary>旧价格明细</summary><PolicyTable name="旧价格明细" readOnly policies={comparison.old_policies} busy={false} /></details>
-            </>}
-          </AdminLoad>
-        </section>}
       </>}
     </AdminLoad>
   </section>;

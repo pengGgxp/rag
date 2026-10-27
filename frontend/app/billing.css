@@ -65,8 +65,6 @@
 .multiplier-form > label { display: grid; gap: 8px; max-width: 200px; font-size: var(--form-label-size); color: var(--muted); }
 .multiplier-form > button { min-height: var(--form-control-height); }
 .multiplier-form > .billing-muted { flex-basis: 100%; }
-.pricing-comparison { margin-top: var(--form-gap); }
-.pricing-comparison > summary { padding-block: var(--form-gap); cursor: pointer; font-size: var(--form-font-size); color: var(--text-secondary); }
 .policy-table-header,
 .policy-row {
   display: grid;
@@ -179,9 +177,6 @@
   .policy-table[data-readonly="true"] .policy-state { grid-column: auto; grid-row: auto; }
   .policy-table[data-readonly="true"] .policy-field-label { margin-bottom: 2px; }
   .pricing-group-heading { align-items: flex-start; flex-wrap: wrap; }
-  .pricing-samples .admin-table { min-width: 0; width: 100%; table-layout: fixed; }
-  .pricing-samples .admin-table th, .pricing-samples .admin-table td { padding: 10px 6px; white-space: normal; overflow-wrap: anywhere; font-size: var(--form-label-size); }
-  .pricing-samples th:first-child { width: 46%; }
 }
 .provider-section-heading small,
 .provider-form-heading p {
