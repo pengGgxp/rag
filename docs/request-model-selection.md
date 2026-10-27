@@ -68,3 +68,25 @@ gates, dual current-model flows or migration product pages.
 - Backend tests use controlled model responses; they are not evidence of real
   upstream connectivity. Online deployment and controlled calls are recorded
   separately after release.
+
+## Online Verification, 2026-10-27
+
+- Deployed runtime commits `bb1e096` and `ed1a5e5` to API/Web after database,
+  protected configuration, source and previous-image backups under
+  `/data1/rag-releases/issue41-20261027`.
+- Revision 0026 applied successfully. Checksums of existing balances, usage,
+  prices, provider associations and pre-existing message fields are unchanged
+  across migration; `.env` and DB/Redis/storage/Worker container IDs unchanged.
+- Shared prices remain enabled, Issue #36 remains disabled. No commercial
+  prices, workspace multipliers or site default were changed.
+- An isolated acceptance account made two real HTTP/SSE requests in one
+  conversation: `qwen3.8-max-0902` (435 input / 32 output, 24 credits) and
+  `deepseek-flash` (443 input / 16 output, 48 credits). Each answer and usage
+  record points to its actual provider; duplicate submissions replayed the
+  answer without another charge. No workspace price rows were created.
+- The acceptance account's sessions were revoked and the account suspended
+  afterwards; consumption and audit records remain traceable.
+- An already-authenticated live browser verified the composer choices, settings
+  navigation removal, a single settings dialog, selection retention when closing
+  settings and clearing on refresh. The site has no configured default model;
+  refresh therefore shows the selection placeholder, not an invented fallback.

@@ -22,7 +22,8 @@ async (page) => {
   let requests = [];
   const identity = { user: { id: "u1", name: "验收用户", email: "test@example.com", has_password: true,
     email_verified: true, wechat_linked: false, is_site_admin: true },
-    workspaces: [{ id: "w1", name: "验收工作区", role: "viewer" }], workspace_id: "w1", csrf_token: "test" };
+    workspaces: [{ id: "w1", name: "验收工作区", role: "viewer" },
+      { id: "w2", name: "另一工作区", role: "viewer" }], workspace_id: "w1", csrf_token: "test" };
   const fixtures = {
     "/auth/options": { setup_available: false, first_run: false },
     "/auth/me": identity, "/knowledge-bases": [], "/agent/skills": [], "/agent/mcp": [],
@@ -35,6 +36,10 @@ async (page) => {
     (url.origin === base && url.pathname.startsWith("/api/")), async route => {
     const path = new URL(route.request().url()).pathname.replace(/^\/api/, "");
     const method = route.request().method();
+    if (path === "/auth/workspace") {
+      identity.workspace_id = route.request().postDataJSON().workspace_id;
+      return route.fulfill({ json: identity });
+    }
     if (path === "/models/available") return route.fulfill(modelFailure
       ? { status: 503, json: { detail: "模型列表暂不可用" } }
       : { json: modelEmpty ? { default_provider_id: null, providers: [] } : models });
@@ -88,6 +93,7 @@ async (page) => {
   const results = [];
   for (const width of [1440, 390]) {
     conversation = null; requests = []; sendFailure = false;
+    identity.workspace_id = "w1";
     await page.setViewportSize({ width, height: width === 1440 ? 900 : 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`${base}/?chat=1`);
@@ -117,6 +123,14 @@ async (page) => {
     await page.locator(".answer-model").filter({ hasText: "Qwen" }).waitFor();
     await page.locator(".chat-message").last().evaluate(el => el.getAnimations({ subtree: true }).forEach(animation => animation.finish()));
     await page.screenshot({ path: `output/playwright/issue41-chat-${width}.png` });
+    if (width === 390) await page.locator("[data-workspace-menu]").click();
+    await page.getByRole("button", { name: "新建对话", exact: true }).click();
+    check(await selector.inputValue() === "two", "New conversation reset current-page model");
+    if (width === 390) await page.locator("[data-workspace-menu]").click();
+    await page.getByRole("navigation", { name: "历史对话", exact: true })
+      .getByRole("button", { name: "新对话", exact: true }).click();
+    await page.waitForURL(url => url.searchParams.get("conversation") === "c1");
+    check(await selector.inputValue() === "two", "History selection reset current-page model");
     await page.reload();
     await page.waitForFunction(() => document.querySelector('select[aria-label="本次请求模型"]')?.value === "one");
     await selector.selectOption("long");
@@ -136,6 +150,11 @@ async (page) => {
     if (width === 390) check(!(await page.getByRole("combobox", { name: "选择设置页面" }).locator("option").allTextContents()).includes("模型选择"), "Mobile model entry remains");
     await page.getByRole("button", { name: "关闭", exact: true }).click();
     await page.getByRole("dialog").waitFor({ state: "detached" });
+    check(await selector.inputValue() === "long", "Settings reset current-page model");
+    if (width === 390) await page.locator("[data-workspace-menu]").click();
+    await page.locator("[data-account-trigger]").click();
+    await page.getByRole("menuitem", { name: "另一工作区", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('select[aria-label="本次请求模型"]')?.value === "one");
     results.push(`${width}px: explicit selection, generation lockout, retry, multiple models, default reset, long label, settings and keyboard`);
   }
   modelFailure = true;
