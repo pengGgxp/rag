@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Check,
@@ -100,7 +100,7 @@ function AccountPage({
   const [notice, setNotice] = useState("");
   const [membersLoading, setMembersLoading] = useState(false);
   const [retry, setRetry] = useState(0);
-  useEffect(() => { setDirty(Boolean(password || currentPassword || email)); }, [password, currentPassword, email, setDirty]);
+  useLayoutEffect(() => { setDirty(Boolean(password || currentPassword || email)); }, [password, currentPassword, email, setDirty]);
   useEffect(() => { setFrameBusy(busy); }, [busy, setFrameBusy]);
   useEffect(() => () => { setDirty(false); setFrameBusy(false); }, [setDirty, setFrameBusy]);
   useEffect(() => {

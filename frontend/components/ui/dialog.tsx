@@ -50,6 +50,7 @@ export function Dialog({
             if (!restoreFocusSelector) return;
             event.preventDefault();
             requestAnimationFrame(() => {
+              if (document.querySelector('[role="dialog"][data-state="open"]')) return;
               const target = Array.from(document.querySelectorAll<HTMLElement>(restoreFocusSelector))
                 .find(element => element.getClientRects().length > 0);
               (target ?? document.querySelector<HTMLElement>("[data-workspace-menu]"))?.focus();

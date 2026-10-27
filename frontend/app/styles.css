@@ -1850,3 +1850,25 @@ thead {
     scroll-behavior: auto !important;
   }
 }
+.admin-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px;
+  color: var(--danger);
+  background: var(--background);
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.admin-skeleton {
+  display: grid;
+  gap: 18px;
+  padding: 20px 0;
+}
+.admin-skeleton span {
+  height: 42px;
+  border-radius: 6px;
+}

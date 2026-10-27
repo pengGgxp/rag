@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Dialog } from "../../components/ui/dialog";
 import { useAuth } from "../auth";
-import { useSettingsFromWorkspace } from "./settings-navigation";
+import { useSettingsNavigation } from "./settings-navigation";
 import { SettingsSidebar } from "./settings-sidebar";
 import { safeReturnTo, sectionFromPath, visibleSections } from "./settings-routes";
 import "./settings.css";
@@ -12,12 +12,14 @@ import "./settings.css";
 const SettingsForm = createContext({ setDirty: (_dirty: boolean) => {}, setBusy: (_busy: boolean) => {} });
 export const useSettingsForm = () => useContext(SettingsForm);
 
-export default function SettingsFrame({ intercepted = false, children }: { intercepted?: boolean; children: ReactNode }) {
+export default function SettingsFrame({ intercepted = false, openingHref, onClose, children }: {
+  intercepted?: boolean; openingHref?: string | null; onClose?: () => void; children: ReactNode;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { session } = useAuth();
-  const fromWorkspace = useSettingsFromWorkspace();
+  const { fromWorkspace, navigate: navigateIntercepted } = useSettingsNavigation();
   const origin = useRef(intercepted && fromWorkspace);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -26,15 +28,22 @@ export default function SettingsFrame({ intercepted = false, children }: { inter
   const returnFocus = useRef<HTMLElement | null>(null);
   const role = session.workspaces.find(item => item.id === session.workspace_id)?.role;
   const workspaceName = session.workspaces.find(item => item.id === session.workspace_id)?.name ?? "当前工作区";
-  const section = sectionFromPath(pathname);
-  const returnTo = safeReturnTo(searchParams.get("returnTo"));
+  const pendingUrl = openingHref ? new URL(openingHref, "https://internal.invalid") : null;
+  const displayPath = pendingUrl?.pathname ?? pathname;
+  const section = sectionFromPath(displayPath);
+  const returnTo = safeReturnTo(pendingUrl?.searchParams.get("returnTo") ?? searchParams.get("returnTo"));
   const hrefFor = (path: string) => `${path}?returnTo=${encodeURIComponent(returnTo)}`;
+  const navigate = (path: string) => {
+    const href = hrefFor(path);
+    if (intercepted) navigateIntercepted(href);
+    else router.replace(href, { scroll: false });
+  };
   const run = (action: () => void) => {
     if (busy) return;
     if (dirty) { returnFocus.current = document.activeElement as HTMLElement; setPending(() => action); }
     else action();
   };
-  const close = () => run(() => origin.current ? router.back() : router.replace(returnTo));
+  const close = () => run(() => onClose ? onClose() : origin.current ? router.back() : router.replace(returnTo));
   useEffect(() => { if (pending) confirmation.current?.focus(); }, [pending]);
   useEffect(() => {
     if (!dirty) return;
@@ -47,14 +56,14 @@ export default function SettingsFrame({ intercepted = false, children }: { inter
     <SettingsForm.Provider value={{ setDirty, setBusy }}>
       <div className="settings-window-layout">
         <SettingsSidebar workspaceName={workspaceName} role={role} activeSection={section?.key}
-          hrefFor={hrefFor} navigate={path => run(() => router.replace(hrefFor(path), { scroll: false }))} />
+          hrefFor={hrefFor} navigate={path => run(() => navigate(path))} />
         <main className="settings-main">
           <header className="settings-header">
-            <h1>{section?.title ?? (pathname === "/settings/policies" ? "计费规则" : "页面不存在")}</h1>
+            <h1>{section?.title ?? (displayPath === "/settings/policies" ? "计费规则" : "页面不存在")}</h1>
             <select className="settings-mobile-select" aria-label="选择设置页面" value={section?.key ?? ""}
               disabled={busy} onChange={event => {
                 const next = visibleSections(role).find(item => item.key === event.target.value);
-                if (next) run(() => router.replace(hrefFor(next.path), { scroll: false }));
+                if (next) run(() => navigate(next.path));
               }}>
               {!section && <option value="">选择页面</option>}
               {(["personal", "workspace"] as const).map(group => <optgroup key={group}

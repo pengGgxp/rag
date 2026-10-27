@@ -31,6 +31,7 @@ import { Modal } from "./modal";
 import { Authentication } from "./authentication";
 import { AuthFrame } from "./auth-frame";
 import "./auth.css";
+import { useSettingsNavigation } from "./settings/settings-navigation";
 
 export type Role = "admin" | "editor" | "viewer";
 export type AuthOptions = {
@@ -81,6 +82,8 @@ const errorMessage = (error: unknown) =>
 
 export function AccountButton() {
   const { session, refreshSession, logout } = useAuth();
+  const settingsNavigation = useSettingsNavigation();
+  const router = useRouter();
   const workspace = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   );
@@ -96,6 +99,16 @@ export function AccountButton() {
   const personalSettingsHref = `/settings?returnTo=${encodeURIComponent(returnTo)}`;
   const workspaceSettingsHref = `/settings/workspace?returnTo=${encodeURIComponent(returnTo)}`;
   const menuItems = useRef<Array<HTMLAnchorElement | HTMLButtonElement>>([]);
+  const prefetchSettings = () => {
+    router.prefetch(personalSettingsHref);
+    router.prefetch(workspaceSettingsHref);
+  };
+  const openSettings = (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    setOpen(false);
+    settingsNavigation.open(href);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -153,6 +166,8 @@ export function AccountButton() {
         data-account-trigger="true"
         aria-expanded={open}
         title="账号与工作区"
+        onPointerEnter={prefetchSettings}
+        onFocus={prefetchSettings}
         onClick={() => setOpen((value) => !value)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
@@ -198,7 +213,7 @@ export function AccountButton() {
             className="account-menu-item"
             href={personalSettingsHref}
             role="menuitem"
-            onClick={() => setOpen(false)}
+            onClick={event => openSettings(event, personalSettingsHref)}
           >
             <UserRound size={16} />
             我的账号
@@ -210,7 +225,7 @@ export function AccountButton() {
             className="account-menu-item"
             href={workspaceSettingsHref}
             role="menuitem"
-            onClick={() => setOpen(false)}
+            onClick={event => openSettings(event, workspaceSettingsHref)}
           >
             <Settings2 size={16} />
             工作区设置
