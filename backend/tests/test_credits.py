@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.credits import (
     CreditError, authorization_hold, release, reserve, settle_model_usage,
 )
-from app.models import CreditAccount, CreditLedgerEntry, UsageEvent
+from app.models import CreditAccount, CreditLedgerEntry, UsageEvent, User
 from test_auth import accounts, register
 
 def test_workspace_admin_cannot_mint_credits(accounts):
@@ -91,9 +91,12 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
     assert db.get(CreditAccount, workspace_id).balance == 995
 
 
-def test_workspace_admin_can_manage_policy_but_users_do_not_see_formula(accounts):
-    (owner, viewer, _), _db = accounts
-    register(owner)
+def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts):
+    (owner, viewer, _), db = accounts
+    session = register(owner)
+    assert owner.get("/usage/policies").status_code == 403
+    db.get(User, UUID(session["user"]["id"])).is_site_admin = True
+    db.commit()
     assert owner.get("/usage/policies").status_code == 200
     updated = owner.put("/usage/policies/llm_output_tokens", json={
         "capability": "llm_output_tokens",

@@ -9,6 +9,7 @@ RETENTION_DAYS = 365
 SAFE_FIELDS = {
     "method", "source", "accepted", "fields", "count",
     "sessions_revoked", "previous_suspended", "suspended", "reason_code",
+    "workspace_id", "resource_id",
 }
 
 

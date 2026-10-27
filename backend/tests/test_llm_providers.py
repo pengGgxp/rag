@@ -1,14 +1,16 @@
 from uuid import UUID, uuid4
 
 from app import llm_providers
-from app.models import LLMProviderConfig, UsageEvent, UsagePolicy
+from app.models import LLMProviderConfig, UsageEvent, UsagePolicy, User
 from app.credits import authorization_hold, settle_model_usage
 from test_auth import accounts, register
 
 
-def test_admin_can_create_and_switch_chat_model_providers(accounts, monkeypatch):
+def test_site_admin_can_create_and_switch_chat_model_providers(accounts, monkeypatch):
     (owner, viewer, _), db = accounts
-    register(owner)
+    session = register(owner)
+    db.get(User, UUID(session["user"]["id"])).is_site_admin = True
+    db.commit()
     monkeypatch.setattr(llm_providers, "_encrypt_api_key", lambda value: f"encrypted:{value}")
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("encrypted:"))
 

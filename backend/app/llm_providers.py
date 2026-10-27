@@ -9,14 +9,14 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from . import mcp_client
-from .auth import Access, get_access
-from .config import get_settings
+from .management_access import ManagementAccess, management_access
 from .credits import ensure_policies
 from .db import get_db
 from .llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider
 from .models import LLMProviderConfig, UsagePolicy
 
 router = APIRouter(prefix="/settings/llm-providers", tags=["llm-providers"])
+site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/llm-providers", tags=["site-admin"])
 
 
 class ProviderInput(BaseModel):
@@ -114,17 +114,17 @@ def _apply(row: LLMProviderConfig, payload: ProviderInput, *, preserve_key: bool
         raise HTTPException(422, "请提供模型供应商 API Key")
 
 
+@site_router.get("")
 @router.get("")
-def list_providers(db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+def list_providers(db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     return [provider_read(row) for row in db.scalars(select(LLMProviderConfig).where(
         LLMProviderConfig.workspace_id == access.workspace_id,
     ).order_by(LLMProviderConfig.created_at, LLMProviderConfig.id)).all()]
 
 
+@site_router.get("/current")
 @router.get("/current")
-def current_provider(db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+def current_provider(db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     row = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.workspace_id == access.workspace_id,
         LLMProviderConfig.active.is_(True),
@@ -132,9 +132,9 @@ def current_provider(db: Session = Depends(get_db), access: Access = Depends(get
     return provider_read(row) if row is not None else None
 
 
+@site_router.post("", status_code=201)
 @router.post("", status_code=201)
-def create_provider(payload: ProviderInput, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+def create_provider(payload: ProviderInput, db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     if payload.api_key is None:
         raise HTTPException(422, "请提供模型供应商 API Key")
     existing = db.scalar(select(LLMProviderConfig).where(
@@ -151,15 +151,17 @@ def create_provider(payload: ProviderInput, db: Session = Depends(get_db), acces
     )):
         row.active = True
     db.add(row)
+    db.flush()
+    access.audit(db, "workspace.model_provider_created", target_id=row.id, fields=payload.model_fields_set)
     db.commit()
     db.refresh(row)
     return provider_read(row)
 
 
+@site_router.put("/{identifier}")
 @router.put("/{identifier}")
 def update_provider(identifier: UUID, payload: ProviderInput,
-                    db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+                    db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     row = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.id == identifier,
         LLMProviderConfig.workspace_id == access.workspace_id,
@@ -176,14 +178,15 @@ def update_provider(identifier: UUID, payload: ProviderInput,
     _apply(row, payload)
     if row.active and not row.enabled:
         row.active = False
+    access.audit(db, "workspace.model_provider_updated", target_id=row.id, fields=payload.model_fields_set)
     db.commit()
     db.refresh(row)
     return provider_read(row)
 
 
+@site_router.post("/{identifier}/activate")
 @router.post("/{identifier}/activate")
-def activate_provider(identifier: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+def activate_provider(identifier: UUID, db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     row = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.id == identifier,
         LLMProviderConfig.workspace_id == access.workspace_id,
@@ -195,14 +198,15 @@ def activate_provider(identifier: UUID, db: Session = Depends(get_db), access: A
         LLMProviderConfig.workspace_id == access.workspace_id,
     ).values(active=False))
     row.active = True
+    access.audit(db, "workspace.model_provider_activated", target_id=row.id, fields=("active",))
     db.commit()
     db.refresh(row)
     return provider_read(row)
 
 
+@site_router.delete("/{identifier}", status_code=204)
 @router.delete("/{identifier}", status_code=204)
-def delete_provider(identifier: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+def delete_provider(identifier: UUID, db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     row = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.id == identifier,
         LLMProviderConfig.workspace_id == access.workspace_id,
@@ -212,13 +216,14 @@ def delete_provider(identifier: UUID, db: Session = Depends(get_db), access: Acc
     if row.active:
         raise HTTPException(409, "当前供应商正在使用，请先切换其他供应商")
     db.delete(row)
+    access.audit(db, "workspace.model_provider_deleted", target_id=row.id)
     db.commit()
 
 
+@site_router.get("/{identifier}/pricing")
 @router.get("/{identifier}/pricing")
 def list_provider_pricing(identifier: UUID, db: Session = Depends(get_db),
-                          access: Access = Depends(get_access)):
-    access.admin()
+                          access: ManagementAccess = Depends(management_access)):
     row = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.id == identifier,
         LLMProviderConfig.workspace_id == access.workspace_id,
@@ -234,10 +239,10 @@ def list_provider_pricing(identifier: UUID, db: Session = Depends(get_db),
     } for item in policies if item.capability.startswith("llm_")]
 
 
+@site_router.put("/{identifier}/pricing/{capability}")
 @router.put("/{identifier}/pricing/{capability}")
 def update_provider_pricing(identifier: UUID, capability: str, payload: ProviderPricingInput,
-                            db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
+                            db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
     if capability != payload.capability:
         raise HTTPException(422, "能力标识不一致")
     row = db.scalar(select(LLMProviderConfig).where(
@@ -261,6 +266,8 @@ def update_provider_pricing(identifier: UUID, capability: str, payload: Provider
         policy.unit_size = payload.unit_size
         policy.credits_per_unit = payload.credits_per_unit
         policy.enabled = payload.enabled
+    policy.updated_by = access.user_id
+    access.audit(db, "workspace.model_pricing_updated", target_id=row.id, fields=payload.model_fields_set)
     db.commit()
     return {
         "capability": policy.capability, "unit": policy.unit,

@@ -9,6 +9,9 @@ from sqlalchemy.orm import Session
 from .auth import Access, get_access
 from .config import get_settings
 from .models import CreditAccount, CreditLedgerEntry, UsageEvent, UsagePolicy
+from .management_access import ManagementAccess, management_access
+
+site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/usage-policies", tags=["site-admin"])
 
 INITIAL_CREDITS = 1000
 CREDIT_RESERVATION = 1
@@ -381,9 +384,9 @@ def build_router(get_db):
             ],
         }
 
+    @site_router.get("")
     @router.get("/policies")
-    def read_policies(db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        access.admin()
+    def read_policies(db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
         policies = ensure_policies(db, access.workspace_id)
         db.commit()
         return [{
@@ -392,10 +395,10 @@ def build_router(get_db):
             "enabled": item.enabled, "version": item.version,
         } for item in sorted(policies, key=lambda row: row.capability)]
 
+    @site_router.put("/{capability}")
     @router.put("/policies/{capability}")
     def update_policy(capability: str, payload: UsagePolicyUpdate,
-                      db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        access.admin()
+                      db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
         if capability != payload.capability:
             raise HTTPException(422, "能力标识不一致")
         policies = ensure_policies(db, access.workspace_id)
@@ -419,6 +422,7 @@ def build_router(get_db):
             policy.unit_size = payload.unit_size
             policy.credits_per_unit = payload.credits_per_unit
             policy.enabled = payload.enabled
+        access.audit(db, "workspace.usage_policy_updated", fields=payload.model_fields_set)
         db.commit()
         return {
             "capability": policy.capability, "unit": policy.unit,
