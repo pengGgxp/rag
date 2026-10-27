@@ -19,6 +19,7 @@ export type AdminWorkspace = {
   member_count: number;
   credits: Credits;
   configuration: { enabled_model_providers: number; provider_names: string[] };
+  billing_multiplier: string;
   members?: {
     id: string;
     email: string;

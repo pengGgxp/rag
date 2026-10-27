@@ -1,67 +1,99 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { CircleAlert, Loader2, RefreshCw, Save } from "lucide-react";
 import { request } from "./api";
 import { AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useWorkspaceChanges } from "./admin/workspace-target";
-import { policyPayload, type Policy, type ModelProvider } from "./model-types";
 import { PolicyTable } from "./policy-table";
+import type { Policy } from "./model-types";
 import "./billing.css";
 
-type PriceGroup = { id: string; name: string; path: string; policies: Policy[] };
+type BillingSettings = {
+  version: number; multiplier: string; shared_pricing_enabled: boolean; billing_enabled: boolean;
+  document_policies: Policy[];
+  models: { binding_id: string; name: string; model: string; active: boolean; policies: Policy[] }[];
+};
+type Migration = {
+  fingerprint: string; ready: boolean;
+  workspaces: { id: string; single_multiplier_preserves_prices: boolean; missing: string[];
+    old_policies: Policy[]; new_policies: Policy[];
+    samples: { label: string; old_credits: number | null; new_credits: number | null; difference: number | null }[] }[];
+};
+
+function ratePercent(value: string) {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
+  const [whole, fraction = ""] = value.split(".");
+  const percent = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  return percent >= 1 && percent <= 10000 ? percent : null;
+}
+
+function effective(policies: Policy[], percent: number | null): Policy[] {
+  return policies.map(policy => {
+    const numerator = policy.credits_per_unit !== null && percent !== null ? policy.credits_per_unit * percent : null;
+    return { ...policy, effective_credits_per_unit: numerator === null ? null
+      : `${Math.floor(numerator / 100)}.${String(numerator % 100).padStart(2, "0")}` };
+  });
+}
 
 export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
-  const base = `/site/admin/workspaces/${encodeURIComponent(workspaceId)}`;
-  const [groups, setGroups] = useState<PriceGroup[]>([]);
-  const [original, setOriginal] = useState<PriceGroup[]>([]);
+  const endpoint = `/site/admin/workspaces/${encodeURIComponent(workspaceId)}/billing-settings`;
+  const { data, loading, error: loadError, reload } = useAdminResource<BillingSettings>(endpoint);
+  const migration = useAdminResource<Migration>("/site/admin/pricing-migration");
+  const [multiplier, setMultiplier] = useState("");
+  const [saved, setSaved] = useState<BillingSettings | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [priceLoadError, setPriceLoadError] = useState("");
   const [notice, setNotice] = useState("");
-  const [saving, setSaving] = useState("");
-  const { data: providers, loading, error: loadError, reload } = useAdminResource<ModelProvider[]>(`${base}/llm-providers`);
-  const [pricesLoading, setPricesLoading] = useState(true);
-  const [retry, setRetry] = useState(0);
-  useWorkspaceChanges(JSON.stringify(groups) !== JSON.stringify(original), Boolean(saving));
-  useEffect(() => {
-    if (!providers) return;
-    let active = true;
-    setPricesLoading(true); setPriceLoadError("");
-    const targets = [{ id: "base", name: "文档处理", path: `${base}/usage-policies` },
-      ...providers.map(item => ({ id: item.id, name: `${item.name} · ${item.model}`, path: `${base}/llm-providers/${item.id}/pricing` }))];
-    Promise.all(targets.map(async item => ({ ...item, policies: await request<Policy[]>(item.path) })))
-      .then(items => { if (active) { setGroups(items); setOriginal(items); } })
-      .catch(e => { if (active) setPriceLoadError(e instanceof Error ? e.message : "加载价格失败"); })
-      .finally(() => { if (active) setPricesLoading(false); });
-    return () => { active = false; };
-  }, [providers, base, retry]);
+  useEffect(() => { if (data) { setSaved(data); setMultiplier(data.multiplier); } }, [data]);
+  const percent = ratePercent(multiplier);
+  const dirty = Boolean(saved && (percent === null || percent !== ratePercent(saved.multiplier)));
+  useWorkspaceChanges(dirty, busy);
+  const comparison = migration.data?.workspaces.find(w => w.id === workspaceId);
 
-  function update(group: PriceGroup, policy: Policy, patch: Partial<Policy>) {
-    setGroups(items => items.map(item => item.id !== group.id ? item : { ...item,
-      policies: item.policies.map(row => row.capability === policy.capability ? { ...row, ...patch } : row) }));
-  }
-  async function save(group: PriceGroup, policy: Policy) {
-    setSaving(`${group.id}:${policy.capability}`); setError(""); setNotice("");
+  async function save() {
+    if (!saved || percent === null) return;
+    setBusy(true); setError(""); setNotice("");
     try {
-      const updated = await request<Policy>(`${group.path}/${policy.capability}`, json({ ...policyPayload(policy), version: policy.version }, "PUT"));
-      const apply = (items: PriceGroup[]) => items.map(item => item.id !== group.id ? item : {
-        ...item, policies: item.policies.map(row => row.capability === updated.capability ? updated : row) });
-      setGroups(apply); setOriginal(apply);
-      setNotice("计费规则已保存，仅影响后续消费");
-    } catch (e) { setError(e instanceof Error ? e.message : "保存规则失败"); }
-    finally { setSaving(""); }
+      const updated = await request<BillingSettings>(endpoint, json({ version: saved.version, multiplier }, "PUT"));
+      setSaved(updated); setMultiplier(updated.multiplier);
+      setNotice(updated.shared_pricing_enabled ? "消费倍率已保存，后续新请求生效" : "倍率已保存，共享计费启用后生效");
+      await migration.reload();
+    } catch (e) { setError(e instanceof Error ? e.message : "保存倍率失败，请重试"); }
+    finally { setBusy(false); }
   }
-  return <section className="pricing-editor" aria-label="工作区计费规则">
-    <p className="pricing-description">规则仅用于当前工作区，修改只影响后续消费。免费请明确填写 0。</p>
+
+  return <section className="pricing-editor" aria-label="工作区消费倍率">
     {notice && <p className="billing-notice" role="status">{notice}</p>}
-    {error && <p className="form-error" role="alert">{error}</p>}
-    <AdminLoad loading={loading || Boolean(providers && pricesLoading)} error={loadError || priceLoadError} retry={() => { if (loadError) void reload(); else setRetry(value => value + 1); }}>
-      {groups.map(group => <section className="pricing-group" key={group.id}>
-        <div className="pricing-group-heading"><h2>{group.name}</h2><span>{group.policies.filter(item => item.configured === false).length ? `${group.policies.filter(item => item.configured === false).length} 项待配置` : "价格已配置"}</span></div>
-        <PolicyTable name={group.name} policies={group.policies} busy={Boolean(saving)}
-          saving={saving.startsWith(`${group.id}:`) ? saving.slice(group.id.length + 1) : ""}
-          isChanged={policy => JSON.stringify(policy) !== JSON.stringify(original.find(item => item.id === group.id)?.policies.find(item => item.capability === policy.capability))}
-          update={(policy, patch) => update(group, policy, patch)} save={policy => void save(group, policy)} />
-      </section>)}
+    {error && <div className="admin-error" role="alert"><span>{error}</span><button className="secondary" disabled={busy} onClick={() => { setError(""); void reload(); }}>重新加载并放弃修改</button></div>}
+    <AdminLoad loading={loading} error={loadError} retry={reload}>
+      {saved && <>
+        {!saved.shared_pricing_enabled && <div className="billing-pending"><CircleAlert size={18} /><div><strong>共享计费待启用</strong><p>当前消费仍使用旧规则，以下为待启用价格。</p></div></div>}
+        <form className="multiplier-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+          <label htmlFor="workspace-multiplier">消费倍率<span className="policy-input"><input id="workspace-multiplier" aria-describedby="multiplier-note" type="number" required min="0.01" max="100" step="0.01" inputMode="decimal" value={multiplier} disabled={busy} onChange={e => setMultiplier(e.target.value)} /><span>×</span></span></label>
+          <button className="primary" disabled={busy || !dirty || percent === null}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存倍率</button>
+          <span className="billing-muted" id="multiplier-note">模型、OCR 与 Embedding 共用 · 版本 {saved.version}{dirty ? " · 未保存" : ""}</span>
+        </form>
+        <section className="pricing-group"><div className="pricing-group-heading"><h2>文档处理</h2><span>{dirty ? "未保存预览" : "平台基准价 × 工作区倍率"}</span></div>
+          <PolicyTable name="文档处理价格预览" readOnly policies={effective(saved.document_policies, percent)} busy={busy} />
+        </section>
+        {saved.models.map(model => <section className="pricing-group" key={model.binding_id}>
+          <div className="pricing-group-heading"><h2>{model.name}<small className="billing-muted"> · {model.model}</small></h2><span>{model.active ? "当前模型" : "已关联模型"}</span></div>
+          <PolicyTable name={`${model.name}价格预览`} readOnly policies={effective(model.policies, percent)} busy={busy} />
+        </section>)}
+        {!saved.models.length && <p className="billing-empty">尚未关联模型</p>}
+        {!saved.shared_pricing_enabled && <section className="pricing-group">
+          <div className="pricing-group-heading"><h2>切换价差</h2><button type="button" className="secondary" disabled={migration.loading || busy} onClick={() => void migration.reload()}><RefreshCw size={15} />重新预览</button></div>
+          <AdminLoad loading={migration.loading} error={migration.error} retry={migration.reload}>
+            {comparison && <>
+              <p className="billing-muted">{comparison.missing.length ? "共享基准价尚未配置完整，暂不能启用。" : migration.data?.ready ? "全站基准价检查通过，等待确认切换。" : "其他工作区仍有未完成配置。"}
+                {!comparison.single_multiplier_preserves_prices && " 原价格比例不同，无法通过一个倍率完全保持旧价。"}{dirty && " 以下样例按已保存倍率计算。"}</p>
+              <div className="admin-table-wrap pricing-samples"><table className="admin-table"><thead><tr><th>固定用量</th><th>旧规则积分</th><th>共享规则积分</th><th>变化</th></tr></thead><tbody>{comparison.samples.map(row => <tr key={row.label}><td>{row.label}</td><td>{row.old_credits ?? "未配置"}</td><td>{row.new_credits ?? "未配置"}</td><td>{row.difference === null ? "—" : row.difference > 0 ? `+${row.difference}` : row.difference}</td></tr>)}</tbody></table></div>
+              <details className="pricing-comparison"><summary>旧价格明细</summary><PolicyTable name="旧价格明细" readOnly policies={comparison.old_policies} busy={false} /></details>
+            </>}
+          </AdminLoad>
+        </section>}
+      </>}
     </AdminLoad>
   </section>;
 }

@@ -68,11 +68,12 @@ export function ModelProviderPanel() {
         {editing === null && !pricing && <button className="secondary" onClick={() => edit()}><Plus size={16} />添加供应商</button>}
         {pricing && <form className="pricing-editor" onSubmit={e => { e.preventDefault(); void action(async () => {
           await request(`${base}/${pricing.id}/pricing`, json({ version: pricing.version, policies: prices.map(({ capability, unit, unit_size, credits_per_unit, enabled }) => ({ capability, unit, unit_size, credits_per_unit, enabled })) }, "PUT"));
-          setPricing(null); setPrices([]); setOriginalPrices([]); setNotice("默认价格已保存，已有工作区价格不变"); await reload();
+          setPricing(null); setPrices([]); setOriginalPrices([]); setNotice("模型基准价已保存，共享计费下的后续调用将使用新价格"); await reload();
         }); }}>
-          <div className="pricing-group-heading"><h2>{pricing.name} · 默认价格</h2></div>
-          <PolicyTable name="供应商默认价格" policies={prices} busy={busy} update={(p, patch) => setPrices(items => items.map(item => item.capability === p.capability ? { ...item, ...patch } : item))} />
-          <div className="pricing-footer"><span>仅用于首次选用此模型的工作区</span><div className="provider-form-actions"><button className="secondary" type="button" disabled={busy} onClick={() => dirty ? setDiscard(true) : setPricing(null)}>取消</button><button className="primary" disabled={busy || !dirty || !pricesComplete}><Save size={16} />保存默认价格</button></div></div>
+          <div className="pricing-group-heading"><h2>{pricing.name} · 模型基准价</h2><span>{pricing.workspace_count} 个关联工作区</span></div>
+          <p className="pricing-description">共享计费启用后，基准价调整影响关联工作区的后续模型调用，已记录消费保持不变。</p>
+          <PolicyTable name="模型基准价" policies={prices} busy={busy} update={(p, patch) => setPrices(items => items.map(item => item.capability === p.capability ? { ...item, ...patch } : item))} />
+          <div className="pricing-footer"><span>关联工作区按各自倍率结算</span><div className="provider-form-actions"><button className="secondary" type="button" disabled={busy} onClick={() => { if (dirty) setDiscard(true); else { setPricing(null); setPrices([]); setOriginalPrices([]); } }}>取消</button><button className="primary" disabled={busy || !dirty || !pricesComplete}><Save size={16} />保存基准价</button></div></div>
           {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button type="button" className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button type="button" className="danger" onClick={() => { setDiscard(false); setPricing(null); setPrices([]); setOriginalPrices([]); }}>放弃修改</button></div>}
         </form>}
         {editing !== null && <form className="provider-form" onSubmit={event => { event.preventDefault(); void action(save); }}>
@@ -93,9 +94,9 @@ export function ModelProviderPanel() {
           {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button type="button" className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button type="button" className="danger" onClick={() => { setDiscard(false); setEditing(null); setForm(blank); }}>放弃修改</button></div>}
         </form>}
         {providers.map(provider => <section className="provider-section" key={provider.id}>
-          <div className="provider-section-heading"><div><div className="provider-title-row"><strong>{provider.name}</strong><span className="provider-status">{provider.enabled ? "已启用" : "已停用"}{provider.is_default ? " · 新工作区默认" : ""}</span></div><small>{provider.model} · {provider.key}</small><small>{provider.base_url}</small><small>{provider.workspace_count} 个工作区 · {provider.published ? "全站可选" : "仅原工作区"} · {provider.configured ? "默认价格已配置" : "默认价格待配置"}</small></div>
+          <div className="provider-section-heading"><div><div className="provider-title-row"><strong>{provider.name}</strong><span className="provider-status">{provider.enabled ? "已启用" : "已停用"}{provider.is_default ? " · 新工作区默认" : ""}</span></div><small>{provider.model} · {provider.key}</small><small>{provider.base_url}</small><small>{provider.workspace_count} 个工作区 · {provider.published ? "全站可选" : "仅原工作区"} · {provider.configured ? "基准价已配置" : "基准价待配置"}</small></div>
             <div className="provider-form-actions"><button className="icon-button" aria-label={`编辑${provider.name}`} title="编辑供应商" disabled={busy || editing !== null || Boolean(pricing)} onClick={() => edit(provider)}><Pencil size={16} /></button>
-              <button className="secondary" disabled={busy || editing !== null || Boolean(pricing)} onClick={() => editPrices(provider)}>默认价格</button>
+              <button className="secondary" disabled={busy || editing !== null || Boolean(pricing)} onClick={() => editPrices(provider)}>模型基准价</button>
               {!provider.is_default && <button className="secondary" disabled={busy || editing !== null || Boolean(pricing) || !provider.enabled || !provider.published || !provider.configured} onClick={() => void action(async () => { await request(`${base}/${provider.id}/default`, json({ version: provider.version })); setNotice("新工作区默认模型已更新"); await reload(); })}>设为默认</button>}
             </div>
           </div>

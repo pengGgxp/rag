@@ -30,7 +30,7 @@ export default function WorkspaceDetailPage() {
       <AdminHeading title={data?.name || "工作区详情"}>
         {data && <div className="provider-form-actions">
           <Link className="secondary" href="/admin/models">模型供应商</Link>
-          <Link className="secondary" href={`/admin/pricing?workspace=${data.id}`}>计费规则</Link>
+          <Link className="secondary" href={`/admin/pricing?workspace=${data.id}`}>消费倍率</Link>
         </div>}
       </AdminHeading>
       <AdminLoad loading={loading} error={error} retry={reload}>
@@ -48,6 +48,10 @@ export default function WorkspaceDetailPage() {
               <div>
                 <dt>启用的模型供应商</dt>
                 <dd>{data.configuration.enabled_model_providers}</dd>
+              </div>
+              <div>
+                <dt>消费倍率</dt>
+                <dd>{data.billing_multiplier} ×</dd>
               </div>
               <div>
                 <dt>供应商名称</dt>

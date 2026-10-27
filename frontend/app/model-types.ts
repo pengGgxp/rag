@@ -7,6 +7,8 @@ export type Policy = {
   version: number;
   configured?: boolean;
   template_version?: number | null;
+  source?: string;
+  effective_credits_per_unit?: string | null;
 };
 
 export type ModelProvider = {

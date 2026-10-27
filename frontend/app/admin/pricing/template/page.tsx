@@ -11,7 +11,7 @@ import { AdminHeading, AdminLoad, json, useAdminResource } from "../../admin-ui"
 import { useAdminChanges } from "../../admin-changes";
 import "../../../billing.css";
 
-type Template = { version: number; configured: boolean; billing_enabled: boolean; policies: Policy[] };
+type Template = { version: number; configured: boolean; billing_enabled: boolean; shared_pricing_enabled: boolean; policies: Policy[] };
 
 export default function PricingTemplatePage() {
   const workspace = useSearchParams().get("workspace");
@@ -32,27 +32,27 @@ export default function PricingTemplatePage() {
       const updated = await request<Template>("/site/admin/pricing-template", json({
         version: form.version, policies: form.policies.filter(p => p.credits_per_unit !== null).map(policyPayload),
       }, "PUT"));
-      setForm(updated); setOriginal(updated); setNotice("模板已保存，已有供应商和工作区价格不受影响");
+      setForm(updated); setOriginal(updated); setNotice(updated.shared_pricing_enabled ? "平台基准价已保存，后续文档处理使用新价格；已有模型基准价不变" : "价格已保存，共享计费启用后文档基准价生效");
     } catch (e) { setSaveError(e instanceof Error ? e.message : "保存失败，请重试"); }
     finally { setBusy(false); }
   }
-  return <><AdminHeading title="新工作区价格模板"><Link className="secondary" href={`/admin/pricing${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`}><ArrowLeft size={16} />工作区价格</Link></AdminHeading>
-    <section className="pricing-editor" aria-label="默认计费模板">
-    <p className="pricing-description">模型价格用于新供应商，文档处理价格用于新工作区。已有配置不受影响，免费请明确填写 0。</p>
+  return <><AdminHeading title="平台基准价与模型初始价"><Link className="secondary" href={`/admin/pricing${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`}><ArrowLeft size={16} />工作区倍率</Link></AdminHeading>
+    <section className="pricing-editor" aria-label="平台基准价与模型初始价">
+    <p className="pricing-description">OCR 与 Embedding 是全站共享基准价；模型初始价仅用于新建供应商。免费请明确填写 0。</p>
     {notice && <p className="billing-notice" role="status">{notice}</p>}
     {saveError && <div className="admin-error" role="alert"><span>{saveError}</span><button className="secondary" onClick={() => void reload()}>重新加载</button></div>}
     <AdminLoad loading={loading} error={error} retry={reload}>
       {form && <form onSubmit={event => { event.preventDefault(); void save(); }}>
         <div className="pricing-summary">
-          <span className="pricing-status" data-warning={!form.configured}>{form.configured ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}{form.configured ? `模板版本 ${form.version}` : "模板待配置"}</span>
-          <span className="pricing-summary-detail">{form.billing_enabled ? "新结算已启用" : "新结算未启用"}</span>
+          <span className="pricing-status" data-warning={!form.configured}>{form.configured ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}{form.configured ? `版本 ${form.version}` : "部分价格待配置"}</span>
+          <span className="pricing-summary-detail">{form.shared_pricing_enabled ? "共享计费已启用" : "共享计费待启用"}</span>
         </div>
-        {[{ name: "模型初始价格", model: true }, { name: "文档处理", model: false }].map(group => <section className="pricing-group" key={group.name}>
+        {[{ name: "平台文档基准价", model: false }, { name: "新供应商初始模型价", model: true }].map(group => <section className="pricing-group" key={group.name}>
           <div className="pricing-group-heading"><h2>{group.name}</h2></div>
           <PolicyTable name={group.name} requirePrices={false} policies={form.policies.filter(p => p.capability.startsWith("llm_") === group.model)} busy={busy} update={(policy, patch) => setForm(value => value && ({ ...value,
             policies: value.policies.map(item => item.capability === policy.capability ? { ...item, ...patch } : item) }))} />
         </section>)}
-        <div className="pricing-footer"><span>{!complete ? "未填写的能力将保留为待配置" : dirty ? "有未保存的修改" : "当前模板已保存"}</span><button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存模板</button></div>
+        <div className="pricing-footer"><span>{!complete ? "未填写的能力保留为待配置" : dirty ? "有未保存的修改" : "当前价格已保存"}</span><button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存价格</button></div>
       </form>}
     </AdminLoad>
     </section>
