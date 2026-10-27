@@ -68,6 +68,7 @@ def workspace_summary(db: Session, workspace: Workspace):
             "lifetime_spent": account.lifetime_spent if account else 0},
         "configuration": {"enabled_model_providers": len(providers),
             "provider_names": list(providers)},
+        "billing_multiplier": f"{workspace.billing_multiplier_percent // 100}.{workspace.billing_multiplier_percent % 100:02d}",
     }
 
 

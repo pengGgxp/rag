@@ -2,6 +2,9 @@
 
 Issue: #38. Related settlement work: #36.
 
+> Pricing superseded by Issue #39: see `workspace-billing-multipliers.md`.
+> Connections and historical IDs described here remain valid; new code no longer creates workspace price copies.
+
 ## Goal and boundary
 
 Centralize chat model connections in the site console. Workspaces select a published provider and retain independent price copies. Remove runtime chat environment fallback. Preserve historical provider IDs, usage, balances and price snapshots; do not enable request settlement or change commercial prices.

@@ -134,19 +134,4 @@ def list_provider_pricing(identifier: UUID, db=Depends(get_db), access: Manageme
 def update_provider_pricing(identifier: UUID, capability: str, payload: ProviderPricingInput,
                             db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
     scoped_provider(db, access, identifier)
-    if capability != payload.capability:
-        raise HTTPException(422, "能力标识不一致")
-    policy = db.scalar(select(UsagePolicy).where(UsagePolicy.workspace_id == access.workspace_id,
-        UsagePolicy.provider_id == identifier, UsagePolicy.capability == capability))
-    if payload.version != (policy.version if policy else 0):
-        raise HTTPException(409, "价格已更新，请重新加载")
-    if policy is None:
-        policy = UsagePolicy(workspace_id=access.workspace_id, provider_id=identifier, version=0)
-        db.add(policy)
-    for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled"):
-        setattr(policy, key, getattr(payload, key))
-    policy.version += 1
-    policy.updated_by = access.user_id
-    access.audit(db, "workspace.model_pricing_updated", target_id=identifier, fields=payload.model_fields_set)
-    db.commit()
-    return serialize_policy(policy)
+    raise HTTPException(410, "工作区独立价格已停止编辑，请在站点后台维护共享基准价与工作区倍率")

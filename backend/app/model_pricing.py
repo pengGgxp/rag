@@ -68,12 +68,6 @@ def complete(template):
 
 
 def copy_workspace_template(db, workspace_id):
-    row = db.get(ModelBillingSettings, 1)
-    if row:
-        for key in DOCUMENT_CAPABILITIES:
-            if key in row.template:
-                db.add(UsagePolicy(workspace_id=workspace_id, template_version=row.version, **row.template[key]))
-        db.flush()
     from .shared_providers import initialize_default
     initialize_default(db, workspace_id)
 
@@ -94,7 +88,7 @@ def template_read(row):
             "unit_size": 1 if key == "ocr_pages" else 1000, "credits_per_unit": None, "enabled": True}),
             "configured": key in row.template, "version": row.version, "template_version": None})
     return {"version": row.version, "configured": set(row.template) == set(TEMPLATE_CAPABILITIES),
-        "billing_enabled": row.enabled, "policies": policies}
+        "billing_enabled": row.enabled, "shared_pricing_enabled": bool(row.shared_pricing_enabled), "policies": policies}
 
 
 @router.get("")

@@ -1,6 +1,7 @@
 """Server-console-only commands. Never expose bootstrap tokens through public APIs."""
 import secrets
 import sys
+import json
 from datetime import timedelta
 from urllib.parse import quote
 
@@ -13,6 +14,19 @@ from .models import AuthToken, Membership, User, SiteAuthAudit, LEGACY_WORKSPACE
 
 
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "pricing":
+        from .billing_admin import migration_command
+        from fastapi import HTTPException
+        if sys.argv[2] not in ("preview", "pause", "resume", "activate") or len(sys.argv) != (4 if sys.argv[2] == "activate" else 3):
+            raise SystemExit("Usage: pricing preview|pause|resume|activate <reviewed-fingerprint>")
+        with SessionLocal() as db:
+            try:
+                result = migration_command(db, sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
+                db.commit()
+            except (ValueError, HTTPException) as exc:
+                raise SystemExit(getattr(exc, "detail", str(exc))) from exc
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+        return
     if sys.argv[1:] == ["models", "migrate"]:
         from .shared_providers import migrate_connections
         with SessionLocal() as db:

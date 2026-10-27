@@ -1,7 +1,7 @@
 from uuid import UUID, uuid4
 from sqlalchemy import select
 from app import shared_providers, llm_providers
-from app.models import SiteAuditEvent, UsageEvent, LLMProviderConfig
+from app.models import SiteAuditEvent, UsageEvent, LLMProviderConfig, ModelBillingSettings
 from app.credits import authorization_hold, settle_model_usage
 from test_auth import register, share, switch
 from test_site_admin import setup
@@ -23,6 +23,8 @@ def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, 
     admin, owner, _, db, a, b = setup(accounts)
     monkeypatch.setattr(shared_providers, "_encrypt_api_key", lambda value: "enc:" + value)
     p = provider(admin)
+    db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
+    db.commit()
     base = f"/site/admin/workspaces/{b['workspace_id']}"
     result = admin.put(base + "/model", json={"provider_id": p["id"], "version": 0})
     assert result.status_code == 200, result.text
@@ -40,6 +42,8 @@ def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch
     monkeypatch.setattr(shared_providers, "_encrypt_api_key", lambda value: "enc:" + value)
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
     p = provider(admin)
+    db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
+    db.commit()
     base = f"/site/admin/workspaces/{b['workspace_id']}"
     admin.put(base + "/model", json={"provider_id": p["id"], "version": 0})
     binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(b["workspace_id"])))
@@ -52,8 +56,8 @@ def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch
     snapshot = dict(old.policy_snapshot)
     path = base + f"/llm-providers/{binding.id}/pricing/llm_input_tokens"
     payload = {"capability": "llm_input_tokens", "unit": "tokens", "unit_size": 1000, "credits_per_unit": 9, "enabled": True, "version": 1}
-    assert admin.put(path, json=payload).status_code == 200
-    assert admin.put(path, json=payload).status_code == 409
+    assert admin.put(path, json=payload).status_code == 410
+    assert admin.put(path, json=payload).status_code == 410
     db.refresh(old)
     assert old.credits == 4 and old.policy_snapshot == snapshot
     assert llm_providers.active_provider_config(db, binding.workspace_id).api_key == "secret"

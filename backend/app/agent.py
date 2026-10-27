@@ -174,6 +174,8 @@ def stream_retrieval_agent(
             "source": source,
             "provider_id": getattr(provider_status, "provider_id", None),
             "provider_key": getattr(provider_status, "provider_key", None),
+            **({"billing_snapshot_id": meter.last_snapshot_id}
+               if getattr(meter, "last_snapshot_id", None) else {}),
         })
         if not calls and not response.content:
             raise LLMProviderError("Agent 未返回回答或工具调用，请重试")

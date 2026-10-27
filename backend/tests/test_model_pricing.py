@@ -44,18 +44,16 @@ def test_template_rejects_unreliable_prices(accounts, value):
     assert owner.put("/site/admin/pricing-template", json=payload).status_code == 422
 
 
-def test_documents_copy_once_and_do_not_backfill(accounts):
+def test_document_template_is_live_and_never_copies_workspace_policies(accounts):
     owner, db, original = administrator(accounts)
     assert owner.put("/site/admin/pricing-template", json=template(rate=7)).status_code == 200
     (_, other, _), _ = accounts
     workspace = UUID(register(other, "template@example.com")["workspace_id"])
     copied = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
-    assert {p.capability for p in copied} == set(prices.DOCUMENT_CAPABILITIES)
-    assert {p.credits_per_unit for p in copied} == {7}
-    assert {p.template_version for p in copied} == {1}
+    assert copied == []
     owner.put("/site/admin/pricing-template", json=template(version=1, rate=8))
     db.expire_all()
-    assert {p.credits_per_unit for p in copied} == {7}
+    assert db.get(ModelBillingSettings, 1).template["ocr_pages"]["credits_per_unit"] == 8
     listing = owner.get(f"/site/admin/workspaces/{original}/usage-policies").json()
     assert len(listing) == 2 and all(p["credits_per_unit"] is None for p in listing)
     assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == original)).all() == []
@@ -66,7 +64,7 @@ def test_template_and_signup_rollback_together(accounts):
     owner.put("/site/admin/pricing-template", json=template())
     from app.auth import create_user
     user, workspace = create_user(db, "rollback@example.com", "Rollback")
-    assert len(db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()) == 2
+    assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all() == []
     db.rollback()
     assert db.get(Workspace, workspace) is None and db.get(User, user.id) is None
     assert not db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()

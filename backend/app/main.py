@@ -1011,6 +1011,8 @@ def answer_knowledge_base(
         model_billing.start_request(db, access.workspace_id, access.user_id, reservation_id,
             UUID(provider_config.provider_id), hold)
     else:
+        from .workspace_billing import operation_snapshot
+        admission = operation_snapshot(db, access.workspace_id, reservation_id, "model")
         authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
     db.commit()
     def finalize_model(outcome):
@@ -1018,6 +1020,8 @@ def answer_knowledge_base(
             model_billing.finalize_request(db, reservation_id, outcome)
         else:
             release_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
+            from .workspace_billing import finish_operation
+            finish_operation(db, access.workspace_id, reservation_id)
         db.commit()
     try:
         if metered:
@@ -1025,7 +1029,12 @@ def answer_knowledge_base(
             meter = model_billing.ModelMeter(sessionmaker(bind=db.get_bind()), reservation_id)
             answer = meter.invoke(provider, lambda: provider.complete(messages), messages)
         else:
-            answer = provider.complete(messages)
+            from .workspace_billing import LegacyPriceMeter
+            from sqlalchemy.orm import sessionmaker
+            legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.workspace_id, reservation_id
+                ) if admission.context["source_mode"] == "shared" else None
+            answer = legacy_meter.invoke(provider, lambda: provider.complete(messages), messages
+                ) if legacy_meter else provider.complete(messages)
     except LLMConfigurationError as exc:
         finalize_model("failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -1055,7 +1064,11 @@ def answer_knowledge_base(
     if metered:
         finalize_model("completed")
     else:
+        if legacy_meter:
+            usage_event["billing_snapshot_id"] = legacy_meter.last_snapshot_id
         settle_model_usage(db, access.workspace_id, access.user_id, reservation_id, [usage_event], hold)
+        from .workspace_billing import finish_operation
+        finish_operation(db, access.workspace_id, reservation_id)
         db.commit()
 
     db.expire_all()
@@ -1088,4 +1101,6 @@ app.include_router(site_llm_providers_router)
 from .shared_providers import router as shared_providers_router, selection_router
 app.include_router(shared_providers_router)
 app.include_router(selection_router)
+from .billing_admin import router as workspace_billing_router
+app.include_router(workspace_billing_router)
 

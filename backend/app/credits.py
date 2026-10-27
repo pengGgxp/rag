@@ -55,11 +55,8 @@ def ensure_policies(
 
 
 def require_policy(db, workspace_id, capability):
-    row = db.scalar(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace_id,
-        UsagePolicy.provider_id.is_(None), UsagePolicy.capability == capability))
-    if row is None or not row.enabled:
-        raise HTTPException(503, "服务暂不可用，请联系站点管理员完善计费配置")
-    return row
+    from .workspace_billing import resolve_prices
+    return resolve_prices(db, workspace_id, (capability,))[capability]
 
 
 def ensure_account(db: Session, workspace_id: UUID, *, initial: int = INITIAL_CREDITS) -> CreditAccount:
@@ -224,6 +221,7 @@ def settle_usage(
     event_key: str | None = None,
     provider_id: UUID | None = None,
     provider_key: str | None = None,
+    pricing_context: dict | None = None,
 ) -> UsageEvent:
     """Record one measured event and reconcile it against the internal hold."""
     if units < 0:
@@ -234,11 +232,14 @@ def settle_usage(
     ))
     if existing is not None:
         return existing
-    policies = ensure_policies(db, workspace_id, provider_id)
-    policy = next((item for item in policies if item.capability == capability), None)
-    if policy is None or not policy.enabled:
-        raise HTTPException(503, "服务暂不可用，请联系站点管理员完善计费配置")
-    credits = ceil(units / policy.unit_size) * policy.credits_per_unit if units else 0
+    from fractions import Fraction
+    from .workspace_billing import operation_snapshot, multiplier, finish_operation
+    if pricing_context is None:
+        pricing_context = operation_snapshot(db, workspace_id, request_id, event_key or capability,
+            capabilities=(capability,), provider_id=provider_id).context
+    price = pricing_context["prices"][capability]
+    base = ((units + price["unit_size"] - 1) // price["unit_size"]) * price["credits_per_unit"] if units else 0
+    credits = ceil(Fraction(base) * multiplier(pricing_context))
     account = ensure_account(db, workspace_id)
     if credits:
         _entry(
@@ -251,11 +252,11 @@ def settle_usage(
         workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
         provider_id=provider_id, provider_key=provider_key,
         capability=capability, units=units, credits=credits,
-        policy_version=policy.version,
+        policy_version=price["version"],
         policy_snapshot={
-            "capability": policy.capability, "unit": policy.unit,
-            "unit_size": policy.unit_size, "credits_per_unit": policy.credits_per_unit,
-            "enabled": policy.enabled,
+            **price, **{key: pricing_context[key] for key in (
+                "source_mode", "multiplier_percent", "multiplier_version")},
+            "formula_version": "legacy_event_multiplier_v1",
             "provider_id": str(provider_id) if provider_id else None,
             "provider_key": provider_key,
         },
@@ -263,6 +264,7 @@ def settle_usage(
         metadata_json=metadata or {},
     )
     db.add(event)
+    finish_operation(db, workspace_id, request_id, event_key or capability)
     db.flush()
     return event
 
@@ -277,6 +279,8 @@ def settle_model_usage(
     provider_id: UUID | None = None,
     provider_key: str | None = None,
 ) -> int:
+    if any(usage.get("billing_snapshot_id") for usage in usage_events):
+        return settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold)
     total = 0
     event_provider_id = provider_id
     event_provider_key = provider_key
@@ -303,6 +307,52 @@ def settle_model_usage(
             )
             total += event.credits
     reconcile_hold(db, workspace_id, actor_user_id, request_id, total, hold)
+    return total
+
+
+def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold):
+    from fractions import Fraction
+    from .models import BillingSnapshot
+    from .workspace_billing import allocate, multiplier, finish_operation
+    account = ensure_account(db, workspace_id)
+    charge_key = f"usage:{request_id}:legacy-model:charge"
+    existing = db.scalar(select(CreditLedgerEntry).where(CreditLedgerEntry.idempotency_key == charge_key))
+    events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id,
+        UsageEvent.workspace_id == workspace_id)).all()
+    if existing or events:
+        return sum(row.credits for row in events)
+    parts = []
+    for index, usage in enumerate(usage_events):
+        snapshot = db.get(BillingSnapshot, UUID(usage["billing_snapshot_id"]))
+        if snapshot is None or snapshot.workspace_id != workspace_id or snapshot.request_id != request_id:
+            raise ValueError("billing snapshot scope mismatch")
+        for capability, field in (("llm_input_tokens", "prompt_tokens"), ("llm_output_tokens", "completion_tokens")):
+            units = usage.get(field)
+            if type(units) is not int or units < 0:
+                continue
+            price = snapshot.context["prices"][capability]
+            base = ((units + price["unit_size"] - 1) // price["unit_size"]) * price["credits_per_unit"]
+            parts.append((index, capability, units, price, snapshot, Fraction(base) * multiplier(snapshot.context)))
+    total, allocations = allocate([part[-1] for part in parts])
+    # Return the reservation atomically before testing the full request debit.
+    release_hold(db, workspace_id, actor_user_id, request_id, hold)
+    if total:
+        _entry(db, account, actor_user_id=actor_user_id, amount=-total, kind="usage_settlement",
+            idempotency_key=charge_key, metadata={"request_id": str(request_id), "capability": "model_tokens"})
+    for (index, capability, units, price, snapshot, exact), credits in zip(parts, allocations):
+        usage = usage_events[index]
+        db.add(UsageEvent(workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
+            provider_id=UUID(usage["provider_id"]) if usage.get("provider_id") else None,
+            provider_key=usage.get("provider_key"), capability=capability, units=units, credits=credits,
+            policy_version=price["version"], policy_snapshot={**price, **{
+                key: snapshot.context[key] for key in ("source_mode", "multiplier_percent", "multiplier_version")},
+                "formula_version": "legacy_model_multiplier_v1"},
+            idempotency_key=f"usage:{request_id}:model:{index}:{capability}",
+            metadata_json={"round": index, "source": usage.get("source"), "snapshot_id": str(snapshot.id),
+                "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
+        snapshot.status = "complete"
+    finish_operation(db, workspace_id, request_id)
+    db.flush()
     return total
 
 
@@ -401,38 +451,7 @@ def build_router(get_db):
     @router.put("/policies/{capability}")
     def update_policy(capability: str, payload: UsagePolicyUpdate,
                       db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
-        if capability != payload.capability:
-            raise HTTPException(422, "能力标识不一致")
-        from .model_pricing import DOCUMENT_CAPABILITIES
-        if capability not in DOCUMENT_CAPABILITIES or payload.unit != ("pages" if capability == "ocr_pages" else "tokens"):
-            raise HTTPException(422, "请通过模型价格接口配置模型规则")
-        policies = ensure_policies(db, access.workspace_id)
-        policy = next((item for item in policies if item.capability == capability), None)
-        if payload.version != (policy.version if policy else 0):
-            raise HTTPException(409, "价格已更新，请重新加载")
-        if policy is None:
-            policy = UsagePolicy(
-                workspace_id=access.workspace_id,
-                capability=capability,
-                unit=payload.unit,
-                unit_size=payload.unit_size,
-                credits_per_unit=payload.credits_per_unit,
-                enabled=payload.enabled,
-                updated_by=access.user_id,
-            )
-            db.add(policy)
-            db.flush()
-        else:
-            policy.version += 1
-            policy.updated_by = access.user_id
-            policy.unit = payload.unit
-            policy.unit_size = payload.unit_size
-            policy.credits_per_unit = payload.credits_per_unit
-            policy.enabled = payload.enabled
-        access.audit(db, "workspace.usage_policy_updated", fields=payload.model_fields_set)
-        db.commit()
-        from .model_pricing import serialize_policy
-        return serialize_policy(policy)
+        raise HTTPException(410, "工作区独立价格已停止编辑，请在站点后台维护共享基准价与工作区倍率")
 
     @router.post("/credits")
     def add_credits(access: Access = Depends(get_access)):

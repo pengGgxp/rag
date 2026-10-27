@@ -1,4 +1,4 @@
-"""Site connections and workspace selections, with independent price copies."""
+"""Site connections and workspace selections, with shared base prices."""
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -125,12 +125,13 @@ def update_global(identifier: UUID, payload: SiteProviderInput, db=Depends(get_d
 
 @router.put("/{identifier}/pricing")
 def update_prices(identifier: UUID, payload: PriceUpdate, db=Depends(get_db), actor=Depends(provider_writer)):
+    settings_locked(db)
     row = lock_provider(db, identifier, payload.version)
     prices = {p.capability: p.model_dump() for p in payload.policies}
     if len(prices) != len(payload.policies) or not complete(prices):
         raise HTTPException(422, "请完整填写三项模型价格，免费请明确填写 0")
     row.prices, row.version = prices, row.version + 1
-    record(db, actor, "models.default_prices_updated", "model_provider", row.id, details={"fields": list(prices)})
+    record(db, actor, "models.base_prices_updated", "model_provider", row.id, details={"fields": list(prices)})
     db.commit()
     return read_provider(db, row)
 
@@ -160,6 +161,8 @@ def delete_global(identifier: UUID, payload: VersionInput, db=Depends(get_db), a
 
 
 def choices(db, workspace_id):
+    from .workspace_billing import shared_enabled
+    shared = shared_enabled(db)
     workspace = db.get(Workspace, workspace_id)
     bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id)).all()
     ids = [row.site_provider_id for row in bindings if row.site_provider_id]
@@ -171,7 +174,7 @@ def choices(db, workspace_id):
             UsagePolicy.capability.in_(CAPABILITIES)))} for binding in bindings}
     return {"version": workspace.model_version, "provider_id": str(active.site_provider_id) if active and active.site_provider_id else None,
         "providers": [{"id": str(row.id), "name": row.name, "model": row.model,
-            "available": row.enabled and complete(binding_prices.get(row.id, row.prices)),
+            "available": row.enabled and complete(row.prices if shared else binding_prices.get(row.id, {})),
             "enabled": row.enabled} for row in rows]}
 
 
@@ -181,9 +184,13 @@ def select_model(db, workspace_id, identifier):
     row = lock_provider(db, identifier)
     binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id,
         LLMProviderConfig.site_provider_id == identifier))
+    from .workspace_billing import shared_enabled
+    shared = shared_enabled(db)
     if not row.published and binding is None:
         raise HTTPException(404, "模型不存在或不可用")
-    if not row.enabled or (binding is None and not complete(row.prices)):
+    if not shared and binding is None:
+        raise HTTPException(409, "请先由站点管理员确认并启用共享基准价，再选用新模型")
+    if not row.enabled or ((binding is None or shared) and not complete(row.prices)):
         raise HTTPException(409, "模型暂不可用，请联系站点管理员")
     if binding is None:
         binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=row.id,
@@ -191,10 +198,9 @@ def select_model(db, workspace_id, identifier):
             encrypted_api_key="", enabled=True, active=False, source_price_version=row.version)
         db.add(binding)
         db.flush()
-        for price in row.prices.values():
-            db.add(UsagePolicy(workspace_id=workspace_id, provider_id=binding.id, **price))
+        # Before activation, new associations are staged until live pricing is enabled.
         db.flush()
-    else:
+    elif not shared:
         from .model_billing import price_snapshot
         price_snapshot(db, workspace_id, binding.id)
     db.execute(update(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id).values(active=False))
@@ -240,7 +246,8 @@ def admin_select_model(payload: SelectionInput, db=Depends(get_db), access: Mana
 def initialize_default(db, workspace_id):
     settings = db.get(ModelBillingSettings, 1)
     row = db.get(SiteModelProvider, settings.default_provider_id) if settings and settings.default_provider_id else None
-    if row and row.published and row.enabled and complete(row.prices):
+    from .workspace_billing import shared_enabled
+    if shared_enabled(db) and row and row.published and row.enabled and complete(row.prices):
         select_model(db, workspace_id, row.id)
 
 

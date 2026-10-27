@@ -21,6 +21,7 @@ def setup_site(accounts, monkeypatch):
     (owner, _, _), db = accounts
     session = register(owner)
     db.get(User, UUID(session["user"]["id"])).is_site_admin = True
+    db.add(ModelBillingSettings(id=1, shared_pricing_enabled=True, enabled=False, template={}, version=0))
     db.commit()
     monkeypatch.setattr(shared, "_encrypt_api_key", lambda value: f"enc:{value}")
     monkeypatch.setattr(shared, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
@@ -51,7 +52,7 @@ def choose(client, identifier):
     return result.json()
 
 
-def test_shared_once_copy_and_switchback(accounts, monkeypatch):
+def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
     p = provider(owner)
     q = provider(owner, "two", 8)
@@ -68,7 +69,9 @@ def test_shared_once_copy_and_switchback(accounts, monkeypatch):
     choose(owner, p["id"])
     assert len(db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(session["workspace_id"]))).all()) == 2
     for a in associations:
-        assert {r.credits_per_unit for r in db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == a.id))} == {4}
+        assert db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == a.id)).all() == []
+    from app.model_billing import price_snapshot
+    assert price_snapshot(db, associations[0].workspace_id, associations[0].id)["llm_input_tokens"]["credits_per_unit"] == 20
     config = llm_providers.active_provider_config(db, UUID(other_session["workspace_id"]))
     assert config.model == "model-one" and config.api_key == "secret"
     assert config.site_provider_id == p["id"]
@@ -107,13 +110,13 @@ def test_template_documents_drafts_default_and_no_backfill(accounts, monkeypatch
     registered = register(other, "new@example.com")
     workspace = UUID(registered["workspace_id"])
     policies = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
-    assert len(policies) == 5
+    assert len(policies) == 0
     assert other.get("/settings/models").json()["provider_id"] == p["id"]
     assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == UUID(first["workspace_id"]))).all() == []
     draft = owner.put("/site/admin/pricing-template", json={"version": 1, "policies": []})
     assert draft.status_code == 200 and not draft.json()["configured"]
     assert db.get(ModelBillingSettings, 1).enabled is False
-    assert len(db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()) == 5
+    assert len(db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()) == 0
 
 
 def test_migration_idempotent_preserves_ids_and_partial_prices(accounts, monkeypatch):

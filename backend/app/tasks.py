@@ -22,8 +22,9 @@ from .models import (
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
 from .credits import (
-    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold, require_policy,
+    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold,
 )
+from .workspace_billing import document_snapshot
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
@@ -49,7 +50,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
             return parse_batched_pdf(session, job, document, pages, ranges, settings)
     provider = AliyunDocMind(settings)
     workspace_id = document.knowledge_base.workspace_id
-    require_policy(session, workspace_id, "ocr_pages")
+    pricing_context = document_snapshot(session, workspace_id, job.id, "ocr_pages", "ocr")
     ocr_hold = False
     hold_amount = authorization_hold_amount()
 
@@ -100,6 +101,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     event = settle_usage(
         session, workspace_id, None, job.id, "ocr_pages", page_count,
         event_key="ocr", metadata={"document_id": str(document.id), "provider": PARSER_NAME},
+        pricing_context=pricing_context,
     )
     reconcile_hold(
         session, workspace_id, None, job.id, event.credits, hold_amount,
@@ -118,7 +120,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
 
     provider = AliyunDocMind(settings)
     workspace_id = document.knowledge_base.workspace_id
-    require_policy(session, workspace_id, "ocr_pages")
+    pricing_context = document_snapshot(session, workspace_id, job.id, "ocr_pages", "ocr")
     metadata = copy.deepcopy(document.parsing_metadata or {
         "provider": PARSER_NAME, "status": "processing", "page_count": len(pages),
         "parts": [{"start": start, "end": end, "status": "pending"} for start, end in ranges],
@@ -178,6 +180,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
         event = settle_usage(
             session, workspace_id, None, job.id, "ocr_pages", len(pages), event_key="ocr",
             metadata={"document_id": str(document.id), "provider": PARSER_NAME},
+            pricing_context=pricing_context,
         )
         reconcile_hold(session, workspace_id, None, job.id, event.credits, hold_amount)
         document.parsed_text = parsed.text
@@ -367,7 +370,7 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
         provider = OpenAICompatibleEmbeddingProvider()
         workspace_id = document.knowledge_base.workspace_id
         metering_id = UUID(str(job.id if job is not None else document.id))
-        require_policy(session, workspace_id, "embedding_tokens")
+        pricing_context = document_snapshot(session, workspace_id, metering_id, "embedding_tokens", "embedding")
         hold_amount = authorization_hold_amount()
         authorization_hold(session, workspace_id, None, metering_id, hold_amount)
         session.commit()
@@ -383,6 +386,7 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
             session, workspace_id, None, metering_id, "embedding_tokens",
             sum(max(chunk.token_count, 0) for chunk in pending),
             event_key="embedding", metadata={"document_id": str(document.id)},
+            pricing_context=pricing_context,
         )
         reconcile_hold(
             session, workspace_id, None, metering_id, event.credits, hold_amount,

@@ -26,9 +26,13 @@ class User(Base):
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    __table_args__ = (CheckConstraint("billing_multiplier_percent BETWEEN 1 AND 10000",
+                                     name="ck_workspace_billing_multiplier"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(100))
     model_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    billing_multiplier_percent: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    billing_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -162,6 +166,21 @@ class ModelBillingSettings(Base):
     version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     default_provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True)
     connections_migrated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    shared_pricing_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    pricing_paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class BillingSnapshot(Base):
+    __tablename__ = "billing_snapshots"
+    __table_args__ = (UniqueConstraint("workspace_id", "request_id", "event_key",
+                                      name="uq_billing_snapshot_operation"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    event_key: Mapped[str] = mapped_column(String(100))
+    context: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ModelUsageRequest(Base):
@@ -174,6 +193,7 @@ class ModelUsageRequest(Base):
     hold: Mapped[int] = mapped_column(Integer, default=0)
     credits: Mapped[int] = mapped_column(Integer, default=0)
     formula_version: Mapped[str] = mapped_column(String(32), default="model_request_v2")
+    billing_context: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

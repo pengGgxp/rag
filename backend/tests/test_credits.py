@@ -108,7 +108,6 @@ def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts
         "credits_per_unit": 4,
         "enabled": True,
     })
-    assert updated.status_code == 200
-    assert updated.json()["version"] == 1
+    assert updated.status_code == 410
     usage = owner.get("/usage").json()
     assert "credits_per_unit" not in usage

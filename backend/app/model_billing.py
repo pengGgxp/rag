@@ -1,7 +1,6 @@
 """Durable per-call measurement with one exact request-level settlement."""
 from datetime import datetime, timezone
 from fractions import Fraction
-from math import ceil
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -9,8 +8,8 @@ from sqlalchemy import func, select
 
 from .credits import CreditError, _entry, authorization_hold, ensure_account, release_hold
 from .llm import measured_usage
-from .models import (ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent,
-                     UsagePolicy)
+from .models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent
+from .workspace_billing import context_for_workspace, resolve_prices, multiplier, allocate, finish_operation
 
 CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")
 USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "completion_tokens")
@@ -21,16 +20,8 @@ def enabled(db):
     return bool(row and row.enabled)
 
 
-def price_snapshot(db, workspace_id, provider_id=None):
-    rows = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace_id,
-        UsagePolicy.provider_id == provider_id, UsagePolicy.capability.in_(CAPABILITIES))).all()
-    by_capability = {row.capability: row for row in rows}
-    if len(by_capability) != len(CAPABILITIES) or any(not row.enabled for row in rows):
-        raise HTTPException(503, "模型服务暂不可用，请联系站点管理员完善计费配置")
-    return {key: {"unit": by_capability[key].unit,
-        "unit_size": by_capability[key].unit_size,
-        "credits_per_unit": by_capability[key].credits_per_unit,
-        "version": by_capability[key].version} for key in CAPABILITIES}
+def price_snapshot(db, workspace_id, provider_id=None, *, context=None):
+    return resolve_prices(db, workspace_id, CAPABILITIES, provider_id, context=context)
 
 
 def pending_credits(db, workspace_id):
@@ -51,7 +42,8 @@ def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold
     existing = db.get(ModelUsageRequest, request_id, populate_existing=True)
     if existing:
         raise HTTPException(409, "模型请求已存在，请勿重复提交")
-    price_snapshot(db, workspace_id, provider_id)
+    context = context_for_workspace(db, workspace_id)
+    price_snapshot(db, workspace_id, provider_id, context=context)
     debts = db.scalars(select(ModelUsageRequest).where(
         ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
     ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()
@@ -61,7 +53,8 @@ def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold
         _pay(db, account, row)
     authorization_hold(db, workspace_id, actor_user_id, request_id, hold)
     db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
-        actor_user_id=actor_user_id, hold=hold))
+        actor_user_id=actor_user_id, hold=hold, billing_context=context,
+        formula_version="model_request_multiplier_v3" if context["source_mode"] == "shared" else "model_request_v2"))
     db.flush()
 
 
@@ -80,7 +73,8 @@ def begin_call(db, request_id, provider):
         raise HTTPException(409, "模型请求已经结束")
     status = provider.status
     provider_id = UUID(status.provider_id) if status.provider_id else None
-    prices = price_snapshot(db, row.workspace_id, provider_id)
+    prices = price_snapshot(db, row.workspace_id, provider_id,
+        context=row.billing_context or {"source_mode": "legacy", "multiplier_percent": 100})
     round_number = db.scalar(select(func.count()).select_from(ModelCallUsage).where(
         ModelCallUsage.request_id == request_id))
     call = ModelCallUsage(id=uuid4(), request_id=request_id, round=round_number,
@@ -119,27 +113,24 @@ def finalize_request(db, request_id, outcome):
             if type(units) is not int or units < 0:
                 continue
             price = call.prices[capability]
-            exact = Fraction(units * price["credits_per_unit"], price["unit_size"])
+            exact = Fraction(units * price["credits_per_unit"], price["unit_size"]) * multiplier(row.billing_context)
             parts.append((call, capability, units, exact, order))
-    total = ceil(sum((item[3] for item in parts), Fraction()))
-    allocations = [item[3].numerator // item[3].denominator for item in parts]
-    remaining = total - sum(allocations)
-    ranked = sorted(range(len(parts)), key=lambda i: (
-        -(parts[i][3]-allocations[i]), parts[i][0].round, parts[i][4]))
-    for index in ranked[:remaining]:
-        allocations[index] += 1
+    total, allocations = allocate([item[3] for item in parts])
     for (call, capability, units, exact, _), credits in zip(parts, allocations):
         price = call.prices[capability]
         db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id,
             request_id=request_id, provider_id=call.provider_id, provider_key=call.provider_key,
             capability=capability, units=units, credits=credits, policy_version=price["version"],
             policy_snapshot={**price, "capability": capability, "formula_version": row.formula_version,
-                "model": call.model, "provider_id": str(call.provider_id) if call.provider_id else None},
+                "model": call.model, "provider_id": str(call.provider_id) if call.provider_id else None,
+                **{key: row.billing_context.get(key, default) for key, default in (
+                    ("source_mode", "legacy"), ("multiplier_percent", 100), ("multiplier_version", 0))}},
             idempotency_key=f"usage:{request_id}:model:{call.round}:{capability}",
             metadata_json={"call_id": str(call.id), "round": call.round,
                 "source": call.usage.get("source"), "cache_status": call.usage.get("cache_status"),
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
     row.credits, row.outcome = total, outcome
+    finish_operation(db, row.workspace_id, request_id)
     row.finalized_at = datetime.now(timezone.utc)
     release_hold(db, row.workspace_id, row.actor_user_id, request_id, row.hold)
     if account.balance >= total:

@@ -110,6 +110,15 @@ def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Con
 
 def recover_interrupted_conversations(db: Session):
     model_billing.recover_requests(db)
+    from .models import BillingSnapshot, CreditLedgerEntry
+    from .workspace_billing import finish_operation
+    for snapshot in db.scalars(select(BillingSnapshot).where(
+            BillingSnapshot.event_key == "model", BillingSnapshot.status == "running")):
+        hold = db.scalar(select(CreditLedgerEntry).where(
+            CreditLedgerEntry.idempotency_key == f"usage:{snapshot.request_id}:hold"))
+        if hold:
+            release_hold(db, snapshot.workspace_id, hold.actor_user_id, snapshot.request_id, -hold.amount)
+        snapshot.status = "interrupted"
     db.execute(update(ChatMessage).where(ChatMessage.status == "streaming").values(
         status="interrupted", error_detail="服务重启，回答已中断，可以重试",
     ))
@@ -308,6 +317,8 @@ def chat_router(get_db, retrieve):
                 model_billing.start_request(db, access.workspace_id, access.user_id,
                     payload.request_id, UUID(provider_config.provider_id), hold_amount)
             else:
+                from .workspace_billing import operation_snapshot
+                operation_snapshot(db, access.workspace_id, payload.request_id, "model")
                 authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
         except CreditError:
             db.rollback()
@@ -369,7 +380,13 @@ def chat_router(get_db, retrieve):
         usage_settled = False
         with factory() as metering_db:
             metered = metering_db.get(ModelUsageRequest, request_id) is not None
-        meter = model_billing.ModelMeter(factory, request_id) if metered else None
+            from .workspace_billing import LegacyPriceMeter
+            from .models import BillingSnapshot
+            root = metering_db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == access.workspace_id,
+                BillingSnapshot.request_id == request_id, BillingSnapshot.event_key == "model"))
+            shared = bool(root and root.context["source_mode"] == "shared")
+        meter = (model_billing.ModelMeter(factory, request_id) if metered else
+                 LegacyPriceMeter(factory, access.workspace_id, request_id) if shared else None)
 
         def save(status="streaming"):
             with factory() as db:
@@ -470,7 +487,7 @@ def chat_router(get_db, retrieve):
             if agent_run is None:
                 raise LLMProviderError("Agent 未完成回答，请重试")
             citations, traces = agent_run.citations, agent_run.traces
-            if not meter:
+            if not metered:
                 with factory() as usage_db:
                     settle_model_usage(
                         usage_db, access.workspace_id, access.user_id, request_id,
@@ -478,6 +495,10 @@ def chat_router(get_db, retrieve):
                     )
                     usage_db.commit()
                 usage_settled = True
+                with factory() as usage_db:
+                    from .workspace_billing import finish_operation
+                    finish_operation(usage_db, access.workspace_id, request_id)
+                    usage_db.commit()
             _, active = await run_in_threadpool(save)
             if not active:
                 return
@@ -511,13 +532,13 @@ def chat_router(get_db, retrieve):
         finally:
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
-                if meter:
+                if metered:
                     with factory() as usage_db:
                         model_billing.finalize_request(usage_db, request_id, final_status)
                         usage_db.commit()
                     usage_settled = True
                 saved, _ = await run_in_threadpool(save, final_status)
-                if not meter and (final_status != "completed" or not usage_settled):
+                if not metered and (final_status != "completed" or not usage_settled):
                     with factory() as credit_db:
                         try:
                             release_hold(
@@ -527,6 +548,8 @@ def chat_router(get_db, retrieve):
                                 request_id,
                                 hold_amount,
                             )
+                            from .workspace_billing import finish_operation
+                            finish_operation(credit_db, access.workspace_id, request_id)
                             credit_db.commit()
                         except Exception:
                             credit_db.rollback()
