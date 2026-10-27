@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Loader2, Save } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleAlert, Loader2, Save } from "lucide-react";
 import { request } from "../../../api";
 import { policyPayload, type Policy } from "../../../model-types";
 import { PolicyTable } from "../../../policy-table";
@@ -22,7 +22,9 @@ export default function PricingTemplatePage() {
   const [saveError, setSaveError] = useState("");
   const [notice, setNotice] = useState("");
   useEffect(() => { if (data) { setForm(data); setOriginal(data); } }, [data]);
-  useAdminChanges(JSON.stringify(form) !== JSON.stringify(original), busy);
+  const dirty = JSON.stringify(form) !== JSON.stringify(original);
+  const complete = Boolean(form?.policies.every(policy => policy.credits_per_unit !== null && Number.isInteger(policy.credits_per_unit) && policy.credits_per_unit >= 0 && Number.isInteger(policy.unit_size) && policy.unit_size > 0));
+  useAdminChanges(dirty, busy);
   async function save() {
     if (!form) return;
     setBusy(true); setSaveError(""); setNotice("");
@@ -35,16 +37,21 @@ export default function PricingTemplatePage() {
     finally { setBusy(false); }
   }
   return <><AdminHeading title="新工作区价格模板"><Link className="secondary" href={`/admin/pricing${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ""}`}><ArrowLeft size={16} />工作区价格</Link></AdminHeading>
-    <p className="billing-muted">新工作区创建时复制完整模板，后续独立管理。已有工作区与历史账单不受影响，免费请明确填写 0。</p>
+    <section className="pricing-editor" aria-label="模型价格模板">
+    <p className="pricing-description">新工作区使用此模板的初始价格，已有工作区不受影响。免费请明确填写 0。</p>
     {notice && <p className="billing-notice" role="status">{notice}</p>}
     {saveError && <div className="admin-error" role="alert"><span>{saveError}</span><button className="secondary" onClick={() => void reload()}>重新加载</button></div>}
     <AdminLoad loading={loading} error={error} retry={reload}>
       {form && <form onSubmit={event => { event.preventDefault(); void save(); }}>
-        <div className="admin-target-toolbar"><span>{form.configured ? `模板版本 ${form.version}` : "模板待配置"}</span><span>{form.billing_enabled ? "请求合计结算已启用" : "请求合计结算未启用"}</span></div>
+        <div className="pricing-summary">
+          <span className="pricing-status" data-warning={!form.configured}>{form.configured ? <CheckCircle2 size={16} /> : <CircleAlert size={16} />}{form.configured ? `模板版本 ${form.version}` : "模板待配置"}</span>
+          <span className="pricing-summary-detail">{form.billing_enabled ? "新结算已启用" : "新结算未启用"}</span>
+        </div>
         <PolicyTable name="新工作区价格模板" policies={form.policies} busy={busy} update={(policy, patch) => setForm(value => value && ({ ...value,
           policies: value.policies.map(item => item.capability === policy.capability ? { ...item, ...patch } : item) }))} />
-        <div className="admin-target-toolbar"><button className="primary" disabled={busy}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存完整模板</button></div>
+        <div className="pricing-footer"><span>{!complete ? "请补齐三项价格后保存" : dirty ? "有未保存的修改" : "当前模板已保存"}</span><button className="primary" disabled={busy || !dirty || !complete}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存模板</button></div>
       </form>}
     </AdminLoad>
+    </section>
   </>;
 }

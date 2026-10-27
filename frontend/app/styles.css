@@ -36,6 +36,15 @@
   --settings-sidebar-width: 232px;
   --settings-window-shadow: 0 24px 80px #17203326;
   --settings-content-padding: 32px;
+  --form-control-height: 40px;
+  --form-touch-height: 44px;
+  --form-font-size: 13px;
+  --form-label-size: 12px;
+  --form-radius: 6px;
+  --form-gap: 16px;
+  --form-section-gap: 24px;
+  --warning-soft: #fffbeb;
+  --warning-foreground: #92400e;
 }
 * {
   box-sizing: border-box;

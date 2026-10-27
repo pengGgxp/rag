@@ -39,6 +39,12 @@ docker compose exec -T api python -m app.manage model-billing enable
 
 ## 验证记录（2026-10-27）
 
+### UI 复查与修正范围
+
+复查发现原价格表输入仅 11px、模板状态缺少层级、手机按钮不足 44px，且 521–760px 的表头与表单行采用不同布局。此轮仅修正 Issue #36 前端：复用 PolicyTable、Tooltip 和现有按钮入口，统一表单 Token、固定单位后缀、窄容器标签、缺失及待结算状态和保存区；收紧现有手机后台导航。保留所有 API、价格、计费和权限行为。验收覆盖 1440px、700px、390px、保存/刷新/冲突错误、键盘和 reduced motion，线上只做只读检查；仅部署 Web。
+
+本地生产构建和 `git diff --check` 通过；隔离 API fixture 下的 Playwright 已验证三种宽度、控件尺寸、零价保存/刷新、409 保留输入、未保存导航、单行保存 Tooltip、Tab/Enter 以及待结算警告。额外复查手机直接刷新、视口变化后当前导航可见，截图逐张检查无字段遮挡。截图和验收脚本保留在未跟踪的 `output/playwright/issue36-ui-*`；模拟保存没有修改线上价格。
+
 - 后端相关回归已覆盖缓存零/部分/全部命中、非法/冲突字段、估算、流式尾包、真实 ASGI 断线、多轮 Skill/MCP 上下文、失败/停止/重放、恢复、精确费用和价格快照。
 - 本机独立 PostgreSQL 测试库迁移至 0023；并发结算只有一笔扣款、待结算支付不超支、模板乐观版本与注册事务回滚、原工作区价格版本并发均验证通过。
 - 本地 Playwright 使用隔离 API fixture 验证 1440px/390px 模板和工作区价格、显式零价保存/刷新、未保存导航提示、键盘保存、待结算提示及 reduced motion；截图保存于未跟踪的 `output/playwright/issue36-*.png`。模拟数据仅用于界面验收，不代表真实缓存命中或生产价格配置。

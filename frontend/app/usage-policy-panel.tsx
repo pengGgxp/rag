@@ -50,15 +50,16 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
     } catch (e) { setError(e instanceof Error ? e.message : "保存规则失败"); }
     finally { setSaving(""); }
   }
-  return <section aria-label="工作区计费规则">
-    <p className="billing-muted">规则仅用于当前工作区，历史账单保持原有价格快照。</p>
+  return <section className="pricing-editor" aria-label="工作区计费规则">
+    <p className="pricing-description">规则仅用于当前工作区，修改只影响后续消费。免费请明确填写 0。</p>
     {notice && <p className="billing-notice" role="status">{notice}</p>}
     {error && <p className="form-error" role="alert">{error}</p>}
     <AdminLoad loading={loading || Boolean(providers && pricesLoading)} error={loadError || priceLoadError} retry={() => { if (loadError) void reload(); else setRetry(value => value + 1); }}>
-      {groups.map(group => <section className="admin-section" key={group.id}>
-        <h2>{group.name}</h2>
+      {groups.map(group => <section className="pricing-group" key={group.id}>
+        <div className="pricing-group-heading"><h2>{group.name}</h2><span>{group.policies.filter(item => item.configured === false).length ? `${group.policies.filter(item => item.configured === false).length} 项待配置` : "价格已配置"}</span></div>
         <PolicyTable name={group.name} policies={group.policies} busy={Boolean(saving)}
           saving={saving.startsWith(`${group.id}:`) ? saving.slice(group.id.length + 1) : ""}
+          isChanged={policy => JSON.stringify(policy) !== JSON.stringify(original.find(item => item.id === group.id)?.policies.find(item => item.capability === policy.capability))}
           update={(policy, patch) => update(group, policy, patch)} save={policy => void save(group, policy)} />
       </section>)}
     </AdminLoad>

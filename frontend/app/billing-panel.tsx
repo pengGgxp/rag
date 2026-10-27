@@ -183,7 +183,7 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
         </button>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
-      {Boolean(usage?.pending_credits) && <p className="form-error" role="status">有 {count(usage!.pending_credits!)} 积分待结算，请充值补足。下次使用模型前将先结清。</p>}
+      {Boolean(usage?.pending_credits) && <div className="billing-pending" role="status"><Info size={18} aria-hidden="true" /><div><strong>{count(usage!.pending_credits!)} 积分待结算</strong><p>请充值补足，下次使用模型前将优先结清。</p></div></div>}
       {notice && <p className="billing-notice" role="status"><Info size={16} />{notice}</p>}
       {loading && !catalog ? (
         <div className="settings-skeleton" role="status" aria-label="加载中"><span /><span /><span /></div>

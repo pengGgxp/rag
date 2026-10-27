@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   UsersRound,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useAuth } from "../auth";
 import { AdminChangesBoundary } from "./admin-changes";
 
@@ -32,6 +32,24 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const pathname = usePathname();
   const workspaceId = useSearchParams().get("workspace");
+  const navigationRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = navigationRef.current;
+    if (!nav) return;
+    const revealCurrent = () => {
+      const current = nav.querySelector<HTMLElement>('[aria-current="page"]');
+      if (!current || nav.scrollWidth <= nav.clientWidth) return;
+      const linkBounds = current.getBoundingClientRect();
+      const navBounds = nav.getBoundingClientRect();
+      if (linkBounds.left < navBounds.left || linkBounds.right > navBounds.right) {
+        nav.scrollLeft += linkBounds.left - navBounds.left - 16;
+      }
+    };
+    revealCurrent();
+    const observer = new ResizeObserver(revealCurrent);
+    observer.observe(nav);
+    return () => observer.disconnect();
+  }, [pathname]);
   if (!session.user.is_site_admin)
     return (
       <main className="site-auth-denied">
@@ -53,7 +71,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
           <strong>知库</strong>
           <span>站点管理</span>
         </Link>
-        <nav aria-label="后台导航">
+        <nav ref={navigationRef} aria-label="后台导航">
           {navigation.map(({ href, label, icon: Icon }) => {
             const active =
               href === "/admin" ? pathname === href : pathname.startsWith(href);
