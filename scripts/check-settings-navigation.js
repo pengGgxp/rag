@@ -29,6 +29,7 @@ async (page) => {
     await page.waitForURL(url => url.pathname === `/settings${section ? `/${section}` : ''}`);
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('.modal-fullscreen > div')?.style.opacity === '1');
+    await page.waitForFunction(() => document.querySelectorAll('.modal-fullscreen').length === 1);
     check(await page.locator('.modal-fullscreen').count() === 1, `Duplicate settings layer at ${section}`);
   };
   const open = async () => {
@@ -84,6 +85,8 @@ async (page) => {
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
     await page.reload();
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
+    await page.waitForLoadState('networkidle');
+    check(await page.locator('.modal-fullscreen').count() === 1, `Direct settings duplicated at ${section}`);
     await setting('billing', '积分与充值');
     await setting('audit', '审计日志');
     await page.getByRole('button', { name: '关闭', exact: true }).click();
