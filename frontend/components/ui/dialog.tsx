@@ -14,6 +14,7 @@ export function Dialog({
   wide = false,
   fullScreen = false,
   sidePanel = false,
+  settingsWindow = false,
   restoreFocusSelector,
 }: {
   title: string;
@@ -23,6 +24,7 @@ export function Dialog({
   wide?: boolean;
   fullScreen?: boolean;
   sidePanel?: boolean;
+  settingsWindow?: boolean;
   restoreFocusSelector?: string;
 }) {
   const closeButton = (
@@ -43,7 +45,7 @@ export function Dialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="modal-overlay" />
         <DialogPrimitive.Content
-          className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""} ${sidePanel ? "modal-side-panel" : ""}`}
+          className={`modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""} ${sidePanel ? "modal-side-panel" : ""} ${settingsWindow ? "modal-settings" : ""}`}
           onCloseAutoFocus={(event) => {
             if (!restoreFocusSelector) return;
             event.preventDefault();
@@ -65,7 +67,7 @@ export function Dialog({
             animate={fullScreen ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
           >
-            <div className="modal-heading">
+            <div className={settingsWindow ? "settings-dialog-heading" : "modal-heading"}>
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
               {fullScreen || sidePanel ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>}
             </div>

@@ -54,6 +54,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             return (
               <Link
                 key={href}
+                className="navigation-item"
                 href={href}
                 aria-current={active ? "page" : undefined}
               >

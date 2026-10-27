@@ -1,7 +1,7 @@
 "use client";
 
-import StandaloneSettings from "../../../../settings/standalone-settings";
+import SettingsPage from "../../../../settings/settings-page";
 
 export default function InterceptedSettingsRoute() {
-  return <StandaloneSettings intercepted />;
+  return <SettingsPage />;
 }

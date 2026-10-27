@@ -1,5 +1,5 @@
-import StandaloneSettings from "../standalone-settings";
+import SettingsPage from "../settings-page";
 
 export default function SettingsRoute() {
-  return <StandaloneSettings />;
+  return <SettingsPage />;
 }

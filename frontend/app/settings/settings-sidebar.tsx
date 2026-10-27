@@ -1,116 +1,31 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import {
-  CreditCard,
-  LayoutDashboard,
-  Layers3,
-  ScrollText,
-  SlidersHorizontal,
-  UserRound,
-  UsersRound,
-} from "lucide-react";
-import type { Role, Session } from "../auth";
+import { Building2, CreditCard, ScrollText, ShieldCheck, UserRound, UsersRound } from "lucide-react";
+import type { Role } from "../auth";
+import { visibleSections, type SettingsSection } from "./settings-routes";
 
-export type SettingsSection =
-  | "account"
-  | "workspace"
-  | "billing"
-  | "policies"
-  | "members"
-  | "audit";
+const icons = { account: UserRound, security: ShieldCheck, workspace: Building2,
+  members: UsersRound, billing: CreditCard, audit: ScrollText };
 
-const settingsPath = (section: SettingsSection, returnTo: string) =>
-  `${section === "account" ? "/settings" : `/settings/${section}`}?returnTo=${encodeURIComponent(returnTo)}`;
-
-export function SettingsSidebar({
-  session,
-  role,
-  activeSection,
-}: {
-  session: Session;
-  role?: Role;
-  activeSection: SettingsSection;
+export function SettingsSidebar({ workspaceName, role, activeSection, hrefFor, navigate }: {
+  workspaceName: string; role?: Role; activeSection?: SettingsSection;
+  hrefFor: (path: string) => string; navigate: (path: string) => void;
 }) {
-  const searchParams = useSearchParams();
-  const requestedReturnTo = searchParams.get("returnTo");
-  const returnTo = requestedReturnTo?.startsWith("/") &&
-    !requestedReturnTo.startsWith("//") && !requestedReturnTo.includes("\\") &&
-    !requestedReturnTo.startsWith("/settings")
-    ? requestedReturnTo
-    : "/";
-  return (
-    <aside className="settings-global-sidebar" aria-label="产品导航">
-      <Link className="settings-brand" href="/">
-        <span className="brand-mark">
-          <Layers3 size={21} />
-        </span>
-        <span>知库</span>
-      </Link>
-      <nav className="settings-global-nav">
-        <div className="settings-nav-group">
-          <span className="settings-nav-group-label">工作区</span>
-          <Link
-            replace
-            scroll={false}
-            href={settingsPath("workspace", returnTo)}
-            data-active={activeSection === "workspace"}
-          >
-            <LayoutDashboard size={17} />
-            工作区概览
-          </Link>
-          <Link
-            replace
-            scroll={false}
-            href={settingsPath("billing", returnTo)}
-            data-active={activeSection === "billing"}
-          >
-            <CreditCard size={17} />
-            积分与充值
-          </Link>
-          {role === "admin" && (
-            <>
-              <Link replace scroll={false} href={settingsPath("policies", returnTo)} data-active={activeSection === "policies"}>
-                <SlidersHorizontal size={17} />计费规则
-              </Link>
-              <Link replace scroll={false} href={settingsPath("members", returnTo)} data-active={activeSection === "members"}>
-                <UsersRound size={17} />工作区成员
-              </Link>
-              <Link replace scroll={false} href={settingsPath("audit", returnTo)} data-active={activeSection === "audit"}>
-                <ScrollText size={17} />审计日志
-              </Link>
-            </>
-          )}
-        </div>
-        <div className="settings-nav-group settings-nav-group-management">
-          <span className="settings-nav-group-label">账号</span>
-          <Link
-            replace
-            scroll={false}
-            href={settingsPath("account", returnTo)}
-            data-active={activeSection === "account"}
-          >
-            <UserRound size={17} />
-            我的账号
-          </Link>
-        </div>
-      </nav>
-      <div className="settings-global-footer">
-        <div className="settings-user-summary">
-          <span className="account-avatar">
-            <UserRound size={16} />
-          </span>
-          <span>
-            <strong>{session.user.name}</strong>
-            <small>
-              {session.workspaces.find(
-                (item) => item.id === session.workspace_id,
-              )?.name ?? "当前工作区"}
-            </small>
-          </span>
-        </div>
-      </div>
-    </aside>
-  );
+  return <aside className="settings-sidebar" aria-label="设置导航">
+    {(["personal", "workspace"] as const).map(group => <nav key={group}
+      className="settings-nav-group" aria-label={group === "personal" ? "个人" : "工作区"}>
+      <p className="settings-nav-label" title={group === "personal" ? "个人" : workspaceName}>
+        {group === "personal" ? "个人" : workspaceName}
+      </p>
+      {visibleSections(role).filter(section => section.group === group).map(section => {
+        const Icon = icons[section.key];
+        return <Link key={section.key} href={hrefFor(section.path)} replace scroll={false}
+          className="navigation-item" aria-current={activeSection === section.key ? "page" : undefined}
+          onClick={event => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+            event.preventDefault(); navigate(section.path);
+          } }}><Icon size={18} />{section.title}</Link>;
+      })}
+    </nav>)}
+  </aside>;
 }

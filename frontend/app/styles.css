@@ -28,6 +28,14 @@
   --workspace-header-height: 60px;
   --workspace-content-padding: 32px;
   --workspace-title-size: 18px;
+  --navigation-item-height: 40px;
+  --navigation-item-gap: 10px;
+  --navigation-item-radius: 6px;
+  --settings-window-width: 1120px;
+  --settings-window-height: min(760px, 88dvh);
+  --settings-sidebar-width: 232px;
+  --settings-window-shadow: 0 24px 80px #17203326;
+  --settings-content-padding: 32px;
 }
 * {
   box-sizing: border-box;
@@ -1033,34 +1041,7 @@ tbody tr:hover {
   padding: 0 24px;
   background: var(--surface);
 }
-.modal-fullscreen .settings-shell {
-  min-height: 0;
-  height: calc(100% - 60px);
-  overflow: auto;
-}
-.account-page-layer,
-.account-page-layer .account-settings {
-  min-height: 0;
-  height: 100%;
-}
-.modal-fullscreen .account-page-layer {
-  overflow: auto;
-}
 .modal.modal-side-panel { inset: 0 auto 0 0; width: var(--workspace-drawer-width); height: 100dvh; max-width: 100vw; max-height: none; transform: none; border-radius: 0; padding: 0; overflow: hidden; }
-.workspace-settings-overview {
-  display: grid;
-  gap: 20px;
-  max-width: 700px;
-}
-.workspace-settings-links {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
-}
-.workspace-settings-links button {
-  justify-content: space-between;
-  min-height: 48px;
-}
 .modal-heading {
   display: flex;
   align-items: center;
@@ -1331,6 +1312,21 @@ thead {
   font-size: 11px;
   color: #738179;
 }
+.navigation-item {
+  display: flex;
+  align-items: center;
+  gap: var(--navigation-item-gap);
+  min-height: var(--navigation-item-height);
+  padding: 9px 12px;
+  border-radius: var(--navigation-item-radius);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  text-decoration: none;
+}
+.navigation-item:hover { background: var(--surface-muted); color: var(--ink); }
+.navigation-item[aria-current="page"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.navigation-item svg { width: 18px; height: 18px; }
 .primary-navigation {
   display: flex;
   flex-direction: column;
@@ -1338,7 +1334,6 @@ thead {
   margin: 28px 0 22px;
   flex-shrink: 0;
 }
-.primary-navigation > a,
 .management-navigation > button,
 .knowledge-navigation > button:not(.back-link) {
   width: 100%;
@@ -1349,12 +1344,10 @@ thead {
   color: #586174;
   font-size: 13px;
 }
-.primary-navigation > a:hover,
 .management-navigation > button:hover,
 .knowledge-navigation > button:hover {
   background: #eceff4;
 }
-.primary-navigation > a.selected,
 .management-navigation > button.selected,
 .knowledge-navigation > button.selected {
   background: #e9effc;
@@ -1406,7 +1399,6 @@ thead {
   font-size: 11px;
   font-weight: 400;
 }
-.primary-navigation > a { display: flex; align-items: center; gap: 7px; text-decoration: none; }
 .catalog {
   padding: 24px var(--workspace-content-padding);
 }

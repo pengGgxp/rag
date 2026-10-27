@@ -183,7 +183,7 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
       {error && <p className="form-error" role="alert">{error}</p>}
       {notice && <p className="billing-notice" role="status"><Info size={16} />{notice}</p>}
       {loading && !catalog ? (
-        <div className="billing-empty"><Loader2 size={18} className="spin" />正在加载</div>
+        <div className="settings-skeleton" role="status" aria-label="加载中"><span /><span /><span /></div>
       ) : catalog?.enabled ? (
         <form className="recharge-form" onSubmit={(event) => { event.preventDefault(); void checkout(); }}>
           <fieldset className="recharge-options" disabled={busy}>

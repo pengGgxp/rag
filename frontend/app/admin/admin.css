@@ -37,24 +37,6 @@
   display: grid;
   gap: 6px;
 }
-.admin-sidebar nav a {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--muted);
-  padding: 11px 12px;
-  border-radius: 6px;
-  white-space: nowrap;
-}
-.admin-sidebar nav a:hover {
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.admin-sidebar nav a[aria-current] {
-  background: var(--brand-soft);
-  color: var(--brand);
-  font-weight: 600;
-}
 .admin-sidebar footer {
   margin-top: auto;
   display: grid;

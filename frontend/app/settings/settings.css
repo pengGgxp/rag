@@ -1,0 +1,55 @@
+.modal.modal-settings {
+  width: min(var(--settings-window-width), calc(100vw - 48px));
+  height: var(--settings-window-height);
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  box-shadow: var(--settings-window-shadow);
+  background: var(--surface);
+}
+.modal-settings > div { height: 100%; }
+.settings-dialog-heading > h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.settings-dialog-heading > button { position: absolute; top: 8px; right: 12px; z-index: 2; width: 44px; height: 44px; }
+.settings-window-layout { display: grid; grid-template-columns: var(--settings-sidebar-width) minmax(0, 1fr); height: 100%; }
+.settings-sidebar { padding: 28px 16px; background: var(--background); border-right: 1px solid var(--line); overflow-y: auto; }
+.settings-nav-group { display: grid; gap: 4px; margin-bottom: 28px; }
+.settings-nav-label { margin: 0 12px 8px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.settings-header { display: flex; align-items: center; gap: 16px; flex: 0 0 60px; min-width: 0; padding: 0 64px 0 var(--settings-content-padding); border-bottom: 1px solid var(--line); }
+.settings-header h1 { margin: 0; font-size: 18px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.settings-mobile-select { display: none; }
+.settings-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 28px var(--settings-content-padding) 40px; }
+.settings-content { width: 100%; max-width: 800px; margin: 0 auto; }
+.settings-content .account-identity { margin: 0 0 28px; padding: 0; }
+.settings-details { display: grid; margin: 0; }
+.settings-details > div { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 16px; padding: 20px 0; border-bottom: 1px solid var(--line); }
+.settings-details dt { color: var(--muted); }
+.settings-details dd { margin: 0; overflow-wrap: anywhere; }
+.settings-section { padding: 0 0 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
+.settings-section h2, .settings-content h3 { font-size: 14px; font-weight: 600; margin: 0 0 16px; }
+.settings-content .account-oauth { gap: 16px; padding: 10px 0; }
+.settings-content .account-oauth strong { font-weight: 500; overflow-wrap: anywhere; }
+.settings-content .account-oauth p, .settings-muted { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.settings-content .account-password { padding: 0; border: 0; max-width: 440px; margin: 0 0 24px; }
+.settings-discard { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px var(--settings-content-padding); background: var(--surface-muted); border-bottom: 1px solid var(--line); }
+.settings-discard span { flex: 1 1 200px; }
+.settings-empty { color: var(--muted); padding: 24px 0; }
+.settings-skeleton { display: grid; gap: 20px; padding: 12px 0; }
+.settings-skeleton span { display: block; height: 44px; border-radius: 6px; background: var(--surface-muted); }
+.settings-skeleton span:nth-child(2) { width: 80%; }
+.settings-skeleton span:nth-child(3) { width: 60%; }
+@media (max-width: 700px) {
+  .modal.modal-settings { inset: 0; width: 100vw; height: 100dvh; max-width: none; transform: none; border-radius: 0; border: 0; }
+  .settings-window-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-sidebar { display: none; }
+  .settings-header { flex: 0 0 auto; min-height: 104px; align-items: flex-start; flex-direction: column; gap: 0; padding: 16px 64px 8px 16px; }
+  .settings-mobile-select { display: block; width: 100%; min-height: 44px; font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; margin-top: 8px; padding: 0 10px; }
+  .settings-body { padding: 24px 16px 32px; }
+  .settings-details > div { grid-template-columns: 90px minmax(0, 1fr); }
+  .settings-discard { padding: 12px 16px; }
+  .settings-content .account-oauth { align-items: flex-start; flex-wrap: wrap; }
+  .settings-content .account-oauth button { min-height: 44px; }
+  .settings-content input, .settings-content select { min-height: 44px; }
+}

@@ -25,7 +25,7 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
     <nav className="primary-navigation" aria-label="产品导航">
       {destinations.map(({ mode: itemMode, href, label, icon: Icon }) => (
         <Link key={itemMode} href={href} scroll={false} onClick={onNavigate}
-          className={mode === itemMode ? "selected" : undefined}
+          className="navigation-item"
           aria-current={mode === itemMode ? "page" : undefined}>
           <Icon size={18} />{label}
         </Link>

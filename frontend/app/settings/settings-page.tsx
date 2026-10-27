@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
-  ArrowRight,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -20,14 +19,9 @@ import {
   Session,
   useAuth,
 } from "../auth";
-import { BillingPanel, creditKind, type CreditUsage } from "../billing-panel";
-import { UsagePolicyPanel } from "../usage-policy-panel";
-import {
-  SettingsSidebar,
-  type SettingsSection,
-} from "./settings-sidebar";
-
-type AccountTab = SettingsSection;
+import { BillingPanel } from "../billing-panel";
+import { sectionFromPath } from "./settings-routes";
+import { useSettingsForm } from "./standalone-settings";
 type Member = { id: string; name: string; email: string; role: Role };
 type AuditLog = {
   id: string;
@@ -51,14 +45,6 @@ const ROLE_LABELS: Record<Role, string> = {
   editor: "编辑者",
   viewer: "只读成员",
 };
-const ACCOUNT_TABS: AccountTab[] = [
-  "account",
-  "workspace",
-  "billing",
-  "policies",
-  "members",
-  "audit",
-];
 const json = (body: unknown, method = "POST") => ({
   method,
   headers: { "Content-Type": "application/json" },
@@ -66,24 +52,13 @@ const json = (body: unknown, method = "POST") => ({
 });
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "请求失败，请稍后重试";
-export function settingsPath(tab: AccountTab) {
-  return tab === "account" ? "/settings" : `/settings/${tab}`;
-}
-function settingsTabFromPath(pathname: string): AccountTab {
-  const segment = pathname.split("/").filter(Boolean)[1];
-  return ACCOUNT_TABS.includes(segment as AccountTab)
-    ? (segment as AccountTab)
-    : "account";
-}
-
-export default function SettingsPage({ standalone = true }: { standalone?: boolean }) {
+export default function SettingsPage() {
   const { session, options, refreshSession } = useAuth();
   return (
     <AccountPage
       session={session}
       options={options}
       onSession={refreshSession}
-      standalone={standalone}
     />
   );
 }
@@ -92,20 +67,18 @@ function AccountPage({
   session,
   options,
   onSession,
-  standalone,
 }: {
   session: Session;
   options: AuthOptions;
   onSession: (session: Session) => void;
-  standalone: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
+  const { setDirty, setBusy: setFrameBusy } = useSettingsForm();
   const role = session.workspaces.find(
     (item) => item.id === session.workspace_id,
   )?.role;
-  const [tab, setTab] = useState<AccountTab>(() => settingsTabFromPath(pathname));
+  const tab = sectionFromPath(pathname)?.key;
   const [members, setMembers] = useState<Member[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogPage>({
     items: [],
@@ -124,20 +97,18 @@ function AccountPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [usage, setUsage] = useState<CreditUsage | null>(null);
-
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => { setDirty(Boolean(password || currentPassword || email)); }, [password, currentPassword, email, setDirty]);
+  useEffect(() => { setFrameBusy(busy); }, [busy, setFrameBusy]);
+  useEffect(() => () => { setDirty(false); setFrameBusy(false); }, [setDirty, setFrameBusy]);
   useEffect(() => {
-    setTab(settingsTabFromPath(pathname));
+    setError(""); setNotice(""); setPassword(""); setCurrentPassword(""); setEmail("");
   }, [pathname]);
-
-  function navigateTab(next: AccountTab) {
-    const returnTo = searchParams.get("returnTo");
-    const validReturnTo = returnTo && returnTo.startsWith("/") &&
-      !returnTo.startsWith("//") && !returnTo.includes("\\") &&
-      !returnTo.startsWith("/settings");
-    const query = validReturnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : "";
-    router.replace(`${settingsPath(next)}${query}`, { scroll: false });
-  }
+  useEffect(() => {
+    if (pathname === "/settings/policies" && session.user.is_site_admin)
+      router.replace(`/admin/pricing?workspace=${session.workspace_id}`);
+  }, [pathname, session.user.is_site_admin, session.workspace_id, router]);
 
   const load = useCallback(
     async () => setMembers(await request<Member[]>("/auth/members")),
@@ -145,9 +116,14 @@ function AccountPage({
   );
 
   useEffect(() => {
-    if (tab === "members" && role === "admin")
-      load().catch((e) => setError(errorMessage(e)));
-  }, [tab, role, load]);
+    if (tab !== "members" || role !== "admin") return;
+    let active = true;
+    setMembersLoading(true);
+    setError("");
+    load().catch(e => { if (active) setError(errorMessage(e)); })
+      .finally(() => { if (active) setMembersLoading(false); });
+    return () => { active = false; };
+  }, [tab, role, load, retry]);
 
   const loadAuditLogs = useCallback(async () => {
     setAuditLoading(true);
@@ -182,14 +158,6 @@ function AccountPage({
     if (tab === "audit" && role === "admin") void loadAuditLogs();
   }, [tab, role, loadAuditLogs]);
 
-  const loadUsage = useCallback(async () => {
-    setUsage(await request<CreditUsage>("/usage"));
-  }, []);
-
-  useEffect(() => {
-    if (tab === "workspace") void loadUsage().catch((e) => setError(errorMessage(e)));
-  }, [tab, loadUsage]);
-
   async function action(run: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -209,49 +177,15 @@ function AccountPage({
     onSession(await request<Session>("/auth/me"));
   }
 
-  const tabMeta = {
-    account: {
-      title: "我的账号",
-      description: "管理个人资料、登录方式和账号安全。",
-    },
-    workspace: {
-      title: "工作区概览",
-      description: "查看当前工作区，并进入积分、成员和管理设置。",
-    },
-    billing: {
-      title: "积分与充值",
-      description: "查看工作区余额、充值记录和使用明细。",
-    },
-    policies: {
-      title: "计费规则",
-      description: "为不同模型和能力配置工作区积分消耗规则。",
-    },
-    members: {
-      title: "工作区成员",
-      description: "管理成员访问权限和工作区角色。",
-    },
-    audit: {
-      title: "审计日志",
-      description: "查看工作区内关键账号、内容和权限操作记录。",
-    },
-  } as const;
-
+  if (!tab) return <div className="settings-empty" role="status">
+    {pathname === "/settings/policies"
+      ? session.user.is_site_admin ? "正在打开站点管理…" : "计费规则由站点管理员管理，你无权访问。"
+      : "找不到此设置页面，请从导航中选择。"}
+  </div>;
+  if ((tab === "members" || tab === "audit") && role !== "admin")
+    return <p className="form-error" role="alert">此页面仅对工作区管理员开放。</p>;
   return (
-    <div className="settings-shell">
-      <SettingsSidebar session={session} role={role} activeSection={tab} />
-      <div className={`account-page ${standalone ? "" : "account-page-layer"}`}>
-        <div className="account-settings">
-          <header className="account-page-header">
-            <div className="account-page-heading">
-              <p>{tab === "account" ? "账号" : "工作区"}</p>
-              <h1>{tabMeta[tab].title}</h1>
-            </div>
-          </header>
-          <section className="account-page-content">
-            <div className="account-content-heading">
-              <h2>{tabMeta[tab].title}</h2>
-              <p>{tabMeta[tab].description}</p>
-            </div>
+          <section className="settings-content" key={tab}>
             {error && (
               <p className="form-error" role="alert">
                 {error}
@@ -271,16 +205,37 @@ function AccountPage({
                     <p>{session.user.email}</p>
                   </div>
                 </div>
-                <div className="account-oauth"><span>邮箱验证</span>{session.user.email_verified ? <span className="auth-success">已验证</span> : <button className="secondary" onClick={() => router.push("/auth/verify-email?returnTo=%2Fsettings")}><ShieldCheck size={15} />验证邮箱</button>}</div>
-                {(options.wechat || session.user.wechat_linked) && <div className="account-oauth"><span>微信</span><button className="secondary" disabled={busy} onClick={() => void action(async () => {
+                <dl className="settings-details">
+                  <div><dt>姓名</dt><dd>{session.user.name}</dd></div>
+                  <div><dt>邮箱</dt><dd>{session.user.email}</dd></div>
+                </dl>
+              </>
+            ) : tab === "security" ? (
+              <>
+                <section className="settings-section">
+                  <h2>邮箱</h2>
+                  <div className="account-oauth"><div><strong>{session.user.email}</strong><p>{session.user.email_verified ? "已验证，可用于登录" : "尚未验证"}</p></div>{!session.user.email_verified && <button className="secondary" onClick={() => router.push("/auth/verify-email?returnTo=%2Fsettings%2Fsecurity")}><ShieldCheck size={15} />验证邮箱</button>}</div>
+                </section>
+                <section className="settings-section">
+                  <h2>关联登录</h2>
+                {(options.wechat || session.user.wechat_linked) && <div className="account-oauth"><div><strong>微信</strong><p>{session.user.wechat_linked ? "已绑定" : "未绑定"}</p></div><button className="secondary" disabled={busy} onClick={() => void action(async () => {
                   if (session.user.wechat_linked) {
                     const result = await request<{ message: string }>("/auth/wechat/unlink", json({}));
                     setNotice(result.message); onSession(await request<Session>("/auth/me"));
                   } else {
-                    const result = await request<{ url: string }>("/auth/wechat/start", json({ link: true, return_to: "/settings" }));
+                    const result = await request<{ url: string }>("/auth/wechat/start", json({ link: true, return_to: "/settings/security" }));
                     window.location.assign(result.url);
                   }
                 })}><ShieldCheck size={15} />{session.user.wechat_linked ? "解除微信绑定" : "绑定微信"}</button></div>}
+                {!options.wechat && !session.user.wechat_linked && !options.oauth_name && <p className="settings-muted">暂无其他登录方式</p>}
+                {options.oauth_name && <div className="account-oauth">
+                  <div><strong>{options.oauth_name}</strong><p>{session.user.oauth_linked ? "已关联" : "未关联"}</p></div>
+                  {!session.user.oauth_linked && <button className="secondary" disabled={busy} onClick={() => void action(async () => {
+                    const result = await request<{ url: string }>("/auth/oauth/start", json({ link: true }));
+                    window.location.assign(result.url);
+                  })}><ShieldCheck size={15} />关联账号</button>}
+                </div>}
+                </section>
                 <form
                   className="account-password auth-form"
                   onSubmit={(event) => {
@@ -337,82 +292,12 @@ function AccountPage({
                     保存密码
                   </button>
                 </form>
-                {options.oauth_name && (
-                  <div className="account-oauth">
-                    <span>{options.oauth_name}</span>
-                    {session.user.oauth_linked ? (
-                      <span className="auth-success">已关联</span>
-                    ) : (
-                      <button
-                        className="secondary"
-                        disabled={busy}
-                        onClick={() =>
-                          void action(async () => {
-                            const result = await request<{ url: string }>(
-                              "/auth/oauth/start",
-                              json({ link: true }),
-                            );
-                            window.location.assign(result.url);
-                          })
-                        }
-                      >
-                        <ShieldCheck size={15} />
-                        关联账号
-                      </button>
-                    )}
-                  </div>
-                )}
               </>
             ) : tab === "workspace" ? (
-              <div className="workspace-settings-overview">
-                <label className="account-field">
-                  当前工作区
-                  <select
-                    value={session.workspace_id}
-                    disabled={busy}
-                    onChange={(event) => void action(async () => onSession(await request<Session>("/auth/workspace", json({ workspace_id: event.target.value }))))}
-                  >
-                    {session.workspaces.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} · {ROLE_LABELS[item.role]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {usage && (
-                  <section className="credit-usage" aria-label="积分用量">
-                    <div className="credit-usage-heading">
-                      <div>
-                        <span className="credit-label">可用积分</span>
-                        <strong>{usage.balance.toLocaleString("zh-CN")}</strong>
-                      </div>
-                      <small>已使用 {usage.lifetime_spent.toLocaleString("zh-CN")} · 累计获得 {usage.lifetime_granted.toLocaleString("zh-CN")}</small>
-                    </div>
-                    {usage.entries.length > 0 && (
-                      <div className="credit-entry-list" aria-label="最近积分流水">
-                        {usage.entries.slice(0, 5).map((entry) => (
-                          <div className="credit-entry" key={entry.id}>
-                            <span>{creditKind(entry.kind)}</span>
-                            <strong className={entry.amount < 0 ? "negative" : ""}>
-                              {entry.amount > 0 ? "+" : ""}{entry.amount}
-                            </strong>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <button className="text-button credit-billing-link" onClick={() => navigateTab("billing")}>
-                      积分与充值 <ArrowRight size={14} />
-                    </button>
-                  </section>
-                )}
-                <div className="workspace-settings-links">
-                  {(["billing", ...(role === "admin" ? ["policies", "members", "audit"] : [])] as AccountTab[]).map((section) => (
-                    <button className="secondary" key={section} onClick={() => navigateTab(section)}>
-                      {tabMeta[section].title}<ArrowRight size={14} />
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <dl className="settings-details">
+                <div><dt>工作区名称</dt><dd>{session.workspaces.find(item => item.id === session.workspace_id)?.name}</dd></div>
+                <div><dt>我的角色</dt><dd>{role ? ROLE_LABELS[role] : "—"}</dd></div>
+              </dl>
             ) : tab === "billing" ? (
               <BillingPanel
                 workspaceName={
@@ -422,8 +307,6 @@ function AccountPage({
                 }
                 onBusyChange={setBusy}
               />
-            ) : tab === "policies" ? (
-              <UsagePolicyPanel onBusyChange={setBusy} />
             ) : tab === "members" ? (
               <>
                 <form
@@ -470,7 +353,7 @@ function AccountPage({
                     <Plus size={17} />
                   </button>
                 </form>
-                <div className="member-list">
+                {membersLoading ? <SettingsSkeleton /> : error ? <button className="secondary" onClick={() => setRetry(value => value + 1)}>重试加载成员</button> : <div className="member-list">
                   {members.map((item) => (
                     <div className="member-row" key={item.id}>
                       <div>
@@ -518,7 +401,7 @@ function AccountPage({
                       </button>
                     </div>
                   ))}
-                </div>
+                </div>}
               </>
             ) : (
               <AuditLogPanel
@@ -539,10 +422,13 @@ function AccountPage({
               />
             )}
           </section>
-        </div>
-      </div>
-    </div>
   );
+}
+
+export function SettingsSkeleton() {
+  return <div className="settings-skeleton" role="status" aria-label="加载中">
+    <span /><span /><span />
+  </div>;
 }
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -657,7 +543,7 @@ function AuditLogPanel({
         </button>
       </div>
       {loading && logs.items.length === 0 ? (
-        <div className="audit-empty">正在加载审计日志…</div>
+        <SettingsSkeleton />
       ) : logs.items.length === 0 ? (
         <div className="audit-empty">暂无匹配的审计记录</div>
       ) : (
