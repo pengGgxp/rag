@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Dialog } from "../../components/ui/dialog";
 import SettingsPage from "./settings-page";
+import { useSettingsFromWorkspace } from "./settings-navigation";
 
 function safeReturnTo(value: string | null) {
   if (!value || !value.startsWith("/") || value.startsWith("//") ||
@@ -13,13 +14,14 @@ function safeReturnTo(value: string | null) {
 export default function StandaloneSettings({ intercepted = false }: { intercepted?: boolean }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const fromWorkspace = useSettingsFromWorkspace();
   return (
     <Dialog
       title="设置"
       fullScreen
-      restoreFocusSelector={intercepted ? '[data-account-trigger=\"true\"]' : undefined}
+      restoreFocusSelector={intercepted && fromWorkspace ? '[data-account-trigger=\"true\"]' : undefined}
       onClose={() => {
-        if (intercepted) router.back();
+        if (intercepted && fromWorkspace) router.back();
         else router.replace(safeReturnTo(searchParams.get("returnTo")));
       }}
     >

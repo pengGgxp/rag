@@ -4,7 +4,7 @@ import { AuthBoundary, AuthBootstrapScreen } from "./auth";
 import { TooltipProvider } from "../components/ui/tooltip";
 import { MotionProvider } from "../components/ui/motion-provider";
 import { Suspense, type ReactNode } from "react";
-import { SettingsSlot } from "./settings-slot";
+import { SettingsNavigation } from "./settings/settings-navigation";
 
 export const metadata: Metadata = {
   title: "知库 · 知识工作空间",
@@ -14,16 +14,14 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-  settings,
-}: Readonly<{ children: ReactNode; settings: ReactNode }>) {
+}: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="zh-CN">
       <body>
         <MotionProvider>
           <TooltipProvider>
             <Suspense fallback={<AuthBootstrapScreen />}><AuthBoundary>
-              {children}
-              <SettingsSlot>{settings}</SettingsSlot>
+              <SettingsNavigation>{children}</SettingsNavigation>
             </AuthBoundary></Suspense>
           </TooltipProvider>
         </MotionProvider>

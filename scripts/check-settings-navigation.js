@@ -26,7 +26,8 @@ async (page) => {
   const sections = [ ['workspace', '工作区概览'], ['billing', '积分与充值'], ['policies', '计费规则'], ['members', '工作区成员'], ['audit', '审计日志'], ['', '我的账号'] ];
   const setting = async (section, name) => {
     await page.getByRole('link', { name, exact: true }).click();
-    await page.waitForURL(url => url.pathname === `/settings${section ? `/${section}` : ''}`);
+    await page.waitForURL(url => url.pathname === `/settings${section ? `/${section}` : ''}`)
+      .catch(() => { throw new Error(`Expected settings ${section}, received ${page.url()}`); });
     await page.getByRole('heading', { name, level: 1, exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('.modal-fullscreen > div')?.style.opacity === '1');
     await page.waitForFunction(() => document.querySelectorAll('.modal-fullscreen').length === 1);
@@ -40,7 +41,8 @@ async (page) => {
     await page.getByRole('heading', { name: '工作区概览', level: 1, exact: true }).waitFor();
   };
   const closed = async path => {
-    await page.waitForURL(url => url.pathname + url.search === path);
+    await page.waitForURL(url => url.pathname + url.search === path)
+      .catch(() => { throw new Error(`Expected close to ${path}, received ${page.url()}`); });
     await page.locator('.modal-fullscreen').waitFor({ state: 'detached' });
   };
   await page.setViewportSize({ width: 1440, height: 900 });
