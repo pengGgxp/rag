@@ -2,7 +2,7 @@ import httpx
 import json
 from collections.abc import AsyncIterator
 from httpx_sse import aconnect_sse, SSEError
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from .config import Settings, get_settings
@@ -36,6 +36,34 @@ class LLMUsage:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     source: str = "provider"
+    cached_input_tokens: int | None = None
+    cache_status: str = "missing"
+    diagnostics: tuple[str, ...] = ()
+
+    def measured(self) -> dict:
+        result = asdict(self)
+        result["input_tokens"] = (
+            self.prompt_tokens - (self.cached_input_tokens or 0)
+            if self.prompt_tokens is not None else None
+        )
+        return result
+
+
+def measured_usage(usage, messages, output, tools=None, *, success=True):
+    """Estimate only successful responses, never invent cache hits or failed usage."""
+    values = usage.measured() if usage else LLMUsage().measured()
+    estimated = []
+    if success:
+        if values["prompt_tokens"] is None:
+            values["prompt_tokens"] = estimate_tokens([{"messages": messages, "tools": tools or []}])
+            values["input_tokens"] = values["prompt_tokens"]
+            estimated.append("input")
+        if values["completion_tokens"] is None:
+            values["completion_tokens"] = estimate_tokens([output])
+            estimated.append("output")
+    values["estimated_fields"] = estimated
+    values["source"] = "estimate" if usage is None and success else "mixed" if estimated else "provider"
+    return values
 
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
@@ -109,6 +137,7 @@ class OpenAICompatibleChatProvider:
         )
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
+        self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
                 "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
@@ -141,6 +170,7 @@ class OpenAICompatibleChatProvider:
             body: Any = response.json()
         except ValueError as exc:
             raise LLMProviderError("LLM provider returned invalid JSON") from exc
+        self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
         choices = body.get("choices") if isinstance(body, dict) else None
         if not isinstance(choices, list) or not choices:
             raise LLMProviderError("LLM response must contain at least one choice")
@@ -148,7 +178,6 @@ class OpenAICompatibleChatProvider:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("LLM response did not contain message content")
-        self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
         return content.strip()
 
     def complete_with_tools(
@@ -164,6 +193,7 @@ class OpenAICompatibleChatProvider:
         runtime does not depend on a vendor SDK or on provider-specific
         message classes.
         """
+        self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
                 "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL."
@@ -195,6 +225,7 @@ class OpenAICompatibleChatProvider:
             )
         try:
             body: Any = response.json()
+            self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
             message = body["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError("LLM response did not contain a valid tool message") from exc
@@ -218,8 +249,7 @@ class OpenAICompatibleChatProvider:
         content = message.get("content")
         if content is not None and not isinstance(content, str):
             raise LLMProviderError("LLM returned invalid tool-call content")
-        usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
-        self.last_usage = usage
+        usage = self.last_usage
         return ToolResponse(
             content=content.strip() if isinstance(content, str) else None,
             tool_calls=calls,
@@ -227,6 +257,7 @@ class OpenAICompatibleChatProvider:
         )
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")
         payload = {
@@ -234,6 +265,7 @@ class OpenAICompatibleChatProvider:
             "messages": messages,
             "temperature": 0.0,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
@@ -247,6 +279,7 @@ class OpenAICompatibleChatProvider:
                     # Some compatible providers ignore stream=True and return one JSON response.
                     if "application/json" in source.response.headers.get("content-type", ""):
                         body = json.loads(await source.response.aread())
+                        self.last_usage = _parse_usage(body.get("usage"))
                         content = body["choices"][0]["message"]["content"]
                         if not isinstance(content, str) or not content.strip():
                             raise LLMProviderError("回答服务未返回正文")
@@ -259,6 +292,9 @@ class OpenAICompatibleChatProvider:
                             finished = True
                             break
                         body = event.json()
+                        parsed_usage = _parse_usage(body.get("usage"))
+                        if parsed_usage is not None:
+                            self.last_usage = parsed_usage
                         if body.get("error"):
                             raise LLMProviderError("回答服务返回错误")
                         choices = body.get("choices", [])
@@ -293,7 +329,29 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
     prompt = raw.get("prompt_tokens")
     completion = raw.get("completion_tokens")
     total = raw.get("total_tokens")
-    values = [value if isinstance(value, int) and value >= 0 else None for value in (prompt, completion, total)]
+    values = [value if type(value) is int and value >= 0 else None for value in (prompt, completion, total)]
     if all(value is None for value in values):
         return None
-    return LLMUsage(prompt_tokens=values[0], completion_tokens=values[1], total_tokens=values[2])
+    details = raw.get("prompt_tokens_details")
+    candidates = []
+    if isinstance(details, dict) and "cached_tokens" in details:
+        candidates.append(details["cached_tokens"])
+    if "prompt_cache_hit_tokens" in raw:
+        candidates.append(raw["prompt_cache_hit_tokens"])
+    diagnostics = []
+    cached = None
+    status = "missing"
+    if candidates:
+        if (any(type(value) is not int or value < 0 for value in candidates)
+                or len(set(candidates)) != 1 or values[0] is None
+                or candidates[0] > values[0]):
+            status = "invalid"
+            diagnostics.append("invalid_or_conflicting_cache_usage")
+        else:
+            cached = candidates[0]
+            status = "reported"
+    if any(raw.get(key) is not None and value is None for key, value in zip(
+            ("prompt_tokens", "completion_tokens", "total_tokens"), values)):
+        diagnostics.append("invalid_token_count")
+    return LLMUsage(prompt_tokens=values[0], completion_tokens=values[1], total_tokens=values[2],
+                    cached_input_tokens=cached, cache_status=status, diagnostics=tuple(diagnostics))
