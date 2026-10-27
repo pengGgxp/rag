@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { Save, Loader2 } from "lucide-react";
 import { request } from "./api";
 import { AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import "./billing.css";
 
+const unavailableLabels = {
+  model_disabled: "已停用",
+  pricing_unconfigured: "价格待配置",
+  service_not_ready: "服务尚未就绪",
+};
 type Selection = { version: number; provider_id: string | null;
-  providers: { id: string; name: string; model: string; available: boolean; enabled: boolean }[] };
+  providers: { id: string; name: string; model: string; available: boolean; enabled: boolean;
+    unavailable_reason?: keyof typeof unavailableLabels | null }[] };
 type Props = { endpoint?: string; editable: boolean; onDirty: (value: boolean) => void; onBusy?: (value: boolean) => void };
 
 // Shared selection form; host layouts own navigation and unsaved-change protection.
@@ -19,7 +25,8 @@ export function ModelSelectionPanel({ endpoint = "/settings/models", editable, o
   const [notice, setNotice] = useState("");
   useEffect(() => { if (data) setSelected(data.provider_id ?? ""); }, [data]);
   const dirty = Boolean(data && selected !== (data.provider_id ?? ""));
-  useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
+  const selectedAvailable = Boolean(data?.providers.some(p => p.id === selected && p.available));
+  useLayoutEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
   useEffect(() => { onBusy?.(busy); return () => onBusy?.(false); }, [busy, onBusy]);
   return <section className="pricing-editor" aria-label="工作区模型选择">
     {failure && <div role="alert" className="admin-error"><span>{failure}</span><button className="secondary" onClick={() => void reload()}>重新加载</button></div>}
@@ -34,11 +41,11 @@ export function ModelSelectionPanel({ endpoint = "/settings/models", editable, o
       <div className="provider-form-grid"><label className="provider-form-wide">当前模型
         <select aria-label="当前模型" value={selected} disabled={!editable || busy} onChange={e => setSelected(e.target.value)}>
           <option value="" disabled>请选择模型</option>
-          {data.providers.map(p => <option key={p.id} value={p.id} disabled={!p.available}>{p.name} · {p.model}{!p.available ? "（暂不可选）" : ""}</option>)}
+          {data.providers.map(p => <option key={p.id} value={p.id} disabled={!p.available}>{p.name} · {p.model}{!p.available ? `（${p.unavailable_reason ? unavailableLabels[p.unavailable_reason] ?? "暂不可选" : "暂不可选"}）` : ""}</option>)}
         </select>
       </label></div>
       {!data.providers.some(p => p.available) && <p className="pricing-description">暂无可选模型，请联系站点管理员。</p>}
-      {editable && <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "模型切换不影响正在进行的回答"}</span><button className="primary" disabled={busy || !dirty || !selected}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存选择</button></div>}
+      {editable && <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "模型切换不影响正在进行的回答"}</span><button className="primary" disabled={busy || !dirty || !selectedAvailable}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存选择</button></div>}
     </form>}</AdminLoad>
   </section>;
 }

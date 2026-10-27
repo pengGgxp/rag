@@ -160,6 +160,23 @@ def delete_global(identifier: UUID, payload: VersionInput, db=Depends(get_db), a
     db.commit()
 
 
+def unavailable_reason(db, provider, binding, shared):
+    if not provider.enabled:
+        return "model_disabled"
+    if not provider.encrypted_api_key or not provider.model or not provider.base_url:
+        return "service_not_ready"
+    if shared:
+        prices = provider.prices
+    elif binding is None:
+        return "service_not_ready"
+    else:
+        prices = {p.capability: {key: getattr(p, key) for key in (
+            "capability", "unit", "unit_size", "credits_per_unit", "enabled")}
+            for p in db.scalars(select(UsagePolicy).where(
+                UsagePolicy.provider_id == binding.id, UsagePolicy.capability.in_(CAPABILITIES)))}
+    return None if complete(prices) else "pricing_unconfigured"
+
+
 def choices(db, workspace_id):
     from .workspace_billing import shared_enabled
     shared = shared_enabled(db)
@@ -168,14 +185,14 @@ def choices(db, workspace_id):
     ids = [row.site_provider_id for row in bindings if row.site_provider_id]
     rows = db.scalars(select(SiteModelProvider).where(or_(SiteModelProvider.published.is_(True), SiteModelProvider.id.in_(ids))).order_by(SiteModelProvider.created_at)).all()
     active = next((row for row in bindings if row.active), None)
-    binding_prices = {binding.site_provider_id: {p.capability: {
-        key: getattr(p, key) for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled")}
-        for p in db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == binding.id,
-            UsagePolicy.capability.in_(CAPABILITIES)))} for binding in bindings}
+    by_provider = {binding.site_provider_id: binding for binding in bindings}
+    providers = []
+    for row in rows:
+        reason = unavailable_reason(db, row, by_provider.get(row.id), shared)
+        providers.append({"id": str(row.id), "name": row.name, "model": row.model,
+            "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})
     return {"version": workspace.model_version, "provider_id": str(active.site_provider_id) if active and active.site_provider_id else None,
-        "providers": [{"id": str(row.id), "name": row.name, "model": row.model,
-            "available": row.enabled and complete(row.prices if shared else binding_prices.get(row.id, {})),
-            "enabled": row.enabled} for row in rows]}
+        "providers": providers}
 
 
 def select_model(db, workspace_id, identifier):
@@ -188,21 +205,18 @@ def select_model(db, workspace_id, identifier):
     shared = shared_enabled(db)
     if not row.published and binding is None:
         raise HTTPException(404, "模型不存在或不可用")
-    if not shared and binding is None:
-        raise HTTPException(409, "请先由站点管理员确认并启用共享基准价，再选用新模型")
-    if not row.enabled or ((binding is None or shared) and not complete(row.prices)):
-        raise HTTPException(409, "模型暂不可用，请联系站点管理员")
+    reason = unavailable_reason(db, row, binding, shared)
+    if reason:
+        messages = {"model_disabled": "模型已停用，请选择其他模型",
+            "pricing_unconfigured": "模型价格尚未配置完整，请联系站点管理员",
+            "service_not_ready": "模型服务尚未就绪，请联系站点管理员"}
+        raise HTTPException(409, messages[reason])
     if binding is None:
         binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=row.id,
             key=f"shared-{row.id}", name=row.name, base_url="", model=row.model,
             encrypted_api_key="", enabled=True, active=False, source_price_version=row.version)
         db.add(binding)
         db.flush()
-        # Before activation, new associations are staged until live pricing is enabled.
-        db.flush()
-    elif not shared:
-        from .model_billing import price_snapshot
-        price_snapshot(db, workspace_id, binding.id)
     db.execute(update(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id).values(active=False))
     binding.active = True
     db.get(Workspace, workspace_id).model_version += 1

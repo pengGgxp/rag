@@ -164,3 +164,42 @@ def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
         llm_providers.active_provider_config(db, UUID(session["workspace_id"]))
+
+
+@pytest.mark.parametrize("mode,reason", [
+    ("ready", None), ("zero", None), ("missing", "pricing_unconfigured"),
+    ("disabled", "model_disabled"), ("connection", "service_not_ready"),
+    ("legacy_new", "service_not_ready"),
+])
+def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason):
+    owner, db, session = setup_site(accounts, monkeypatch)
+    p = provider(owner, rate=0 if mode == "zero" else 4)
+    row = db.get(SiteModelProvider, UUID(p["id"]))
+    if mode == "missing":
+        row.prices = {}
+    elif mode == "disabled":
+        row.enabled = False
+    elif mode == "connection":
+        row.encrypted_api_key = ""
+    elif mode == "legacy_new":
+        db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
+    db.commit()
+    result = owner.get("/settings/models").json()
+    choice = next(item for item in result["providers"] if item["id"] == p["id"])
+    assert choice["unavailable_reason"] == reason
+    assert choice["available"] is (reason is None)
+    saved = owner.put("/settings/models", json={"provider_id": p["id"], "version": result["version"]})
+    assert saved.status_code == (200 if reason is None else 409), saved.text
+    assert db.get(ModelBillingSettings, 1).enabled is False
+
+
+def test_legacy_binding_missing_prices_cannot_be_selected(accounts, monkeypatch):
+    owner, db, session = setup_site(accounts, monkeypatch)
+    p = provider(owner)
+    choose(owner, p["id"])
+    db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
+    db.commit()
+    result = owner.get("/settings/models").json()
+    assert result["providers"][0]["unavailable_reason"] == "pricing_unconfigured"
+    assert owner.put("/settings/models", json={"provider_id": p["id"],
+        "version": result["version"]}).status_code == 409
