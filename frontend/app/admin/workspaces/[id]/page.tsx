@@ -2,8 +2,6 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { useState } from "react";
-import { ModelSelectionPanel } from "../../../model-selection-panel";
 import { useAdminChanges } from "../../admin-changes";
 import type { AdminWorkspace } from "../page";
 import {
@@ -15,9 +13,7 @@ import {
 } from "../../admin-ui";
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState(false);
-  useAdminChanges(dirty, busy);
+  useAdminChanges(false, false);
   const { data, loading, error, reload } = useAdminResource<AdminWorkspace>(
     `/site/admin/workspaces/${id}`,
   );
@@ -60,10 +56,6 @@ export default function WorkspaceDetailPage() {
                 </dd>
               </div>
             </dl>
-            <section className="admin-section">
-              <h2>工作区模型</h2>
-              <ModelSelectionPanel key={id} endpoint={`/site/admin/workspaces/${id}/model`} editable onDirty={setDirty} onBusy={setBusy} />
-            </section>
             <section className="admin-section">
               <h2>积分摘要</h2>
               <CreditSummary credits={data.credits} />

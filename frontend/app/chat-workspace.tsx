@@ -71,7 +71,17 @@ type Message = {
   refused: boolean;
   error_detail?: string | null;
   feedback?: Feedback | null;
+  provider_name?: string | null;
+  model?: string | null;
 };
+type ModelChoice = {
+  id: string;
+  name: string;
+  model: string;
+  available: boolean;
+  unavailable_reason?: "model_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
+};
+type ModelOptions = { default_provider_id: string | null; providers: ModelChoice[] };
 type Conversation = {
   id: string;
   title: string;
@@ -159,6 +169,11 @@ export function ChatWorkspace({
   );
   const [question, setQuestion] = useState("");
   const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection>({ skill_ids: [], mcp_server_ids: [] });
+  const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
+  const [modelId, setModelId] = useState("");
+  const [modelError, setModelError] = useState("");
+  const [modelLoading, setModelLoading] = useState(true);
+  const [modelAttempt, setModelAttempt] = useState(0);
   const [extensionsBusy, setExtensionsBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -227,6 +242,20 @@ export function ChatWorkspace({
       void stopGeneration();
     };
   }, [refreshList, stopGeneration]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setModelLoading(true);
+    setModelError("");
+    request<ModelOptions>("/models/available", { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted) {
+        setModelOptions(data);
+        setModelId(current => data.providers.some(item => item.id === current) ? current : data.default_provider_id ?? "");
+      }
+    }).catch(error => {
+      if (!controller.signal.aborted) setModelError(error instanceof Error ? error.message : "模型加载失败");
+    }).finally(() => { if (!controller.signal.aborted) setModelLoading(false); });
+    return () => controller.abort();
+  }, [modelAttempt]);
   useEffect(() => {
     // Creating a conversation replaces the URL while its stream is already active.
     if (conversationId && viewRef.current?.id === conversationId) return;
@@ -346,6 +375,7 @@ export function ChatWorkspace({
   async function send(retryId?: string) {
     if (
       sending.current ||
+      modelLoading || !!modelError || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
       extensionsBusy ||
       (!retryId && !question.trim()) ||
@@ -416,6 +446,7 @@ export function ChatWorkspace({
         `/conversations/${current.id}/messages`,
         {
           request_id: active.requestId,
+          provider_id: modelId,
           ...(retryId ? { retry_message_id: retryId } : { query }),
         },
         controller.signal,
@@ -787,7 +818,7 @@ export function ChatWorkspace({
                           {index === conversation.messages.length - 1 && (
                             <button
                               className="text-button"
-                              disabled={running}
+                              disabled={running || modelLoading || !!modelError || !modelOptions?.providers.some(item => item.id === modelId && item.available)}
                               onClick={() => void send(message.id)}
                             >
                               <RefreshCw size={13} />
@@ -833,6 +864,9 @@ export function ChatWorkspace({
                       )}
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
+                          {message.model && <span className="answer-model" title={`${message.provider_name ?? ""} · ${message.model}`}>
+                            {message.provider_name} · {message.model}
+                          </span>}
                           {message.content && (
                             <button
                               className="icon-button"
@@ -918,6 +952,11 @@ export function ChatWorkspace({
             )}
         </section>
         <div className="composer-area">
+          {modelError && <div className="model-status form-error" role="alert">
+            <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
+          </div>}
+          {!modelLoading && !modelError && modelOptions && !modelOptions.providers.some(item => item.available) &&
+            <p className="model-status" role="status">暂无可用模型，请联系站点管理员。</p>}
           <form
             className="composer"
             onSubmit={(event) => {
@@ -946,7 +985,18 @@ export function ChatWorkspace({
               }}
             />
             <div className="composer-footer">
-              <span>
+              <label className="model-picker">
+                <select aria-label="本次请求模型" value={modelId}
+                  disabled={running || loading || modelLoading || !!modelError}
+                  title={modelOptions?.providers.find(item => item.id === modelId)?.model}
+                  onChange={event => setModelId(event.target.value)}>
+                  <option value="" disabled>{modelLoading ? "加载模型…" : "选择模型"}</option>
+                  {modelOptions?.providers.map(item => <option key={item.id} value={item.id} disabled={!item.available}>
+                    {item.name} · {item.model}{!item.available ? `（${item.unavailable_reason === "pricing_unconfigured" ? "价格待配置" : item.unavailable_reason === "model_disabled" ? "已停用" : "服务未就绪"}）` : ""}
+                  </option>)}
+                </select>
+              </label>
+              <span className="composer-library-count">
                 <BookOpen size={14} />
                 {selectedNames.length} 个知识库
               </span>
@@ -971,7 +1021,8 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    !question.trim() || loading || extensionsBusy || !!conversationError
+                    !question.trim() || loading || extensionsBusy || !!conversationError || modelLoading || !!modelError ||
+                    !modelOptions?.providers.some(item => item.id === modelId && item.available)
                   }
                   type="submit"
                 >

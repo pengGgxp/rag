@@ -1,0 +1,70 @@
+# Request-Level Model Selection
+
+## Goal and Boundary
+
+Users choose a site-managed model for each question. There is no workspace or
+conversation current-model setting. Current-page React state retains the choice;
+refresh, workspace changes and reopening the page use an available site default.
+Generation disables selection; a genuine retry uses the current choice.
+
+Reuse the existing chat/Agent runtime, shared pricing, workspace multiplier and
+UI controls. Do not enable Issue #36, change commercial rates, copy prices,
+persist browser preferences or add another Agent conversation surface.
+
+## Implementation
+
+- Authenticated GET /models/available returns sanitized model choices and an
+  available site default. Published models and previously scoped private models
+  retain workspace visibility rules; unavailable choices carry safe reasons.
+- Conversation messages and single-answer requests require a site provider ID.
+  Resolve it against the workspace, validate availability, and create/reuse the
+  unique accounting association without changing any active workspace model.
+- Persist immutable provider name/model on assistant messages and request
+  accounting context. Historical messages remain unknown, never backfilled.
+- Each request pins its connection, model and base prices; existing multiplier,
+  usage, idempotency and settlement semantics remain intact. A stopped provider
+  prevents subsequent upstream rounds without rewriting confirmed usage.
+- Remove settings/admin current-model editors and retire their write endpoints.
+  Keep historical associations and ledger foreign keys, not a second workflow.
+- The input toolbar uses a native accessible select with existing form tokens,
+  local loading/retry and unavailable reasons. Display actual model on answers.
+
+## Acceptance
+
+Backend tests cover member access, private visibility, redaction, missing/zero
+prices, disabled providers, explicit selection, retries, idempotency, request
+snapshots, workspace isolation and concurrent association creation. Verify fresh
+and upgrade PostgreSQL migrations, existing balances and historical records.
+
+Build the frontend, run diff checks, and use Playwright at 1440px/390px for model
+selection, consecutive requests, streaming lockout, retry with another model,
+default reset, loading/errors, keyboard access and removed settings entry.
+Deploy API/Web after backup and run controlled real requests without changing
+prices, billing flags or an existing workspace's current model.
+
+## Rollback
+
+Use small Conventional Commits. Preserve added message metadata, accounting
+associations and usage snapshots; never reverse financial records. This is a
+development release: ship the request-level path directly, without activation
+gates, dual current-model flows or migration product pages.
+
+## Local Verification, 2026-10-27
+
+- Linux backend regression: 342 passed, 15 conditional skips. Object-storage
+  integration uses the Compose network endpoint, not container-local localhost.
+- Disposable PostgreSQL: 10 passed across provider, immutable billing snapshot,
+  request settlement, registration and site-admin concurrency/transaction tests.
+  Includes matching configuration lock order for request admission and admin
+  edits. Fresh migrations and 0025-to-0026 upgrade succeeded.
+- Frontend production build and `git diff --check` passed.
+- Playwright at 1440px/390px passed explicit selection, multiple models, retry
+  with a changed model, generation lockout, refresh defaults, long names, empty
+  lists, failed list retry, rejected-request input preservation, keyboard and
+  reduced-motion checks. Screenshots: `output/playwright/issue41-*`.
+- Existing settings regression passed cold/slow routing, immediate/persistent
+  single dialog, loading cancellation, history, direct refresh, unsaved password
+  guards, local billing retry, mobile focus trap and focus restoration.
+- Backend tests use controlled model responses; they are not evidence of real
+  upstream connectivity. Online deployment and controlled calls are recorded
+  separately after release.

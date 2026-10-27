@@ -4,6 +4,11 @@ Issue: #38. Related settlement work: #36.
 
 > Pricing superseded by Issue #39: see `workspace-billing-multipliers.md`.
 > Connections and historical IDs described here remain valid; new code no longer creates workspace price copies.
+> Selection superseded by Issue #41: see `request-model-selection.md`. Every
+> authenticated member selects a model per request in the chat composer.
+> Workspace settings and admin workspace details no longer select an active model.
+> New requests retain accounting associations, not workspace price copies or a
+> persisted current model. The sections below describe the original #38 release.
 
 ## Goal and boundary
 

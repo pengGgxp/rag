@@ -69,7 +69,7 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
           <PolicyTable name="文档处理价格预览" readOnly policies={effective(saved.document_policies, percent)} busy={busy} />
         </section>
         {saved.models.map(model => <section className="pricing-group" key={model.binding_id}>
-          <div className="pricing-group-heading"><h2>{model.name}<small className="billing-muted"> · {model.model}</small></h2><span>{model.active ? "当前模型" : "已关联模型"}</span></div>
+          <div className="pricing-group-heading"><h2>{model.name}<small className="billing-muted"> · {model.model}</small></h2><span>已关联模型</span></div>
           <PolicyTable name={`${model.name}价格预览`} readOnly policies={effective(model.policies, percent)} busy={busy} />
         </section>)}
         {!saved.models.length && <p className="billing-empty">尚未关联模型</p>}

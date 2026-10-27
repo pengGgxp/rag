@@ -307,3 +307,45 @@
     scroll-behavior: auto;
   }
 }
+.model-picker {
+  display: flex;
+  min-width: 0;
+  max-width: min(70%, 340px);
+}
+.model-picker select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: var(--form-font-size, 13px);
+  text-overflow: ellipsis;
+}
+.composer-footer .composer-library-count {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.answer-model {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.model-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+@media (max-width: 700px) {
+  .model-picker select { min-height: 44px; }
+  .composer-footer .composer-library-count { display: none; }
+  .model-picker { max-width: calc(100% - 56px); }
+}
