@@ -1,107 +1,189 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, Pencil, Plus, Save } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, ArrowRight, Check, Loader2, Plus, Save, Search, Star } from "lucide-react";
+import * as Tabs from "../components/ui/tabs";
 import { request } from "./api";
-import { AdminLoad, json, useAdminResource } from "./admin/admin-ui";
+import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useAdminChanges } from "./admin/admin-changes";
-import type { ModelProvider, Policy } from "./model-types";
+import { availabilityLabel, type ModelProvider, type Policy } from "./model-types";
 import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
+const base = "/site/admin/llm-providers";
 const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, published: true, version: 0 };
+const capabilities = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"];
 type ProviderForm = typeof blank;
 
 export function ModelProviderPanel() {
-  const base = "/site/admin/llm-providers";
-  const { data: providers, loading, error: loadError, reload } = useAdminResource<ModelProvider[]>(base);
-  const [editing, setEditing] = useState<string | null>(null);
+  const { data, loading, error, reload } = useAdminResource<ModelProvider[]>(base);
+  const params = useSearchParams();
+  const router = useRouter();
+  const search = params.get("q") ?? "";
+  const status = params.get("status") ?? "all";
+  const [query, setQuery] = useState(search);
+  useEffect(() => setQuery(search), [search]);
+  useAdminChanges(false, false);
+  function filter(q: string, nextStatus: string) {
+    const next = new URLSearchParams();
+    if (q) next.set("q", q);
+    if (nextStatus !== "all") next.set("status", nextStatus);
+    router.replace(`/admin/models${next.size ? `?${next}` : ""}`, { scroll: false });
+  }
+  const models = data?.filter(p => `${p.name} ${p.model}`.toLowerCase().includes(search.toLowerCase())
+    && (status === "available" ? p.available : status === "unavailable" ? !p.available : status === "private" ? !p.published : true));
+  return <>
+    <AdminHeading title="模型管理"><Link href="/admin/models/new" className="primary"><Plus size={16} />添加模型</Link></AdminHeading>
+    <form className="admin-filters" onSubmit={event => { event.preventDefault(); filter(query.trim(), status); }}>
+      <label>搜索模型<input value={query} onChange={event => setQuery(event.target.value)} placeholder="名称或模型名" /></label>
+      <label>筛选<select value={status} onChange={event => filter(query.trim(), event.target.value)}>
+        <option value="all">全部模型</option><option value="available">可用模型</option><option value="unavailable">不可用模型</option><option value="private">受限范围</option>
+      </select></label>
+      <button className="secondary"><Search size={16} />查询</button>
+    </form>
+    <AdminLoad loading={loading} error={error} retry={reload}>
+      {models && <><div className="model-catalog" role="table" aria-label="模型配置列表">
+        <div className="model-catalog-heading" role="row"><span role="columnheader">名称 / 模型</span><span role="columnheader">可用性</span><span role="columnheader">发布范围</span><span role="columnheader">操作</span></div>
+        {models.map(model => <div className="model-catalog-row" role="row" key={model.id}>
+          <div className="model-catalog-name" role="cell"><Link href={`/admin/models/${model.id}`}>{model.name}</Link><small>{model.model}</small>
+            {model.is_default && <span className="model-default"><Star size={12} />问答默认</span>}</div>
+          <div role="cell" className="model-catalog-state"><span className="model-price-label">可用性</span><span className="model-availability" data-warning={!model.available}>{availabilityLabel(model.unavailable_reason)}</span></div>
+          <div role="cell" className="model-catalog-state"><span className="model-price-label">发布范围</span><span>{model.published ? "全站可选" : "仅授权工作区"}</span></div>
+          <div role="cell" className="model-catalog-action"><Link className="secondary" href={`/admin/models/${model.id}`} aria-label={`管理${model.name}`}>管理<ArrowRight size={15} /></Link></div>
+        </div>)}
+      </div>{!models.length && <p className="admin-empty">{data?.length ? "没有符合条件的模型" : "尚未添加模型"}</p>}
+      <p className="billing-muted">共 {models.length} 个模型{search || status !== "all" ? `，全部 ${data?.length ?? 0} 个` : ""}</p></>}
+    </AdminLoad>
+  </>;
+}
+
+function connectionForm(provider: ModelProvider): ProviderForm {
+  return { key: provider.key, name: provider.name, base_url: provider.base_url, model: provider.model,
+    api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, published: provider.published, version: provider.version };
+}
+
+function priceForm(provider: ModelProvider): Policy[] {
+  return capabilities.map(capability => ({
+    capability, unit: "tokens", unit_size: 1000, credits_per_unit: null, enabled: true, version: provider.version,
+    ...provider.prices.find(p => p.capability === capability),
+    configured: provider.prices.some(p => p.capability === capability),
+  }));
+}
+
+export function ModelProviderDetail({ id }: { id: string }) {
+  const isNew = id === "new";
+  const router = useRouter();
+  const params = useSearchParams();
+  const tab = !isNew && params.get("tab") === "pricing" ? "pricing" : "connection";
+  const resource = useAdminResource<ModelProvider | null>(isNew ? null : `${base}/${encodeURIComponent(id)}`);
+  const [provider, setProvider] = useState<ModelProvider | null>(null);
   const [form, setForm] = useState<ProviderForm>(blank);
   const [original, setOriginal] = useState<ProviderForm>(blank);
-  const [busy, setBusy] = useState(false);
-  const [discard, setDiscard] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [pricing, setPricing] = useState<ModelProvider | null>(null);
   const [prices, setPrices] = useState<Policy[]>([]);
   const [originalPrices, setOriginalPrices] = useState<Policy[]>([]);
-  const dirty = (editing !== null && JSON.stringify(form) !== JSON.stringify(original)) || JSON.stringify(prices) !== JSON.stringify(originalPrices);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [pendingTab, setPendingTab] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const dirty = JSON.stringify(form) !== JSON.stringify(original) || JSON.stringify(prices) !== JSON.stringify(originalPrices);
   useAdminChanges(dirty, busy);
-  function edit(provider?: ModelProvider) {
-    const value = provider ? { key: provider.key, name: provider.name, base_url: provider.base_url, model: provider.model, api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, published: provider.published, version: provider.version } : blank;
-    setEditing(provider?.id ?? "new"); setForm(value); setOriginal(value); setError(""); setNotice("");
+  function accept(value: ModelProvider) {
+    const connection = connectionForm(value);
+    const pricing = priceForm(value);
+    setProvider(value); setForm(connection); setOriginal(connection); setPrices(pricing); setOriginalPrices(pricing);
+  }
+  useEffect(() => { if (resource.data) accept(resource.data); }, [resource.data]);
+  function changeTab(next: string) {
+    if (busy || next === tab) return;
+    if (dirty) { setPendingTab(next); return; }
+    setError(""); setNotice("");
+    router.replace(`/admin/models/${id}${next === "pricing" ? "?tab=pricing" : ""}`, { scroll: false });
   }
   async function action(run: () => Promise<void>) {
-    setBusy(true); setError(""); setNotice("");
-    try { await run(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败"); }
+    setBusy(true); setError(""); setNotice(""); setConflict(false);
+    try { await run(); }
+    catch (e) { setError(e instanceof Error ? e.message : "操作失败，请重试"); setConflict(true); }
     finally { setBusy(false); }
   }
-  async function save() {
+  async function saveConnection() {
     const { api_key, ...fields } = form;
-    await request<ModelProvider>(editing === "new" ? base : `${base}/${editing}`, json({ ...fields, ...(api_key ? { api_key } : {}) }, editing === "new" ? "POST" : "PUT"));
-    setForm(blank); setOriginal(blank); setEditing(null);
-    setNotice("模型供应商已保存"); await reload();
+    const updated = await request<ModelProvider>(isNew ? base : `${base}/${id}`,
+      json({ ...fields, ...(api_key ? { api_key } : {}) }, isNew ? "POST" : "PUT"));
+    accept(updated);
+    if (isNew) router.replace(`/admin/models/${updated.id}?tab=pricing`);
+    else setNotice("连接配置已保存");
   }
-  function editPrices(provider: ModelProvider) {
-    const values = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"].map(capability => ({
-      capability, unit: "tokens", unit_size: 1000, credits_per_unit: null, enabled: true, version: provider.version,
-      ...provider.prices.find(p => p.capability === capability),
-      configured: provider.prices.some(p => p.capability === capability),
-    }));
-    setPricing(provider); setPrices(values); setOriginalPrices(values); setError(""); setNotice("");
-  }
-  async function reloadEditor() {
-    const latest = await request<ModelProvider[]>(base);
-    const current = latest.find(p => p.id === (editing ?? pricing?.id));
-    if (editing && current) edit(current);
-    else if (pricing && current) editPrices(current);
-    else { setEditing(null); setPricing(null); setPrices([]); setOriginalPrices([]); }
-    await reload();
-  }
-  const pricesComplete = prices.every(p => Number.isInteger(p.credits_per_unit) && p.credits_per_unit !== null && p.credits_per_unit >= 0 && Number.isInteger(p.unit_size) && p.unit_size > 0 && p.enabled);
-  return <section aria-label="站点模型供应商">
-    {error && <div className="admin-error" role="alert"><span>{error}</span><button className="secondary" disabled={busy} onClick={() => void action(reloadEditor)}>重新加载并放弃修改</button></div>}
-    {notice && <p className="billing-notice" role="status">{notice}</p>}
-    <AdminLoad loading={loading} error={loadError} retry={reload}>
-      {providers && <>
-        {!providers.length && <p className="billing-muted">尚未配置模型供应商</p>}
-        {editing === null && !pricing && <button className="secondary" onClick={() => edit()}><Plus size={16} />添加供应商</button>}
-        {pricing && <form className="pricing-editor" onSubmit={e => { e.preventDefault(); void action(async () => {
-          await request(`${base}/${pricing.id}/pricing`, json({ version: pricing.version, policies: prices.map(({ capability, unit, unit_size, credits_per_unit, enabled }) => ({ capability, unit, unit_size, credits_per_unit, enabled })) }, "PUT"));
-          setPricing(null); setPrices([]); setOriginalPrices([]); setNotice("模型基准价已保存，共享计费下的后续调用将使用新价格"); await reload();
-        }); }}>
-          <div className="pricing-group-heading"><h2>{pricing.name} · 模型基准价</h2><span>{pricing.workspace_count} 个关联工作区</span></div>
-          <p className="pricing-description">共享计费启用后，基准价调整影响关联工作区的后续模型调用，已记录消费保持不变。</p>
-          <PolicyTable name="模型基准价" policies={prices} busy={busy} update={(p, patch) => setPrices(items => items.map(item => item.capability === p.capability ? { ...item, ...patch } : item))} />
-          <div className="pricing-footer"><span>关联工作区按各自倍率结算</span><div className="provider-form-actions"><button className="secondary" type="button" disabled={busy} onClick={() => { if (dirty) setDiscard(true); else { setPricing(null); setPrices([]); setOriginalPrices([]); } }}>取消</button><button className="primary" disabled={busy || !dirty || !pricesComplete}><Save size={16} />保存基准价</button></div></div>
-          {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button type="button" className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button type="button" className="danger" onClick={() => { setDiscard(false); setPricing(null); setPrices([]); setOriginalPrices([]); }}>放弃修改</button></div>}
-        </form>}
-        {editing !== null && <form className="provider-form" onSubmit={event => { event.preventDefault(); void action(save); }}>
-          <h2>{editing === "new" ? "添加供应商" : "编辑供应商"}</h2>
-          <fieldset disabled={busy} className="provider-form-fields">
-            <div className="provider-form-grid">
-              <label>标识<input required maxLength={80} pattern="[a-z0-9][a-z0-9_\x2d]*" value={form.key} onChange={e => setForm({ ...form, key: e.target.value })} placeholder="例如 qwen" /></label>
-              <label>显示名称<input required maxLength={120} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
-              <label className="provider-form-wide">Base URL<input required type="url" maxLength={1000} value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
-              <label>模型名称<input required maxLength={200} value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} /></label>
-              <label>API Key<input type="password" autoComplete="new-password" required={editing === "new"} value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} placeholder={editing === "new" ? "输入供应商密钥" : "留空保留现有密钥"} /></label>
-              <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
-              <label className="provider-enabled"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用供应商</label>
-              <label className="provider-enabled"><input type="checkbox" checked={form.published} onChange={e => setForm({ ...form, published: e.target.checked })} />允许所有工作区选择</label>
-            </div>
-            <div className="provider-form-actions"><button className="primary">{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存供应商</button><button type="button" className="secondary" onClick={() => dirty ? setDiscard(true) : setEditing(null)}>取消</button></div>
-          </fieldset>
-          {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button type="button" className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button type="button" className="danger" onClick={() => { setDiscard(false); setEditing(null); setForm(blank); }}>放弃修改</button></div>}
-        </form>}
-        {providers.map(provider => <section className="provider-section" key={provider.id}>
-          <div className="provider-section-heading"><div><div className="provider-title-row"><strong>{provider.name}</strong><span className="provider-status">{provider.enabled ? "已启用" : "已停用"}{provider.is_default ? " · 新工作区默认" : ""}</span></div><small>{provider.model} · {provider.key}</small><small>{provider.base_url}</small><small>{provider.workspace_count} 个工作区 · {provider.published ? "全站可选" : "仅原工作区"} · {provider.configured ? "基准价已配置" : "基准价待配置"}</small></div>
-            <div className="provider-form-actions"><button className="icon-button" aria-label={`编辑${provider.name}`} title="编辑供应商" disabled={busy || editing !== null || Boolean(pricing)} onClick={() => edit(provider)}><Pencil size={16} /></button>
-              <button className="secondary" disabled={busy || editing !== null || Boolean(pricing)} onClick={() => editPrices(provider)}>模型基准价</button>
-              {!provider.is_default && <button className="secondary" disabled={busy || editing !== null || Boolean(pricing) || !provider.enabled || !provider.published || !provider.configured} onClick={() => void action(async () => { await request(`${base}/${provider.id}/default`, json({ version: provider.version })); setNotice("新工作区默认模型已更新"); await reload(); })}>设为默认</button>}
-            </div>
-          </div>
-        </section>)}
-      </>}
+  const complete = prices.length === 3 && prices.every(p => p.credits_per_unit !== null
+    && Number.isInteger(p.credits_per_unit) && p.credits_per_unit >= 0 && Number.isInteger(p.unit_size) && p.unit_size > 0 && p.enabled);
+  return <>
+    <Link href="/admin/models" className="admin-back"><ArrowLeft size={15} />模型管理</Link>
+    <AdminHeading title={isNew ? "添加模型" : provider?.name ?? "模型详情"}>
+      {provider && <span className="model-detail-actions">
+        {provider.is_default ? <span className="model-default"><Star size={14} />问答默认模型</span>
+          : <button className="secondary" disabled={busy || dirty || !provider.available || !provider.published} onClick={() => void action(async () => {
+            accept(await request<ModelProvider>(`${base}/${id}/default`, json({ version: provider.version })));
+            setNotice("问答默认模型已更新");
+          })}><Star size={15} />设为问答默认模型</button>}
+      </span>}
+    </AdminHeading>
+    {provider && <div className="model-detail-summary"><span className="model-availability" data-warning={!provider.available}>{availabilityLabel(provider.unavailable_reason)}</span>
+      <span>{provider.published ? "全站可选" : "仅授权工作区可选"}</span><span>已有消费关联工作区 {provider.workspace_count} 个</span></div>}
+    {notice && <p className="billing-notice" role="status"><Check size={16} />{notice}</p>}
+    {error && <div className="admin-error" role="alert">{error}</div>}
+    {conflict && !isNew && <div className="model-reload"><button className="secondary" disabled={busy} onClick={() => setPendingTab("reload")}>重新加载并放弃修改</button></div>}
+    {pendingTab && <div className="admin-inline-confirm" role="alert"><span>有尚未保存的修改，要放弃吗？</span>
+      <button className="secondary" onClick={() => setPendingTab(null)}>继续编辑</button>
+      <button className="danger" onClick={() => {
+        const next = pendingTab; setPendingTab(null); setError(""); setConflict(false);
+        if (provider) accept(provider);
+        if (next === "reload") void resource.reload();
+        else router.replace(`/admin/models/${id}${next === "pricing" ? "?tab=pricing" : ""}`, { scroll: false });
+      }}>放弃修改</button>
+    </div>}
+    <AdminLoad loading={!isNew && resource.loading} error={isNew ? "" : resource.error} retry={resource.reload}>
+      {(isNew || provider) && <Tabs.Root value={tab} onValueChange={changeTab}>
+        <Tabs.List className="model-detail-tabs tab-list" aria-label="模型详情">
+          <Tabs.Trigger value="connection" disabled={busy}>连接配置</Tabs.Trigger>
+          <Tabs.Trigger value="pricing" disabled={busy || isNew}>模型基准价</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="connection">
+          <form className="provider-form model-detail-form" onSubmit={event => { event.preventDefault(); void action(saveConnection); }}>
+            <fieldset disabled={busy} className="provider-form-fields">
+              <section className="model-form-section"><h2>基本信息</h2><div className="provider-form-grid">
+                <label>显示名称<input required maxLength={120} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
+                <label>模型名<input required maxLength={200} value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} /></label>
+                <label>配置标识<input required maxLength={80} pattern="[a-z0-9][a-z0-9_\x2d]*" value={form.key} onChange={e => setForm({ ...form, key: e.target.value })} placeholder="例如 deepseek-flash" /></label>
+              </div></section>
+              <section className="model-form-section"><h2>连接凭据</h2><div className="provider-form-grid">
+                <label className="provider-form-wide">接口地址<input required type="url" maxLength={1000} value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
+                <label>API Key{!isNew && <span className="billing-muted">{provider?.has_api_key ? "已配置，留空保留" : "尚未配置"}</span>}<input type="password" autoComplete="new-password" required={isNew} value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} /></label>
+                <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
+              </div></section>
+              <section className="model-form-section"><h2>可用范围</h2><div className="model-scope-fields">
+                <label className="provider-enabled"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
+                <label className="provider-enabled"><input type="checkbox" checked={form.published} onChange={e => setForm({ ...form, published: e.target.checked })} />发布为全站可选</label>
+              </div>{isNew && <p className="billing-muted">先保存连接，再补齐三项模型基准价后启用。</p>}</section>
+              <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "连接配置"}{provider ? ` · 版本 ${provider.version}` : ""}</span>
+                <button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
+            </fieldset>
+          </form>
+        </Tabs.Content>
+        <Tabs.Content value="pricing">
+          <form className="pricing-editor model-detail-form" onSubmit={event => { event.preventDefault(); void action(async () => {
+            const updated = await request<ModelProvider>(`${base}/${id}/pricing`, json({ version: provider!.version,
+              policies: prices.map(({ capability, unit, unit_size, credits_per_unit, enabled }) => ({ capability, unit, unit_size, credits_per_unit, enabled })) }, "PUT"));
+            accept(updated); setNotice("模型基准价已保存，后续新调用使用新价格");
+          }); }}>
+            <p className="pricing-description">以下为共享模型基准价，工作区按各自倍率计算。修改影响后续新调用，不改变已记录消费；免费请明确填写 0。</p>
+            <PolicyTable name="模型基准价" policies={prices} busy={busy} update={(price, patch) => setPrices(items => items.map(item => item.capability === price.capability ? { ...item, ...patch } : item))} />
+            <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "当前基准价"} · 版本 {provider?.version}</span>
+              <button className="primary" disabled={busy || !dirty || !complete}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存模型基准价</button></div>
+          </form>
+        </Tabs.Content>
+      </Tabs.Root>}
     </AdminLoad>
-  </section>;
+  </>;
 }

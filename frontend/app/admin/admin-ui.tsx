@@ -30,15 +30,16 @@ export const json = (body: unknown, method = "POST") => ({
   body: JSON.stringify(body),
 });
 
-export function useAdminResource<T>(path: string) {
+export function useAdminResource<T>(path: string | null) {
   const [state, setState] = useState<{
-    path: string;
+    path: string | null;
     data: T | null;
     error: string;
     loading: boolean;
   }>({ path, data: null, error: "", loading: true });
   const sequence = useRef(0);
   const load = useCallback(async () => {
+    if (!path) return;
     const id = ++sequence.current;
     setState((value) => ({
       path,
@@ -68,7 +69,7 @@ export function useAdminResource<T>(path: string) {
   return {
     data: state.path === path ? state.data : null,
     error: state.path === path ? state.error : "",
-    loading: state.path !== path || state.loading,
+    loading: path !== null && (state.path !== path || state.loading),
     reload: load,
   };
 }
