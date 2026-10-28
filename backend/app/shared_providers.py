@@ -14,6 +14,7 @@ from .model_pricing import ModelPrice, complete, settings_locked
 from .models import LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, Workspace
 from .site_auth import site_admin
 from .site_audit import record
+from .thinking import ThinkingConfig, public_capability
 
 router = APIRouter(prefix="/site/admin/llm-providers", tags=["site-admin"])
 selection_router = APIRouter(tags=["models"])
@@ -33,6 +34,7 @@ def provider_writer(request: Request, db=Depends(get_db), actor=Depends(site_adm
 class SiteProviderInput(ProviderInput):
     enabled: bool = False
     version: int = Field(default=0, ge=0)
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
 
 
 class PriceUpdate(BaseModel):
@@ -68,6 +70,8 @@ def read_provider(db, row):
         "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
         "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled,
         "version": row.version,
+        "thinking": row.thinking_config or ThinkingConfig().model_dump(),
+        "thinking_version": row.thinking_version,
         "is_default": bool(settings and settings.default_provider_id == row.id),
         "configured": complete(row.prices), "prices": list(row.prices.values()),
         "available": reason is None, "unavailable_reason": reason,
@@ -89,6 +93,10 @@ def apply_provider(row, payload):
     if payload.enabled and not row.enabled and not complete(row.prices):
         raise HTTPException(422, "启用前请补齐三项模型价格")
     row.enabled = payload.enabled
+    thinking = payload.thinking.model_dump()
+    if ThinkingConfig.model_validate(row.thinking_config or {}).model_dump() != thinking:
+        row.thinking_config = thinking
+        row.thinking_version = (row.thinking_version or 0) + 1
 
 
 @router.get("")
@@ -198,6 +206,7 @@ def choices(db, workspace_id):
     for row in visible_providers(db, workspace_id):
         reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
+            "thinking": public_capability(row.thinking_config, row.thinking_version),
             "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})
     return providers
 

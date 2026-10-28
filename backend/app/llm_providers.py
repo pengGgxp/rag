@@ -64,9 +64,12 @@ def _decrypt_api_key(value):
     return mcp_client.decrypt_headers(value).get("api_key", "")
 
 
-def request_provider_config(db, workspace_id, site_provider_id):
+def request_provider_config(db, workspace_id, site_provider_id, thinking_option_id=None, thinking_config_version=None):
     from .shared_providers import request_binding
+    from .thinking import select_thinking
     row, shared = request_binding(db, workspace_id, site_provider_id)
+    thinking = select_thinking(shared.thinking_config, shared.thinking_version,
+                              thinking_option_id, thinking_config_version)
     try:
         api_key = _decrypt_api_key(shared.encrypted_api_key)
     except Exception as exc:
@@ -75,7 +78,7 @@ def request_provider_config(db, workspace_id, site_provider_id):
         raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员")
     return ChatProviderConfig(base_url=shared.base_url, api_key=api_key, model=shared.model,
         timeout_seconds=shared.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
-        provider_name=shared.name, site_provider_id=str(shared.id))
+        provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking)
 
 
 @site_router.get("")

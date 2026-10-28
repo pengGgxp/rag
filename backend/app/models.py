@@ -75,6 +75,8 @@ class SiteModelProvider(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     published: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    thinking_config: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    thinking_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     prices: Mapped[dict] = mapped_column(JSON, default=dict)
     template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

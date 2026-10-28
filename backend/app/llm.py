@@ -2,10 +2,11 @@ import httpx
 import json
 from collections.abc import AsyncIterator
 from httpx_sse import aconnect_sse, SSEError
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .config import Settings, get_settings
+from .thinking import ThinkingSelection
 
 
 class LLMConfigurationError(RuntimeError):
@@ -28,6 +29,7 @@ class ToolResponse:
     content: str | None
     tool_calls: list[ToolCall]
     usage: "LLMUsage | None" = None
+    protocol_fields: dict[str, str] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -92,6 +94,7 @@ class ChatProviderConfig:
     provider_key: str | None = None
     provider_name: str | None = None
     site_provider_id: str | None = None
+    thinking: ThinkingSelection = ThinkingSelection()
 
     @property
     def llm_configured(self) -> bool:
@@ -131,6 +134,84 @@ class OpenAICompatibleChatProvider:
             from .shared_providers import assert_available
             assert_available(self.config.site_provider_id)
 
+    def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
+        thinking = self.config.thinking
+        if tools and not thinking.supports_tools:
+            raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
+        payload = {"model": self.model, "messages": messages}
+        if thinking.adapter == "none":
+            payload["temperature"] = temperature
+        payload.update(thinking.parameters())
+        if tools:
+            payload.update(tools=tools, tool_choice=tool_choice)
+        if stream:
+            payload.update(stream=True, stream_options={"include_usage": True})
+        return payload
+
+    def _post_message(self, payload):
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        try:
+            if self.config.thinking.stream_only:
+                payload.update(stream=True, stream_options={"include_usage": True})
+                with httpx.stream("POST", self._chat_url(self.base_url), headers=headers,
+                                  json=payload, timeout=self.timeout_seconds) as response:
+                    if response.status_code >= 400:
+                        raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                    return self._collect_tool_stream(response)
+            response = httpx.post(self._chat_url(self.base_url), headers=headers,
+                                  json=payload, timeout=self.timeout_seconds)
+            if response.status_code >= 400:
+                raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+            body = response.json()
+        except httpx.HTTPError as exc:
+            raise LLMProviderError("模型连接失败，请重试") from exc
+        except ValueError as exc:
+            raise LLMProviderError("模型返回无效 JSON") from exc
+        except (KeyError, TypeError, AttributeError, SSEError) as exc:
+            raise LLMProviderError("模型返回无效响应") from exc
+        self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
+        return body
+
+    def _collect_tool_stream(self, response):
+        from httpx_sse import EventSource
+        message = {"content": "", "reasoning_content": ""}
+        calls = {}
+        finished = False
+        for event in EventSource(response).iter_sse():
+            if event.data == "[DONE]":
+                break
+            body = event.json()
+            usage = _parse_usage(body.get("usage"))
+            if usage is not None and not (
+                self.last_usage is not None and self.last_usage.prompt_tokens is not None
+                and self.last_usage.completion_tokens is not None
+                and (usage.prompt_tokens is None or usage.completion_tokens is None)
+            ):
+                self.last_usage = usage
+            if body.get("error"):
+                raise LLMProviderError("模型流式调用失败")
+            for choice in body.get("choices", []):
+                delta = choice.get("delta", {})
+                for key in ("content", "reasoning_content"):
+                    if isinstance(delta.get(key), str):
+                        message[key] += delta[key]
+                for part in delta.get("tool_calls", []):
+                    index = part["index"]
+                    call = calls.setdefault(index, {"id": "", "type": "function",
+                                                     "function": {"name": "", "arguments": ""}})
+                    if part.get("id"):
+                        call["id"] = part["id"]
+                    for key in ("name", "arguments"):
+                        call["function"][key] += part.get("function", {}).get(key, "")
+                if choice.get("finish_reason") in ("length", "content_filter"):
+                    raise LLMProviderError("模型响应未完整生成，请重试")
+                if choice.get("finish_reason") in ("stop", "tool_calls"):
+                    finished = True
+        if not finished:
+            raise LLMProviderError("模型响应未完成，请重试")
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return {"choices": [{"message": message}]}
+
     @property
     def status(self) -> LLMStatus:
         return LLMStatus(
@@ -150,35 +231,7 @@ class OpenAICompatibleChatProvider:
             raise LLMConfigurationError(
                 "请在问答输入区选择可用模型"
             )
-        url = self._chat_url(self.base_url)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        try:
-            response = httpx.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-        except httpx.HTTPError as exc:
-            raise LLMProviderError(f"LLM request failed: {exc}") from exc
-        if response.status_code >= 400:
-            detail = response.text[:500].replace("\n", " ")
-            raise LLMProviderError(
-                f"LLM provider returned HTTP {response.status_code}: {detail}"
-            )
-        try:
-            body: Any = response.json()
-        except ValueError as exc:
-            raise LLMProviderError("LLM provider returned invalid JSON") from exc
-        self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
+        body = self._post_message(self._payload(messages, temperature))
         choices = body.get("choices") if isinstance(body, dict) else None
         if not isinstance(choices, list) or not choices:
             raise LLMProviderError("LLM response must contain at least one choice")
@@ -207,34 +260,8 @@ class OpenAICompatibleChatProvider:
             raise LLMConfigurationError(
                 "回答模型尚未配置，请在工作区设置中选择模型"
             )
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.0,
-        }
-        if tools:
-            payload.update(tools=tools, tool_choice=tool_choice)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        body = self._post_message(self._payload(messages, tools=tools, tool_choice=tool_choice))
         try:
-            response = httpx.post(
-                self._chat_url(self.base_url),
-                headers=headers,
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-        except httpx.HTTPError as exc:
-            raise LLMProviderError(f"LLM request failed: {exc}") from exc
-        if response.status_code >= 400:
-            detail = response.text[:500].replace("\n", " ")
-            raise LLMProviderError(
-                f"LLM provider returned HTTP {response.status_code}: {detail}"
-            )
-        try:
-            body: Any = response.json()
-            self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
             message = body["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError("LLM response did not contain a valid tool message") from exc
@@ -263,6 +290,9 @@ class OpenAICompatibleChatProvider:
             content=content.strip() if isinstance(content, str) else None,
             tool_calls=calls,
             usage=usage,
+            protocol_fields=({"reasoning_content": message.get("reasoning_content", "")}
+                if self.config.thinking.continuation_required
+                and isinstance(message.get("reasoning_content", ""), str) else None),
         )
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
@@ -270,13 +300,7 @@ class OpenAICompatibleChatProvider:
         self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": 0.0,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
+        payload = self._payload(messages, stream=True)
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
