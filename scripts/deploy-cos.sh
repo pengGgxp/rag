@@ -23,6 +23,7 @@ if [ ! -f "$release/images.before" ]; then
 fi
 tar -xzf "$release/source.tar.gz" -C "$project"
 # Preserve the deployed Compose options; forward the existing encryption key only.
+cp "$release/compose.before.yml" "$project/docker-compose.yml"
 python3 - <<'PY'
 import yaml
 from pathlib import Path
