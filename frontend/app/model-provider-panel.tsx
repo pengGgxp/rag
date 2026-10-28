@@ -14,7 +14,8 @@ import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
 const base = "/site/admin/llm-providers";
-const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, version: 0, thinking: emptyThinking };
+const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, version: 0,
+  thinking: emptyThinking, context_capacity: null as number | null, max_output_tokens: null as number | null };
 const capabilities = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"];
 type ProviderForm = typeof blank;
 
@@ -63,7 +64,8 @@ export function ModelProviderPanel() {
 function connectionForm(provider: ModelProvider): ProviderForm {
   return { key: provider.key, name: provider.name, base_url: provider.base_url, model: provider.model,
     api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, version: provider.version,
-    thinking: { ...emptyThinking, ...provider.thinking } };
+    thinking: { ...emptyThinking, ...provider.thinking }, context_capacity: provider.context_capacity ?? null,
+    max_output_tokens: provider.max_output_tokens ?? null };
 }
 
 function priceForm(provider: ModelProvider): Policy[] {
@@ -120,6 +122,10 @@ export function ModelProviderDetail({ id }: { id: string }) {
   }
   const complete = prices.length === 3 && prices.every(p => p.credits_per_unit !== null
     && Number.isInteger(p.credits_per_unit) && p.credits_per_unit >= 0 && Number.isInteger(p.unit_size) && p.unit_size > 0 && p.enabled);
+  const budgetError = (form.context_capacity === null) !== (form.max_output_tokens === null)
+    ? "请同时填写上下文容量和最大输出，或同时留空。"
+    : form.context_capacity && form.max_output_tokens && form.max_output_tokens >= form.context_capacity * 0.95
+      ? "最大输出必须小于上下文容量减去 5% 安全余量。" : "";
   return <>
     <Link href="/admin/models" className="admin-back"><ArrowLeft size={15} />模型管理</Link>
     <AdminHeading title={isNew ? "添加模型" : provider?.name ?? "模型详情"}>
@@ -169,11 +175,21 @@ export function ModelProviderDetail({ id }: { id: string }) {
                 <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
               </div></section>
               <ThinkingConfigFields value={form.thinking} onChange={thinking => setForm({ ...form, thinking })} />
+              <section className="model-form-section"><h2>上下文预算</h2>
+                <p className="billing-muted model-budget-description">按接口提供方的实际规格填写，两项一同配置。留空保持上游默认，但无法启用上下文保护。</p>
+                <div className="provider-form-grid">
+                  <label>上下文容量（Token）<input type="number" min={1024} max={100000000} step={1}
+                    value={form.context_capacity ?? ""} onChange={e => setForm({ ...form, context_capacity: e.target.value ? Number(e.target.value) : null })} /></label>
+                  <label>最大输出（Token）<input type="number" min={1} max={10000000} step={1}
+                    value={form.max_output_tokens ?? ""} onChange={e => setForm({ ...form, max_output_tokens: e.target.value ? Number(e.target.value) : null })} /></label>
+                </div>
+                {budgetError && <p className="form-error" role="alert">{budgetError}</p>}
+              </section>
               <section className="model-form-section"><h2>运行状态</h2><div className="model-scope-fields">
                 <label className="provider-enabled"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
               </div>{isNew && <p className="billing-muted">先保存连接，再补齐三项模型基准价后启用。</p>}</section>
               <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "连接配置"}{provider ? ` · 版本 ${provider.version}` : ""}</span>
-                <button className="primary" disabled={busy || !dirty || !!thinkingConfigError(form.thinking)}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
+                <button className="primary" disabled={busy || !dirty || !!thinkingConfigError(form.thinking) || !!budgetError}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
             </fieldset>
           </form>
         </Tabs.Content>

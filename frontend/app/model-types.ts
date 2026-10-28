@@ -30,6 +30,8 @@ export type ModelProvider = {
   unavailable_reason: string | null;
   thinking?: ThinkingConfig;
   thinking_version?: number;
+  context_capacity?: number | null;
+  max_output_tokens?: number | null;
 };
 
 export type ThinkingConfig = {

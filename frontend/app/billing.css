@@ -216,6 +216,7 @@
 .model-form-section { padding-block: var(--form-section-gap); border-bottom: 1px solid var(--line); }
 .model-form-section:first-child { padding-top: 0; }
 .admin-main .model-form-section h2 { font-size: 14px; margin-bottom: var(--form-gap); }
+.model-budget-description { margin: 0 0 var(--form-gap); font-size: var(--form-label-size); line-height: 1.7; }
 .model-scope-fields { display: grid; gap: 8px; font-size: var(--form-font-size); }
 .model-scope-fields .provider-enabled { display: flex; align-items: center; gap: 10px; min-height: var(--form-control-height); cursor: pointer; }
 .model-scope-fields input { width: 16px; height: 16px; margin: 0; accent-color: var(--brand); }
