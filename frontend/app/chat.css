@@ -308,9 +308,7 @@
   }
 }
 .model-picker {
-  display: flex;
-  min-width: 0;
-  max-width: min(70%, 340px);
+  max-width: 280px;
 }
 .composer-model-controls {
   display: flex;
@@ -320,44 +318,51 @@
   min-width: 0;
   gap: 8px;
 }
-.composer-model-controls .model-picker { flex: 1 1 150px; max-width: 340px; }
-.composer-model-controls .model-picker select { width: 100%; }
-.thinking-picker {
+.model-picker, .thinking-picker {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
   min-width: 0;
-  max-width: 180px;
-  color: var(--text-secondary);
+  min-height: var(--form-control-height);
+  border: 1px solid var(--line);
+  border-radius: var(--form-radius);
+  background: var(--surface);
+  color: var(--muted);
 }
-.thinking-picker > svg { flex: none; }
-.thinking-picker select {
+.thinking-picker { max-width: 210px; }
+.model-picker > svg, .thinking-picker > svg {
+  position: absolute;
+  pointer-events: none;
+}
+.model-picker > svg:first-child, .thinking-picker > svg:first-child { left: 10px; }
+.model-picker > svg:last-child, .thinking-picker > svg:last-child { right: 8px; }
+.model-picker select, .thinking-picker select {
+  appearance: none;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
-  min-height: 40px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--surface);
-  color: var(--text-primary);
-  font-size: var(--form-font-size, 13px);
+  min-height: calc(var(--form-control-height) - 2px);
+  padding: 7px 28px 7px 32px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--form-font-size);
+  line-height: 1.5;
   text-overflow: ellipsis;
+  cursor: pointer;
 }
-.thinking-fixed { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+.model-picker:focus-within, .thinking-picker:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.model-picker select:focus, .thinking-picker select:focus { outline: 0; box-shadow: none; }
+.model-picker:has(select:disabled), .thinking-picker:has(select:disabled) { opacity: .55; }
+.model-picker select:disabled, .thinking-picker select:disabled { cursor: not-allowed; }
+.thinking-fixed { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--form-label-size); }
 .answer-thinking { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .chat-main .answer-actions { flex-wrap: wrap; }
-.model-picker select {
-  min-width: 0;
-  max-width: 100%;
-  min-height: 40px;
-  padding: 6px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--surface);
-  color: var(--text-primary);
-  font-size: var(--form-font-size, 13px);
-  text-overflow: ellipsis;
-}
 .composer-footer .composer-library-count {
   margin-left: auto;
   white-space: nowrap;
@@ -379,13 +384,15 @@
   margin-bottom: 8px;
 }
 @media (max-width: 700px) {
-  .model-picker select { min-height: 44px; }
   .composer-footer .composer-library-count { display: none; }
-  .model-picker { max-width: calc(100% - 56px); }
-  .composer-model-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
-  .composer-model-controls .model-picker { max-width: 100%; }
-  .thinking-picker { max-width: 100%; justify-self: start; }
-  .thinking-picker select { min-height: 44px; }
-  .composer-footer > .send-button { align-self: flex-end; flex-shrink: 0; }
+  .composer-model-controls { display: contents; }
+  .composer-model-controls .model-picker { max-width: 100%; grid-column: 1; }
+  .thinking-picker { max-width: 100%; grid-column: 1; }
+  .model-picker, .thinking-picker { min-height: var(--form-touch-height); }
+  .model-picker select, .thinking-picker select { min-height: var(--form-touch-height); }
+  .composer-footer { display: grid; grid-template-columns: minmax(0, 1fr) var(--form-touch-height); gap: 8px; align-items: end; }
+  .composer-footer:has(.thinking-picker, .thinking-fixed) .model-picker { grid-column: 1 / -1; }
+  .composer-footer > .send-button { grid-column: 2; width: var(--form-touch-height); height: var(--form-touch-height); }
+  .composer textarea { resize: none; }
   .chat-main .answer-actions > .answer-model:first-child { flex-basis: 100%; }
 }

@@ -1015,6 +1015,7 @@ export function ChatWorkspace({
             <div className="composer-footer">
               <div className="composer-model-controls">
               <label className="model-picker">
+                <Layers3 size={15} aria-hidden="true" />
                 <select aria-label="本次请求模型" value={modelId}
                   disabled={running || loading || modelLoading || !!modelError}
                   title={modelOptions?.providers.find(item => item.id === modelId)?.model}
@@ -1024,6 +1025,7 @@ export function ChatWorkspace({
                     {item.name} · {item.model}{!item.available ? `（${item.unavailable_reason === "pricing_unconfigured" ? "价格待配置" : item.unavailable_reason === "model_disabled" ? "已停用" : "服务未就绪"}）` : ""}
                   </option>)}
                 </select>
+                <ChevronDown size={14} aria-hidden="true" />
               </label>
               {thinking?.options.length ? <label className="thinking-picker" title="本次请求思考设置">
                 <BrainCircuit size={15} aria-hidden="true" />
@@ -1033,6 +1035,7 @@ export function ChatWorkspace({
                   onChange={event => setThinkingId(event.target.value)}>
                   {thinking.options.map(item => <option key={item.id} value={item.id}>{item.label} · {item.detail}</option>)}
                 </select>
+                <ChevronDown size={14} aria-hidden="true" />
               </label> : thinking?.kind === "fixed" ? <span className="thinking-fixed"><BrainCircuit size={15} aria-hidden="true" />固定思考</span> : null}
               </div>
               <span className="composer-library-count">

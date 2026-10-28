@@ -115,11 +115,22 @@ async (page) => {
     check(saved.at(-1).thinking.default_option_id === "max", "Saved wrong default");
     check(!("api_key" in saved.at(-1)), "Blank credential overwritten");
     await noOverflow();
+    const style = await page.locator(".thinking-config").evaluate(section => {
+      const input = section.querySelector('input[type="text"], input:not([type])');
+      const checkbox = section.querySelector('input[type="checkbox"]');
+      return { accent: getComputedStyle(checkbox).accentColor,
+        controlHeight: input?.getBoundingClientRect().height,
+        headingSize: getComputedStyle(section.querySelector("h2")).fontSize };
+    });
+    check(style.accent === "rgb(37, 99, 235)" && style.headingSize === "14px", "Thinking form is not using design-system styling");
+    check(style.controlHeight >= (width === 390 ? 44 : 40), "Thinking form control too small");
     await page.screenshot({ path: `output/playwright/issue44-admin-effort-${width}.png`, fullPage: true });
+    await page.locator(".thinking-config").screenshot({ path: `output/playwright/issue44-thinking-section-${width}.png` });
     // Restore the fixture's default before checking user page initial state.
     models[0].thinking.default_option_id = "high";
     await page.goto(`${origin}/admin/models/bailian`);
     await kind.waitFor();
+    await page.getByText("高级兼容设置", { exact: true }).click();
     await page.getByRole("checkbox", { name: "仅支持流式响应", exact: true }).check();
     await page.getByRole("checkbox", { name: "模型始终思考", exact: true }).check();
     await page.getByRole("button", { name: "添加预算预设", exact: true }).click();
@@ -166,6 +177,14 @@ async (page) => {
     await page.getByText("请求思考设置：精简", { exact: true }).waitFor();
     check(await thinking.inputValue() === "small", "Completion reset choice");
     await noOverflow();
+    const pickerStyle = await thinking.evaluate(select => ({
+      font: getComputedStyle(select).fontFamily,
+      referenceFont: getComputedStyle(document.querySelector(".composer textarea")).fontFamily,
+      border: getComputedStyle(select.parentElement).borderTopColor,
+      borderWidth: getComputedStyle(select.parentElement).borderTopWidth,
+    }));
+    check(pickerStyle.font === pickerStyle.referenceFont && pickerStyle.border === "rgb(226, 232, 240)"
+      && pickerStyle.borderWidth === "1px", "Composer controls do not match shared typography/border tokens");
     if (width === 390) {
       const box = await thinking.boundingBox();
       check(box.height >= 44 && box.x + box.width <= width, "Mobile thinking target or overflow");

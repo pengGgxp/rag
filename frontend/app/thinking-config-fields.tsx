@@ -1,6 +1,7 @@
 "use client";
 
-import { Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Tooltip } from "../components/ui/tooltip";
 import { emptyThinking, type ThinkingConfig } from "./model-types";
 
 const levels = {
@@ -73,6 +74,8 @@ export function ThinkingConfigFields({ value, onChange }: {
       </select></label>}
     </div>
     {configurable && <>
+      <details className="thinking-advanced">
+      <summary><SlidersHorizontal size={15} aria-hidden="true" />高级兼容设置<ChevronDown size={15} aria-hidden="true" /></summary>
       <div className="thinking-capability-flags">
         <label className="provider-enabled"><input type="checkbox" checked={value.supports_tools}
           onChange={event => onChange({ ...value, supports_tools: event.target.checked })} />支持 Chat Completions 工具调用</label>
@@ -83,17 +86,20 @@ export function ThinkingConfigFields({ value, onChange }: {
             onChange={event => onChange({ ...value, always_thinking: event.target.checked })} />模型始终思考</label>}
         </>}
       </div>
+      </details>
       {value.kind === "effort" && <fieldset className="thinking-levels"><legend>模型支持的等级</legend>
+        <div className="thinking-option-heading" aria-hidden="true"><span>可选参数</span><span>显示名称</span></div>
         {levels[value.adapter as keyof typeof levels]?.map(level => {
           const chosen = value.options.find(item => item.value === level);
-          return <div className="thinking-option-row" key={level}>
+          return <div className="thinking-option-row" data-selected={!!chosen} key={level}>
             <label className="provider-enabled"><input type="checkbox" checked={!!chosen} onChange={event => {
               if (!event.target.checked) { removeOption(chosen!.id); return; }
               onChange({ ...value, options: [...value.options, { id: level, label: labels[level], value: level }],
                 default_option_id: value.default_option_id ?? level });
             }} />{labels[level]} <code>{level}</code></label>
-            {chosen && <label className="thinking-option-name">显示名称<input aria-label={`${level} 显示名称`} required maxLength={40}
-              value={chosen.label} onChange={event => patchOption(chosen.id, { label: event.target.value })} /></label>}
+            {chosen ? <label className="thinking-option-name"><span>显示名称</span><input aria-label={`${level} 显示名称`} required maxLength={40}
+              value={chosen.label} onChange={event => patchOption(chosen.id, { label: event.target.value })} /></label>
+              : <span className="thinking-option-empty" aria-hidden="true">未启用</span>}
           </div>;
         })}
       </fieldset>}
@@ -107,10 +113,10 @@ export function ThinkingConfigFields({ value, onChange }: {
         <div className="thinking-presets">
           {value.options.map(option => <div className="thinking-budget-row" key={option.id}>
             <label>预设名称<input required maxLength={40} value={option.label} onChange={event => patchOption(option.id, { label: event.target.value })} /></label>
-            <label>预算（Token）<input required type="number" step={1} min={value.budget_min} max={value.budget_max} value={option.value}
-              onChange={event => patchOption(option.id, { value: Number(event.target.value) })} /></label>
-            <button className="icon-button" type="button" title={`删除${option.label}预设`} aria-label={`删除${option.label}预设`}
-              onClick={() => removeOption(option.id)}><Trash2 size={16} /></button>
+            <label>预算（Token）<span className="policy-input"><input required type="number" step={1} min={value.budget_min} max={value.budget_max} value={option.value}
+              onChange={event => patchOption(option.id, { value: Number(event.target.value) })} /><span aria-hidden="true">Token</span></span></label>
+            <Tooltip content={`删除${option.label}预设`}><button className="icon-button" type="button" aria-label={`删除${option.label}预设`}
+              onClick={() => removeOption(option.id)}><Trash2 size={16} /></button></Tooltip>
           </div>)}
           <button type="button" className="secondary" disabled={value.options.length >= 10} onClick={() => {
             let index = 1;
