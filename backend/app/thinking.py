@@ -4,7 +4,7 @@ import json
 from typing import Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
 
 EFFORTS = {
     "deepseek": ("disabled", "low", "high", "max"),
@@ -17,7 +17,7 @@ class ThinkingOption(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,39}$")
     label: str = Field(min_length=1, max_length=40)
-    value: str | int = Field(union_mode="left_to_right")
+    value: StrictStr | StrictInt
 
 
 class ThinkingConfig(BaseModel):
@@ -31,15 +31,6 @@ class ThinkingConfig(BaseModel):
     supports_tools: bool = True
     stream_only: bool = False
     always_thinking: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def strict_option_values(cls, data):
-        if isinstance(data, dict):
-            for option in data.get("options", []):
-                if isinstance(option, dict) and type(option.get("value")) not in (str, int):
-                    raise ValueError("选项参数必须是字符串或整数")
-        return data
 
     @model_validator(mode="after")
     def valid_capability(self):

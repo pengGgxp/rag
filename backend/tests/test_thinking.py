@@ -186,6 +186,7 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     final = events[-1].json()
     assert final["status"] == "completed", final
     assert final["thinking"]["config_version"] == 1
+    assert all("private" not in event.data for event in events)
     assert all(item["reasoning_effort"] == "high" for item in observed)
     assert observed[1]["messages"][-2]["reasoning_content"] == "private-first"
     saved = db.scalar(select(ChatMessage).where(ChatMessage.role == "assistant"))

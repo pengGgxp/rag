@@ -28,6 +28,32 @@ export type ModelProvider = {
   workspace_count: number;
   available: boolean;
   unavailable_reason: string | null;
+  thinking?: ThinkingConfig;
+  thinking_version?: number;
+};
+
+export type ThinkingConfig = {
+  kind: "unconfigured" | "unsupported" | "fixed" | "toggle" | "effort" | "budget";
+  adapter: "none" | "deepseek" | "bailian" | "openai";
+  options: { id: string; label: string; value: string | number }[];
+  default_option_id: string | null;
+  budget_min: number;
+  budget_max: number;
+  supports_tools: boolean;
+  stream_only: boolean;
+  always_thinking: boolean;
+};
+
+export type ThinkingCapability = {
+  kind: ThinkingConfig["kind"];
+  version: number;
+  default_option_id: string | null;
+  options: { id: string; label: string; detail: string }[];
+};
+
+export const emptyThinking: ThinkingConfig = {
+  kind: "unconfigured", adapter: "none", options: [], default_option_id: null,
+  budget_min: 1, budget_max: 32768, supports_tools: true, stream_only: false, always_thinking: false,
 };
 
 export function availabilityLabel(reason: string | null) {

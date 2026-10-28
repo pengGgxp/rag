@@ -43,3 +43,8 @@ Rollback preserves the added tables, associations and consumption. Do not restor
 - Frontend production build and diff check passed. Local Playwright API fixtures verified creation, credential non-return, draft OCR zero versus missing Embedding, selection persistence, unsaved-close confirmation, keyboard and Escape/reduced-motion behavior.
 - Captured provider form, template and selection screenshots at 1440, 700 and 390 pixels in `output/playwright/issue38-*`; no document-level horizontal overflow. Fixed checkbox sizing and action-row layout discovered through screenshots. Fixtures do not constitute live upstream acceptance.
 - Source/configuration migration is additive. Existing missing prices remain missing; new model selection requires complete prices even while migrated active connections continue under the existing billing gate.
+
+## 请求级思考配置
+
+站点模型的连接配置包含独立版本的思考能力，问答与 Agent 按请求选择。
+参数适配、默认规则和私有续传边界见 [模型思考配置](model-thinking.md)。

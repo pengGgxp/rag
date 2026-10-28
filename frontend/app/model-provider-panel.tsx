@@ -8,12 +8,13 @@ import * as Tabs from "../components/ui/tabs";
 import { request } from "./api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useAdminChanges } from "./admin/admin-changes";
-import { availabilityLabel, type ModelProvider, type Policy } from "./model-types";
+import { availabilityLabel, emptyThinking, type ModelProvider, type Policy } from "./model-types";
+import { ThinkingConfigFields, thinkingConfigError } from "./thinking-config-fields";
 import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
 const base = "/site/admin/llm-providers";
-const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, version: 0 };
+const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, version: 0, thinking: emptyThinking };
 const capabilities = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"];
 type ProviderForm = typeof blank;
 
@@ -61,7 +62,8 @@ export function ModelProviderPanel() {
 
 function connectionForm(provider: ModelProvider): ProviderForm {
   return { key: provider.key, name: provider.name, base_url: provider.base_url, model: provider.model,
-    api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, version: provider.version };
+    api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, version: provider.version,
+    thinking: { ...emptyThinking, ...provider.thinking } };
 }
 
 function priceForm(provider: ModelProvider): Policy[] {
@@ -166,11 +168,12 @@ export function ModelProviderDetail({ id }: { id: string }) {
                 <label><span className="provider-key-label">API Key{!isNew && <small>{provider?.has_api_key ? "已配置，留空保留" : "尚未配置"}</small>}</span><input type="password" autoComplete="new-password" required={isNew} value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} /></label>
                 <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
               </div></section>
+              <ThinkingConfigFields value={form.thinking} onChange={thinking => setForm({ ...form, thinking })} />
               <section className="model-form-section"><h2>运行状态</h2><div className="model-scope-fields">
                 <label className="provider-enabled"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
               </div>{isNew && <p className="billing-muted">先保存连接，再补齐三项模型基准价后启用。</p>}</section>
               <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "连接配置"}{provider ? ` · 版本 ${provider.version}` : ""}</span>
-                <button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
+                <button className="primary" disabled={busy || !dirty || !!thinkingConfigError(form.thinking)}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
             </fieldset>
           </form>
         </Tabs.Content>

@@ -15,6 +15,9 @@ export const API_URL =
     : configuredApiUrl;
 
 let csrfToken = "";
+export class ApiError extends Error {
+  constructor(public status: number, message: string) { super(message); }
+}
 export function setCsrfToken(value: string) {
   csrfToken = value;
 }
@@ -62,7 +65,7 @@ export async function request<T>(
   if (response.status === 204) return undefined as T;
   const data = await response.json();
   if (!response.ok)
-    throw new Error(
+    throw new ApiError(response.status,
       typeof data.detail === "string"
         ? data.detail
         : `请求失败 (${response.status})`,
@@ -104,7 +107,7 @@ export async function streamRequest(
     if (response.status === 401)
       window.dispatchEvent(new Event("rag-session-expired"));
     const error = await response.json().catch(() => ({}));
-    throw new Error(
+    throw new ApiError(response.status,
       typeof error.detail === "string"
         ? error.detail
         : `请求失败 (${response.status})`,

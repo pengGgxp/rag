@@ -90,3 +90,10 @@ gates, dual current-model flows or migration product pages.
   navigation removal, a single settings dialog, selection retention when closing
   settings and clearing on refresh. The site has no configured default model;
   refresh therefore shows the selection placeholder, not an invented fallback.
+
+## 思考设置
+
+思考设置与模型选择均仅保留当前页面状态，不保存为会话偏好。
+切换模型恢复目标模型默认值；生成期间禁用，重试使用当前设置。
+服务端返回过期版本时保留问题，重新加载并要求确认，不静默换档。
+回答的“请求思考设置”是请求快照，不表示实测思考深度。

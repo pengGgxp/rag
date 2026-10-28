@@ -5,6 +5,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   BookOpen,
+  BrainCircuit,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -23,7 +24,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { API_URL, request, streamRequest } from "./api";
+import { API_URL, ApiError, request, streamRequest } from "./api";
+import type { ThinkingCapability } from "./model-types";
 import { Modal } from "./modal";
 import { WorkspaceNavigation } from "./workspace-shell";
 import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
@@ -73,6 +75,7 @@ type Message = {
   feedback?: Feedback | null;
   provider_name?: string | null;
   model?: string | null;
+  thinking?: { label: string; option_id: string | null; config_version: number; kind: string } | null;
 };
 type ModelChoice = {
   id: string;
@@ -80,6 +83,7 @@ type ModelChoice = {
   model: string;
   available: boolean;
   unavailable_reason?: "model_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
+  thinking?: ThinkingCapability;
 };
 type ModelOptions = { default_provider_id: string | null; providers: ModelChoice[] };
 type Conversation = {
@@ -171,6 +175,9 @@ export function ChatWorkspace({
   const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection>({ skill_ids: [], mcp_server_ids: [] });
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
   const [modelId, setModelId] = useState("");
+  const [thinkingId, setThinkingId] = useState("");
+  const [thinkingVersion, setThinkingVersion] = useState(0);
+  const [thinkingStale, setThinkingStale] = useState(false);
   const [modelError, setModelError] = useState("");
   const [modelLoading, setModelLoading] = useState(true);
   const [modelAttempt, setModelAttempt] = useState(0);
@@ -203,6 +210,8 @@ export function ChatWorkspace({
   const follow = useRef(true);
   const draftScopeInitialized = useRef(!!initialLibraryId);
   viewRef.current = conversation;
+  const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
+  const thinking = selectedModel?.thinking;
   const selectedNames = conversation
     ? conversation.knowledge_bases.map((item) => item.name)
     : libraries
@@ -256,6 +265,10 @@ export function ChatWorkspace({
     }).finally(() => { if (!controller.signal.aborted) setModelLoading(false); });
     return () => controller.abort();
   }, [modelAttempt]);
+  useEffect(() => {
+    setThinkingId(thinking?.default_option_id ?? "");
+    setThinkingVersion(thinking?.version ?? 0);
+  }, [modelId, thinking?.version, thinking?.default_option_id]);
   useEffect(() => {
     // Creating a conversation replaces the URL while its stream is already active.
     if (conversationId && viewRef.current?.id === conversationId) return;
@@ -375,7 +388,7 @@ export function ChatWorkspace({
   async function send(retryId?: string) {
     if (
       sending.current ||
-      modelLoading || !!modelError || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
+      modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
       extensionsBusy ||
       (!retryId && !question.trim()) ||
@@ -447,6 +460,8 @@ export function ChatWorkspace({
         {
           request_id: active.requestId,
           provider_id: modelId,
+          thinking_config_version: thinkingVersion,
+          ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
           ...(retryId ? { retry_message_id: retryId } : { query }),
         },
         controller.signal,
@@ -500,6 +515,10 @@ export function ChatWorkspace({
       );
     } catch (error) {
       if (!controller.signal.aborted && epoch.current === currentEpoch) {
+        if (error instanceof ApiError && error.status === 409 && error.message.includes("思考配置")) {
+          setThinkingStale(true);
+          setModelAttempt(value => value + 1);
+        }
         report(error);
         if (!received && !retryId) setQuestion(query);
         if (active) await stopGeneration();
@@ -818,7 +837,7 @@ export function ChatWorkspace({
                           {index === conversation.messages.length - 1 && (
                             <button
                               className="text-button"
-                              disabled={running || modelLoading || !!modelError || !modelOptions?.providers.some(item => item.id === modelId && item.available)}
+                              disabled={running || modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available)}
                               onClick={() => void send(message.id)}
                             >
                               <RefreshCw size={13} />
@@ -866,6 +885,9 @@ export function ChatWorkspace({
                         <div className="answer-actions">
                           {message.model && <span className="answer-model" title={`${message.provider_name ?? ""} · ${message.model}`}>
                             {message.provider_name} · {message.model}
+                          </span>}
+                          {message.thinking && <span className="answer-model answer-thinking" title={`请求思考设置 · ${message.thinking.label}`}>
+                            <BrainCircuit size={13} aria-hidden="true" />请求思考设置：{message.thinking.label}
                           </span>}
                           {message.content && (
                             <button
@@ -957,6 +979,12 @@ export function ChatWorkspace({
           </div>}
           {!modelLoading && !modelError && modelOptions && !modelOptions.providers.some(item => item.available) &&
             <p className="model-status" role="status">暂无可用模型，请联系站点管理员。</p>}
+          {thinkingStale && <div className="model-status form-error" role="alert">
+            <span>思考配置已更新，请确认当前设置。</span>
+            <button type="button" className="text-button" disabled={modelLoading || !!modelError} onClick={() => setThinkingStale(false)}>
+              确认设置
+            </button>
+          </div>}
           <form
             className="composer"
             onSubmit={(event) => {
@@ -985,17 +1013,28 @@ export function ChatWorkspace({
               }}
             />
             <div className="composer-footer">
+              <div className="composer-model-controls">
               <label className="model-picker">
                 <select aria-label="本次请求模型" value={modelId}
                   disabled={running || loading || modelLoading || !!modelError}
                   title={modelOptions?.providers.find(item => item.id === modelId)?.model}
-                  onChange={event => setModelId(event.target.value)}>
+                  onChange={event => { setModelId(event.target.value); setThinkingStale(false); }}>
                   <option value="" disabled>{modelLoading ? "加载模型…" : "选择模型"}</option>
                   {modelOptions?.providers.map(item => <option key={item.id} value={item.id} disabled={!item.available}>
                     {item.name} · {item.model}{!item.available ? `（${item.unavailable_reason === "pricing_unconfigured" ? "价格待配置" : item.unavailable_reason === "model_disabled" ? "已停用" : "服务未就绪"}）` : ""}
                   </option>)}
                 </select>
               </label>
+              {thinking?.options.length ? <label className="thinking-picker" title="本次请求思考设置">
+                <BrainCircuit size={15} aria-hidden="true" />
+                <select aria-label="本次请求思考设置" value={thinkingId}
+                  disabled={running || loading || modelLoading || !!modelError}
+                  title={thinking.options.find(item => item.id === thinkingId)?.detail}
+                  onChange={event => setThinkingId(event.target.value)}>
+                  {thinking.options.map(item => <option key={item.id} value={item.id}>{item.label} · {item.detail}</option>)}
+                </select>
+              </label> : thinking?.kind === "fixed" ? <span className="thinking-fixed"><BrainCircuit size={15} aria-hidden="true" />固定思考</span> : null}
+              </div>
               <span className="composer-library-count">
                 <BookOpen size={14} />
                 {selectedNames.length} 个知识库
@@ -1021,7 +1060,7 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    !question.trim() || loading || extensionsBusy || !!conversationError || modelLoading || !!modelError ||
+                    !question.trim() || loading || extensionsBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)
                   }
                   type="submit"

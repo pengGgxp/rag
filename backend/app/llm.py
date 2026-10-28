@@ -139,7 +139,9 @@ class OpenAICompatibleChatProvider:
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
         payload = {"model": self.model, "messages": messages}
-        if thinking.adapter == "none":
+        if thinking.adapter == "none" or (
+            thinking.adapter in ("deepseek", "bailian") and thinking.value == "disabled"
+        ):
             payload["temperature"] = temperature
         payload.update(thinking.parameters())
         if tools:

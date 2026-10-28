@@ -312,6 +312,40 @@
   min-width: 0;
   max-width: min(70%, 340px);
 }
+.composer-model-controls {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.composer-model-controls .model-picker { flex: 1 1 150px; max-width: 340px; }
+.composer-model-controls .model-picker select { width: 100%; }
+.thinking-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 180px;
+  color: var(--text-secondary);
+}
+.thinking-picker > svg { flex: none; }
+.thinking-picker select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-size: var(--form-font-size, 13px);
+  text-overflow: ellipsis;
+}
+.thinking-fixed { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 12px; }
+.answer-thinking { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.chat-main .answer-actions { flex-wrap: wrap; }
 .model-picker select {
   min-width: 0;
   max-width: 100%;
@@ -348,4 +382,10 @@
   .model-picker select { min-height: 44px; }
   .composer-footer .composer-library-count { display: none; }
   .model-picker { max-width: calc(100% - 56px); }
+  .composer-model-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .composer-model-controls .model-picker { max-width: 100%; }
+  .thinking-picker { max-width: 100%; justify-self: start; }
+  .thinking-picker select { min-height: 44px; }
+  .composer-footer > .send-button { align-self: flex-end; flex-shrink: 0; }
+  .chat-main .answer-actions > .answer-model:first-child { flex-basis: 100%; }
 }
