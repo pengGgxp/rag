@@ -267,6 +267,51 @@ def test_real_sdk_signature_includes_part_number_upload_id_and_content_length():
     assert altered["q-signature"] != signed["q-signature"]
 
 
+@pytest.mark.parametrize("size", [0, 2 * 1024 * 1024 + 13], ids=["empty", "multiple-chunks"])
+def test_download_reads_real_sdk_stream_body_and_closes_connection(size):
+    from types import SimpleNamespace
+    from requests import Response
+    from qcloud_cos.streambody import StreamBody
+
+    content = b"x" * size
+    response = Response()
+    response.status_code = 200
+    response.headers["Content-Length"] = str(len(content))
+    response.raw = io.BytesIO(content)
+    storage = CosStorage.__new__(CosStorage)
+    storage.bucket = "test-123"
+    storage.sdk = SimpleNamespace(get_object=lambda **_: {"Body": StreamBody(response)})
+    with storage.download("document.txt") as downloaded:
+        assert downloaded.tell() == 0
+        assert downloaded.read() == content
+    assert response.raw.closed
+
+
+def test_download_failure_closes_files_and_hides_provider_details(monkeypatch):
+    from types import SimpleNamespace
+    from app import cos_storage
+    from requests import Response
+    from qcloud_cos.streambody import StreamBody
+
+    class BrokenStream(io.BytesIO):
+        def read(self, *_args, **_kwargs):
+            raise OSError("private signed URL and provider details")
+
+    response = Response()
+    response.headers["Content-Length"] = "10"
+    response.raw = BrokenStream()
+    temporary = io.BytesIO()
+    monkeypatch.setattr(cos_storage, "TemporaryFile", lambda: temporary)
+    storage = CosStorage.__new__(CosStorage)
+    storage.bucket = "test-123"
+    storage.sdk = SimpleNamespace(get_object=lambda **_: {"Body": StreamBody(response)})
+    with pytest.raises(HTTPException) as caught:
+        storage.download("document.txt")
+    assert caught.value.status_code == 503
+    assert "private" not in caught.value.detail
+    assert response.raw.closed and temporary.closed
+
+
 def test_orphan_cleanup_never_deletes_original_versions_or_active_uploads(direct, monkeypatch):
     owner, _, db, _, kb, storage, _, _ = direct
     from test_retrieval import add_document

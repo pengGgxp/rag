@@ -38,8 +38,12 @@ class CosStorage:
         output = TemporaryFile()
         try:
             response = self._call("get_object", Key=key)
-            for chunk in response["Body"].get_stream().iter_content(chunk_size=1024 * 1024):
-                output.write(chunk)
+            body = response["Body"]
+            try:
+                for chunk in body.get_stream(chunk_size=1024 * 1024):
+                    output.write(chunk)
+            finally:
+                body.get_raw_stream().close()
             output.seek(0)
             return output
         except Exception:
