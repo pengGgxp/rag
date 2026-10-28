@@ -32,6 +32,7 @@ import { Authentication } from "./authentication";
 import { AuthFrame } from "./auth-frame";
 import "./auth.css";
 import { useSettingsNavigation } from "./settings/settings-navigation";
+import { DocumentUploadProvider } from "./document-uploads";
 
 export type Role = "admin" | "editor" | "viewer";
 export type AuthOptions = {
@@ -454,11 +455,11 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
         logout,
       }}
     >
-      <div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
+      <DocumentUploadProvider key={session.user.id}><div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
         <div className="app-view">
           {children}
         </div>
-      </div>
+      </div></DocumentUploadProvider>
       {!workspace && (
         <Modal title="工作区访问已变更" onClose={() => undefined}>
           <button className="primary" onClick={() => window.location.assign("/settings")}>

@@ -158,6 +158,18 @@ class AliyunDocMind:
             offset += len(batch)
         return normalize_layouts(layouts, page_count, allow_empty=True)
 
+    def submit_url(self, url: str, page_count: int) -> str:
+        if page_count < 1:
+            raise DocMindError("PDF 没有可解析页面")
+        data = self._request(self.client.submit_doc_parser_job_with_options,
+            models.SubmitDocParserJobRequest(file_url=url, file_name="document.pdf",
+                file_name_extension="pdf", page_index=f"1-{page_count}",
+                output_format=["markdown", "visualLayoutInfo"],
+                llm_enhancement=False, formula_enhancement=False))
+        if data is None or not data.id:
+            raise DocMindError("阿里云未返回解析任务标识，未自动重复提交", uncertain=True)
+        return data.id
+
 
 def normalize_layouts(layouts: list[dict], page_count: int, *, allow_empty: bool = False) -> ParsedDocument:
     pages: dict[int, list[dict]] = {page: [] for page in range(1, page_count + 1)}

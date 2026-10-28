@@ -10,6 +10,7 @@ import { useUiStore } from "./ui-store";
 import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
 import { KnowledgeNavigation } from "./knowledge-navigation";
 import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
+import { useDocumentUploads } from "./document-uploads";
 import type {
   Health,
   KnowledgeBase,
@@ -79,15 +80,12 @@ export default function KnowledgeWorkspace() {
   if (pathname === "/") workspaceParams.current = searchParams;
   const params = workspaceParams.current;
   const { role } = useAuth();
+  const uploads = useDocumentUploads();
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const selectedId = params.get("library") || "";
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
-  const [ingestionOptions, setIngestionOptions] = useState<{
-    third_party_processor: string | null;
-    max_pdf_pages: number | null;
-  } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const screen: WorkspaceScreen = params.has("conversation") || params.has("chat")
     ? "chat" : params.has("extensions") ? "extensions" : selectedId ? "knowledge" : "catalog";
@@ -110,7 +108,7 @@ export default function KnowledgeWorkspace() {
   const [documentError, setDocumentError] = useState("");
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [modal, setModal] = useState<
-    "create" | "edit" | "upload" | "versions" | null
+    "create" | "edit" | "versions" | null
   >(null);
   const [versionTarget, setVersionTarget] = useState<SourceDocument | null>(null);
   const [versions, setVersions] = useState<SourceDocument[]>([]);
@@ -118,8 +116,6 @@ export default function KnowledgeWorkspace() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [tagsInput, setTagsInput] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploadFailures, setUploadFailures] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState("");
   const [notice, setNotice] = useState<{
@@ -129,7 +125,6 @@ export default function KnowledgeWorkspace() {
   const [preview, setPreview] = useState<Preview | null>(null);
   const selectedRef = useRef(selectedId);
   const documentRequest = useRef(0);
-  const fileInput = useRef<HTMLInputElement>(null);
   selectedRef.current = selectedId;
 
   const notifyError = useCallback((error: unknown) => {
@@ -183,10 +178,16 @@ export default function KnowledgeWorkspace() {
   useEffect(() => {
     loadLibraries().catch(notifyError);
     void refreshHealth();
-    request<{ third_party_processor: string | null; max_pdf_pages: number | null }>(
-      "/ingestion/options",
-    ).then(setIngestionOptions).catch(notifyError);
   }, [loadLibraries, notifyError, refreshHealth]);
+  useEffect(() => {
+    const admitted = (event: Event) => {
+      const id = (event as CustomEvent<{ library: string }>).detail.library;
+      if (id === selectedRef.current) void loadDocuments(id, true).catch(notifyError);
+      void loadLibraries().catch(notifyError);
+    };
+    window.addEventListener("rag-upload-admitted", admitted);
+    return () => window.removeEventListener("rag-upload-admitted", admitted);
+  }, [loadDocuments, loadLibraries, notifyError]);
   useEffect(() => {
     setDocuments([]);
     setDocumentError("");
@@ -215,9 +216,11 @@ export default function KnowledgeWorkspace() {
   }, [notice]);
 
   function openModal(next: "create" | "edit" | "upload") {
+    if (next === "upload") {
+      if (selected) uploads.open({ id: selected.id, name: selected.name });
+      return;
+    }
     setModalError("");
-    setFiles([]);
-    setUploadFailures([]);
     setVersionTarget(null);
     setTagsInput("");
     setModal(next);
@@ -270,11 +273,8 @@ export default function KnowledgeWorkspace() {
     }
   }
   function openVersionUpload(doc: SourceDocument) {
-    setModalError("");
-    setFiles([]);
-    setUploadFailures([]);
-    setVersionTarget(doc);
-    setModal("upload");
+    setModal(null);
+    if (selected) uploads.open({ id: selected.id, name: selected.name, versionOf: doc.id, filename: doc.filename });
   }
   async function openVersions(doc: SourceDocument) {
     setVersionsLoading(true);
@@ -331,72 +331,6 @@ export default function KnowledgeWorkspace() {
       setNotice({ text: "知识库已创建" });
     } catch (error) {
       setModalError(error instanceof Error ? error.message : "创建失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-  function chooseFiles(next?: FileList | File[]) {
-    setModalError("");
-    const selectedFiles = Array.from(next ?? []);
-    if (versionTarget && selectedFiles.length > 1) {
-      setModalError("文档版本上传一次只能选择一个文件");
-    }
-    const candidates = versionTarget ? selectedFiles.slice(0, 1) : selectedFiles;
-    const oversized = selectedFiles.filter(
-      (item) => item.size > 200 * 1024 * 1024,
-    );
-    if (oversized.length) {
-      setModalError(`${oversized.map((item) => item.name).join("、")} 超过 200 MB`);
-    }
-    setFiles(
-      candidates.filter((item) => item.size <= 200 * 1024 * 1024),
-    );
-    setUploadFailures([]);
-  }
-  async function uploadDocument(event: FormEvent) {
-    event.preventDefault();
-    if (!files.length || !selectedId) return;
-    const id = selectedId;
-    setBusy(true);
-    setModalError("");
-    const failures: string[] = [];
-    const remaining: File[] = [];
-    let successCount = 0;
-    try {
-      for (const nextFile of files) {
-        const body = new FormData();
-        body.append("file", nextFile);
-        if (versionTarget) body.append("version_of", versionTarget.id);
-        try {
-          await request(`/knowledge-bases/${id}/documents`, {
-            method: "POST",
-            body,
-          });
-          successCount += 1;
-        } catch (error) {
-          remaining.push(nextFile);
-          failures.push(
-            `${nextFile.name}：${error instanceof Error ? error.message : "上传失败"}`,
-          );
-        }
-        if (versionTarget) break;
-      }
-      setFiles(remaining);
-      setUploadFailures(failures);
-      setNotice({
-        text: versionTarget
-          ? successCount
-            ? "新版本已上传，处理完成后可切换生效版本"
-            : "新版本上传失败"
-          : `已上传 ${successCount} 个文件${failures.length ? `，${failures.length} 个失败` : ""}`,
-        error: failures.length > 0 && successCount === 0,
-      });
-      await refresh(id);
-      if (!failures.length) setModal(null);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : "上传失败";
-      setModalError(text);
-      setNotice({ text, error: true });
     } finally {
       setBusy(false);
     }
@@ -842,6 +776,7 @@ export default function KnowledgeWorkspace() {
                     <button
                       className="primary"
                       disabled={!canEdit || selected.status === "archived"}
+                      data-upload-trigger
                       onClick={() => openModal("upload")}
                     >
                       <Plus size={16} />
@@ -1028,6 +963,7 @@ export default function KnowledgeWorkspace() {
                         <button
                           disabled={!canEdit}
                           className="text-button"
+                          data-upload-trigger
                           onClick={() => openModal("upload")}
                         >
                           上传文档
@@ -1193,110 +1129,6 @@ export default function KnowledgeWorkspace() {
                 disabled={busy || !name.trim()}
               >
                 {busy && <Loader2 size={15} className="spin" />}保存修改
-              </button>
-            </div>
-          </form>
-        </Modal>
-      )}
-      {modal === "upload" && (
-        <Modal
-          title={versionTarget ? `上传 ${versionTarget.filename} 的新版本` : "上传文档"}
-          onClose={() => setModal(null)}
-          busy={busy}
-        >
-          <form className="modal-form" onSubmit={uploadDocument}>
-            <div className="upload-destination">
-              <BookOpen size={15} />
-              <span>{selected?.name}</span>
-            </div>
-            <label
-              className={`dropzone ${files.length ? "has-file" : ""}`}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={(event) => {
-                event.preventDefault();
-                if (!busy) chooseFiles(event.dataTransfer.files);
-              }}
-            >
-              <input
-                ref={fileInput}
-                aria-label="选择文件"
-                type="file"
-                multiple={!versionTarget}
-                accept=".pdf,.docx,.md,.txt,.html,.csv,.xlsx"
-                disabled={busy}
-                onChange={(event) => chooseFiles(event.target.files ?? undefined)}
-              />
-              <span className="upload-symbol">
-                {files.length ? <FileText size={26} /> : <Upload size={26} />}
-              </span>
-              <strong>
-                {files.length
-                  ? `已选择 ${files.length} 个文件`
-                  : "选择文件或拖拽到此处"}
-              </strong>
-              <span>
-                {files.length
-                  ? `${sizeLabel(files.reduce((total, item) => total + item.size, 0))} 总计`
-                  : "PDF、DOCX、MD、TXT、HTML、CSV、XLSX"}
-              </span>
-              <small>
-                {versionTarget
-                  ? "单个文件最大 200 MB"
-                  : "可一次选择多个文件，单个文件最大 200 MB"}
-              </small>
-            </label>
-            {ingestionOptions?.third_party_processor && (
-              <p className="field-hint">
-                PDF 将上传至{ingestionOptions.third_party_processor}进行文字与版面解析。
-                请确认你有权上传相关资料。
-              </p>
-            )}
-            {files.length > 0 && (
-              <ul className="upload-file-list">
-                {files.map((item) => (
-                  <li key={`${item.name}-${item.lastModified}`}>
-                    <FileText size={14} />
-                    <span>{item.name}</span>
-                    <small>{sizeLabel(item.size)}</small>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {uploadFailures.length > 0 && (
-              <div className="form-error upload-failures" role="alert">
-                <strong>以下文件上传失败，可保留后重试：</strong>
-                <ul>
-                  {uploadFailures.map((failure) => (
-                    <li key={failure}>{failure}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {modalError && (
-              <p className="form-error" role="alert">
-                {modalError}
-              </p>
-            )}
-            <div className="modal-footer">
-              <button
-                className="secondary"
-                type="button"
-                disabled={busy}
-                onClick={() => setModal(null)}
-              >
-                取消
-              </button>
-              <button
-                className="primary"
-                disabled={busy || !files.length}
-                type="submit"
-              >
-                {busy ? (
-                  <Loader2 size={15} className="spin" />
-                ) : (
-                  <Upload size={15} />
-                )}
-                {busy ? "上传中…" : "上传文档"}
               </button>
             </div>
           </form>

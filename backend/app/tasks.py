@@ -1,6 +1,7 @@
 from celery import Celery
 from sqlalchemy import select
 from uuid import UUID
+import io
 
 from .config import get_settings
 from .db import SessionLocal
@@ -18,6 +19,7 @@ from .models import (
     IngestionJob,
     JobState,
     KnowledgeBaseStatus,
+    SiteStorageSettings,
 )
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
@@ -28,6 +30,22 @@ from .workspace_billing import document_snapshot
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
+
+
+def ocr_storage(session):
+    from .cos_storage import CosStorage
+    settings = session.get(SiteStorageSettings, 1)
+    return CosStorage(settings) if settings and settings.active else None
+
+
+def cleanup_ocr_object(storage, key):
+    if storage and key:
+        try:
+            storage.delete(key)
+        except Exception:
+            # Retain the key in the parsing checkpoint for later cleanup.
+            return False
+    return True
 
 
 def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocument:
@@ -63,6 +81,10 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     check_active()
     if not metadata.get("task_id") and metadata.get("status") == "submitting":
         raise DocMindError("上次云端提交结果未知，已阻止重复付费提交，请由管理员核对云端任务")
+    source_url = None
+    if not metadata.get("task_id"):
+        storage = ocr_storage(session)
+        source_url = storage.read_url(document.object_key) if storage else None
     authorization_hold(session, workspace_id, None, job.id, hold_amount)
     session.commit()
     ocr_hold = True
@@ -75,7 +97,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
         document.parsing_metadata = metadata
         session.commit()
         try:
-            task_id = provider.submit(content, page_count)
+            task_id = provider.submit_url(source_url, page_count) if source_url else provider.submit(content, page_count)
         except DocMindError as exc:
             if not exc.uncertain:
                 # An explicit rejection is safe to retry after configuration is fixed.
@@ -151,10 +173,19 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
             if part["status"] != "complete":
                 if not part.get("task_id"):
                     content = pdf_part(pages, part["start"], part["end"])
+                    storage = ocr_storage(session)
+                    source_url = None
+                    if storage:
+                        part["object_key"] = f"_ocr/{document.id}/{job.id}/{part['start']}-{part['end']}.pdf"
+                        # Persist before uploading so an interrupted submission is cleanable.
+                        save()
+                        storage.put(part["object_key"], io.BytesIO(content), "application/pdf")
+                        source_url = storage.read_url(part["object_key"])
                     part["status"] = "submitting"
                     save()
                     try:
-                        part["task_id"] = provider.submit(content, part["end"] - part["start"])
+                        count = part["end"] - part["start"]
+                        part["task_id"] = provider.submit_url(source_url, count) if source_url else provider.submit(content, count)
                     except DocMindError as exc:
                         if not exc.uncertain:
                             part["status"] = "pending"
@@ -168,6 +199,9 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
                 check_active()
                 part.update(status="complete", text=parsed.text, pages=parsed.pages)
                 save()
+                if cleanup_ocr_object(ocr_storage(session), part.get("object_key")):
+                    part.pop("object_key", None)
+                    save()
             for page in part["pages"]:
                 combined.append((part["start"] + page["page_number"], [
                     {**block, "text": part["text"][block["char_start"]:block["char_end"]]}
@@ -199,7 +233,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
 
 
 @celery_app.task(bind=True, autoretry_for=(ConnectionError,), retry_backoff=True, max_retries=3)
-def process_document(self, job_id: str) -> None:
+def process_document(self, job_id: str, *, prepared_content: bytes | None = None) -> None:
     job_id = UUID(str(job_id))
     session = SessionLocal()
     job = None
@@ -225,7 +259,11 @@ def process_document(self, job_id: str) -> None:
         document.status = DocumentStatus.PROCESSING
         session.commit()
 
-        content = download_fileobj(document.object_key).read()
+        if prepared_content is None:
+            with download_fileobj(document.object_key) as source:
+                content = source.read()
+        else:
+            content = prepared_content
         parsed = parse_for_ingestion(session, job, document, content)
         if not parsed.text.strip():
             raise ValueError("The document parser produced no text")
@@ -307,6 +345,35 @@ def process_document(self, job_id: str) -> None:
         raise
     finally:
         session.close()
+
+
+@celery_app.task
+def verify_upload(identifier: str) -> None:
+    from .document_uploads import finalize_upload
+    finalize_upload(identifier)
+
+
+@celery_app.task
+def maintain_uploads() -> None:
+    from .document_uploads import cleanup_uploads, cleanup_orphans, recover_uploads
+    cleanup_uploads()
+    recover_uploads()
+    cleanup_orphans()
+    with SessionLocal() as db:
+        storage = ocr_storage(db)
+        if storage:
+            for document in db.scalars(select(Document).where(Document.parsing_metadata.is_not(None))):
+                metadata = document.parsing_metadata or {}
+                changed = False
+                for part in metadata.get("parts", []):
+                    if part.get("object_key") and (part["status"] == "complete" or document.status == DocumentStatus.DELETED):
+                        if cleanup_ocr_object(storage, part["object_key"]):
+                            part.pop("object_key")
+                            changed = True
+                if changed:
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(document, "parsing_metadata")
+                    db.commit()
 
 
 @celery_app.task(bind=True, max_retries=3)

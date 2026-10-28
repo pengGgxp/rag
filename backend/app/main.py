@@ -59,7 +59,9 @@ from .schemas import (
     RetrievalRequest,
 )
 from .storage import upload_fileobj
+from .document_ingestion import admit, check_format
 from .storage_settings import router as storage_settings_router
+from .document_uploads import router as document_uploads_router
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
@@ -113,11 +115,18 @@ async def lifespan(_: FastAPI):
                 prune(db)
                 db.commit()
         while True:
-            await asyncio.sleep(86400)
+            await asyncio.sleep(3600)
             try:
                 await asyncio.to_thread(cleanup)
+                from .tasks import maintain_uploads
+                await asyncio.to_thread(maintain_uploads.delay)
             except Exception:
-                logging.getLogger(__name__).warning("Site audit retention failed; retrying on next daily run")
+                logging.getLogger(__name__).warning("Retention maintenance unavailable; retrying next hour")
+    try:
+        from .tasks import maintain_uploads
+        maintain_uploads.delay()
+    except Exception:
+        logging.getLogger(__name__).warning("Upload recovery deferred until the next maintenance run")
     retention = asyncio.create_task(audit_retention())
     try:
         yield
@@ -320,17 +329,7 @@ def upload_document(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    knowledge_base = access.library(db, knowledge_base_id, write=True)
-    previous = None
-    if version_of:
-        previous = db.scalar(
-            select(Document).where(
-                Document.id == version_of,
-                Document.knowledge_base_id == knowledge_base_id,
-            ).with_for_update()
-        )
-        if previous is None or previous.status == DocumentStatus.DELETED:
-            raise HTTPException(status_code=404, detail="The source document version was not found")
+    access.library(db, knowledge_base_id, write=True)
     allowed = {
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -346,58 +345,14 @@ def upload_document(
         raise HTTPException(status_code=415, detail="Unsupported document type")
 
     size_bytes, digest = inspect_upload(file.file)
-    existing = db.scalar(
-        select(Document).where(
-            Document.knowledge_base_id == knowledge_base_id,
-            Document.content_hash == digest,
-            Document.status != DocumentStatus.DELETED,
-        )
-    )
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="This document already exists")
-    if previous:
-        version_group_id = previous.version_group_id
-        version_number = db.scalar(
-            select(func.max(Document.version_number)).where(
-                Document.version_group_id == version_group_id
-            )
-        ) + 1
-        is_active = False
-    else:
-        version_group_id = uuid4()
-        version_number = 1
-        is_active = True
-
-    object_key = f"{knowledge_base_id}/{uuid4()}-{file.filename}"
+    check_format(file.file, file.filename or "")
+    object_key = f"{knowledge_base_id}/{uuid4()}{suffix}"
+    document, job = admit(db, access, knowledge_base_id, file.filename or "untitled",
+        file.content_type, size_bytes, digest, object_key, version_of, request)
     upload_fileobj(
         fileobj=file.file,
         object_key=object_key,
         content_type=file.content_type,
-    )
-    document = Document(
-        knowledge_base_id=knowledge_base_id,
-        version_group_id=version_group_id,
-        version_number=version_number,
-        is_active=is_active,
-        supersedes_id=previous.id if previous else None,
-        filename=file.filename or "untitled",
-        content_type=file.content_type,
-        size_bytes=size_bytes,
-        object_key=object_key,
-        content_hash=digest,
-    )
-    db.add(document)
-    db.flush()
-    job = IngestionJob(document_id=document.id)
-    db.add(job)
-    knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action="document.version_uploaded" if previous else "document.uploaded",
-        resource_type="document", resource_id=document.id,
-        metadata={"knowledge_base_id": str(knowledge_base_id), "filename": document.filename[:255],
-                  "size_bytes": document.size_bytes, "version_number": version_number},
-        request=request,
     )
     db.commit()
     db.refresh(document)
@@ -1094,6 +1049,7 @@ app.include_router(wechat_auth_router)
 app.include_router(site_auth_router)
 app.include_router(site_admin_router)
 app.include_router(storage_settings_router)
+app.include_router(document_uploads_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)

@@ -4,7 +4,6 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { motion, useReducedMotion } from "motion/react";
 import { X } from "lucide-react";
 import { CSSProperties, ReactNode, useLayoutEffect, useRef, useState } from "react";
-import { Tooltip } from "./tooltip";
 
 export function Dialog({
   title,
@@ -123,7 +122,7 @@ export function Dialog({
           >
             <div className={anchor ? "sr-only" : settingsWindow ? "settings-dialog-heading" : "modal-heading"}>
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-              {!anchor && (fullScreen || sidePanel || settingsWindow ? closeButton : <Tooltip content="关闭">{closeButton}</Tooltip>)}
+              {!anchor && closeButton}
             </div>
             <DialogPrimitive.Description className="sr-only">
               {title}

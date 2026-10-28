@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { BookOpen, Layers3, MessageSquare, Puzzle } from "lucide-react";
 import { AccountButton } from "./auth";
 import type { WorkspaceScreen } from "./workspace-types";
+import { UploadTaskEntry } from "./document-uploads";
 
 const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
@@ -32,6 +33,6 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
       ))}
     </nav>
     {children}
-    <div className="sidebar-footer"><AccountButton /></div>
+    <div className="sidebar-footer"><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
   </>;
 }
