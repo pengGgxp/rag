@@ -219,6 +219,7 @@ def choices(db, workspace_id):
         reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
             "thinking": public_capability(row.thinking_config, row.thinking_version),
+            "context_capacity": row.context_capacity, "max_output_tokens": row.max_output_tokens,
             "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})
     return providers
 

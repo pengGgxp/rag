@@ -85,7 +85,7 @@
 .context-compact:hover:not(:disabled) { background: var(--surface-muted); }
 .context-confirm { font-size: var(--form-label-size); display: grid; gap: 10px; }
 .context-confirm > div { display: flex; justify-content: flex-end; gap: 12px; }
-.context-status { display: flex; align-items: flex-start; gap: 7px; font-size: var(--form-label-size); color: var(--muted); margin-top: 12px; }
+.context-status { display: flex; align-items: flex-start; gap: 7px; font-size: var(--form-label-size); color: var(--muted); margin: 12px 0; }
 .context-warning { color: var(--warning-foreground); }
 .conversation-detail-metadata { display: grid; gap: 7px; padding: 12px 0; font-size: var(--form-label-size); }
 .conversation-detail-metadata > div { display: flex; gap: 16px; flex-wrap: wrap; }

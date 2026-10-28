@@ -549,5 +549,13 @@ def test_model_budget_admin_validation_versions_and_public_redaction(client):
     assert updated.status_code == 200, updated.text
     assert updated.json()["context_capacity"] == 16000
     assert http.put(path, json={**payload, "context_capacity": 16000, "max_output_tokens": 2000}).status_code == 409
-    public = http.get("/models/available").text
+    response = http.get("/models/available")
+    model = next(item for item in response.json()["providers"] if item["id"] == identifier)
+    assert model["context_capacity"] == 16000
+    assert model["max_output_tokens"] == 2000
+    public = response.text
     assert "base_url" not in public and "api_key" not in public and "prices" not in public
+    cleared = http.put(path, json={**payload, "version": updated.json()["version"]})
+    assert cleared.status_code == 200
+    model = next(item for item in http.get("/models/available").json()["providers"] if item["id"] == identifier)
+    assert model["context_capacity"] is None and model["max_output_tokens"] is None

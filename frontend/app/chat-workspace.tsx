@@ -90,6 +90,8 @@ type ModelChoice = {
   available: boolean;
   unavailable_reason?: "model_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
   thinking?: ThinkingCapability;
+  context_capacity: number | null;
+  max_output_tokens: number | null;
 };
 type ModelOptions = { default_provider_id: string | null; providers: ModelChoice[] };
 type ContextResponse = {
@@ -97,7 +99,7 @@ type ContextResponse = {
   eligible: boolean; status: ConversationContextState["status"];
 };
 const emptyContext: ConversationContextState = {
-  estimatedInputTokens: 0, capacity: null, outputReserve: null, eligible: false, status: "idle",
+  estimatedInputTokens: null, capacity: null, outputReserve: null, eligible: false, status: "idle",
 };
 function contextState(value: ContextResponse): ConversationContextState {
   return { estimatedInputTokens: value.estimated_input_tokens, capacity: value.capacity,
@@ -211,6 +213,7 @@ export function ChatWorkspace({
   const [phase, setPhase] = useState("");
   const [contextInfo, setContextInfo] = useState<ConversationContextState>(emptyContext);
   const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState("");
   const [contextAttempt, setContextAttempt] = useState(0);
   const [latest, setLatest] = useState(false);
   const setSidebar = useUiStore((state) => state.setSidebarOpen);
@@ -237,7 +240,14 @@ export function ChatWorkspace({
   const thinking = selectedModel?.thinking;
   useEffect(() => {
     const controller = new AbortController();
-    if (!conversation?.id || !modelId) { setContextInfo(emptyContext); return; }
+    setContextError("");
+    if (!conversation?.id || !selectedModel) {
+      setContextLoading(false);
+      setContextInfo({ ...emptyContext, capacity: selectedModel?.context_capacity ?? null,
+        outputReserve: selectedModel?.max_output_tokens ?? null });
+      return;
+    }
+    setContextInfo(emptyContext);
     setContextLoading(true);
     const params = new URLSearchParams({ provider_id: modelId, thinking_config_version: String(thinkingVersion) });
     if (thinkingId) params.set("thinking_option_id", thinkingId);
@@ -245,11 +255,11 @@ export function ChatWorkspace({
       { signal: controller.signal }).then(value => {
         if (!controller.signal.aborted) setContextInfo(contextState(value));
       }).catch(error => {
-        if (!controller.signal.aborted) setContextInfo({ ...emptyContext, status: "failed",
-          error: error instanceof Error ? error.message : "上下文状态加载失败" });
+        if (!controller.signal.aborted) setContextError(
+          error instanceof Error ? error.message : "上下文状态加载失败");
       }).finally(() => { if (!controller.signal.aborted) setContextLoading(false); });
     return () => controller.abort();
-  }, [conversation?.id, modelId, thinkingId, thinkingVersion, contextAttempt]);
+  }, [conversation?.id, modelId, selectedModel, thinkingId, thinkingVersion, contextAttempt]);
   const selectedNames = conversation
     ? conversation.knowledge_bases.map((item) => item.name)
     : libraries
@@ -1114,9 +1124,14 @@ export function ChatWorkspace({
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
-              <ConversationContextControl state={contextInfo} loading={contextLoading}
+              <ConversationContextControl state={contextInfo} loading={contextLoading || modelLoading || loading}
+                modelSelected={!!selectedModel} loadError={modelError || contextError || conversationError}
                 disabled={running || loading || modelLoading || thinkingStale || !conversation || !selectedModel?.available}
-                onRetry={() => setContextAttempt(value => value + 1)} onCompact={() => void compact()} />
+                onRetry={() => {
+                  if (modelError) setModelAttempt(value => value + 1);
+                  else if (conversationError) setReloadAttempt(value => value + 1);
+                  else setContextAttempt(value => value + 1);
+                }} onCompact={() => void compact()} />
               <span className="composer-library-count">
                 <BookOpen size={14} />
                 {selectedNames.length} 个知识库
