@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 
 from .auth import Access, get_access
 from .db import get_db
@@ -32,7 +32,6 @@ def provider_writer(request: Request, db=Depends(get_db), actor=Depends(site_adm
 
 class SiteProviderInput(ProviderInput):
     enabled: bool = False
-    published: bool = True
     version: int = Field(default=0, ge=0)
 
 
@@ -68,7 +67,7 @@ def read_provider(db, row):
     return {"id": str(row.id), "key": row.key, "name": row.name, "model": row.model,
         "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
         "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled,
-        "published": row.published, "version": row.version,
+        "version": row.version,
         "is_default": bool(settings and settings.default_provider_id == row.id),
         "configured": complete(row.prices), "prices": list(row.prices.values()),
         "available": reason is None, "unavailable_reason": reason,
@@ -82,7 +81,7 @@ def apply_provider(row, payload):
     row.base_url, row.model = validate_base_url(payload.base_url), payload.model.strip()
     if not row.name or not row.model:
         raise HTTPException(422, "名称和模型不能为空")
-    row.timeout_seconds, row.published = payload.timeout_seconds, payload.published
+    row.timeout_seconds = payload.timeout_seconds
     if payload.api_key:
         row.encrypted_api_key = _encrypt_api_key(payload.api_key.get_secret_value())
     if not row.encrypted_api_key:
@@ -150,8 +149,8 @@ def update_prices(identifier: UUID, payload: PriceUpdate, db=Depends(get_db), ac
 def set_default(identifier: UUID, payload: VersionInput, db=Depends(get_db), actor=Depends(provider_writer)):
     settings = settings_locked(db)
     row = lock_provider(db, identifier, payload.version)
-    if not row.enabled or not row.published or not complete(row.prices):
-        raise HTTPException(422, "默认模型必须已发布、启用且价格完整")
+    if unavailable_reason(db, row, None, True):
+        raise HTTPException(422, "默认模型必须启用、连接就绪且价格完整")
     settings.default_provider_id = row.id
     row.version += 1
     record(db, actor, "models.default_selected", "model_provider", row.id)
@@ -188,10 +187,10 @@ def unavailable_reason(db, provider, binding, shared):
 
 
 def visible_providers(db, workspace_id):
-    bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace_id)).all()
-    ids = [row.site_provider_id for row in bindings if row.site_provider_id]
-    return db.scalars(select(SiteModelProvider).where(or_(SiteModelProvider.published.is_(True),
-        SiteModelProvider.id.in_(ids))).order_by(SiteModelProvider.created_at)).all()
+    # Site providers are centrally managed and selectable by every workspace.
+    # Availability is reported separately so disabled or incomplete models
+    # remain discoverable without becoming callable.
+    return db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.created_at)).all()
 
 
 def choices(db, workspace_id):
@@ -221,8 +220,6 @@ def request_binding(db, workspace_id, identifier):
     binding = db.scalar(select(LLMProviderConfig).where(
         LLMProviderConfig.workspace_id == workspace_id,
         LLMProviderConfig.site_provider_id == identifier))
-    if not row.published and binding is None:
-        raise HTTPException(404, "模型不存在或不可用")
     reason = unavailable_reason(db, row, binding, True)
     if reason:
         messages = {"model_disabled": "模型已停用，请选择其他模型",

@@ -12,14 +12,14 @@ Issue: #38. Related settlement work: #36.
 
 ## Goal and boundary
 
-Centralize chat model connections in the site console. Workspaces select a published provider and retain independent price copies. Remove runtime chat environment fallback. Preserve historical provider IDs, usage, balances and price snapshots; do not enable request settlement or change commercial prices.
+Centralize chat model connections in the site console. All configured site models are visible to workspaces; disabled or incomplete models remain discoverable with an unavailable reason. Users select an available model per request. Remove runtime chat environment fallback. Preserve historical provider IDs, usage, balances and price snapshots; do not enable request settlement or change commercial prices.
 
 ## Implementation
 
 - Global providers own encrypted credentials, connection versions, publication, availability and default model prices. Existing provider rows remain workspace associations.
 - Copy model template prices to new global providers, then copy provider prices once when a workspace first selects it. Switching back never replaces prices. OCR and Embedding template prices copy directly to new workspaces.
 - Workspace members read sanitized model choices; workspace administrators select; site administrators manage connections and all prices.
-- Migrate existing connections individually and preserve their private scope. Import the legacy environment connection only through an idempotent console command. No runtime environment fallback.
+- Migrate existing connections individually and preserve historical associations. The old scope flag is retained only for data compatibility and is not used to decide visibility. Import the legacy environment connection only through an idempotent console command. No runtime environment fallback.
 - Missing prices remain missing. Draft templates are permitted. New selection/activation requires complete model prices. Existing migrated active connections retain their prices and billing gate.
 
 ## Verification and release

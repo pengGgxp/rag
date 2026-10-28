@@ -68,28 +68,25 @@ def test_each_request_selects_actual_model_and_pins_prices(accounts, monkeypatch
     assert "provider_id" not in detail  # No conversation-level selected model.
 
 
-def test_member_can_choose_and_private_model_remains_scoped(accounts, monkeypatch):
+def test_member_can_choose_any_configured_model(accounts, monkeypatch):
     owner, db, identity = setup_site(accounts, monkeypatch)
-    public, private = provider(owner, "public"), provider(owner, "private", published=False)
+    public, private = provider(owner, "public"), provider(owner, "legacy")
+    db.get(SiteModelProvider, UUID(private["id"])).published = False
+    db.commit()
     (_, member, anonymous), _ = accounts
     registered = register(member, "member@example.com")
     share(owner, registered["user"]["email"], "viewer")
     switch(member, identity["workspace_id"])
     assert anonymous.get("/models/available").status_code == 401
     data = member.get("/models/available")
-    assert public["id"] in data.text and private["id"] not in data.text
+    assert public["id"] in data.text and private["id"] in data.text
     assert all(key not in data.text for key in ("secret", "base_url", "prices", "api_key"))
-    conversation = member.post("/conversations", json={}).json()["id"]
-    blocked = member.post(f"/conversations/{conversation}/messages", json={
-        "provider_id": private["id"], "query": "hello", "request_id": str(uuid4())})
-    assert blocked.status_code == 404
-    # An existing private association is an actual visibility grant, not a global publication.
-    db.add(LLMProviderConfig(workspace_id=UUID(identity["workspace_id"]), site_provider_id=UUID(private["id"]),
-        key="private", name="Private", model="model-one", base_url="", encrypted_api_key="", active=False))
+    from app import shared_providers
+    binding, _ = shared_providers.request_binding(db, UUID(identity["workspace_id"]), UUID(private["id"]))
+    assert binding.site_provider_id == UUID(private["id"])
     db.commit()
-    assert private["id"] in member.get("/models/available").text
     switch(member, registered["workspace_id"])
-    assert private["id"] not in member.get("/models/available").text
+    assert private["id"] in member.get("/models/available").text
 
 
 def test_missing_id_invalid_model_and_disabled_never_charge(accounts, monkeypatch):

@@ -22,8 +22,8 @@ request routing. No schema migration or activation step is required.
 
 ## Verification
 
-- API unit/regression checks: 42 passed on 2026-10-28, including unused/private
-  models, zero/missing prices, availability, permissions, read-only queries,
+- API unit/regression checks: 42 passed on 2026-10-28, including unused and
+  universally visible models, zero/missing prices, availability, permissions, read-only queries,
   version conflicts and unchanged accounting.
 - Frontend build, responsive browser checks and online verification: pending.
 - Preserve untracked output artifacts; never commit credentials or screenshots.

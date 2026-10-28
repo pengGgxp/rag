@@ -80,8 +80,7 @@ def settings_read(db, workspace_id):
                 "source": "model_provider", "source_id": str(provider.id)}, workspace.billing_multiplier_percent))
         reason = unavailable_reason(db, provider, None, True)
         models.append({"provider_id": str(provider.id), "name": provider.name, "model": provider.model,
-            "available": reason is None, "unavailable_reason": reason, "published": provider.published,
-            "policies": prices})
+            "available": reason is None, "unavailable_reason": reason, "policies": prices})
     return {"workspace_id": str(workspace_id), "version": workspace.billing_version,
             "multiplier": display_rate(workspace.billing_multiplier_percent),
             "multiplier_percent": workspace.billing_multiplier_percent,

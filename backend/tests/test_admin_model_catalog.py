@@ -55,7 +55,7 @@ def test_preview_visibility_and_reasons_match_composer(accounts, monkeypatch):
     (_, other, _), _ = accounts
     target = register(other, "catalog-other@example.com")["workspace_id"]
     others = owner.get(f"/site/admin/workspaces/{target}/billing-settings").json()["models"]
-    assert private["id"] not in {p["provider_id"] for p in others}
+    assert private["id"] in {p["provider_id"] for p in others}
     assert other.get(path).status_code == 403
     assert len(db.scalars(select(LLMProviderConfig)).all()) == 1
 

@@ -14,8 +14,8 @@ persist browser preferences or add another Agent conversation surface.
 ## Implementation
 
 - Authenticated GET /models/available returns sanitized model choices and an
-  available site default. Published models and previously scoped private models
-  retain workspace visibility rules; unavailable choices carry safe reasons.
+  available site default. Centrally configured models are visible to all
+  workspaces; disabled or incomplete models remain listed with a reason.
 - Conversation messages and single-answer requests require a site provider ID.
   Resolve it against the workspace, validate availability, and create/reuse the
   unique accounting association without changing any active workspace model.
@@ -31,7 +31,7 @@ persist browser preferences or add another Agent conversation surface.
 
 ## Acceptance
 
-Backend tests cover member access, private visibility, redaction, missing/zero
+Backend tests cover universal model visibility, redaction, missing/zero
 prices, disabled providers, explicit selection, retries, idempotency, request
 snapshots, workspace isolation and concurrent association creation. Verify fresh
 and upgrade PostgreSQL migrations, existing balances and historical records.

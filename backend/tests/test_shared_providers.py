@@ -29,10 +29,9 @@ def setup_site(accounts, monkeypatch):
     return owner, db, session
 
 
-def provider(client, key="one", rate=4, published=True):
+def provider(client, key="one", rate=4):
     result = client.post("/site/admin/llm-providers", json={"key": key, "name": key,
-        "model": "model-one", "base_url": "https://provider.example/v1", "api_key": "secret",
-        "published": published})
+        "model": "model-one", "base_url": "https://provider.example/v1", "api_key": "secret"})
     assert result.status_code == 201, result.text
     row = result.json()
     result = client.put(f"/site/admin/llm-providers/{row['id']}/pricing", json={"version": row["version"], "policies": prices(rate)})
@@ -40,7 +39,7 @@ def provider(client, key="one", rate=4, published=True):
     row = result.json()
     result = client.put(f"/site/admin/llm-providers/{row['id']}", json={"key": key, "name": key,
         "model": "model-one", "base_url": "https://provider.example/v1", "enabled": True,
-        "published": published, "version": row["version"]})
+        "version": row["version"]})
     assert result.status_code == 200, result.text
     return result.json()
 
@@ -79,21 +78,23 @@ def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts
     assert config.site_provider_id == p["id"]
 
 
-def test_permissions_private_visibility_versions_and_secrets(accounts, monkeypatch):
+def test_permissions_universal_visibility_versions_and_secrets(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
     p = provider(owner)
-    private = provider(owner, "private", published=False)
+    private = provider(owner, "legacy")
+    db.get(SiteModelProvider, UUID(private["id"])).published = False
+    db.commit()
     (_, other, anonymous), _ = accounts
     register(other, "viewer@example.com")
     assert other.get("/site/admin/llm-providers").status_code == 403
     assert anonymous.get("/models/available").status_code == 401
     choices = other.get("/models/available")
     assert "secret" not in choices.text and "base_url" not in choices.text and "prices" not in choices.text
-    assert private["id"] not in choices.text
-    from fastapi import HTTPException
-    with pytest.raises(HTTPException) as exc:
-        shared.request_binding(db, UUID(other.get("/auth/me").json()["workspace_id"]), UUID(private["id"]))
-    assert exc.value.status_code == 404
+    assert private["id"] in choices.text
+    assert "published" not in owner.get(f"/site/admin/llm-providers/{private['id']}").text
+    assert owner.post(f"/site/admin/llm-providers/{private['id']}/default",
+        json={"version": private["version"]}).status_code == 200
+    shared.request_binding(db, UUID(other.get("/auth/me").json()["workspace_id"]), UUID(private["id"]))
     db.rollback()
     share(owner, "viewer@example.com", "viewer")
     switch(other, session["workspace_id"])

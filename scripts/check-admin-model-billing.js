@@ -18,7 +18,7 @@ async (page) => {
     { id: "p3", key: "disabled", name: "停用模型", model: "disabled-model", prices: prices(0), available: false, unavailable_reason: "model_disabled", enabled: false },
     { id: "p4", key: "missing", name: "缺价模型", model: "missing-cache-price", prices: prices().filter(p => p.capability !== caps[1]), available: false, unavailable_reason: "pricing_unconfigured" },
   ].map(p => ({ base_url: "https://model.example/v1", timeout_seconds: 60, has_api_key: true,
-    enabled: true, published: true, is_default: false, configured: true, version: 2, workspace_count: 0, ...p }));
+    enabled: true, is_default: false, configured: true, version: 2, workspace_count: 0, ...p }));
   const workspaces = Array.from({ length: 12 }, (_, i) => ({ id: `w${i + 1}`,
     name: i === 1 ? "第二工作区" : i === 2 ? "慢请求工作区" : `知识运营工作区 ${i + 1}`, role: "admin" }));
   const documents = [
@@ -112,7 +112,7 @@ async (page) => {
   await page.getByRole("checkbox", { name: "显示不可用模型" }).uncheck();
   await multiplier.fill("1.25");
   check((await page.locator(".model-price-row").first().innerText()).includes("5.00"), "Draft model effective price");
-  await page.screenshot({ path: "output/playwright/issue42-billing-1440.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/issue43-billing-draft-1440.png", fullPage: true });
   await page.getByRole("button", { name: "更换", exact: true }).click();
   await page.getByRole("dialog", { name: "更换管理工作区" }).waitFor();
   await page.getByRole("radio", { name: /知识运营工作区 1 w1$/ }).check();
@@ -123,8 +123,6 @@ async (page) => {
   await page.getByRole("button", { name: "更换", exact: true }).click();
   await page.getByRole("dialog").waitFor();
   await page.getByRole("dialog").press("Escape");
-  await page.waitForTimeout(150);
-  console.log("escape-state", await page.locator("[role=dialog]").count(), await page.locator("[role=dialog]").first().getAttribute("data-state").catch(() => "none"));
   await page.getByRole("dialog").waitFor({ state: "detached" });
   await page.waitForFunction(() => document.activeElement?.matches("[data-workspace-target]"));
   check(await page.getByRole("button", { name: "更换", exact: true }).evaluate(el => el === document.activeElement), "Picker focus not restored");
@@ -177,15 +175,27 @@ async (page) => {
   await title("模型管理").waitFor();
   await page.getByRole("link", { name: "DeepSeek", exact: true }).waitFor();
   check(await page.getByText("https://model.example/v1", { exact: true }).count() === 0, "List leaks connection clutter");
+  check(await page.getByText("发布范围", { exact: true }).count() === 0, "Obsolete publication scope remains");
+  check(await page.getByRole("option", { name: "受限范围", exact: true }).count() === 0, "Obsolete scope filter remains");
   await page.getByRole("combobox", { name: "筛选", exact: true }).selectOption("unavailable");
   check(await page.getByText("停用模型", { exact: true }).count() === 1
     && await page.getByText("缺价模型", { exact: true }).count() === 1, "Status filter failed");
   await page.getByRole("combobox", { name: "筛选", exact: true }).selectOption("all");
   await page.getByRole("textbox", { name: "搜索模型", exact: true }).fill("deep");
   await page.getByRole("button", { name: "查询", exact: true }).click();
+  await page.waitForURL(/q=deep/);
+  await page.waitForFunction(() => document.querySelectorAll(".model-catalog-row").length === 1);
   check(await page.locator(".model-catalog-row").count() === 1, "Search failed");
   await page.getByRole("link", { name: "DeepSeek", exact: true }).click();
   await title("DeepSeek").waitFor();
+  check(await page.getByRole("checkbox", { name: "发布为全站可选" }).count() === 0, "Obsolete publish checkbox remains");
+  await page.getByRole("tab", { name: "连接配置", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "模型基准价");
+  check(await page.getByRole("tab", { name: "模型基准价", exact: true }).evaluate(el => el === document.activeElement), "Tab keyboard focus failed");
+  await page.keyboard.press("Enter");
+  await page.getByRole("table", { name: "模型基准价", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "连接配置", exact: true }).click();
   await page.getByRole("textbox", { name: "显示名称", exact: true }).fill("DeepSeek draft");
   await page.getByRole("tab", { name: "模型基准价", exact: true }).click();
   await page.getByRole("button", { name: "继续编辑", exact: true }).click();
@@ -210,12 +220,12 @@ async (page) => {
   await title("DeepSeek renamed").waitFor();
   await page.getByRole("button", { name: "设为问答默认模型", exact: true }).click();
   await page.getByText("问答默认模型", { exact: true }).waitFor();
-  await page.screenshot({ path: "output/playwright/issue42-model-connection-1440.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/issue43-model-connection-1440.png", fullPage: true });
   await page.getByRole("tab", { name: "模型基准价", exact: true }).click();
   await page.waitForURL(/tab=pricing/);
   await page.reload();
   await page.getByRole("table", { name: "模型基准价", exact: true }).waitFor();
-  await page.screenshot({ path: "output/playwright/issue42-model-pricing-1440.png", fullPage: true });
+  await page.screenshot({ path: "output/playwright/issue43-model-pricing-1440.png", fullPage: true });
   results.push("model list/search/status, route details, tab guards, conflict/reload, independent saves/default, redaction/refresh");
 
   await page.goto(`${base}/admin/models/new`);
@@ -245,17 +255,27 @@ async (page) => {
       await page.getByRole("heading", { level: 1 }).waitFor();
       await page.locator(".admin-skeleton").waitFor({ state: "detached" });
       await noOverflow();
-      await page.screenshot({ path: `output/playwright/issue42-${name}-${width}.png`, fullPage: true });
+      if (name === "connection" || name === "pricing") {
+        for (const item of await page.getByRole("tab").all()) {
+          const box = await item.boundingBox();
+          check(box && box.height >= 44, `Tab target too small at ${width}`);
+        }
+        const styles = await page.getByRole("tab", { selected: true }).evaluate(el => {
+          const s = getComputedStyle(el);
+          return { border: s.borderTopColor, background: s.backgroundColor };
+        });
+        check(styles.border !== "rgba(0, 0, 0, 0)" && styles.background !== "rgba(0, 0, 0, 0)", "Tabs lack visible selected state");
+      }
+      await page.screenshot({ path: `output/playwright/issue43-${name}-${width}.png`, fullPage: true });
     }
     await page.goto(`${base}/admin/pricing?workspace=w1`);
     await page.getByRole("button", { name: "更换", exact: true }).click();
     await page.getByRole("dialog").waitFor();
     await page.getByRole("radio").first().waitFor();
-    await page.screenshot({ path: `output/playwright/issue42-picker-${width}.png` });
+    await page.screenshot({ path: `output/playwright/issue43-picker-${width}.png` });
     await page.keyboard.press("Shift+Tab");
     check(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]'))), "Dialog focus escaped");
     await page.getByRole("dialog").press("Escape");
-    console.log("responsive-escape", width, await page.locator("[role=dialog]").count(), await page.locator("[role=dialog]").first().getAttribute("data-state").catch(() => "none"));
     await page.getByRole("dialog").waitFor({ state: "detached" });
   }
   await page.goto(`${base}/admin/models/unknown`);

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, Check, Loader2, Plus, Save, Search, Star } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Coins, Loader2, Plus, PlugZap, Save, Search, Star } from "lucide-react";
 import * as Tabs from "../components/ui/tabs";
 import { request } from "./api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-ui";
@@ -13,7 +13,7 @@ import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
 const base = "/site/admin/llm-providers";
-const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, published: true, version: 0 };
+const blank = { key: "", name: "", base_url: "", model: "", api_key: "", timeout_seconds: 60, enabled: false, version: 0 };
 const capabilities = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"];
 type ProviderForm = typeof blank;
 
@@ -33,24 +33,24 @@ export function ModelProviderPanel() {
     router.replace(`/admin/models${next.size ? `?${next}` : ""}`, { scroll: false });
   }
   const models = data?.filter(p => `${p.name} ${p.model}`.toLowerCase().includes(search.toLowerCase())
-    && (status === "available" ? p.available : status === "unavailable" ? !p.available : status === "private" ? !p.published : true));
+    && (status === "available" ? p.available : status === "unavailable" ? !p.available : true));
   return <>
     <AdminHeading title="模型管理"><Link href="/admin/models/new" className="primary"><Plus size={16} />添加模型</Link></AdminHeading>
     <form className="admin-filters" onSubmit={event => { event.preventDefault(); filter(query.trim(), status); }}>
       <label>搜索模型<input value={query} onChange={event => setQuery(event.target.value)} placeholder="名称或模型名" /></label>
       <label>筛选<select value={status} onChange={event => filter(query.trim(), event.target.value)}>
-        <option value="all">全部模型</option><option value="available">可用模型</option><option value="unavailable">不可用模型</option><option value="private">受限范围</option>
+        <option value="all">全部模型</option><option value="available">可用模型</option><option value="unavailable">不可用模型</option>
       </select></label>
       <button className="secondary"><Search size={16} />查询</button>
     </form>
     <AdminLoad loading={loading} error={error} retry={reload}>
       {models && <><div className="model-catalog" role="table" aria-label="模型配置列表">
-        <div className="model-catalog-heading" role="row"><span role="columnheader">名称 / 模型</span><span role="columnheader">可用性</span><span role="columnheader">发布范围</span><span role="columnheader">操作</span></div>
+        <div className="model-catalog-heading" role="row"><span role="columnheader">名称 / 模型</span><span role="columnheader">可用性</span><span role="columnheader">关联工作区</span><span role="columnheader">操作</span></div>
         {models.map(model => <div className="model-catalog-row" role="row" key={model.id}>
           <div className="model-catalog-name" role="cell"><Link href={`/admin/models/${model.id}`}>{model.name}</Link><small>{model.model}</small>
             {model.is_default && <span className="model-default"><Star size={12} />问答默认</span>}</div>
           <div role="cell" className="model-catalog-state"><span className="model-price-label">可用性</span><span className="model-availability" data-warning={!model.available}>{availabilityLabel(model.unavailable_reason)}</span></div>
-          <div role="cell" className="model-catalog-state"><span className="model-price-label">发布范围</span><span>{model.published ? "全站可选" : "仅授权工作区"}</span></div>
+          <div role="cell" className="model-catalog-state"><span className="model-price-label">关联工作区</span><span>{model.workspace_count} 个</span></div>
           <div role="cell" className="model-catalog-action"><Link className="secondary" href={`/admin/models/${model.id}`} aria-label={`管理${model.name}`}>管理<ArrowRight size={15} /></Link></div>
         </div>)}
       </div>{!models.length && <p className="admin-empty">{data?.length ? "没有符合条件的模型" : "尚未添加模型"}</p>}
@@ -61,7 +61,7 @@ export function ModelProviderPanel() {
 
 function connectionForm(provider: ModelProvider): ProviderForm {
   return { key: provider.key, name: provider.name, base_url: provider.base_url, model: provider.model,
-    api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, published: provider.published, version: provider.version };
+    api_key: "", timeout_seconds: provider.timeout_seconds, enabled: provider.enabled, version: provider.version };
 }
 
 function priceForm(provider: ModelProvider): Policy[] {
@@ -123,14 +123,14 @@ export function ModelProviderDetail({ id }: { id: string }) {
     <AdminHeading title={isNew ? "添加模型" : provider?.name ?? "模型详情"}>
       {provider && <span className="model-detail-actions">
         {provider.is_default ? <span className="model-default"><Star size={14} />问答默认模型</span>
-          : <button className="secondary" disabled={busy || dirty || !provider.available || !provider.published} onClick={() => void action(async () => {
+          : <button className="secondary" disabled={busy || dirty || !provider.available} onClick={() => void action(async () => {
             accept(await request<ModelProvider>(`${base}/${id}/default`, json({ version: provider.version })));
             setNotice("问答默认模型已更新");
           })}><Star size={15} />设为问答默认模型</button>}
       </span>}
     </AdminHeading>
     {provider && <div className="model-detail-summary"><span className="model-availability" data-warning={!provider.available}>{availabilityLabel(provider.unavailable_reason)}</span>
-      <span>{provider.published ? "全站可选" : "仅授权工作区可选"}</span><span>已有消费关联工作区 {provider.workspace_count} 个</span></div>}
+      <span>适用所有工作区</span><span>已使用的工作区 {provider.workspace_count} 个</span></div>}
     {notice && <p className="billing-notice" role="status"><Check size={16} />{notice}</p>}
     {error && <div className="admin-error" role="alert">{error}</div>}
     {conflict && !isNew && <div className="model-reload"><button className="secondary" disabled={busy} onClick={() => setPendingTab("reload")}>重新加载并放弃修改</button></div>}
@@ -144,10 +144,14 @@ export function ModelProviderDetail({ id }: { id: string }) {
       }}>放弃修改</button>
     </div>}
     <AdminLoad loading={!isNew && resource.loading} error={isNew ? "" : resource.error} retry={resource.reload}>
-      {(isNew || provider) && <Tabs.Root value={tab} onValueChange={changeTab}>
-        <Tabs.List className="model-detail-tabs tab-list" aria-label="模型详情">
-          <Tabs.Trigger value="connection" disabled={busy}>连接配置</Tabs.Trigger>
-          <Tabs.Trigger value="pricing" disabled={busy || isNew}>模型基准价</Tabs.Trigger>
+      {(isNew || provider) && <Tabs.Root value={tab} onValueChange={changeTab} activationMode="manual">
+        <Tabs.List className="model-detail-tabs" aria-label="模型详情">
+          <Tabs.Trigger value="connection" disabled={busy} aria-label="连接配置">
+            <PlugZap size={17} aria-hidden="true" /><span><strong>连接配置</strong><small>接口地址、凭据与超时</small></span>
+          </Tabs.Trigger>
+          <Tabs.Trigger value="pricing" disabled={busy || isNew} aria-label="模型基准价">
+            <Coins size={17} aria-hidden="true" /><span><strong>模型基准价</strong><small>输入、缓存读取与输出价格</small></span>
+          </Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="connection">
           <form className="provider-form model-detail-form" onSubmit={event => { event.preventDefault(); void action(saveConnection); }}>
@@ -159,12 +163,11 @@ export function ModelProviderDetail({ id }: { id: string }) {
               </div></section>
               <section className="model-form-section"><h2>连接凭据</h2><div className="provider-form-grid">
                 <label className="provider-form-wide">接口地址<input required type="url" maxLength={1000} value={form.base_url} onChange={e => setForm({ ...form, base_url: e.target.value })} placeholder="https://api.example.com/v1" /></label>
-                <label>API Key{!isNew && <span className="billing-muted">{provider?.has_api_key ? "已配置，留空保留" : "尚未配置"}</span>}<input type="password" autoComplete="new-password" required={isNew} value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} /></label>
+                <label><span className="provider-key-label">API Key{!isNew && <small>{provider?.has_api_key ? "已配置，留空保留" : "尚未配置"}</small>}</span><input type="password" autoComplete="new-password" required={isNew} value={form.api_key} onChange={e => setForm({ ...form, api_key: e.target.value })} /></label>
                 <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
               </div></section>
-              <section className="model-form-section"><h2>可用范围</h2><div className="model-scope-fields">
+              <section className="model-form-section"><h2>运行状态</h2><div className="model-scope-fields">
                 <label className="provider-enabled"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
-                <label className="provider-enabled"><input type="checkbox" checked={form.published} onChange={e => setForm({ ...form, published: e.target.checked })} />发布为全站可选</label>
               </div>{isNew && <p className="billing-muted">先保存连接，再补齐三项模型基准价后启用。</p>}</section>
               <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "连接配置"}{provider ? ` · 版本 ${provider.version}` : ""}</span>
                 <button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并配置基准价" : "保存连接配置"}</button></div>
