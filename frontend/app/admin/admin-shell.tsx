@@ -7,6 +7,7 @@ import {
   Building2,
   Coins,
   Cpu,
+  HardDrive,
   LayoutDashboard,
   Layers3,
   ScrollText,
@@ -24,6 +25,7 @@ const navigation = [
   { href: "/admin/workspaces", label: "工作区", icon: Building2 },
   { href: "/admin/models", label: "模型管理", icon: Cpu },
   { href: "/admin/pricing", label: "计费管理", icon: Coins },
+  { href: "/admin/storage", label: "文件存储", icon: HardDrive },
   { href: "/admin/audit", label: "站点审计", icon: ScrollText },
   { href: "/admin/auth", label: "认证与登录", icon: Settings2 },
 ];

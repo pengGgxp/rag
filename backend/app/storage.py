@@ -1,8 +1,17 @@
 import boto3
-from botocore.exceptions import ClientError
-from time import sleep
+from tempfile import TemporaryFile
+from fastapi import HTTPException
 
 from .config import get_settings
+
+
+def cos_backend():
+    from .db import SessionLocal
+    from .models import SiteStorageSettings
+    from .cos_storage import CosStorage
+    with SessionLocal() as db:
+        row = db.get(SiteStorageSettings, 1)
+        return CosStorage(row) if row and row.active else None
 
 
 def client():
@@ -17,37 +26,19 @@ def client():
     )
 
 
-def ensure_bucket() -> None:
-    settings = get_settings()
-    s3 = client()
-    last_error = None
-    for _ in range(12):
-        try:
-            s3.head_bucket(Bucket=settings.s3_bucket)
-            return
-        except ClientError:
-            try:
-                s3.create_bucket(Bucket=settings.s3_bucket)
-                return
-            except ClientError as error:
-                last_error = error
-                sleep(2)
-    raise RuntimeError(f"Object storage is unavailable: {last_error}")
-
-
 def upload_fileobj(fileobj, object_key: str, content_type: str) -> None:
-    settings = get_settings()
-    client().upload_fileobj(
-        fileobj,
-        settings.s3_bucket,
-        object_key,
-        ExtraArgs={"ContentType": content_type},
-    )
+    backend = cos_backend()
+    if not backend:
+        raise HTTPException(503, "文件存储尚未就绪，请联系站点管理员")
+    backend.put(object_key, fileobj, content_type)
 
 
 def download_fileobj(object_key: str):
+    backend = cos_backend()
+    if backend:
+        return backend.download(object_key)
     settings = get_settings()
-    output = __import__("io").BytesIO()
+    output = TemporaryFile()
     client().download_fileobj(settings.s3_bucket, object_key, output)
     output.seek(0)
     return output

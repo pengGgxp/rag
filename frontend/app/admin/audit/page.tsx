@@ -44,6 +44,9 @@ const actions: Record<string, string> = {
   "user.reactivated": "恢复用户",
   "user.sessions_revoked": "撤销用户会话",
   "user.verification_resent": "重发验证邮件",
+  "storage.updated": "更新文件存储配置",
+  "storage.tested": "测试文件存储",
+  "storage.migrated": "迁移原始文件",
 };
 export default function SiteAuditPage() {
   const params = useSearchParams();

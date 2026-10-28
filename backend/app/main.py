@@ -58,7 +58,8 @@ from .schemas import (
     RetrievalRead,
     RetrievalRequest,
 )
-from .storage import ensure_bucket, upload_fileobj
+from .storage import upload_fileobj
+from .storage_settings import router as storage_settings_router
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
@@ -100,7 +101,6 @@ def inspect_upload(fileobj) -> tuple[int, str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    ensure_bucket()
     with SessionLocal() as db:
         from .site_audit import prune
         prune(db)
@@ -1093,6 +1093,7 @@ app.include_router(email_auth_router)
 app.include_router(wechat_auth_router)
 app.include_router(site_auth_router)
 app.include_router(site_admin_router)
+app.include_router(storage_settings_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)

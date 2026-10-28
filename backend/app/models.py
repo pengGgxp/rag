@@ -12,6 +12,39 @@ from .db import Base
 LEGACY_WORKSPACE_ID = UUID("00000000-0000-4000-a000-000000000001")
 
 
+class SiteStorageSettings(Base):
+    __tablename__ = "site_storage_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    bucket: Mapped[str] = mapped_column(String(100), default="")
+    region: Mapped[str] = mapped_column(String(60), default="")
+    encrypted_secret_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_secret_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False)
+    tested_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    test_result: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class DocumentUpload(Base):
+    __tablename__ = "document_uploads"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
+    version_of: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(150))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    object_key: Mapped[str] = mapped_column(String(500), unique=True)
+    multipart_id: Mapped[str] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(24), default="uploading", index=True)
+    parts: Mapped[dict] = mapped_column(JSON, default=dict)
+    document_id: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)

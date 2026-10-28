@@ -1,7 +1,15 @@
 from uuid import UUID
+import pytest
 
 from test_auth import library, register
+from app import main
 from app.models import Document, DocumentStatus
+
+
+@pytest.fixture(autouse=True)
+def local_upload_io(monkeypatch):
+    monkeypatch.setattr(main, "upload_fileobj", lambda **_: None)
+    monkeypatch.setattr(main.process_document, "delay", lambda *_: None)
 
 
 def test_document_preview_is_loaded_on_demand_and_hides_deleted_content(accounts):
