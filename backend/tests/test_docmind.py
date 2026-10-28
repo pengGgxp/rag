@@ -45,6 +45,19 @@ def test_stream_upload_has_no_former_page_cap_and_does_not_enable_vlm():
     assert len(calls) == 1
 
 
+def test_cos_url_submission_uses_non_upload_api_and_never_retries():
+    calls = []
+    def submit(request, runtime):
+        calls.append(request)
+        assert runtime.autoretry is False
+        return response(SimpleNamespace(id="url-job"))
+    provider = AliyunDocMind(configured(), SimpleNamespace(submit_doc_parser_job_with_options=submit))
+    assert provider.submit_url("https://private.cos.invalid/file?signature=secret", 10) == "url-job"
+    assert calls[0].file_url.endswith("signature=secret")
+    assert calls[0].page_index == "1-10"
+    assert not calls[0].llm_enhancement and not calls[0].formula_enhancement
+
+
 def test_polling_and_pagination_do_not_drop_layouts(monkeypatch):
     statuses = iter(["Processing", "Success"])
     offsets = []

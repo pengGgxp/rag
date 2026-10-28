@@ -71,6 +71,27 @@ def fake_provider(monkeypatch, *, collect=None, submit=None):
     return calls
 
 
+def test_cos_pdf_is_submitted_by_url_and_resume_reuses_paid_task(pdf_job, monkeypatch):
+    owner, _, db, _, doc_id, job_id, _ = pdf_job
+    from types import SimpleNamespace
+    calls = []
+    class Provider:
+        def __init__(self, *_):
+            pass
+        def submit_url(self, url, pages):
+            calls.append((url, pages))
+            return "cos-url-job"
+        def collect(self, identifier, count, check):
+            check()
+            return normalize_layouts([{"pageNum": 0, "text": "URL parsed document", "type": "text"}], count)
+    monkeypatch.setattr(tasks, "ocr_storage", lambda _: SimpleNamespace(read_url=lambda key: "https://cos.invalid/" + key))
+    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    tasks.process_document.run(str(job_id))
+    tasks.process_document.run(str(job_id))
+    assert len(calls) == 1 and calls[0][1] == 2
+    assert "https://" not in str(db.get(Document, doc_id).parsing_metadata)
+
+
 def test_mixed_pdf_ingestion_is_idempotent_and_page_metadata_reaches_retrieval(pdf_job, monkeypatch):
     owner, outsider, db, kb, doc_id, job_id, embedded = pdf_job
     calls = fake_provider(monkeypatch)
