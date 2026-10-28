@@ -1002,7 +1002,8 @@ def answer_knowledge_base(
             "content": f"Question:\n{payload.query}\n\nSources:\n{context}",
         },
     ]
-    provider_config = request_provider_config(db, access.workspace_id, payload.provider_id)
+    provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
+        payload.thinking_option_id, payload.thinking_config_version)
     provider = OpenAICompatibleChatProvider(config=provider_config)
     reservation_id = uuid4()
     metered = model_billing.enabled(db)
@@ -1080,6 +1081,7 @@ def answer_knowledge_base(
         provider_id=UUID(provider_config.provider_id),
         provider_name=provider_config.provider_name,
         model=provider_config.model,
+        thinking=provider_config.thinking.snapshot(),
         refused=False,
         refusal_reason=None,
         citations=citations,

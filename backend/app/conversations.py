@@ -33,6 +33,7 @@ from .extensions import ExtensionRuntime, validate_selection
 from .llm_providers import request_provider_config
 from . import model_billing
 from .models import ModelUsageRequest
+from .thinking import encrypt_continuation, history_message
 
 
 class ExtensionSelection(BaseModel):
@@ -56,6 +57,8 @@ class TurnRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     request_id: UUID
     provider_id: UUID
+    thinking_option_id: str | None = Field(default=None, min_length=1, max_length=40)
+    thinking_config_version: int | None = Field(default=None, ge=0, strict=True)
     query: str | None = Field(default=None, min_length=1)
     retry_message_id: UUID | None = None
 
@@ -77,6 +80,7 @@ def message_read(message: ChatMessage) -> dict:
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
         "provider_name": message.provider_name, "model": message.model,
+        "thinking": message.thinking_snapshot,
         "citations": message.citations, "traces": message.traces,
         "tool_events": message.tool_events,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
@@ -315,7 +319,12 @@ def chat_router(get_db, retrieve):
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
-            provider_config = request_provider_config(db, access.workspace_id, payload.provider_id)
+            provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
+                payload.thinking_option_id, payload.thinking_config_version)
+            if not provider_config.thinking.supports_tools and (
+                conversation.libraries or conversation.skill_ids or conversation.mcp_server_ids
+            ):
+                raise HTTPException(422, "此模型不支持当前协议的工具调用，请移除检索与扩展或选择其他模型")
             if metered:
                 model_billing.start_request(db, access.workspace_id, access.user_id,
                     payload.request_id, UUID(provider_config.provider_id), hold_amount)
@@ -364,6 +373,8 @@ def chat_router(get_db, retrieve):
         message.provider_id = UUID(provider_config.provider_id)
         message.provider_name = provider_config.provider_name
         message.model = provider_config.model
+        message.thinking_snapshot = provider_config.thinking.snapshot()
+        message.encrypted_continuation = None
         db.commit()
         db.refresh(message)
         message_id = message.id
@@ -385,6 +396,7 @@ def chat_router(get_db, retrieve):
         refused = False
         refusal_reason = None
         usage_settled = False
+        continuation = None
         with factory() as metering_db:
             metered = metering_db.get(ModelUsageRequest, request_id) is not None
             from .workspace_billing import LegacyPriceMeter
@@ -423,6 +435,7 @@ def chat_router(get_db, retrieve):
                     tool_events=tool_events,
                     retrieval_query=retrieval_query, refused=refused,
                     refusal_reason=refusal_reason, error_detail=error_detail,
+                    encrypted_continuation=continuation,
                 ))
                 if row.rowcount and status != "streaming":
                     db.execute(update(Conversation).where(
@@ -453,7 +466,7 @@ def chat_router(get_db, retrieve):
                     ChatMessage.sequence < message.sequence - 1,
                     ChatMessage.status == "completed",
                 ).order_by(ChatMessage.sequence)).all()
-                history = [{"role": row.role, "content": row.content} for row in rows]
+                history = [item for row in rows for item in history_message(row, provider_config)]
             yield event_text(event("message", message_read(message)))
             yield event_text(event("phase", {"phase": "planning"}))
             provider = OpenAICompatibleChatProvider(config=provider_config)
@@ -494,6 +507,7 @@ def chat_router(get_db, retrieve):
             if agent_run is None:
                 raise LLMProviderError("Agent 未完成回答，请重试")
             citations, traces = agent_run.citations, agent_run.traces
+            continuation = encrypt_continuation(provider_config, agent_run.protocol_messages)
             if not metered:
                 with factory() as usage_db:
                     settle_model_usage(

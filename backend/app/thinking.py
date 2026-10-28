@@ -1,5 +1,6 @@
 """Validated model capabilities and immutable request-scoped thinking settings."""
 from dataclasses import dataclass
+import json
 from typing import Literal
 
 from fastapi import HTTPException
@@ -141,3 +142,27 @@ def select_thinking(raw, version, option_id=None, expected_version=None):
         label=option.label if option else None, value=option.value if option else None,
         version=version, supports_tools=config.supports_tools, stream_only=config.stream_only,
         always_thinking=config.always_thinking)
+
+
+def encrypt_continuation(config, messages):
+    if not config.thinking.continuation_required:
+        return None
+    from .mcp_client import encrypt_headers
+    return encrypt_headers({"continuation": json.dumps({
+        "provider": config.site_provider_id, "model": config.model,
+        "adapter": config.thinking.adapter, "messages": messages,
+    }, ensure_ascii=True)})
+
+
+def history_message(row, config):
+    if row.role == "assistant" and row.encrypted_continuation and config.thinking.continuation_required:
+        from .mcp_client import decrypt_headers, MCPError
+        from .llm import LLMConfigurationError
+        try:
+            private = json.loads(decrypt_headers(row.encrypted_continuation)["continuation"])
+        except (MCPError, ValueError, KeyError) as exc:
+            raise LLMConfigurationError("历史模型上下文无法恢复，请联系管理员或新建对话") from exc
+        if (private.get("provider") == config.site_provider_id and private.get("model") == config.model
+                and private.get("adapter") == config.thinking.adapter):
+            return private["messages"]
+    return [{"role": row.role, "content": row.content}]

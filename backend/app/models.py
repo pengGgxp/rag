@@ -504,6 +504,8 @@ class ChatMessage(Base):
     provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("llm_provider_configs.id"), nullable=True)
     provider_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    thinking_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    encrypted_continuation: Mapped[str | None] = mapped_column(Text, nullable=True)
     citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
     traces: Mapped[list[dict]] = mapped_column(JSON, default=list)
     tool_events: Mapped[list[dict]] = mapped_column(JSON, default=list)

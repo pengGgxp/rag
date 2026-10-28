@@ -147,3 +147,116 @@ def test_stream_only_bailian_collects_tools_and_final_usage(monkeypatch):
     assert result.tool_calls[0].arguments == {"x": 1}
     assert result.usage.completion_tokens == 20
     assert not result.protocol_fields
+
+
+def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monkeypatch):
+    from types import SimpleNamespace
+    from cryptography.fernet import Fernet
+    from pydantic import SecretStr
+    from sqlalchemy import select
+    from app import mcp_client, conversations
+    from app.models import ChatMessage, SiteModelProvider
+    from test_request_models import send
+    client, db, identity = setup_site(accounts, monkeypatch)
+    first, second = provider(client), provider(client, "second")
+    row = db.get(SiteModelProvider, UUID(first["id"]))
+    row.thinking_config, row.thinking_version = effort(), 1
+    db.commit()
+    key = Fernet.generate_key().decode()
+    monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=SecretStr(key)))
+    monkeypatch.setattr(shared_providers, "assert_available", lambda _: None)
+    observed = []
+    def post(url, **kwargs):
+        payload = kwargs["json"]
+        observed.append(payload)
+        if len(observed) == 1:
+            row = db.get(SiteModelProvider, UUID(first["id"]))
+            row.thinking_config = effort(value="low")
+            row.thinking_version = 2
+            db.commit()
+            message = {"content": None, "reasoning_content": "private-first",
+                "tool_calls": [{"id": "call-1", "function": {"name": "missing", "arguments": "{}"}}]}
+        else:
+            message = {"content": "public answer", "reasoning_content": "private-final"}
+        return httpx.Response(200, json={"choices": [{"message": message}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20}})
+    monkeypatch.setattr(httpx, "post", post)
+    conversation = client.post("/conversations", json={}).json()["id"]
+    events, _ = send(client, conversation, first["id"], thinking_option_id="strong", thinking_config_version=1)
+    final = events[-1].json()
+    assert final["status"] == "completed", final
+    assert final["thinking"]["config_version"] == 1
+    assert all(item["reasoning_effort"] == "high" for item in observed)
+    assert observed[1]["messages"][-2]["reasoning_content"] == "private-first"
+    saved = db.scalar(select(ChatMessage).where(ChatMessage.role == "assistant"))
+    assert saved.encrypted_continuation and "private" not in saved.encrypted_continuation
+    assert "private" not in client.get(f"/conversations/{conversation}").text
+    assert "private" not in client.get(f"/conversations/{conversation}/export").text
+    send(client, conversation, first["id"], thinking_config_version=2)
+    assert any(item.get("reasoning_content") == "private-first" for item in observed[-1]["messages"])
+    send(client, conversation, second["id"])
+    assert all("reasoning_content" not in item for item in observed[-1]["messages"])
+    assert "reasoning_effort" not in observed[-1]
+    assert client.delete(f"/conversations/{conversation}").status_code == 204
+    assert client.get(f"/conversations/{conversation}").status_code == 404
+
+
+def test_invalid_request_choices_do_not_call_or_charge(accounts, monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy import func, select
+    from app.models import SiteModelProvider, CreditLedgerEntry, ChatMessage
+    client, db, _ = setup_site(accounts, monkeypatch)
+    chosen = provider(client)
+    row = db.get(SiteModelProvider, UUID(chosen["id"]))
+    row.thinking_config, row.thinking_version = effort(), 4
+    db.commit()
+    monkeypatch.setattr(httpx, "post", lambda *_a, **_k: pytest.fail("Invalid choice reached upstream"))
+    conversation = client.post("/conversations", json={}).json()["id"]
+    for option, version, status in [("strong", 3, 409), ("missing", 4, 422)]:
+        response = client.post(f"/conversations/{conversation}/messages", json={
+            "request_id": str(uuid4()), "provider_id": chosen["id"], "query": "question",
+            "thinking_option_id": option, "thinking_config_version": version})
+        assert response.status_code == status, response.text
+    assert not db.scalar(select(func.count()).select_from(ChatMessage))
+    assert not db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(CreditLedgerEntry.amount < 0))
+
+
+def test_single_answer_and_retry_use_current_thinking(accounts, monkeypatch):
+    from app import main, conversations
+    from app.models import SiteModelProvider, KnowledgeBase
+    from app.llm import ToolResponse, LLMUsage, LLMProviderError
+    from test_retrieval import add_document
+    from test_request_models import send
+    client, db, _ = setup_site(accounts, monkeypatch)
+    chosen = provider(client)
+    raw = effort("openai")
+    raw["options"].append({"id": "quick", "label": "低", "value": "low"})
+    row = db.get(SiteModelProvider, UUID(chosen["id"]))
+    row.thinking_config, row.thinking_version = raw, 1
+    db.commit()
+    seen = []
+    class Model(OpenAICompatibleChatProvider):
+        def complete(self, messages, temperature=0):
+            seen.append(self.config.thinking.option_id)
+            self.last_usage = _parse_usage({"prompt_tokens": 1, "completion_tokens": 1})
+            return "answer"
+        def complete_with_tools(self, messages, tools, tool_choice):
+            seen.append(self.config.thinking.option_id)
+            if self.config.thinking.option_id == "strong":
+                raise LLMProviderError("controlled failure")
+            self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
+            return ToolResponse("answer", [], self.last_usage)
+    monkeypatch.setattr(main, "OpenAICompatibleChatProvider", Model)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Model)
+    library = client.post("/knowledge-bases", json={"name": "Evidence"}).json()
+    add_document(db, db.get(KnowledgeBase, UUID(library["id"])), "needle evidence")
+    response = client.post(f"/knowledge-bases/{library['id']}/answer", json={
+        "query": "needle", "provider_id": chosen["id"], "thinking_option_id": "quick", "thinking_config_version": 1})
+    assert response.status_code == 200, response.text
+    assert response.json()["thinking"]["label"] == "低"
+    conversation = client.post("/conversations", json={}).json()["id"]
+    failed, _ = send(client, conversation, chosen["id"])
+    retried, _ = send(client, conversation, chosen["id"], query=None, retry_message_id=failed[-1].json()["id"],
+                     thinking_option_id="quick", thinking_config_version=1)
+    assert retried[-1].json()["thinking"]["option_id"] == "quick"
+    assert seen == ["quick", "strong", "quick"]

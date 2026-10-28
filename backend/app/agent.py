@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Iterator
 from typing import Any, Callable, TypedDict
 from uuid import UUID
@@ -88,6 +88,7 @@ class AgentRun:
     steps: int
     answer: str | None
     usage_events: list[dict[str, Any]]
+    protocol_messages: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
 
 class AgentCancelled(RuntimeError):
@@ -190,6 +191,8 @@ def stream_retrieval_agent(
                 for call in calls
             ],
         }
+        if response.protocol_fields:
+            assistant_message.update(response.protocol_fields)
         return {
             "messages": state["messages"] + [assistant_message],
             "tool_calls": calls,
@@ -357,6 +360,7 @@ def stream_retrieval_agent(
         steps=result.get("steps", 0),
         answer=result.get("answer"),
         usage_events=result.get("usage_events", []),
+        protocol_messages=result.get("messages", [])[len(initial):],
     )
 
 

@@ -29,8 +29,19 @@ OpenAI 使用管理员确认的模型支持子集，不假设 Chat Completions �
 - https://www.alibabacloud.com/help/en/model-studio/deep-thinking
 - https://developers.openai.com/api/docs/guides/reasoning
 
+## Agent 与历史消息
+
+请求设置作为公开消息快照记录，历史消息保持空值。
+DeepSeek 所需的 assistant/tool 消息序列使用现有模型凭据加密机制保存，
+只在同一站点模型、模型名、适配器且开启思考时恢复；不同模型仅接收公开回答。
+续传内容不出现在消息 API、导出、计费记录、日志或审计中。
+原始推理 Token 不叠加到已包含它的 completion_tokens；没有额外档位收费。
+
 ## 验收记录
 
-- 能力和参数适配：57 项相关后端测试通过。
-- Agent、界面、数据库迁移、真实上游与部署验收待后续提交记录。
+- 能力、消息、Agent、LLM、会话：73 项相关后端测试通过。
+- PostgreSQL 从空库迁移至 0028 成功；能力存储、版本并发、共享关联 4 项通过。
+- 旧结算并发测试单独运行 2 项通过；混合运行会受既有测试全局共享价格状态污染，
+  在测试数据库恢复该套件预期模式后通过，不修改线上或应用结算模式。
+- 界面、已有数据升级、真实上游与部署验收待后续提交记录。
 - 不调整商业价格、工作区倍率、默认模型或 Issue #36 开关。
