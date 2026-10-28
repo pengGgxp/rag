@@ -41,6 +41,8 @@ def stream(client, path, payload):
     with client.stream("POST", path, json=payload) as response:
         assert response.status_code == 200, f"HTTP {response.status_code}"
         for event in EventSource(response).iter_sse():
+            if not event.data:
+                continue
             data = event.json()
             if event.event == "delta" and first is None:
                 first = time.monotonic() - started
@@ -157,10 +159,43 @@ def cleanup(path):
     print("Temporary administrator revoked; sessions removed; accounting records retained.")
 
 
+def compact_existing(path):
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert not state.get("finished") and state.get("results"), "No interrupted acceptance to resume"
+    with httpx.Client(base_url=state["api_url"].rstrip("/"), timeout=180,
+            cookies={auth.COOKIE: state["cookie"]}, headers={"X-RAG-Request": "1",
+                "X-CSRF-Token": state["csrf"], "Origin": state["frontend_url"]}) as client:
+        models = client.get("/models/available").json()["providers"]
+        provider = next(row for row in models if row["model"] == state["results"][0]["model"])
+        request_id = uuid4()
+        events, _, duration = stream(client, f"/conversations/{state['results'][0]['conversation_id']}/compact", {
+            "request_id": str(request_id), "provider_id": provider["id"]})
+        assert events[-1][1]["status"] == "completed", "Live compaction failed"
+        with SessionLocal() as db:
+            checkpoint = db.scalar(select(ContextCheckpoint).where(ContextCheckpoint.request_id == request_id))
+            assert checkpoint and checkpoint.estimated_after < checkpoint.estimated_before
+            usage = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
+            assert usage and all(row.metadata_json.get("source") == "provider" for row in usage)
+            assert invariant(db) == state["before"]
+            state["compaction"] = {"request_id": str(request_id), "model": checkpoint.model,
+                "before": checkpoint.estimated_before, "after": checkpoint.estimated_after,
+                "seconds": round(duration, 3), "charged_credits": sum(row.credits for row in usage)}
+        state["finished"] = True
+        path.write_text(json.dumps(state), encoding="utf-8")
+        print(json.dumps({"compaction": state["compaction"], "commercial_configuration": "unchanged"},
+                         ensure_ascii=False), flush=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-live", action="store_true", required=True)
     parser.add_argument("--state-file", type=Path, required=True)
     parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument("--compact-existing", action="store_true")
     args = parser.parse_args()
-    cleanup(args.state_file) if args.cleanup else run(args.state_file)
+    if args.cleanup:
+        cleanup(args.state_file)
+    elif args.compact_existing:
+        compact_existing(args.state_file)
+    else:
+        run(args.state_file)

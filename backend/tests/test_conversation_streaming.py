@@ -58,6 +58,8 @@ def test_real_stream_delivers_text_before_upstream_finishes_and_assembles_tools(
         handler.end_headers()
         sse(handler, {"choices": [{"delta": {"content": "先查资料", "reasoning_content": "PRIVATE-REASONING"}}]})
         assert release.wait(5), "consumer did not receive early text"
+        handler.wfile.write(b"id: upstream-heartbeat\n: keepalive\n\n")
+        handler.wfile.flush()
         sse(handler, {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1",
             "function": {"name": "search_", "arguments": '{"query":'}}]}}]})
         sse(handler, {"choices": [{"delta": {"tool_calls": [{"index": 0,
@@ -96,6 +98,20 @@ def test_truncated_stream_keeps_confirmed_usage_but_does_not_invent_success():
         with pytest.raises(LLMProviderError):
             list(stream)
         assert provider.last_usage.prompt_tokens == 7
+
+
+def test_length_finish_still_reads_the_final_usage_frame():
+    def respond(handler, _payload):
+        handler.send_response(200); handler.send_header("Content-Type", "text/event-stream"); handler.end_headers()
+        sse(handler, {"choices": [{"delta": {"content": "部分正文"}, "finish_reason": "length"}]})
+        sse(handler, {"choices": [], "usage": {"prompt_tokens": 17, "completion_tokens": 9}})
+    with upstream(respond) as url:
+        provider = OpenAICompatibleChatProvider(config=ChatProviderConfig(url, "test-only", "test"))
+        stream = provider.stream_with_tools([], [])
+        assert next(stream)[1]["text"] == "部分正文"
+        with pytest.raises(LLMProviderError, match="未完整生成"):
+            list(stream)
+        assert provider.last_usage.prompt_tokens == 17 and provider.last_usage.completion_tokens == 9
 
 
 def test_json_fallback_is_one_delta_with_diagnostic():

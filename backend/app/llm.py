@@ -185,6 +185,8 @@ class OpenAICompatibleChatProvider:
         calls = {}
         finished = False
         for event in EventSource(response).iter_sse():
+            if not event.data:
+                continue
             if event.data == "[DONE]":
                 break
             body = event.json()
@@ -316,6 +318,7 @@ class OpenAICompatibleChatProvider:
         message = {"content": "", "reasoning_content": ""}
         calls = {}
         finished = False
+        finish_error = None
         try:
             with httpx.stream("POST", self._chat_url(self.base_url),
                     headers={"Authorization": f"Bearer {self.api_key}"},
@@ -333,6 +336,8 @@ class OpenAICompatibleChatProvider:
                     yield "complete", result
                     return
                 for event in EventSource(response).iter_sse():
+                    if not event.data:
+                        continue
                     if event.data == "[DONE]":
                         break
                     body = event.json()
@@ -371,9 +376,12 @@ class OpenAICompatibleChatProvider:
                                 call["function"][key] += fragment
                         reason = choice.get("finish_reason")
                         if reason in ("length", "content_filter"):
-                            raise LLMProviderError("模型响应未完整生成，请重试")
+                            # Usage may arrive after the terminal choice in a separate frame.
+                            finish_error = "模型响应未完整生成，请重试"
                         if reason in ("stop", "tool_calls"):
                             finished = True
+                if finish_error:
+                    raise LLMProviderError(finish_error)
                 if not finished:
                     raise LLMProviderError("模型响应未完成，请重试")
                 message["tool_calls"] = [calls[index] for index in sorted(calls)]
@@ -410,6 +418,8 @@ class OpenAICompatibleChatProvider:
                     received = False
                     finished = False
                     async for event in source.aiter_sse():
+                        if not event.data:
+                            continue
                         if event.data == "[DONE]":
                             finished = True
                             break
