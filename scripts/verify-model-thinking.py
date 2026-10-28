@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import text
 
 from app.db import SessionLocal
-from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider
+from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from app.llm_providers import _decrypt_api_key
 from app.thinking import select_thinking
 
@@ -49,6 +49,8 @@ def check(row, raw, *, tools=False):
     except Exception as exc:
         # Do not echo upstream bodies, prompts, credentials or reasoning.
         result.update(status="failed", error_type=type(exc).__name__)
+        if isinstance(exc, LLMProviderError):
+            result["error"] = str(exc)
     return result
 
 
