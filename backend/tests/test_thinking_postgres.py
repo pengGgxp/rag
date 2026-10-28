@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models import ChatMessage, Conversation, SiteModelProvider, Workspace
+from app.models import ChatMessage, Conversation, SiteModelProvider, Workspace, LLMProviderConfig, ContextCheckpoint
 from app.shared_providers import lock_provider
 from app.thinking import select_thinking
 from test_auth_postgres import auth_postgres
@@ -36,7 +36,9 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
         db.commit()
         db.expire_all()
         assert db.get(ChatMessage, message.id).thinking_snapshot["config_version"] == 1
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0028_message_thinking"
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0029_conversation_streaming"
+        assert message.display_blocks == []
+        assert row.context_capacity is None and row.max_output_tokens is None
 
 
 def test_concurrent_admin_edits_reject_stale_version(auth_postgres):
@@ -61,3 +63,31 @@ def test_concurrent_admin_edits_reject_stale_version(auth_postgres):
                 return exc.status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(edit, ["low", "high"])) == [200, 409]
+
+
+def test_ordered_blocks_and_multiple_checkpoints_keep_request_provenance(auth_postgres):
+    request_id = uuid4()
+    with Session(auth_postgres) as db:
+        workspace = Workspace(name="Streaming checkpoint")
+        provider = SiteModelProvider(key=f"stream-{uuid4()}", name="Test", model="test",
+            base_url="https://example.test/v1", encrypted_api_key="encrypted")
+        db.add_all([workspace, provider]); db.flush()
+        binding = LLMProviderConfig(workspace_id=workspace.id, site_provider_id=provider.id,
+            key="test", name="test", model="test", base_url="", encrypted_api_key="")
+        conversation = Conversation(workspace_id=workspace.id, title="Ordered")
+        db.add_all([binding, conversation]); db.flush()
+        blocks = [{"id": "text-1", "type": "text", "text": "first"},
+            {"id": "activity-one", "type": "activity", "call_id": "one"},
+            {"id": "text-2", "type": "text", "text": "second"}]
+        message = ChatMessage(conversation_id=conversation.id, sequence=0, role="assistant",
+            content="first\n\nsecond", display_blocks=blocks)
+        db.add(message)
+        for through in (1, 3):
+            db.add(ContextCheckpoint(conversation_id=conversation.id, request_id=request_id,
+                through_sequence=through, source_digest="a"*64, scope_digest="b"*64, summary="safe summary",
+                provider_id=binding.id, model="test", estimated_before=2000, estimated_after=500))
+        db.commit()
+        identifier = message.id
+    with Session(auth_postgres) as db:
+        assert db.get(ChatMessage, identifier).display_blocks == blocks
+        assert len(db.scalars(select(ContextCheckpoint).where(ContextCheckpoint.request_id == request_id)).all()) == 2

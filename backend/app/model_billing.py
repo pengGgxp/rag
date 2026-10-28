@@ -37,6 +37,17 @@ def _pay(db, account, row):
     row.status = "settled"
 
 
+def settle_pending(db, workspace_id, hold=0):
+    account = ensure_account(db, workspace_id)
+    debts = db.scalars(select(ModelUsageRequest).where(
+        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
+    ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()
+    if account.balance < sum(row.credits for row in debts) + hold:
+        raise CreditError()
+    for row in debts:
+        _pay(db, account, row)
+
+
 def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold):
     account = ensure_account(db, workspace_id)
     existing = db.get(ModelUsageRequest, request_id, populate_existing=True)
@@ -175,6 +186,8 @@ class ModelMeter:
             success = bool(response.content or response.tool_calls)
         usage = measured_usage(getattr(response, "usage", None) or provider.last_usage,
             messages, output, tools, success=success)
+        if getattr(provider, "stream_diagnostic", None) == "upstream_returned_json":
+            usage["stream_diagnostic"] = "upstream_returned_json"
         with self.factory() as db:
             finish_call(db, self.request_id, call_id, usage, "completed" if success else "failed")
             db.commit()

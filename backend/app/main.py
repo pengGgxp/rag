@@ -1013,7 +1013,8 @@ def answer_knowledge_base(
             UUID(provider_config.provider_id), hold)
     else:
         from .workspace_billing import operation_snapshot
-        admission = operation_snapshot(db, access.workspace_id, reservation_id, "model",
+        model_billing.settle_pending(db, access.workspace_id, hold)
+        operation_snapshot(db, access.workspace_id, reservation_id, "model",
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
         authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
     db.commit()
@@ -1021,8 +1022,9 @@ def answer_knowledge_base(
         if metered:
             model_billing.finalize_request(db, reservation_id, outcome)
         else:
-            release_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
-            from .workspace_billing import finish_operation
+            from .workspace_billing import finish_operation, legacy_call_usage
+            settle_model_usage(db, access.workspace_id, access.user_id, reservation_id,
+                legacy_call_usage(db, access.workspace_id, reservation_id), hold)
             finish_operation(db, access.workspace_id, reservation_id)
         db.commit()
     try:
@@ -1033,10 +1035,8 @@ def answer_knowledge_base(
         else:
             from .workspace_billing import LegacyPriceMeter
             from sqlalchemy.orm import sessionmaker
-            legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.workspace_id, reservation_id
-                ) if admission.context["source_mode"] == "shared" else None
-            answer = legacy_meter.invoke(provider, lambda: provider.complete(messages), messages
-                ) if legacy_meter else provider.complete(messages)
+            legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.workspace_id, reservation_id)
+            answer = legacy_meter.invoke(provider, lambda: provider.complete(messages), messages)
     except LLMConfigurationError as exc:
         finalize_model("failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -160,7 +160,9 @@ def test_agent_loads_selected_skill_progressively_and_persists_tool_summary(user
 
     class Provider:
         def complete_with_tools(self, messages, tools, *, tool_choice):
-            assert [tool["function"]["name"] for tool in tools] == ["load_skill", "read_skill_file"]
+            assert [tool["function"]["name"] for tool in tools] == [
+                "load_skill", "read_skill_file", "read_conversation_history",
+            ]
             if messages[-1]["role"] == "user":
                 assert "Use headings:" not in messages[0]["content"]
                 assert "Write a structured report" in messages[0]["content"]
@@ -192,8 +194,11 @@ def test_agent_calls_only_selected_and_authorized_mcp_tools(users, monkeypatch):
 
     class Provider:
         def complete_with_tools(self, messages, tools, *, tool_choice):
-            assert len(tools) == 1
-            alias = tools[0]["function"]["name"]
+            names = [tool["function"]["name"] for tool in tools]
+            assert "read_conversation_history" in names
+            aliases = [name for name in names if name.startswith("mcp_")]
+            assert len(aliases) == 1
+            alias = aliases[0]
             assert alias.startswith("mcp_")
             if messages[-1]["role"] == "user":
                 return ToolResponse(content=None, tool_calls=[ToolCall(

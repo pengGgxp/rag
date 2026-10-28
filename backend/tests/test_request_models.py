@@ -13,6 +13,7 @@ from app.models import (BillingSnapshot, ChatMessage, CreditAccount, CreditLedge
 from test_auth import register, share, switch
 from test_shared_providers import setup_site, provider
 from test_retrieval import add_document
+from auth_helpers import StreamingTestProvider
 
 
 def send(client, conversation, identifier, **changes):
@@ -32,7 +33,7 @@ def test_each_request_selects_actual_model_and_pins_prices(accounts, monkeypatch
     workspace = UUID(identity["workspace_id"])
     observed = []
 
-    class Model(OpenAICompatibleChatProvider):
+    class Model(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, tool_choice):
             observed.append(self.config)
             with Session(db.get_bind()) as independent:
@@ -109,7 +110,7 @@ def test_real_retry_uses_current_choice_and_old_messages_remain_unknown(accounts
     first, second = provider(client, "first"), provider(client, "second")
     calls = []
 
-    class Model(OpenAICompatibleChatProvider):
+    class Model(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, tool_choice):
             calls.append(self.config.site_provider_id)
             if self.config.site_provider_id == first["id"]:
@@ -139,7 +140,7 @@ def test_single_answer_uses_explicit_model(accounts, monkeypatch):
     add_document(db, db.get(KnowledgeBase, UUID(library["id"])), "needle is useful evidence")
     seen = []
 
-    class Model(OpenAICompatibleChatProvider):
+    class Model(StreamingTestProvider):
         def complete(self, messages, temperature=0):
             seen.append(self.config.site_provider_id)
             self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
@@ -161,7 +162,7 @@ def test_agent_rounds_keep_request_model_and_price_snapshot(accounts, monkeypatc
     db.commit()
     seen = []
 
-    class Model(OpenAICompatibleChatProvider):
+    class Model(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, tool_choice):
             seen.append((self.config.site_provider_id, self.config.model))
             self.last_usage = LLMUsage(prompt_tokens=1000, completion_tokens=1000)

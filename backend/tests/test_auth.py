@@ -31,8 +31,8 @@ PASSWORD = "long-test-password-123"
 
 
 @pytest.fixture
-def accounts(monkeypatch):
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+def accounts(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'accounts.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     db = Session(engine)
     db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="Existing workspace"))

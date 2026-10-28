@@ -1,5 +1,8 @@
 import json
+import logging
 import time
+import asyncio
+from threading import Event
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -11,7 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
+from starlette.concurrency import run_in_threadpool
 
 from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from .agent import AgentCancelled, stream_retrieval_agent
@@ -33,7 +36,10 @@ from .extensions import ExtensionRuntime, validate_selection
 from .llm_providers import request_provider_config
 from . import model_billing
 from .models import ModelUsageRequest
-from .thinking import encrypt_continuation, history_message
+from .thinking import encrypt_continuation
+from .conversation_stream import events as stream_events
+from .conversation_context import ContextManager, build_messages, HISTORY_TOOL
+from .models import ContextOperation, SiteModelProvider
 
 
 class ExtensionSelection(BaseModel):
@@ -53,12 +59,15 @@ class ConversationRename(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
-class TurnRequest(BaseModel):
+class ContextRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     request_id: UUID
     provider_id: UUID
     thinking_option_id: str | None = Field(default=None, min_length=1, max_length=40)
     thinking_config_version: int | None = Field(default=None, ge=0, strict=True)
+
+
+class TurnRequest(ContextRequest):
     query: str | None = Field(default=None, min_length=1)
     retry_message_id: UUID | None = None
 
@@ -83,6 +92,7 @@ def message_read(message: ChatMessage) -> dict:
         "thinking": message.thinking_snapshot,
         "citations": message.citations, "traces": message.traces,
         "tool_events": message.tool_events,
+        "display_blocks": message.display_blocks,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
         "retrieval_query": message.retrieval_query, "error_detail": message.error_detail,
         "feedback": feedback_read(message.feedback),
@@ -118,20 +128,27 @@ def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Con
 def recover_interrupted_conversations(db: Session):
     model_billing.recover_requests(db)
     from .models import BillingSnapshot, CreditLedgerEntry
-    from .workspace_billing import finish_operation
+    from .workspace_billing import legacy_call_usage
     for snapshot in db.scalars(select(BillingSnapshot).where(
             BillingSnapshot.event_key == "model", BillingSnapshot.status == "running")):
         hold = db.scalar(select(CreditLedgerEntry).where(
             CreditLedgerEntry.idempotency_key == f"usage:{snapshot.request_id}:hold"))
         if hold:
-            release_hold(db, snapshot.workspace_id, hold.actor_user_id, snapshot.request_id, -hold.amount)
+            settle_model_usage(db, snapshot.workspace_id, hold.actor_user_id, snapshot.request_id,
+                legacy_call_usage(db, snapshot.workspace_id, snapshot.request_id), -hold.amount)
         snapshot.status = "interrupted"
-    db.execute(update(ChatMessage).where(ChatMessage.status == "streaming").values(
-        status="interrupted", error_detail="服务重启，回答已中断，可以重试",
-    ))
+    for message in db.scalars(select(ChatMessage).where(ChatMessage.status == "streaming")):
+        message.status = "interrupted"
+        message.error_detail = "服务重启，回答已中断，可以重试"
+        message.tool_events = [
+            {**item, "status": "interrupted"} if item.get("status") in ("waiting", "running") else item
+            for item in message.tool_events
+        ]
     db.execute(update(Conversation).where(Conversation.active_request_id.is_not(None)).values(
         active_request_id=None,
     ))
+    db.execute(update(ContextOperation).where(ContextOperation.status == "running").values(
+        status="interrupted", result={"status": "failed", "error": "服务重启，整理已中断，原始记录已保留"}))
     db.commit()
 
 
@@ -140,7 +157,8 @@ def event(name, data):
 
 
 def event_text(payload):
-    return f"event: {payload['event']}\ndata: {payload['data']}\n\n"
+    prefix = f"id: {payload['id']}\n" if payload.get("id") else ""
+    return f"{prefix}event: {payload['event']}\ndata: {payload['data']}\n\n"
 
 
 def chat_router(get_db, retrieve):
@@ -249,11 +267,16 @@ def chat_router(get_db, retrieve):
         message = db.scalar(select(ChatMessage).where(
             ChatMessage.conversation_id == conversation.id, ChatMessage.request_id == payload.request_id,
         ))
-        if message is None:
+        operation = db.get(ContextOperation, payload.request_id)
+        if message is None and (operation is None or operation.conversation_id != conversation_id):
             raise HTTPException(404, "回答不存在")
-        db.execute(update(ChatMessage).where(
-            ChatMessage.id == message.id, ChatMessage.status == "streaming",
-        ).values(status="cancelled", error_detail=None))
+        if message:
+            db.execute(update(ChatMessage).where(
+                ChatMessage.id == message.id, ChatMessage.status == "streaming",
+            ).values(status="cancelled", error_detail=None))
+        elif operation.status == "running":
+            operation.status = "cancelled"
+            operation.result = {"status": "failed", "error": "整理已停止，原始记录已保留"}
         db.execute(update(Conversation).where(
             Conversation.id == conversation.id, Conversation.active_request_id == payload.request_id,
         ).values(active_request_id=None))
@@ -262,8 +285,10 @@ def chat_router(get_db, retrieve):
         except IntegrityError as exc:
             db.rollback()
             raise HTTPException(409, "请求已被提交，请刷新对话后重试") from exc
-        db.refresh(message)
-        return message_read(message)
+        if message:
+            db.refresh(message)
+            return message_read(message)
+        return {**operation.result, "request_id": str(payload.request_id)}
 
     @router.get("/{conversation_id}/export")
     def export(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -291,6 +316,80 @@ def chat_router(get_db, retrieve):
             "\n".join(lines), media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="conversation-{conversation.id}.md"'},
         )
+
+    @router.get("/{conversation_id}/context")
+    def context(conversation_id: UUID, provider_id: UUID, thinking_option_id: str | None = None,
+                thinking_config_version: int | None = None,
+                db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        conversation = live_conversation(db, conversation_id, access)
+        from .shared_providers import unavailable_reason
+        from .llm import ChatProviderConfig
+        from .thinking import select_thinking
+        shared = db.get(SiteModelProvider, provider_id)
+        if shared is None or unavailable_reason(db, shared, None, True):
+            raise HTTPException(409, "当前模型不可用，请重新选择")
+        config = ChatProviderConfig("", "", shared.model, site_provider_id=str(shared.id),
+            context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
+            thinking=select_thinking(shared.thinking_config, shared.thinking_version,
+                thinking_option_id, thinking_config_version))
+        factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        runtime = ExtensionRuntime(factory, access, conversation.skill_ids, conversation.mcp_server_ids)
+        manager = ContextManager(factory, access, conversation_id, config, None, None, None)
+        rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
+            ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
+        history = manager.history(db, conversation, rows)
+        messages, tools = build_messages(db, conversation, [], config, runtime)
+        messages.extend(history)
+        return manager.state(messages, tools + ([HISTORY_TOOL] if config.thinking.supports_tools else []))
+
+    @router.post("/{conversation_id}/compact")
+    def compact(conversation_id: UUID, payload: ContextRequest,
+                db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        conversation = db.get(Conversation, conversation_id, with_for_update=True)
+        if conversation is None or conversation.deleted_at:
+            raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
+        existing = db.get(ContextOperation, payload.request_id)
+        if existing:
+            if existing.conversation_id != conversation_id or existing.status == "running":
+                raise HTTPException(409, "整理请求正在执行或已被使用")
+            async def repeat():
+                yield event_text(event("done", existing.result))
+            return StreamingResponse(repeat(), media_type="text/event-stream")
+        if conversation.active_request_id:
+            raise HTTPException(409, "请先停止或等待当前操作完成")
+        config = request_provider_config(db, access.workspace_id, payload.provider_id,
+            payload.thinking_option_id, payload.thinking_config_version)
+        if not config.context_capacity or not config.max_output_tokens:
+            raise HTTPException(409, "上下文保护未就绪，请联系管理员配置模型容量")
+        from .conversation_context import eligible_rows
+        rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
+            ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
+        factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True)
+        history = manager.history(db, conversation, rows)
+        # A checkpoint already covering the eligible prefix makes this a free no-op.
+        candidates = eligible_rows(rows)
+        if not candidates or candidates[-1].sequence <= manager.covered:
+            async def nothing():
+                yield event_text(event("done", {"status": "idle", "eligible": False, "no_op": True}))
+            db.rollback()
+            return StreamingResponse(nothing(), media_type="text/event-stream")
+        hold = authorization_hold_amount()
+        if model_billing.enabled(db):
+            model_billing.start_request(db, access.workspace_id, access.user_id, payload.request_id,
+                UUID(config.provider_id), hold)
+        else:
+            from .workspace_billing import operation_snapshot
+            model_billing.settle_pending(db, access.workspace_id, hold)
+            operation_snapshot(db, access.workspace_id, payload.request_id, "model",
+                capabilities=model_billing.CAPABILITIES, provider_id=UUID(config.provider_id))
+            authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold)
+        conversation.active_request_id = payload.request_id
+        db.add(ContextOperation(request_id=payload.request_id, conversation_id=conversation_id))
+        db.commit()
+        return StreamingResponse(generate(factory, conversation_id, None, payload.request_id, access, hold, config),
+            media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @router.post("/{conversation_id}/messages")
     def send(conversation_id: UUID, payload: TurnRequest, db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -330,6 +429,7 @@ def chat_router(get_db, retrieve):
                     payload.request_id, UUID(provider_config.provider_id), hold_amount)
             else:
                 from .workspace_billing import operation_snapshot
+                model_billing.settle_pending(db, access.workspace_id, hold_amount)
                 operation_snapshot(db, access.workspace_id, payload.request_id, "model",
                     capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
                 authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
@@ -358,6 +458,7 @@ def chat_router(get_db, retrieve):
             message.citations = []
             message.traces = []
             message.tool_events = []
+            message.display_blocks = []
         else:
             db.add(ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
@@ -386,32 +487,50 @@ def chat_router(get_db, retrieve):
         )
 
     async def generate(factory, conversation_id, message_id, request_id, access, hold_amount, provider_config):
+        manual = message_id is None
         final_status = "cancelled"
         error_detail = None
         content = ""
         citations = []
         traces = []
         tool_events = []
+        display_blocks = []
+        stopped = Event()
+        sequence = 0
         retrieval_query = None
         refused = False
         refusal_reason = None
-        usage_settled = False
         continuation = None
+        disconnected = False
+        last_text_save = 0.0
         with factory() as metering_db:
             metered = metering_db.get(ModelUsageRequest, request_id) is not None
             from .workspace_billing import LegacyPriceMeter
-            from .models import BillingSnapshot
-            root = metering_db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == access.workspace_id,
-                BillingSnapshot.request_id == request_id, BillingSnapshot.event_key == "model"))
-            shared = bool(root and root.context["source_mode"] == "shared")
         meter = (model_billing.ModelMeter(factory, request_id) if metered else
-                 LegacyPriceMeter(factory, access.workspace_id, request_id) if shared else None)
+                 LegacyPriceMeter(factory, access.workspace_id, request_id))
+
+        def emit(name, data):
+            nonlocal sequence
+            sequence += 1
+            payload = event(name, {**data, "event_sequence": sequence})
+            payload["id"] = f"{request_id}:{sequence}"
+            return event_text(payload)
 
         def save(status="streaming"):
             with factory() as db:
                 conversation = db.scalar(select(Conversation).where(
                     Conversation.id == conversation_id,
                 ).with_for_update())
+                if manual:
+                    operation = db.get(ContextOperation, request_id)
+                    if status != "streaming" and operation.status == "running":
+                        operation.status = status
+                        operation.result = {"status": "completed" if status == "completed" else "failed",
+                            "error": error_detail, "eligible": False if status == "completed" else True}
+                        if conversation.active_request_id == request_id:
+                            conversation.active_request_id = None
+                        db.commit()
+                    return {**operation.result, "request_id": str(request_id)}, status == "streaming"
                 try:
                     access.revalidate(db).conversation(db, conversation)
                 except HTTPException:
@@ -423,9 +542,15 @@ def chat_router(get_db, retrieve):
                         conversation.active_request_id = None
                     db.commit()
                     result = message_read(message)
-                    result.update(content="", citations=[], traces=[], tool_events=[])
+                    result.update(content="", citations=[], traces=[], tool_events=[], display_blocks=[])
                     return result, False
                 if conversation.active_request_id != request_id or conversation.deleted_at is not None:
+                    message = db.get(ChatMessage, message_id)
+                    if (conversation.deleted_at is None and message.request_id == request_id
+                            and message.status == "cancelled"):
+                        message.content, message.display_blocks = content, display_blocks
+                        message.tool_events = tool_events
+                        db.commit()
                     return message_read(db.get(ChatMessage, message_id)), False
                 row = db.execute(update(ChatMessage).where(
                     ChatMessage.id == message_id, ChatMessage.request_id == request_id,
@@ -433,6 +558,7 @@ def chat_router(get_db, retrieve):
                 ).values(
                     content=content, status=status, citations=citations, traces=traces,
                     tool_events=tool_events,
+                    display_blocks=display_blocks,
                     retrieval_query=retrieval_query, refused=refused,
                     refusal_reason=refusal_reason, error_detail=error_detail,
                     encrypted_continuation=continuation,
@@ -446,6 +572,8 @@ def chat_router(get_db, retrieve):
                 return message_read(message), bool(row.rowcount)
 
         def still_authorized():
+            if stopped.is_set():
+                return False
             with factory() as db:
                 checked = access.revalidate(db)
                 conversation = live_conversation(db, conversation_id, checked)
@@ -456,19 +584,19 @@ def chat_router(get_db, retrieve):
                 conversation = live_conversation(db, conversation_id, access.revalidate(db))
                 scope_ids = [item.knowledge_base_id for item in conversation.libraries]
                 skill_ids, server_ids = conversation.skill_ids, conversation.mcp_server_ids
-                message = db.get(ChatMessage, message_id)
+                message = db.get(ChatMessage, message_id) if not manual else None
                 query = db.scalar(select(ChatMessage.content).where(
                     ChatMessage.conversation_id == conversation_id,
                     ChatMessage.sequence == message.sequence - 1,
-                ))
+                )) if not manual else None
                 rows = db.scalars(select(ChatMessage).where(
                     ChatMessage.conversation_id == conversation_id,
-                    ChatMessage.sequence < message.sequence - 1,
+                    ChatMessage.sequence < message.sequence - 1 if message else True,
                     ChatMessage.status == "completed",
                 ).order_by(ChatMessage.sequence)).all()
-                history = [item for row in rows for item in history_message(row, provider_config)]
-            yield event_text(event("message", message_read(message)))
-            yield event_text(event("phase", {"phase": "planning"}))
+            if not manual:
+                yield emit("message", message_read(message))
+            yield emit("phase", {"phase": "planning"})
             provider = OpenAICompatibleChatProvider(config=provider_config)
             retrieval_query = query
             if not hasattr(provider, "complete_with_tools"):
@@ -477,22 +605,73 @@ def chat_router(get_db, retrieve):
             extension_runtime = await run_in_threadpool(
                 ExtensionRuntime, factory, access, skill_ids, server_ids,
             )
-            execution = stream_retrieval_agent(
+            manager = ContextManager(factory, access, conversation_id, provider_config, provider, meter,
+                request_id, manual=manual)
+            with factory() as db:
+                conversation = live_conversation(db, conversation_id, access.revalidate(db))
+                history = manager.history(db, conversation, rows)
+                initial_messages, context_tools = build_messages(db, conversation, [], provider_config, extension_runtime, query)
+                initial_messages = initial_messages[:1] + history + initial_messages[1:]
+            if manual:
+                from queue import SimpleQueue
+                def manual_execution():
+                    from concurrent.futures import ThreadPoolExecutor
+                    output = SimpleQueue()
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(manager.prepare, initial_messages, context_tools + (
+                            [HISTORY_TOOL] if provider_config.thinking.supports_tools else []),
+                            output.put, lambda: None if still_authorized() else (_ for _ in ()).throw(AgentCancelled()))
+                        while not future.done() or not output.empty():
+                            try:
+                                yield output.get(timeout=0.1)
+                            except __import__("queue").Empty:
+                                continue
+                        compacted = future.result()
+                    yield "context", manager.state(compacted, context_tools + (
+                        [HISTORY_TOOL] if provider_config.thinking.supports_tools else []))
+                execution = manual_execution()
+            else:
+                execution = stream_retrieval_agent(
                 query=query, knowledge_base_ids=scope_ids, history=history,
                 factory=factory, access=access, retrieve=retrieve, provider=provider,
                 is_active=still_authorized,
                 extensions=extension_runtime,
                 meter=meter,
+                context_manager=manager,
             )
-            async for name, data in iterate_in_threadpool(execution):
-                if not await run_in_threadpool(still_authorized):
-                    return
+            bridge = stream_events(execution, stopped)
+            async for name, data in bridge:
+                if name == "heartbeat":
+                    yield ": heartbeat\n\n"
+                    continue
+                now = time.monotonic()
+                active = await run_in_threadpool(still_authorized)
+                if not active and name not in ("tool_started", "tool_result", "compaction"):
+                    continue
                 if name == "complete":
                     agent_run = data
                 else:
-                    if name in ("tool_call", "tool_result"):
+                    if name == "delta":
+                        block_id = data["block_id"]
+                        block = next((item for item in display_blocks if item["id"] == block_id), None)
+                        if block is None:
+                            block = {"id": block_id, "type": "text", "text": ""}
+                            display_blocks.append(block)
+                            if content:
+                                content += "\n\n"
+                        block["text"] += data["text"]
+                        content += data["text"]
+                        if now - last_text_save >= 0.25:
+                            await run_in_threadpool(save)
+                            last_text_save = now
+                    if name == "sources":
+                        citations, traces = data["citations"], data["traces"]
+                        await run_in_threadpool(save)
+                    if name in ("tool_call", "tool_started", "tool_result", "compaction"):
+                        if name == "compaction":
+                            data = {**data, "kind": "compaction", "name": "compact_context"}
                         summary = {
-                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count")
+                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary")
                             if key in data
                         }
                         summary.setdefault("status", "running")
@@ -500,44 +679,24 @@ def chat_router(get_db, retrieve):
                                       if item.get("call_id") == summary.get("call_id")), None)
                         if index is None:
                             tool_events.append(summary)
+                            display_blocks.append({"id": f"activity-{summary['call_id']}",
+                                "type": "activity", "call_id": summary["call_id"]})
                         else:
                             tool_events[index] = {**tool_events[index], **summary}
                         await run_in_threadpool(save)
-                    yield event_text(event(name, data))
+                    if active:
+                        yield emit(name, data)
             if agent_run is None:
-                raise LLMProviderError("Agent 未完成回答，请重试")
+                if not manual:
+                    raise LLMProviderError("Agent 未完成回答，请重试")
+                final_status = "completed"
+                return
             citations, traces = agent_run.citations, agent_run.traces
             continuation = encrypt_continuation(provider_config, agent_run.protocol_messages)
-            if not metered:
-                with factory() as usage_db:
-                    settle_model_usage(
-                        usage_db, access.workspace_id, access.user_id, request_id,
-                        agent_run.usage_events, hold_amount,
-                    )
-                    usage_db.commit()
-                usage_settled = True
-                with factory() as usage_db:
-                    from .workspace_billing import finish_operation
-                    finish_operation(usage_db, access.workspace_id, request_id)
-                    usage_db.commit()
             _, active = await run_in_threadpool(save)
             if not active:
                 return
-            yield event_text(event("sources", {"citations": citations, "traces": traces}))
-            yield event_text(event("phase", {"phase": "answering"}))
-            answer = agent_run.answer or ""
-            last_save = 0.0
-            for offset in range(0, len(answer), 120):
-                delta = answer[offset:offset + 120]
-                if not await run_in_threadpool(still_authorized):
-                    return
-                content += delta
-                if time.monotonic() - last_save >= 0.4:
-                    _, active = await run_in_threadpool(save)
-                    if not active:
-                        return
-                    last_save = time.monotonic()
-                yield event_text(event("delta", {"text": delta}))
+            yield emit("sources", {"citations": citations, "traces": traces})
             final_status = "completed"
         except AgentCancelled:
             final_status = "cancelled"
@@ -547,34 +706,38 @@ def chat_router(get_db, retrieve):
         except (LLMProviderError, LLMConfigurationError) as exc:
             final_status = "failed"
             error_detail = str(exc)
-        except Exception as exc:
+        except (asyncio.CancelledError, GeneratorExit):
+            disconnected = True
+            raise
+        except Exception:
             final_status = "failed"
-            error_detail = f"本次回答未能完成，请重试: {exc}"
+            error_detail = "本次回答未能完成，请重试"
         finally:
             # Disconnect/cancel must still release the per-conversation generation slot.
             with anyio.CancelScope(shield=True):
+                stopped.set()
+                if "bridge" in locals():
+                    await bridge.aclose()
+                for item in tool_events:
+                    if item.get("status") in ("waiting", "running"):
+                        item["status"] = "cancelled" if final_status == "cancelled" else "interrupted"
                 if metered:
                     with factory() as usage_db:
                         model_billing.finalize_request(usage_db, request_id, final_status)
                         usage_db.commit()
-                    usage_settled = True
                 saved, _ = await run_in_threadpool(save, final_status)
-                if not metered and (final_status != "completed" or not usage_settled):
+                if not metered:
                     with factory() as credit_db:
                         try:
-                            release_hold(
-                                credit_db,
-                                access.workspace_id,
-                                access.user_id,
-                                request_id,
-                                hold_amount,
-                            )
-                            from .workspace_billing import finish_operation
+                            from .workspace_billing import finish_operation, legacy_call_usage
+                            settle_model_usage(credit_db, access.workspace_id, access.user_id, request_id,
+                                legacy_call_usage(credit_db, access.workspace_id, request_id), hold_amount)
                             finish_operation(credit_db, access.workspace_id, request_id)
                             credit_db.commit()
                         except Exception:
                             credit_db.rollback()
-            if final_status in ("completed", "failed", "interrupted") and saved["request_id"] == str(request_id):
-                yield event_text(event("done", saved))
+                            logging.getLogger(__name__).error("Model settlement deferred for request %s", request_id)
+            if not disconnected and saved["request_id"] == str(request_id):
+                yield emit("done", saved)
 
     return router

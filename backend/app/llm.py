@@ -1,6 +1,6 @@
 import httpx
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from httpx_sse import aconnect_sse, SSEError
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
@@ -95,6 +95,9 @@ class ChatProviderConfig:
     provider_name: str | None = None
     site_provider_id: str | None = None
     thinking: ThinkingSelection = ThinkingSelection()
+    context_capacity: int | None = None
+    max_output_tokens: int | None = None
+    config_version: int = 0
 
     @property
     def llm_configured(self) -> bool:
@@ -144,6 +147,8 @@ class OpenAICompatibleChatProvider:
         ):
             payload["temperature"] = temperature
         payload.update(thinking.parameters())
+        if self.config.max_output_tokens:
+            payload["max_completion_tokens" if thinking.adapter == "openai" else "max_tokens"] = self.config.max_output_tokens
         if tools:
             payload.update(tools=tools, tool_choice=tool_choice)
         if stream:
@@ -263,6 +268,9 @@ class OpenAICompatibleChatProvider:
                 "回答模型尚未配置，请在工作区设置中选择模型"
             )
         body = self._post_message(self._payload(messages, tools=tools, tool_choice=tool_choice))
+        return self._tool_response(body)
+
+    def _tool_response(self, body) -> ToolResponse:
         try:
             message = body["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError) as exc:
@@ -284,6 +292,8 @@ class OpenAICompatibleChatProvider:
                 ))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise LLMProviderError("LLM returned an invalid tool call") from exc
+        if len({call.id for call in calls}) != len(calls):
+            raise LLMProviderError("模型返回了重复的工具调用标识")
         content = message.get("content")
         if content is not None and not isinstance(content, str):
             raise LLMProviderError("LLM returned invalid tool-call content")
@@ -296,6 +306,82 @@ class OpenAICompatibleChatProvider:
                 if self.config.thinking.continuation_required
                 and isinstance(message.get("reasoning_content", ""), str) else None),
         )
+
+    def stream_with_tools(self, messages, tools, *, tool_choice="auto") -> Iterator[tuple[str, Any]]:
+        """Forward public text as received; assemble private protocol fields and tool JSON server-side."""
+        from httpx_sse import EventSource
+        self.check_available()
+        self.last_usage = None
+        self.stream_diagnostic = None
+        message = {"content": "", "reasoning_content": ""}
+        calls = {}
+        finished = False
+        try:
+            with httpx.stream("POST", self._chat_url(self.base_url),
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=self._payload(messages, tools=tools, tool_choice=tool_choice, stream=True),
+                    timeout=self.timeout_seconds) as response:
+                if response.status_code >= 400:
+                    raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                if "application/json" in response.headers.get("content-type", ""):
+                    body = json.loads(response.read())
+                    self.last_usage = _parse_usage(body.get("usage"))
+                    self.stream_diagnostic = "upstream_returned_json"
+                    result = self._tool_response(body)
+                    if result.content:
+                        yield "delta", {"text": result.content}
+                    yield "complete", result
+                    return
+                for event in EventSource(response).iter_sse():
+                    if event.data == "[DONE]":
+                        break
+                    body = event.json()
+                    usage = _parse_usage(body.get("usage"))
+                    if usage is not None:
+                        if (self.last_usage and self.last_usage.prompt_tokens is not None
+                                and self.last_usage.completion_tokens is not None
+                                and (usage.prompt_tokens is None or usage.completion_tokens is None)):
+                            self.last_usage = replace(self.last_usage, diagnostics=(
+                                *self.last_usage.diagnostics, "ignored_incomplete_stream_usage"))
+                        else:
+                            self.last_usage = usage
+                    if body.get("error"):
+                        raise LLMProviderError("模型流式调用失败")
+                    for choice in body.get("choices", [])[:1]:
+                        delta = choice.get("delta") or {}
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            message["content"] += text
+                            yield "delta", {"text": text}
+                        reasoning = delta.get("reasoning_content")
+                        if isinstance(reasoning, str):
+                            message["reasoning_content"] += reasoning
+                        for part in delta.get("tool_calls", []):
+                            index = part.get("index")
+                            if type(index) is not int or index < 0 or index > 1024:
+                                raise LLMProviderError("工具调用序号无效")
+                            call = calls.setdefault(index, {"id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""}})
+                            if part.get("id"):
+                                call["id"] = part["id"]
+                            for key in ("name", "arguments"):
+                                fragment = (part.get("function") or {}).get(key, "")
+                                if not isinstance(fragment, str):
+                                    raise LLMProviderError("工具参数片段无效")
+                                call["function"][key] += fragment
+                        reason = choice.get("finish_reason")
+                        if reason in ("length", "content_filter"):
+                            raise LLMProviderError("模型响应未完整生成，请重试")
+                        if reason in ("stop", "tool_calls"):
+                            finished = True
+                if not finished:
+                    raise LLMProviderError("模型响应未完成，请重试")
+                message["tool_calls"] = [calls[index] for index in sorted(calls)]
+                yield "complete", self._tool_response({"choices": [{"message": message}]})
+        except LLMProviderError:
+            raise
+        except (httpx.HTTPError, SSEError, ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+            raise LLMProviderError("模型流式连接或响应异常，请重试") from exc
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.check_available()

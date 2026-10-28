@@ -77,6 +77,8 @@ class SiteModelProvider(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     thinking_config: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     thinking_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    context_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prices: Mapped[dict] = mapped_column(JSON, default=dict)
     template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -509,6 +511,7 @@ class ChatMessage(Base):
     citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
     traces: Mapped[list[dict]] = mapped_column(JSON, default=list)
     tool_events: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    display_blocks: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     retrieval_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     refused: Mapped[bool] = mapped_column(default=False)
     refusal_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -518,6 +521,31 @@ class ChatMessage(Base):
     feedback: Mapped["AnswerFeedback | None"] = relationship(
         uselist=False, cascade="all, delete-orphan", lazy="selectin"
     )
+
+
+class ContextCheckpoint(Base):
+    __tablename__ = "conversation_context_checkpoints"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    through_sequence: Mapped[int] = mapped_column(Integer)
+    source_digest: Mapped[str] = mapped_column(String(64))
+    scope_digest: Mapped[str] = mapped_column(String(64))
+    summary: Mapped[str] = mapped_column(Text)
+    provider_id: Mapped[UUID] = mapped_column(ForeignKey("llm_provider_configs.id"))
+    model: Mapped[str] = mapped_column(String(200))
+    estimated_before: Mapped[int] = mapped_column(Integer)
+    estimated_after: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ContextOperation(Base):
+    __tablename__ = "conversation_context_operations"
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="running")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AnswerFeedback(Base):

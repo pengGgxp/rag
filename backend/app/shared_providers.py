@@ -2,7 +2,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 
 from .auth import Access, get_access
@@ -35,6 +35,16 @@ class SiteProviderInput(ProviderInput):
     enabled: bool = False
     version: int = Field(default=0, ge=0)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    context_capacity: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=10_000_000, strict=True)
+
+    @model_validator(mode="after")
+    def valid_context(self):
+        if (self.context_capacity is None) != (self.max_output_tokens is None):
+            raise ValueError("请同时配置模型上下文容量和最大输出")
+        if self.context_capacity and self.max_output_tokens >= self.context_capacity * 0.95:
+            raise ValueError("最大输出必须小于上下文容量减去安全余量")
+        return self
 
 
 class PriceUpdate(BaseModel):
@@ -72,6 +82,7 @@ def read_provider(db, row):
         "version": row.version,
         "thinking": row.thinking_config or ThinkingConfig().model_dump(),
         "thinking_version": row.thinking_version,
+        "context_capacity": row.context_capacity, "max_output_tokens": row.max_output_tokens,
         "is_default": bool(settings and settings.default_provider_id == row.id),
         "configured": complete(row.prices), "prices": list(row.prices.values()),
         "available": reason is None, "unavailable_reason": reason,
@@ -86,6 +97,7 @@ def apply_provider(row, payload):
     if not row.name or not row.model:
         raise HTTPException(422, "名称和模型不能为空")
     row.timeout_seconds = payload.timeout_seconds
+    row.context_capacity, row.max_output_tokens = payload.context_capacity, payload.max_output_tokens
     if payload.api_key:
         row.encrypted_api_key = _encrypt_api_key(payload.api_key.get_secret_value())
     if not row.encrypted_api_key:

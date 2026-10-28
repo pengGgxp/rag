@@ -78,7 +78,9 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
         raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员")
     return ChatProviderConfig(base_url=shared.base_url, api_key=api_key, model=shared.model,
         timeout_seconds=shared.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
-        provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking)
+        provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking,
+        context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
+        config_version=shared.version)
 
 
 @site_router.get("")

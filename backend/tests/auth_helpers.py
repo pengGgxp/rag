@@ -3,6 +3,16 @@ from datetime import timedelta
 
 from app.auth import COOKIE, digest, now
 from app.models import LoginSession, Membership, User, Workspace, LEGACY_WORKSPACE_ID
+from app.llm import OpenAICompatibleChatProvider
+
+
+class StreamingTestProvider(OpenAICompatibleChatProvider):
+    """Adapt deterministic workflow stubs to the same streaming entry point as production."""
+    def stream_with_tools(self, messages, tools, *, tool_choice="auto"):
+        result = self.complete_with_tools(messages, tools, tool_choice=tool_choice)
+        if result.content:
+            yield "delta", {"text": result.content}
+        yield "complete", result
 
 
 def configured_model(db, workspace_id, monkeypatch=None):

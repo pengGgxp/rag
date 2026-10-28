@@ -9,6 +9,7 @@ from typing import Any, Callable, TypedDict
 from uuid import UUID
 
 from langgraph.graph import END, StateGraph
+from langgraph.config import get_stream_writer
 
 from .llm import LLMProviderError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
 from .models import KnowledgeBase
@@ -77,6 +78,7 @@ class AgentState(TypedDict, total=False):
     all_tool_calls: list[ToolCall]
     tool_results: list[dict[str, Any]]
     usage_events: list[dict[str, Any]]
+    protocol_messages: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ def stream_retrieval_agent(
     is_active: Callable[[], bool] | None = None,
     extensions=None,
     meter=None,
+    context_manager=None,
 ) -> Iterator[tuple[str, Any]]:
     """Run model/tool rounds until the model answers, the user stops, or a request fails."""
 
@@ -148,10 +151,31 @@ def stream_retrieval_agent(
 
     def plan(state: AgentState) -> AgentState:
         check_active()
+        write = get_stream_writer()
         tools = ([SEARCH_TOOL] if allowed else []) + (extensions.tools if extensions else [])
+        if context_manager and context_manager.config.thinking.supports_tools:
+            from .conversation_context import HISTORY_TOOL
+            tools = tools + [HISTORY_TOOL]
+        messages = state["messages"]
+        if context_manager:
+            messages = context_manager.prepare(messages, tools, write, check_active)
         def invoke():
-            return provider.complete_with_tools(state["messages"], tools, tool_choice="auto")
-        response = meter.invoke(provider, invoke, state["messages"], tools) if meter else invoke()
+            if hasattr(provider, "stream_with_tools"):
+                response = None
+                # Finish the in-flight call even after stop, so confirmed usage can be recorded.
+                for name, data in provider.stream_with_tools(messages, tools, tool_choice="auto"):
+                    if name == "complete":
+                        response = data
+                    else:
+                        write((name, {**data, "block_id": f"text-{state.get('steps', 0) + 1}"}))
+                if response is None:
+                    raise LLMProviderError("模型未完成响应")
+                return response
+            response = provider.complete_with_tools(messages, tools, tool_choice="auto")
+            if response.content:
+                write(("delta", {"text": response.content, "block_id": f"text-{state.get('steps', 0) + 1}"}))
+            return response
+        response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
         check_active()
         calls = response.tool_calls
         usage_events = list(state.get("usage_events", []))
@@ -194,15 +218,17 @@ def stream_retrieval_agent(
         if response.protocol_fields:
             assistant_message.update(response.protocol_fields)
         return {
-            "messages": state["messages"] + [assistant_message],
+            "messages": messages + [assistant_message],
             "tool_calls": calls,
             "steps": state.get("steps", 0) + 1,
             "answer": response.content if not calls else None,
             "all_tool_calls": state.get("all_tool_calls", []) + calls,
             "usage_events": usage_events,
+            "protocol_messages": state.get("protocol_messages", []) + [assistant_message],
         }
 
     def execute(state: AgentState) -> AgentState:
+        write = get_stream_writer()
         citations = {item["chunk_id"]: item for item in state.get("citations", [])}
         traces: list[dict[str, Any]] = list(state.get("traces", []))
         messages: list[dict[str, Any]] = []
@@ -211,12 +237,20 @@ def stream_retrieval_agent(
             checked = access.revalidate(db)
             for call in state.get("tool_calls", []):
                 check_active()
+                label = ("回查早期对话" if call.name == "read_conversation_history" else
+                         "知识库检索" if call.name == "search_knowledge_base"
+                         else extensions.label(call.name) if extensions else "工具")
+                kind = ("knowledge" if call.name == "search_knowledge_base" else
+                        "skill" if call.name in ("load_skill", "read_skill_file") else "mcp")
+                activity = {"call_id": f"tool-{state['steps']}-{call.id}", "name": call.name, "label": label, "kind": kind}
                 if call.name != "search_knowledge_base":
+                    write(("tool_started", {**activity, "status": "running"}))
                     result = (
+                        context_manager.read_original(call.arguments)
+                        if context_manager and call.name == "read_conversation_history" else
                         extensions.execute(call.name, call.arguments, check_active=check_active)
                         if extensions else {"error": "该工具不可用"}
                     )
-                    check_active()
                     messages.append(_tool_message(call, result))
                     tool_results.append({
                         "call_id": call.id, "name": call.name,
@@ -225,6 +259,11 @@ def stream_retrieval_agent(
                         "status": "error" if result.get("error") or result.get("isError") else "completed",
                         **({"error": result["error"]} if result.get("error") else {}),
                     })
+                    write(("tool_result", {**activity, "status": tool_results[-1]["status"],
+                        "summary": "工具未能完成，请重试或检查授权" if tool_results[-1]["status"] == "error"
+                        else f"已回查 {result['result_count']} 条消息" if call.name == "read_conversation_history"
+                        else "已读取内容" if kind == "skill" else "操作已完成"}))
+                    check_active()
                     continue
                 requested = call.arguments.get("knowledge_base_ids")
                 search_ids = []
@@ -257,7 +296,9 @@ def stream_retrieval_agent(
                         "call_id": call.id, "name": call.name, "kind": "knowledge",
                         "label": "知识库检索", "status": "error", **result,
                     })
+                    write(("tool_result", {**activity, "status": "error", "summary": "检索参数未通过校验，未执行检索"}))
                     continue
+                write(("tool_started", {**activity, "status": "running"}))
                 found: list[tuple[float, dict[str, Any]]] = []
                 for knowledge_base_id in search_ids:
                     check_active()
@@ -308,12 +349,16 @@ def stream_retrieval_agent(
                     "query": search_query,
                     "result_count": len(selected),
                 })
+                write(("tool_result", {**activity, "status": "completed",
+                    "result_count": len(selected), "summary": f"找到 {len(selected)} 条相关内容"}))
+                write(("sources", {"citations": list(citations.values()), "traces": traces}))
         return {
             "messages": state["messages"] + messages,
             "tool_messages": messages,
             "citations": list(citations.values()),
             "traces": traces,
             "tool_results": tool_results,
+            "protocol_messages": state.get("protocol_messages", []) + messages,
         }
 
     def route(state: AgentState) -> str:
@@ -331,21 +376,22 @@ def stream_retrieval_agent(
     while True:
         check_active()
         yield "agent_step", {"step": result["steps"] + 1, "status": "planning"}
-        for update in compiled.stream(result, stream_mode="updates"):
+        for mode, update in compiled.stream(result, stream_mode=["updates", "custom"]):
+            if mode == "custom":
+                if update[0] == "sources":
+                    check_active()
+                yield update
+                continue
             check_active()
             for node, changes in update.items():
-                previous_results = len(result.get("tool_results", []))
                 result.update(changes)
                 if node == "plan":
                     for call in result.get("tool_calls", []):
                         yield "tool_call", {
-                            "call_id": call.id, "name": call.name, "arguments": call.arguments,
+                            "call_id": f"tool-{result['steps']}-{call.id}", "name": call.name, "status": "waiting",
                             "kind": "knowledge" if call.name == "search_knowledge_base" else "skill" if call.name in ("load_skill", "read_skill_file") else "mcp",
-                            "label": "知识库检索" if call.name == "search_knowledge_base" else extensions.label(call.name) if extensions else call.name,
+                            "label": "回查早期对话" if call.name == "read_conversation_history" else "知识库检索" if call.name == "search_knowledge_base" else extensions.label(call.name) if extensions else call.name,
                         }
-                elif node == "execute":
-                    for item in result.get("tool_results", [])[previous_results:]:
-                        yield "tool_result", item
         if not result.get("tool_calls"):
             break
     check_active()
@@ -360,7 +406,7 @@ def stream_retrieval_agent(
         steps=result.get("steps", 0),
         answer=result.get("answer"),
         usage_events=result.get("usage_events", []),
-        protocol_messages=result.get("messages", [])[len(initial):],
+        protocol_messages=result.get("protocol_messages", []),
     )
 
 

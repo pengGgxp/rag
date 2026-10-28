@@ -9,12 +9,15 @@ from sqlalchemy.orm import Session
 
 from app import model_billing as billing
 from app.credits import CreditError, ensure_policies
-from app.models import CreditAccount, CreditLedgerEntry, ModelCallUsage, ModelUsageRequest, UsagePolicy, User, Workspace
+from app.models import CreditAccount, CreditLedgerEntry, ModelCallUsage, ModelUsageRequest, ModelBillingSettings, UsagePolicy, User, Workspace
 from test_auth_postgres import auth_postgres
 
 
 def setup(engine):
     with Session(engine) as db:
+        settings = db.get(ModelBillingSettings, 1)
+        if settings:
+            settings.shared_pricing_enabled = False
         workspace = Workspace(name="Concurrent metering")
         user = User(email=f"meter-{uuid4().hex}@example.com", name="Meter test")
         db.add_all([workspace,user]); db.flush()

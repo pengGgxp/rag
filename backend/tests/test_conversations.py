@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from httpx_sse import EventSource
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from app import main, conversations as chat
 from app.db import Base
@@ -18,8 +17,8 @@ from auth_helpers import authenticate, model_id
 
 
 @pytest.fixture
-def client(monkeypatch):
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+def client(monkeypatch, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'conversation.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     db = Session(engine)
     captured = []

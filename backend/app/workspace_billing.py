@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from .models import BillingSnapshot, LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, Workspace
+from .llm import measured_usage
 
 MODEL_CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")
 DOCUMENT_CAPABILITIES = ("ocr_pages", "embedding_tokens")
@@ -144,18 +145,52 @@ class LegacyPriceMeter:
         self.last_snapshot_id = None
 
     def invoke(self, provider, operation, messages, tools=None):
-        status = provider.status
+        from types import SimpleNamespace
+        status = getattr(provider, "status", SimpleNamespace(provider_id=None, provider_key=None))
         provider_id = UUID(status.provider_id) if status.provider_id else None
         with self.factory() as db:
             root = db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == self.workspace_id,
                 BillingSnapshot.request_id == self.request_id, BillingSnapshot.event_key == "model"))
             if root is None:
                 raise ValueError("Model request has no admission snapshot")
+            if provider_id is None and root.context.get("model_provider_id"):
+                provider_id = UUID(root.context["model_provider_id"])
+                status = SimpleNamespace(provider_id=str(provider_id), provider_key=None)
             capabilities = MODEL_CAPABILITIES if root.context["source_mode"] == "shared" else (
                 "llm_input_tokens", "llm_output_tokens")
             snapshot = operation_snapshot(db, self.workspace_id, self.request_id, f"model:{self.round}",
                 capabilities=capabilities, provider_id=provider_id, context=root.context)
             self.last_snapshot_id = str(snapshot.id)
+            snapshot_id = snapshot.id
             self.round += 1
             db.commit()
-        return operation()
+        provider.last_usage = None
+        try:
+            response = operation()
+        except BaseException:
+            self._finish(snapshot_id, measured_usage(provider.last_usage, messages, {}, tools, success=False), status, "failed")
+            raise
+        output = {"content": response} if isinstance(response, str) else {
+            "content": getattr(response, "content", None),
+            "tool_calls": [call.arguments for call in getattr(response, "tool_calls", [])]}
+        usage = measured_usage(getattr(response, "usage", None) or provider.last_usage, messages, output, tools)
+        if getattr(provider, "stream_diagnostic", None) == "upstream_returned_json":
+            usage["stream_diagnostic"] = "upstream_returned_json"
+        self._finish(snapshot_id, usage, status, "completed")
+        return response
+
+    def _finish(self, snapshot_id, usage, provider_status, status):
+        with self.factory() as db:
+            snapshot = db.get(BillingSnapshot, snapshot_id, with_for_update=True)
+            snapshot.context = {**snapshot.context, "call_usage": {
+                **usage, "provider_id": provider_status.provider_id,
+                "provider_key": provider_status.provider_key, "billing_snapshot_id": str(snapshot_id)},
+                "call_status": status}
+            db.commit()
+
+
+def legacy_call_usage(db, workspace_id, request_id):
+    rows = [row for row in db.scalars(select(BillingSnapshot).where(
+        BillingSnapshot.workspace_id == workspace_id, BillingSnapshot.request_id == request_id))
+        if row.event_key.startswith("model:") and row.context.get("call_usage")]
+    return [row.context["call_usage"] for row in sorted(rows, key=lambda row: int(row.event_key.split(":")[1]))]

@@ -277,6 +277,7 @@ def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):
     execution = stream_retrieval_agent(**runtime.arguments, provider=provider)
     assert next(execution)[0] == "agent_step"
     assert next(execution)[0] == "tool_call"
+    assert next(execution)[0] == "tool_started"
     assert next(execution)[0] == "tool_result"
     runtime.active["value"] = False
     with pytest.raises(AgentCancelled):

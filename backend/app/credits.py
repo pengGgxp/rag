@@ -336,9 +336,14 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
     total, allocations = allocate([part[-1] for part in parts])
     # Return the reservation atomically before testing the full request debit.
     release_hold(db, workspace_id, actor_user_id, request_id, hold)
-    if total:
+    if total and account.balance >= total:
         _entry(db, account, actor_user_id=actor_user_id, amount=-total, kind="usage_settlement",
             idempotency_key=charge_key, metadata={"request_id": str(request_id), "capability": "model_tokens"})
+    elif total:
+        from .models import ModelUsageRequest
+        db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
+            actor_user_id=actor_user_id, status="pending", credits=total, hold=0,
+            outcome="confirmed_usage", formula_version="legacy_model_multiplier_v1"))
     for (index, capability, units, price, snapshot, exact), credits in zip(parts, allocations):
         usage = usage_events[index]
         db.add(UsageEvent(workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
