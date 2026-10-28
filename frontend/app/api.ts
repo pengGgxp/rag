@@ -115,8 +115,11 @@ export async function streamRequest(
   }
   if (!response.body) throw new Error("浏览器未提供回答数据流");
   let done = false;
+  const eventIds = new Set<string>();
   const parser = createParser({
     onEvent(event) {
+      if (event.id && eventIds.has(event.id)) return;
+      if (event.id) eventIds.add(event.id);
       const data: unknown = JSON.parse(event.data);
       if (event.event === "done") done = true;
       onEvent(event.event || "message", data);

@@ -4,8 +4,8 @@ import ReactMarkdown from "react-markdown";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
+  ArrowDown,
   BookOpen,
-  BrainCircuit,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -37,6 +37,10 @@ import "./chat.css";
 import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
 import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
+import { ConversationActivity } from "./conversation-activity";
+import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
+import { activityItem, appendActivity, appendText, type DisplayBlock, type ToolEvent } from "./conversation-display";
+import "./conversation-experience.css";
 
 type Library = {
   id: string;
@@ -70,7 +74,8 @@ type Message = {
   request_id?: string | null;
   citations: Citation[];
   traces: Trace[];
-  tool_events?: { call_id: string; name: string; label: string; kind: string; status: string }[];
+  tool_events?: ToolEvent[];
+  display_blocks?: DisplayBlock[];
   refused: boolean;
   error_detail?: string | null;
   feedback?: Feedback | null;
@@ -87,6 +92,17 @@ type ModelChoice = {
   thinking?: ThinkingCapability;
 };
 type ModelOptions = { default_provider_id: string | null; providers: ModelChoice[] };
+type ContextResponse = {
+  estimated_input_tokens: number; capacity: number | null; output_reserve: number | null;
+  eligible: boolean; status: ConversationContextState["status"];
+};
+const emptyContext: ConversationContextState = {
+  estimatedInputTokens: 0, capacity: null, outputReserve: null, eligible: false, status: "idle",
+};
+function contextState(value: ContextResponse): ConversationContextState {
+  return { estimatedInputTokens: value.estimated_input_tokens, capacity: value.capacity,
+    outputReserve: value.output_reserve, eligible: value.eligible, status: value.status };
+}
 type Conversation = {
   id: string;
   title: string;
@@ -112,11 +128,13 @@ function upsert(messages: Message[], message: Message) {
 function AnswerMarkdown({
   message,
   onCitation,
+  text,
 }: {
   message: Message;
   onCitation: (item: Citation) => void;
+  text?: string;
 }) {
-  let markdown = message.content;
+  let markdown = text ?? message.content;
   message.citations.forEach((citation, index) => {
     markdown = markdown
       .split(`[${citation.chunk_id}]`)
@@ -191,6 +209,10 @@ export function ChatWorkspace({
   const [reloadAttempt, setReloadAttempt] = useState(0);
   const [asking, setAsking] = useState(false);
   const [phase, setPhase] = useState("");
+  const [contextInfo, setContextInfo] = useState<ConversationContextState>(emptyContext);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextAttempt, setContextAttempt] = useState(0);
+  const [latest, setLatest] = useState(false);
   const setSidebar = useUiStore((state) => state.setSidebarOpen);
   const [notice, setNotice] = useState<{
     text: string;
@@ -213,6 +235,21 @@ export function ChatWorkspace({
   viewRef.current = conversation;
   const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
   const thinking = selectedModel?.thinking;
+  useEffect(() => {
+    const controller = new AbortController();
+    if (!conversation?.id || !modelId) { setContextInfo(emptyContext); return; }
+    setContextLoading(true);
+    const params = new URLSearchParams({ provider_id: modelId, thinking_config_version: String(thinkingVersion) });
+    if (thinkingId) params.set("thinking_option_id", thinkingId);
+    request<ContextResponse>(`/conversations/${conversation.id}/context?${params}`,
+      { signal: controller.signal }).then(value => {
+        if (!controller.signal.aborted) setContextInfo(contextState(value));
+      }).catch(error => {
+        if (!controller.signal.aborted) setContextInfo({ ...emptyContext, status: "failed",
+          error: error instanceof Error ? error.message : "上下文状态加载失败" });
+      }).finally(() => { if (!controller.signal.aborted) setContextLoading(false); });
+    return () => controller.abort();
+  }, [conversation?.id, modelId, thinkingId, thinkingVersion, contextAttempt]);
   const selectedNames = conversation
     ? conversation.knowledge_bases.map((item) => item.name)
     : libraries
@@ -450,7 +487,7 @@ export function ChatWorkspace({
                     status: "streaming",
                     error_detail: null,
                     citations: [],
-                    traces: [],
+                    traces: [], tool_events: [], display_blocks: [],
                   }
                 : item,
             )
@@ -483,9 +520,14 @@ export function ChatWorkspace({
                 ? "Agent 正在整理检索结果…"
                 : "正在分析问题…",
             );
-          if (name === "tool_call")
-            setPhase(`正在调用${(data as { label?: string }).label ?? "工具"}…`);
+          if (name === "tool_started")
+            setPhase(`正在执行${(data as { label?: string }).label ?? "工具"}…`);
           if (name === "tool_result") setPhase("正在分析工具结果…");
+          if (name === "compaction") {
+            const status = (data as ToolEvent).status;
+            setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
+            setPhase(status === "running" ? "正在整理早期上下文…" : "正在继续回答…");
+          }
           if (name === "message") received = true;
           setConversation((item) => {
             if (!item || item.id !== current!.id) return item;
@@ -498,11 +540,24 @@ export function ChatWorkspace({
             }
             const messages = item.messages.map((message) => {
               if (message.request_id !== active!.requestId) return message;
-              if (name === "delta")
+              if (name === "delta") {
+                const delta = data as { text: string; block_id: string };
+                const blocks = message.display_blocks ?? [];
                 return {
                   ...message,
-                  content: message.content + (data as { text: string }).text,
+                  content: message.content + (blocks.some(block => block.id === delta.block_id) || !message.content ? "" : "\n\n") + delta.text,
+                  display_blocks: appendText(blocks, delta.block_id, delta.text),
                 };
+              }
+              if (["tool_call", "tool_started", "tool_result", "compaction"].includes(name)) {
+                const update = data as ToolEvent;
+                const tools = message.tool_events ?? [];
+                const existing = tools.find(tool => tool.call_id === update.call_id);
+                const next = { ...existing, ...update, ...(name === "compaction" ? { kind: "compaction", name: "compact_context" } : {}) };
+                return { ...message, tool_events: existing
+                  ? tools.map(tool => tool.call_id === update.call_id ? next : tool) : [...tools, next],
+                  display_blocks: appendActivity(message.display_blocks ?? [], update.call_id) };
+              }
               if (name === "sources")
                 return {
                   ...message,
@@ -531,8 +586,44 @@ export function ChatWorkspace({
         sending.current = false;
         setAsking(false);
         setPhase("");
+        setContextAttempt(value => value + 1);
       }
       void refreshList();
+    }
+  }
+  async function compact() {
+    if (!conversation || sending.current || conversation.active_request_id || !selectedModel?.available || thinkingStale) return;
+    const currentEpoch = epoch.current;
+    const active: Generation = { controller: new AbortController(), conversationId: conversation.id,
+      requestId: crypto.randomUUID(), epoch: currentEpoch };
+    generation.current = active;
+    sending.current = true;
+    setAsking(true);
+    setPhase("正在整理早期上下文…");
+    setContextInfo(value => ({ ...value, status: "running" }));
+    try {
+      await streamRequest(`/conversations/${conversation.id}/compact`, {
+        request_id: active.requestId, provider_id: modelId, thinking_config_version: thinkingVersion,
+        ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
+      }, active.controller.signal, (name, data) => {
+        if (epoch.current !== currentEpoch || active.controller.signal.aborted) return;
+        if (name === "context") setContextInfo(contextState(data as ContextResponse));
+        if (name === "done") {
+          const result = data as { status: string; error?: string };
+          if (result.status === "failed") throw new Error(result.error || "整理未完成，原始上下文已保留");
+        }
+      });
+    } catch (error) {
+      if (!active.controller.signal.aborted && epoch.current === currentEpoch) {
+        setContextInfo(value => ({ ...value, status: "failed", error: error instanceof Error ? error.message : "整理失败" }));
+        report(error);
+      }
+    } finally {
+      if (epoch.current === currentEpoch) {
+        generation.current = null; sending.current = false; setAsking(false); setPhase("");
+        setContextAttempt(value => value + 1);
+        await reloadCurrent(active.conversationId, currentEpoch);
+      }
     }
   }
   async function rename(event: FormEvent) {
@@ -767,9 +858,11 @@ export function ChatWorkspace({
           ref={scrollArea}
           onScroll={() => {
             const area = scrollArea.current;
-            if (area)
+            if (area) {
               follow.current =
                 area.scrollHeight - area.scrollTop - area.clientHeight < 100;
+              setLatest(!follow.current);
+            }
           }}
         >
           {loading ? (
@@ -814,10 +907,12 @@ export function ChatWorkspace({
                     <p className="chat-question">{message.content}</p>
                   ) : (
                     <>
-                      <AnswerMarkdown
-                        message={message}
-                        onCitation={setPreview}
-                      />
+                      {message.display_blocks?.length ? message.display_blocks.map(block => {
+                        if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
+                        const activity = message.tool_events?.find(item => item.call_id === block.call_id);
+                        return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]}
+                          finished={!["waiting", "running"].includes(activity.status)} /> : null;
+                      }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
                       {message.status === "streaming" && (
                         <Motion.div
                           className="thinking"
@@ -884,12 +979,6 @@ export function ChatWorkspace({
                       )}
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
-                          {message.model && <span className="answer-model" title={`${message.provider_name ?? ""} · ${message.model}`}>
-                            {message.provider_name} · {message.model}
-                          </span>}
-                          {message.thinking && <span className="answer-model answer-thinking" title={`请求思考设置 · ${message.thinking.label}`}>
-                            <BrainCircuit size={13} aria-hidden="true" />请求思考设置：{message.thinking.label}
-                          </span>}
                           {message.content && (
                             <button
                               className="icon-button"
@@ -921,10 +1010,14 @@ export function ChatWorkspace({
                               }
                             />
                           )}
-                          {(!!message.traces.length || !!message.tool_events?.length) && (
+                          {(!!message.model || !!message.thinking || !!message.traces.length || !!message.tool_events?.length) && (
                             <details className="answer-details">
                               <summary>回答详情</summary>
-                              {message.tool_events?.map((item, toolIndex) => (
+                              <dl className="conversation-detail-metadata">
+                                {message.model && <div><dt>模型</dt><dd>{message.provider_name} · {message.model}</dd></div>}
+                                {message.thinking && <div><dt>请求思考设置</dt><dd>{message.thinking.label}</dd></div>}
+                              </dl>
+                              {!message.display_blocks?.length && message.tool_events?.map((item, toolIndex) => (
                                 <Motion.div
                                   key={item.call_id}
                                   className="tool-event"
@@ -974,6 +1067,10 @@ export function ChatWorkspace({
               </div>
             )}
         </section>
+        {latest && <div className="conversation-latest"><button type="button" onClick={() => {
+          scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" });
+          follow.current = true; setLatest(false);
+        }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
@@ -1017,6 +1114,9 @@ export function ChatWorkspace({
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
+              <ConversationContextControl state={contextInfo} loading={contextLoading}
+                disabled={running || loading || modelLoading || thinkingStale || !conversation || !selectedModel?.available}
+                onRetry={() => setContextAttempt(value => value + 1)} onCompact={() => void compact()} />
               <span className="composer-library-count">
                 <BookOpen size={14} />
                 {selectedNames.length} 个知识库
@@ -1026,8 +1126,8 @@ export function ChatWorkspace({
                   key="stop"
                   className="send-button"
                   type="button"
-                  title="停止回答"
-                  aria-label="停止回答"
+                  title={contextInfo.status === "running" ? "停止整理" : "停止回答"}
+                  aria-label={contextInfo.status === "running" ? "停止整理" : "停止回答"}
                   onClick={(event) => {
                     event.preventDefault();
                     void stop();
