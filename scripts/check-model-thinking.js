@@ -145,20 +145,47 @@ async (page) => {
     await page.getByRole("table", { name: "模型基准价", exact: true }).waitFor();
     conversation = null; requests = [];
     await page.goto(`${origin}/?chat=1`);
-    const model = page.getByRole("combobox", { name: "本次请求模型" });
-    const thinking = page.getByRole("combobox", { name: "本次请求思考设置" });
+    const model = page.getByRole("button", { name: "本次请求模型", exact: true });
+    const thinking = page.getByRole("button", { name: "本次请求思考设置", exact: true });
+    const choose = async (trigger, value) => {
+      await trigger.click();
+      await page.locator(`[role="option"][data-value="${value}"]`).click();
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+    };
     const input = page.getByRole("textbox", { name: "向知识库提问" });
     const send = page.getByRole("button", { name: "发送问题", exact: true });
     await thinking.waitFor();
-    check(await thinking.inputValue() === "high", "Wrong initial thinking");
+    check(await thinking.getAttribute("data-value") === "high", "Wrong initial thinking");
     await thinking.focus();
     await thinking.press("Shift+Tab");
     check(await model.evaluate(el => document.activeElement === el), "Thinking keyboard order");
-    await thinking.selectOption("low");
-    await model.selectOption("bailian");
-    await page.waitForFunction(() => document.querySelector('select[aria-label="本次请求思考设置"]')?.value === "small");
-    check((await thinking.locator("option").allTextContents()).some(text => text.includes("8192 Token")), "Budget units absent");
-    await thinking.selectOption("large");
+    await thinking.click();
+    await page.locator('[role="option"][data-value="high"]').focus();
+    await page.keyboard.press("ArrowDown");
+    check(await page.locator('[role="option"][data-value="low"]').evaluate(el => document.activeElement === el), "Arrow navigation failed");
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "本次请求思考设置");
+    check(await thinking.evaluate(el => document.activeElement === el), "Escape did not restore trigger focus");
+    await thinking.click();
+    await thinking.click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await thinking.click();
+    await model.click();
+    await page.getByRole("dialog", { name: "选择模型", exact: true }).waitFor();
+    check(await page.getByRole("dialog").count() === 1, "Switching chooser stacked panels");
+    await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "option");
+    await page.getByRole("heading", { name: "新对话", exact: true }).click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    check(!await thinking.evaluate(el => document.activeElement === el) && !await model.evaluate(el => document.activeElement === el), "Outside dismissal stole focus");
+    await choose(thinking, "low");
+    await choose(model, "bailian");
+    await page.waitForFunction(() => document.querySelector('button[aria-label="本次请求思考设置"]')?.dataset.value === "small");
+    await thinking.click();
+    check((await page.getByRole("option").allTextContents()).some(text => text.includes("8192 Token")), "Budget units absent");
+    await page.waitForFunction(() => Number(getComputedStyle(document.querySelector(".selection-surface > div")).opacity) === 1);
+    await page.screenshot({ path: `output/playwright/issue44-thinking-menu-${width}.png` });
+    await page.locator('[role="option"][data-value="large"]').click();
     await input.fill("验证请求级思考");
     failAnswer = true;
     await send.click();
@@ -169,41 +196,45 @@ async (page) => {
     releaseSend(); releaseSend = null;
     await page.getByText("受控失败", { exact: true }).waitFor();
     failAnswer = false;
-    await thinking.selectOption("small");
+    await choose(thinking, "small");
     await page.getByRole("button", { name: "重试", exact: true }).click();
     for (let count = 0; count < 100 && !releaseSend; count++) await page.waitForTimeout(10);
     check(requests.at(-1).retry_message_id && requests.at(-1).thinking_option_id === "small", "Retry did not use current thinking");
     releaseSend(); releaseSend = null;
     await page.getByText("请求思考设置：精简", { exact: true }).waitFor();
-    check(await thinking.inputValue() === "small", "Completion reset choice");
+    check(await thinking.getAttribute("data-value") === "small", "Completion reset choice");
     await noOverflow();
     const pickerStyle = await thinking.evaluate(select => ({
       font: getComputedStyle(select).fontFamily,
       referenceFont: getComputedStyle(document.querySelector(".composer textarea")).fontFamily,
-      border: getComputedStyle(select.parentElement).borderTopColor,
-      borderWidth: getComputedStyle(select.parentElement).borderTopWidth,
+      background: getComputedStyle(select).backgroundColor,
     }));
-    check(pickerStyle.font === pickerStyle.referenceFont && pickerStyle.border === "rgb(226, 232, 240)"
-      && pickerStyle.borderWidth === "1px", "Composer controls do not match shared typography/border tokens");
+    check(pickerStyle.font === pickerStyle.referenceFont && pickerStyle.background === "rgba(0, 0, 0, 0)",
+      "Composer controls do not match shared typography/surface tokens");
     if (width === 390) {
       const box = await thinking.boundingBox();
       check(box.height >= 44 && box.x + box.width <= width, "Mobile thinking target or overflow");
     }
     await page.screenshot({ path: `output/playwright/issue44-chat-${width}.png` });
-    await model.selectOption("fixed");
+    await page.locator(".composer").screenshot({ path: `output/playwright/issue44-composer-${width}.png` });
+    await model.click();
+    await noOverflow();
+    await page.waitForFunction(() => Number(getComputedStyle(document.querySelector(".selection-surface > div")).opacity) === 1);
+    await page.screenshot({ path: `output/playwright/issue44-model-menu-${width}.png` });
+    await page.locator('[role="option"][data-value="fixed"]').click();
     await thinking.waitFor({ state: "detached" });
     await page.getByText("固定思考", { exact: true }).waitFor();
-    await model.selectOption("unsupported");
+    await choose(model, "unsupported");
     check(await thinking.count() === 0 && await page.getByText("固定思考", { exact: true }).count() === 0, "Unsupported thinking shown");
-    await model.selectOption("unknown");
+    await choose(model, "unknown");
     check(await thinking.count() === 0, "Unconfigured thinking shown");
-    await model.selectOption("deepseek");
+    await choose(model, "deepseek");
     await thinking.waitFor();
-    await thinking.selectOption("low");
+    await choose(thinking, "low");
     await page.reload();
     await thinking.waitFor();
-    check(await model.inputValue() === "deepseek" && await thinking.inputValue() === "high", "Refresh persisted selection");
-    await thinking.selectOption("low");
+    check(await model.getAttribute("data-value") === "deepseek" && await thinking.getAttribute("data-value") === "high", "Refresh persisted selection");
+    await choose(thinking, "low");
     await input.fill("配置冲突保留问题");
     rejectSend = true;
     await send.click();
@@ -222,7 +253,7 @@ async (page) => {
   await page.getByRole("textbox", { name: "向知识库提问" }).fill("错误重试保留问题");
   failModels = false;
   await page.getByRole("button", { name: "重试", exact: true }).click();
-  await page.getByRole("combobox", { name: "本次请求思考设置" }).waitFor();
+  await page.getByRole("button", { name: "本次请求思考设置", exact: true }).waitFor();
   check(await page.getByRole("textbox", { name: "向知识库提问" }).inputValue() === "错误重试保留问题", "Retry cleared input");
   check(errors.length === 0, errors.join("; "));
   return { passed: results, errors };

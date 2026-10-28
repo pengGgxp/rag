@@ -35,6 +35,8 @@
   --settings-window-height: min(760px, 88dvh);
   --settings-sidebar-width: 232px;
   --settings-window-shadow: 0 24px 80px #17203326;
+  --selection-shadow: 0 8px 32px #1720331f, 0 2px 6px #1720330a;
+  --selection-radius: 8px;
   --settings-content-padding: 32px;
   --form-control-height: 40px;
   --form-touch-height: 44px;
@@ -1006,6 +1008,17 @@ tbody tr:hover {
   background: #25352d42;
   backdrop-filter: blur(2px);
 }
+.selection-surface {
+  position: fixed;
+  z-index: 50;
+  border: 1px solid var(--line);
+  border-radius: var(--selection-radius);
+  background: var(--surface);
+  box-shadow: var(--selection-shadow);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.selection-surface:focus { outline: 0; }
 .modal {
   z-index: 41;
 }
@@ -1013,6 +1026,7 @@ tbody tr:hover {
   margin: 0;
 }
 .ui-tooltip {
+  pointer-events: none;
   z-index: 60;
   border-radius: 5px;
   padding: 6px 9px;
