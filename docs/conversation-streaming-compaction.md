@@ -46,12 +46,12 @@ RAG 权限与引用、原始聊天、现有价格及倍率；不启用 Issue #36
 
 ### 视觉样稿
 
-- 本地开发入口：`/dev/conversation`，production 返回 404。
+- 已确认样稿原入口：`/dev/conversation`；真实链路接入后移除样稿路由，截图与 Git 历史保留。
 - Playwright 1440/700/390：活动展开、上下文、计费确认/取消、无效重复整理禁用、
   容量未配置无百分比、生成禁用模型、Escape 和焦点返回、44px 触控及无横向溢出通过。
 - 人工检查桌面完成、桌面执行中、手机上下文截图；截图保存在未跟踪 output/playwright。
-- npm run build、git diff --check 通过。production 路由有 notFound 守卫，
-  本轮未完成 production 服务 HTTP 404 复核（启动验证命令被执行策略阻止）。
+- npm run build、git diff --check 通过。线上发现 notFound 的流式布局会返回软 404，
+  因此交付时直接删除已完成使命的样稿路由，不将演示入口留在正式产品。
 - 样稿仅验证视觉；用户已确认，真实链路验证见下方记录。
 - `ConversationActivity` 组合 Motion/Lucide 处理有序活动展示；现有工具详情无法表达正文间状态。
   `ConversationContextControl` 组合已有 Dialog/Tooltip，不实现第二套弹窗；二者不发业务请求。

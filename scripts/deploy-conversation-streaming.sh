@@ -22,6 +22,8 @@ if [ ! -f "$release/images.before" ]; then
   printf '%s\n%s\n' "$api_image" "$web_image" > "$release/images.before"
 fi
 tar -xzf "$release/source.tar.gz" -C "$project"
+# The approved prototype has been replaced by the real conversation workflow.
+rm -f frontend/app/dev/conversation/page.tsx frontend/app/dev/conversation/prototype.tsx frontend/app/dev/conversation/prototype.css
 docker compose build api web
 active=$(docker compose exec -T db psql -U rag -d rag -Atc 'SELECT count(*) FROM conversations WHERE active_request_id IS NOT NULL')
 test "$active" = 0
