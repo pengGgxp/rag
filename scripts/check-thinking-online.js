@@ -35,10 +35,11 @@ async (page) => {
       check(await thoughts.first().getByRole("button").getAttribute("aria-expanded") === "false",
         "Online keyboard toggle failed");
       await page.getByText("回答详情", { exact: true }).last().click();
-      await page.getByText("已收到思考内容", { exact: false }).first().waitFor();
+      check(!/推理用量|已收到思考内容|未返回思考内容|第\s*\d+\s*轮/.test(
+        await page.locator(".answer-details").last().innerText()), "Internal thinking diagnostics are visible");
       check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
         "Online conversation overflow");
-      results.push({ width, model: item.model, protectedRead: true, diagnostics: true });
+      results.push({ width, model: item.model, protectedRead: true, cleanDetails: true });
     }
     await page.goto(`${origin}/admin/models`);
     await page.locator('[role="row"]').filter({ hasText: "qwen3.8-max-0902" })

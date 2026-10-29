@@ -16,6 +16,12 @@ async (page) => {
     `[已有链接 [chunk_id: ${id}]](https://example.com)\n\n未知来源保持原文：[chunk_id: unknown]`;
   const message = { id: "answer-citation", sequence: 1, role: "assistant", content,
     status: "completed", citations: [source], traces: [], refused: false,
+    model: "test-model", provider_name: "验收模型",
+    thinking: { label: "高", option_id: "high", config_version: 1, kind: "effort" },
+    thinking_diagnostics: [
+      { round: 1, status: "completed", received_thinking: true, reasoning_tokens: 36, stream: "sse" },
+      { round: 2, status: "completed", received_thinking: true, reasoning_tokens: 259, stream: "sse" },
+    ],
     display_blocks: [{ id: "text-1", type: "text", text: content }] };
   const conversation = { id: "citation-regression", title: "AI 协作方法", knowledge_bases: [],
     active_request_id: null, updated_at: new Date().toISOString(), messages: [message],
@@ -55,6 +61,12 @@ async (page) => {
     check(await page.locator(".answer-text code").count() === 2, "Code blocks were changed");
     check(await page.locator(".answer-text a[href='https://example.com']").count() === 1,
       "Existing link was changed");
+    await page.getByText("回答详情", { exact: true }).click();
+    const detail = page.locator(".answer-details");
+    await detail.getByText("思考模式", { exact: true }).waitFor();
+    check(!/推理用量|已收到思考内容|未返回思考内容|第\s*\d+\s*轮|\bToken\b/.test(
+      await detail.innerText()), "Internal thinking diagnostics are visible");
+    await page.screenshot({ path: `output/playwright/issue49-clean-answer-details-${width}.png` });
     await buttons.first().focus();
     await page.keyboard.press("Enter");
     const preview = page.getByRole("dialog");
@@ -71,7 +83,7 @@ async (page) => {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Horizontal overflow");
     await page.waitForTimeout(400);
     await page.screenshot({ path: `output/playwright/issue50-citations-${width}.png` });
-    results.push({ width, citations: 3, preview: true, keyboard: true, refresh: true });
+    results.push({ width, citations: 3, preview: true, keyboard: true, refresh: true, cleanDetails: true });
   }
   check(!errors.length, errors.join("\n"));
   return { results, errors };

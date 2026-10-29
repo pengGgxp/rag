@@ -56,7 +56,8 @@ async (page) => {
     }
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Conversation overflow");
     await page.getByText("回答详情", { exact: true }).last().click();
-    await page.getByText("已收到思考内容", { exact: false }).first().waitFor();
+    check(!/推理用量|已收到思考内容|未返回思考内容|第\s*\d+\s*轮/.test(
+      await page.locator(".answer-details").last().innerText()), "Internal thinking diagnostics are visible");
     await page.goto("http://127.0.0.1:3109/admin/models");
     await page.getByRole("link", { name: "本地流式测试", exact: true }).click();
     await page.getByRole("heading", { name: "参数验证", exact: true }).waitFor();

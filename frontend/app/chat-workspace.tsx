@@ -84,7 +84,6 @@ type Message = {
   provider_name?: string | null;
   model?: string | null;
   thinking?: { label: string; option_id: string | null; config_version: number; kind: string } | null;
-  thinking_diagnostics?: { round: number; status: string; received_thinking: boolean; reasoning_tokens: number | null; stream: string }[];
 };
 type ModelChoice = {
   id: string;
@@ -1033,12 +1032,7 @@ export function ChatWorkspace({
                               <summary>回答详情</summary>
                               <dl className="conversation-detail-metadata">
                                 {message.model && <div><dt>模型</dt><dd>{message.provider_name} · {message.model}</dd></div>}
-                                {message.thinking && <div><dt>请求思考设置</dt><dd>{message.thinking.label}</dd></div>}
-                                {message.thinking_diagnostics?.map(item => <div key={item.round}>
-                                  <dt>第 {item.round} 轮</dt><dd>{item.received_thinking ? "已收到思考内容" : "未返回思考内容"}
-                                    {item.reasoning_tokens !== null ? ` · 推理用量 ${item.reasoning_tokens} Token` : " · 推理用量未报告"}
-                                    {item.status !== "completed" ? " · 调用中断" : ""}</dd>
-                                </div>)}
+                                {message.thinking && <div><dt>思考模式</dt><dd>{message.thinking.label}</dd></div>}
                               </dl>
                               {!message.display_blocks?.length && message.tool_events?.map((item, toolIndex) => (
                                 <Motion.div
