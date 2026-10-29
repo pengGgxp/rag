@@ -56,7 +56,7 @@ def create_state(path, issue=49):
     return state
 
 
-def run(path, *, resume=False, issue=49):
+def run(path, *, resume=False, issue=49, selected_models=None):
     state = json.loads(path.read_text(encoding="utf-8")) if resume else create_state(path, issue)
     settings = get_settings()
     with httpx.Client(base_url=settings.api_public_url.rstrip("/"), timeout=180,
@@ -64,6 +64,9 @@ def run(path, *, resume=False, issue=49):
         "Origin": settings.frontend_url}) as client:
         models = client.get("/models/available").json()["providers"]
         models = [row for row in models if row["available"] and row["thinking"]["kind"] == "effort"]
+        if selected_models:
+            models = [row for row in models if row["model"] in selected_models]
+            assert {row["model"] for row in models} == set(selected_models), "Selected models are not all available"
         assert 0 < len(models) <= 2, "This bounded verification expects at most two configured models"
         for model in models:
             if any(row["model"] == model["model"] for row in state["results"]):
@@ -147,8 +150,9 @@ if __name__ == "__main__":
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--issue", type=int, default=49)
+    parser.add_argument("--model", action="append", help="Limit paid verification to these exact model names")
     args = parser.parse_args()
     if args.operation == "run":
-        run(args.state, resume=args.resume, issue=args.issue)
+        run(args.state, resume=args.resume, issue=args.issue, selected_models=args.model)
     else:
         cleanup(args.state)

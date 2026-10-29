@@ -49,3 +49,14 @@ Issue #52，关联 #51、#44、#45。
 - 前端生产构建通过；Playwright 三种宽度、键盘、刷新、错误恢复、放弃确认
   和 reduced motion 通过，已人工检查桌面及手机截图。
 - 本地模拟上游覆盖真实 HTTP 分时传输，不代表真实 OpenAI 或网关账号验收。
+
+2026-10-29 部署验证：
+
+- 候选 Linux 镜像完整回归 497 passed、27 skipped；API/Web 已更新，
+  数据库为 `0034_model_api_protocol`。已有三个连接均保留 Chat Completions。
+- 已备份数据库、配置与旧镜像；`.env`、Compose 校验一致，
+  Worker、数据库、Redis 和原存储容器未重建。
+- 隔离工作区实测 `deepseek-flash`、`qwen3.8-max-0902` 的模型发现、受控参数测试、
+  流式正文、思考、工具调用、加密恢复与用量记录通过；配置不变量一致，
+  临时验收账号已撤权。未调用新增的第三个模型。
+- Responses 尚无真实连接验收，Issue #52 保持打开。
