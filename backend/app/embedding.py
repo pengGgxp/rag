@@ -24,6 +24,9 @@ class EmbeddingStatus:
 
 
 class OpenAICompatibleEmbeddingProvider:
+    # A conservative limit also accepted by the configured DashScope endpoint.
+    MAX_BATCH_SIZE = 20
+
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
@@ -45,6 +48,12 @@ class OpenAICompatibleEmbeddingProvider:
                 "EMBEDDING_API_KEY, and EMBEDDING_MODEL."
             )
 
+        vectors = []
+        for offset in range(0, len(texts), self.MAX_BATCH_SIZE):
+            vectors.extend(self._embed_batch(texts[offset:offset + self.MAX_BATCH_SIZE]))
+        return vectors
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         url = self._embeddings_url(self.settings.embedding_base_url or "")
         headers = {
             "Authorization": f"Bearer {self.settings.embedding_api_key.get_secret_value()}",
@@ -85,7 +94,7 @@ class OpenAICompatibleEmbeddingProvider:
 
         vectors: list[list[float] | None] = [None] * expected_count
         for item in data:
-            if not isinstance(item, dict) or not isinstance(item.get("index"), int):
+            if not isinstance(item, dict) or type(item.get("index")) is not int:
                 raise EmbeddingProviderError("Embedding response item is missing an integer index")
             index = item["index"]
             values = item.get("embedding")

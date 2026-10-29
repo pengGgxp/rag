@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session
 
 from app import tasks
 from app.docmind import DocMindError, normalize_layouts
-from app.models import Chunk, Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase
+from app.models import (
+    Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState,
+    KnowledgeBase, UsageEvent, UsagePolicy,
+)
 from test_auth import library, register
 from test_retrieval import add_document
 
@@ -69,6 +72,64 @@ def fake_provider(monkeypatch, *, collect=None, submit=None):
 
     monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
     return calls
+
+
+def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pdf_job, monkeypatch):
+    import httpx
+    from app.config import Settings
+    from app.embedding import OpenAICompatibleEmbeddingProvider
+
+    owner, _, db, kb_id, doc_id, old_job_id, embedded = pdf_job
+    document = db.get(Document, doc_id)
+    document.parsed_text = "previously parsed PDF"
+    document.status = DocumentStatus.FAILED
+    document.chunks.clear()
+    document.chunks.extend(Chunk(
+        ordinal=index, text=str(index), token_count=10, char_start=index,
+        char_end=index + 1, content_hash=str(index), embedding_status=EmbeddingStatus.FAILED,
+    ) for index in range(114))
+    db.get(IngestionJob, old_job_id).state = JobState.FAILED
+    db.add(UsagePolicy(
+        workspace_id=db.get(KnowledgeBase, kb_id).workspace_id, capability="embedding_tokens",
+        unit="tokens", unit_size=1000, credits_per_unit=1,
+    ))
+    db.commit()
+    chunk_ids = [chunk.id for chunk in document.chunks]
+    settings = Settings(
+        embedding_base_url="https://provider.example/v1", embedding_api_key="test",
+        embedding_model="test-model", embedding_dimension=1024,
+    )
+    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider",
+                        lambda: OpenAICompatibleEmbeddingProvider(settings))
+    batches = []
+
+    def fake_post(url, **kwargs):
+        inputs = kwargs["json"]["input"]
+        assert len(inputs) <= 20
+        batches.append(inputs)
+        return httpx.Response(200, json={"data": [
+            {"index": index, "embedding": [float(text)] + [0.0] * 1023}
+            for index, text in reversed(list(enumerate(inputs)))
+        ]})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    response = owner.post(f"/jobs/{old_job_id}/retry")
+    assert response.status_code == 202
+    job_id = UUID(response.json()["id"])
+    assert embedded == [(str(doc_id), str(job_id))]
+    tasks.embed_document.run(doc_id, job_id)
+    tasks.embed_document.run(doc_id, job_id)
+    db.expire_all()
+    document = db.get(Document, doc_id)
+    assert document.status == DocumentStatus.READY
+    assert db.get(IngestionJob, job_id).state == JobState.SUCCEEDED
+    assert [len(batch) for batch in batches] == [20, 20, 20, 20, 20, 14]
+    chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    assert [chunk.id for chunk in chunks] == chunk_ids
+    assert [chunk.embedding[0] for chunk in chunks] == list(range(114))
+    events = db.scalars(select(UsageEvent)).all()
+    assert len(events) == 1
+    assert (events[0].capability, events[0].units, events[0].credits) == ("embedding_tokens", 1140, 2)
 
 
 def test_cos_pdf_is_submitted_by_url_and_resume_reuses_paid_task(pdf_job, monkeypatch):

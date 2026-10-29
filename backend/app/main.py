@@ -613,7 +613,10 @@ def retry_job(
     )
     db.commit()
     db.refresh(new_job)
-    process_document.delay(str(new_job.id))
+    if document.parsed_text and document.chunks:
+        embed_document.delay(str(document.id), str(new_job.id))
+    else:
+        process_document.delay(str(new_job.id))
     return new_job
 
 
