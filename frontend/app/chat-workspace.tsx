@@ -38,8 +38,9 @@ import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
 import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
 import { ConversationActivity } from "./conversation-activity";
+import { ConversationThinking } from "./conversation-thinking";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
-import { activityItem, appendActivity, appendText, type DisplayBlock, type ToolEvent } from "./conversation-display";
+import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
 
 type Library = {
@@ -82,6 +83,7 @@ type Message = {
   provider_name?: string | null;
   model?: string | null;
   thinking?: { label: string; option_id: string | null; config_version: number; kind: string } | null;
+  thinking_diagnostics?: { round: number; status: string; received_thinking: boolean; reasoning_tokens: number | null; stream: string }[];
 };
 type ModelChoice = {
   id: string;
@@ -533,6 +535,8 @@ export function ChatWorkspace({
           if (name === "tool_started")
             setPhase(`正在执行${(data as { label?: string }).label ?? "工具"}…`);
           if (name === "tool_result") setPhase("正在分析工具结果…");
+          if (name === "thinking_delta") setPhase("正在思考…");
+          if (name === "thinking_status" || name === "delta") setPhase("正在生成回答…");
           if (name === "compaction") {
             const status = (data as ToolEvent).status;
             setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
@@ -550,6 +554,10 @@ export function ChatWorkspace({
             }
             const messages = item.messages.map((message) => {
               if (message.request_id !== active!.requestId) return message;
+              if (name === "thinking_delta" || name === "thinking_status") {
+                return { ...message, display_blocks: updateThinking(message.display_blocks ?? [],
+                  data as { block_id: string; round: number; text?: string; status?: string }) };
+              }
               if (name === "delta") {
                 const delta = data as { text: string; block_id: string };
                 const blocks = message.display_blocks ?? [];
@@ -919,11 +927,15 @@ export function ChatWorkspace({
                     <>
                       {message.display_blocks?.length ? message.display_blocks.map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
+                        if (block.type === "thinking") return <ConversationThinking key={`${message.request_id}-${block.id}`} block={block}
+                          conversationId={conversation.id} messageId={message.id} messageStatus={message.status} />;
                         const activity = message.tool_events?.find(item => item.call_id === block.call_id);
                         return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]}
                           finished={!["waiting", "running"].includes(activity.status)} /> : null;
                       }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
-                      {message.status === "streaming" && (
+                      {message.status === "streaming" && !message.display_blocks?.some(
+                        block => block.type === "thinking" && block.status === "running",
+                      ) && (
                         <Motion.div
                           className="thinking"
                           role="status"
@@ -1026,6 +1038,11 @@ export function ChatWorkspace({
                               <dl className="conversation-detail-metadata">
                                 {message.model && <div><dt>模型</dt><dd>{message.provider_name} · {message.model}</dd></div>}
                                 {message.thinking && <div><dt>请求思考设置</dt><dd>{message.thinking.label}</dd></div>}
+                                {message.thinking_diagnostics?.map(item => <div key={item.round}>
+                                  <dt>第 {item.round} 轮</dt><dd>{item.received_thinking ? "已收到思考内容" : "未返回思考内容"}
+                                    {item.reasoning_tokens !== null ? ` · 推理用量 ${item.reasoning_tokens} Token` : " · 推理用量未报告"}
+                                    {item.status !== "completed" ? " · 调用中断" : ""}</dd>
+                                </div>)}
                               </dl>
                               {!message.display_blocks?.length && message.tool_events?.map((item, toolIndex) => (
                                 <Motion.div

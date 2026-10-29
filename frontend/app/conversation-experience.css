@@ -4,6 +4,12 @@
   color: var(--muted);
   font-size: var(--form-font-size);
 }
+.conversation-thinking { margin: 12px 0; color: var(--muted); font-size: var(--form-font-size); min-width: 0; }
+.thinking-toggle { font: inherit; color: var(--muted); }
+.thinking-content { border-left: 1px solid var(--line); margin: 4px 0 12px 7px; padding: 2px 0 2px 20px; line-height: 1.8; overflow-wrap: anywhere; }
+.thinking-content p { white-space: pre-wrap; margin: 0; font-size: var(--form-font-size); }
+.thinking-read-error { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.thinking-read-error .text-button { min-height: var(--form-touch-height); }
 .activity-toggle {
   justify-content: flex-start;
   min-height: var(--form-control-height);
@@ -103,4 +109,5 @@
 @media (prefers-reduced-motion: reduce) {
   .activity-chevron { transition: none; }
   .conversation-activity .spin, .context-trigger .spin, .context-panel .spin { animation: none; }
+  .conversation-thinking .spin { animation: none; }
 }

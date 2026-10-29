@@ -1,7 +1,8 @@
 import type { ConversationActivityItem } from "./conversation-activity";
 
 export type DisplayBlock = { id: string; type: "text"; text: string }
-  | { id: string; type: "activity"; call_id: string };
+  | { id: string; type: "activity"; call_id: string }
+  | { id: string; type: "thinking"; round: number; status: string; text?: string };
 export type ToolEvent = {
   call_id: string; name: string; label: string; kind: string; status: string;
   summary?: string; result_count?: number;
@@ -28,4 +29,15 @@ export function appendText(blocks: DisplayBlock[], blockId: string, text: string
 export function appendActivity(blocks: DisplayBlock[], callId: string) {
   return blocks.some(block => block.type === "activity" && block.call_id === callId) ? blocks
     : [...blocks, { id: `activity-${callId}`, type: "activity" as const, call_id: callId }];
+}
+
+export function updateThinking(blocks: DisplayBlock[], update: {
+  block_id: string; round: number; text?: string; status?: string;
+}): DisplayBlock[] {
+  const exists = blocks.some(block => block.id === update.block_id);
+  if (!exists && !update.text) return blocks;
+  return exists ? blocks.map(block => block.id === update.block_id && block.type === "thinking"
+    ? { ...block, text: (block.text ?? "") + (update.text ?? ""), status: update.status ?? block.status } : block)
+    : [...blocks, { id: update.block_id, type: "thinking", round: update.round,
+      status: update.status ?? "running", text: update.text }];
 }
