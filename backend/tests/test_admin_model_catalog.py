@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from app.models import LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, Workspace
+from app.models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
 from test_auth import register
 from test_shared_providers import setup_site, provider, choose
 
@@ -40,7 +40,7 @@ def test_preview_visibility_and_reasons_match_composer(accounts, monkeypatch):
     db.get(SiteModelProvider, UUID(private["id"])).published = False
     db.get(SiteModelProvider, UUID(missing["id"])).prices = {}
     db.get(SiteModelProvider, UUID(disabled["id"])).enabled = False
-    db.get(SiteModelProvider, UUID(disconnected["id"])).encrypted_api_key = ""
+    db.get(ModelConnection, UUID(disconnected["connection_id"])).encrypted_api_key = ""
     db.commit()
     path = f"/site/admin/workspaces/{session['workspace_id']}/billing-settings"
     models = owner.get(path).json()["models"]
@@ -66,7 +66,7 @@ def test_model_detail_permissions_redaction_and_live_diagnostics(accounts, monke
     path = f"/site/admin/llm-providers/{model['id']}"
     result = owner.get(path)
     assert result.status_code == 200
-    assert result.json()["available"] and result.json()["has_api_key"]
+    assert result.json()["available"] and result.json()["connection_id"]
     assert "secret" not in result.text and "encrypted_api_key" not in result.text
     db.get(SiteModelProvider, UUID(model["id"])).prices = {}
     db.commit()

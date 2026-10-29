@@ -12,12 +12,13 @@ from app.shared_providers import lock_provider
 from app.thinking import select_thinking
 from test_auth_postgres import auth_postgres
 from test_thinking import effort
+from auth_helpers import connection_id
 
 
 def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
     with Session(auth_postgres) as db:
         row = SiteModelProvider(key=f"thinking-{uuid4()}", name="Test", model="model",
-            base_url="https://example.test/v1", encrypted_api_key="encrypted")
+            connection_id=connection_id(db))
         workspace = Workspace(name="Thinking migration")
         db.add_all([row, workspace])
         db.flush()
@@ -38,7 +39,7 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
         db.commit()
         db.expire_all()
         assert db.get(ChatMessage, message.id).thinking_snapshot["config_version"] == 1
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0032_thinking_diagnostics"
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0033_model_connections"
         assert message.encrypted_display_thinking == "separate-display-ciphertext"
         assert message.thinking_diagnostics[0]["reasoning_tokens"] == 12
         assert message.display_blocks == []
@@ -48,7 +49,7 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
 def test_concurrent_admin_edits_reject_stale_version(auth_postgres):
     with Session(auth_postgres) as db:
         row = SiteModelProvider(key=f"concurrent-{uuid4()}", name="Test", model="model",
-            base_url="https://example.test/v1", encrypted_api_key="encrypted")
+            connection_id=connection_id(db))
         db.add(row)
         db.commit()
         identifier = row.id
@@ -74,7 +75,7 @@ def test_ordered_blocks_and_multiple_checkpoints_keep_request_provenance(auth_po
     with Session(auth_postgres) as db:
         workspace = Workspace(name="Streaming checkpoint")
         provider = SiteModelProvider(key=f"stream-{uuid4()}", name="Test", model="test",
-            base_url="https://example.test/v1", encrypted_api_key="encrypted")
+            connection_id=connection_id(db))
         db.add_all([workspace, provider]); db.flush()
         binding = LLMProviderConfig(workspace_id=workspace.id, site_provider_id=provider.id,
             key="test", name="test", model="test", base_url="", encrypted_api_key="")

@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from .models import BillingSnapshot, LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, Workspace
+from .models import BillingSnapshot, LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
 from .llm import measured_usage
 
 MODEL_CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")
@@ -36,13 +36,19 @@ def context_for_workspace(db, workspace_id):
 
 
 def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=None, required=True):
+    from .model_connections import connection_for
     context = context or context_for_workspace(db, workspace_id)
     if (context.get("model_provider_id") == str(provider_id) and context.get("model_prices")
             and all(key in context["model_prices"] for key in capabilities)):
         if required and provider_id is not None:
             binding = db.get(LLMProviderConfig, provider_id)
             provider = db.get(SiteModelProvider, binding.site_provider_id, populate_existing=True) if binding else None
-            if binding is None or binding.workspace_id != workspace_id or provider is None or not provider.enabled:
+            connection_id = next((price.get("connection_id") for price in context["model_prices"].values()
+                                  if price.get("connection_id")), None)
+            connection = (db.get(ModelConnection, UUID(connection_id), populate_existing=True) if connection_id
+                          else connection_for(db, provider, refresh=True) if provider else None)
+            if (binding is None or binding.workspace_id != workspace_id or provider is None
+                    or not provider.enabled or not connection or not connection.enabled):
                 raise HTTPException(503, "当前模型已停用，请选择其他模型")
         return {key: deepcopy(context["model_prices"][key]) for key in capabilities}
     shared = context["source_mode"] == "shared"
@@ -55,7 +61,10 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
         provider = db.get(SiteModelProvider, binding.site_provider_id, populate_existing=True)
         if provider is None or (not provider.enabled and required):
             raise HTTPException(503, "当前模型已停用，请选择其他模型")
-        source_enabled = provider.enabled
+        connection = connection_for(db, provider, refresh=True)
+        if required and (not connection or not connection.enabled):
+            raise HTTPException(503, "模型服务已停用，请选择其他模型")
+        source_enabled = provider.enabled and bool(connection and connection.enabled)
         source, version, identifier, values = "model_provider", provider.version, str(provider.id), provider.prices
     elif shared:
         if any(key in MODEL_CAPABILITIES for key in capabilities):
@@ -84,6 +93,9 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
             "source": source, "source_id": identifier,
             "provider_id": str(provider_id) if provider_id else None,
             "enabled": bool(price.get("enabled", True) if valid else True) and source_enabled}
+        if shared and provider_id is not None:
+            result[key].update(connection_id=str(provider.connection_id),
+                               connection_version=connection.version if connection else 0)
     return result
 
 

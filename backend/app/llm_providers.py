@@ -66,21 +66,23 @@ def _decrypt_api_key(value):
 
 def request_provider_config(db, workspace_id, site_provider_id, thinking_option_id=None, thinking_config_version=None):
     from .shared_providers import request_binding
+    from .model_connections import lock_connection
     from .thinking import select_thinking
     row, shared = request_binding(db, workspace_id, site_provider_id)
+    connection = lock_connection(db, shared.connection_id)
     thinking = select_thinking(shared.thinking_config, shared.thinking_version,
                               thinking_option_id, thinking_config_version)
     try:
-        api_key = _decrypt_api_key(shared.encrypted_api_key)
+        api_key = _decrypt_api_key(connection.encrypted_api_key)
     except Exception as exc:
         raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员") from exc
     if not api_key:
         raise HTTPException(503, "模型服务尚未就绪，请联系站点管理员")
-    return ChatProviderConfig(base_url=shared.base_url, api_key=api_key, model=shared.model,
-        timeout_seconds=shared.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
+    return ChatProviderConfig(base_url=connection.base_url, api_key=api_key, model=shared.model,
+        timeout_seconds=connection.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
         provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking,
         context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
-        config_version=shared.version)
+        config_version=shared.version, connection_id=str(connection.id), connection_version=connection.version)
 
 
 @site_router.get("")

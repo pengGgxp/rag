@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app import shared_providers as shared, llm_providers
 from app.config import Settings
 from app.llm import OpenAICompatibleChatProvider
-from app.models import LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, User, Workspace
+from app.models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, User, Workspace
 from test_auth import accounts, register, share, switch
 
 
@@ -25,20 +25,25 @@ def setup_site(accounts, monkeypatch):
     db.commit()
     monkeypatch.setattr(shared, "_encrypt_api_key", lambda value: f"enc:{value}")
     monkeypatch.setattr(shared, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
+    from app import model_connections
+    monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: f"enc:{value}")
+    monkeypatch.setattr(model_connections, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
     return owner, db, session
 
 
 def provider(client, key="one", rate=4):
-    result = client.post("/site/admin/llm-providers", json={"key": key, "name": key,
-        "model": "model-one", "base_url": "https://provider.example/v1", "api_key": "secret"})
+    connection = client.post("/site/admin/model-connections", json={"name": key,
+        "base_url": "https://provider.example/v1", "api_key": "secret"}).json()
+    result = client.post("/site/admin/llm-providers", json={"name": key,
+        "model": "model-one", "connection_id": connection["id"], "connection_version": connection["version"]})
     assert result.status_code == 201, result.text
     row = result.json()
     result = client.put(f"/site/admin/llm-providers/{row['id']}/pricing", json={"version": row["version"], "policies": prices(rate)})
     assert result.status_code == 200, result.text
     row = result.json()
-    result = client.put(f"/site/admin/llm-providers/{row['id']}", json={"key": key, "name": key,
-        "model": "model-one", "base_url": "https://provider.example/v1", "enabled": True,
+    result = client.put(f"/site/admin/llm-providers/{row['id']}", json={"name": key,
+        "model": "model-one", "connection_id": connection["id"], "connection_version": connection["version"], "enabled": True,
         "version": row["version"]})
     assert result.status_code == 200, result.text
     return result.json()
@@ -160,8 +165,10 @@ def test_migration_idempotent_preserves_ids_and_partial_prices(accounts, monkeyp
 
 def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
-    result = owner.post("/site/admin/llm-providers", json={"key": "bad", "name": "Bad", "base_url": "https://a.example/v1",
-        "model": "m", "api_key": "key", "enabled": True})
+    c = owner.post("/site/admin/model-connections", json={"name": "Bad", "base_url": "https://a.example/v1",
+        "api_key": "key"}).json()
+    result = owner.post("/site/admin/llm-providers", json={"name": "Bad",
+        "connection_id": c["id"], "connection_version": c["version"], "model": "m", "enabled": True})
     assert result.status_code == 422
     db.rollback()
     p = provider(owner)
@@ -188,7 +195,7 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
     elif mode == "disabled":
         row.enabled = False
     elif mode == "connection":
-        row.encrypted_api_key = ""
+        db.get(ModelConnection, row.connection_id).encrypted_api_key = ""
     elif mode == "legacy_new":
         db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
     db.commit()

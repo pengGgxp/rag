@@ -36,6 +36,7 @@ class TestInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID
     version: int = Field(ge=1, strict=True)
+    connection_version: int = Field(ge=1, strict=True)
     thinking_config_version: int = Field(ge=0, strict=True)
     option_id: str | None = Field(default=None, min_length=1, max_length=40)
 
@@ -65,6 +66,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
     if existing:
         if (existing.actor_user_id != actor.id or existing.workspace_id != access.workspace_id
                 or existing.provider_id != identifier or existing.version != payload.version
+                or existing.connection_version != payload.connection_version
                 or existing.thinking_version != payload.thinking_config_version
                 or existing.option_id != payload.option_id):
             raise HTTPException(409, "测试请求已被使用，请重新发起")
@@ -84,7 +86,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
         raise HTTPException(409, "测试请求已被使用，请重新发起")
     config = request_provider_config(db, access.workspace_id, identifier, payload.option_id,
         payload.thinking_config_version)
-    if config.config_version != payload.version:
+    if config.config_version != payload.version or config.connection_version != payload.connection_version:
         raise HTTPException(409, "供应商已更新，请重新加载后测试")
     config = replace(config, max_output_tokens=min(config.max_output_tokens or 1024, 1024),
         timeout_seconds=min(config.timeout_seconds, 90))
@@ -99,7 +101,8 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(config.provider_id))
         authorization_hold(db, access.workspace_id, actor.id, payload.request_id, hold)
     row = ThinkingTest(request_id=payload.request_id, actor_user_id=actor.id, workspace_id=access.workspace_id,
-        provider_id=identifier, version=payload.version, thinking_version=payload.thinking_config_version,
+        provider_id=identifier, version=payload.version, connection_version=config.connection_version,
+        thinking_version=payload.thinking_config_version,
         option_id=payload.option_id, status="running", result={})
     db.add(row)
     db.commit()
@@ -109,6 +112,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
     provider = OpenAICompatibleChatProvider(config=config)
     messages = [{"role": "user", "content": "计算17乘23，只输出结果。"}]
     result = {"request_id": str(payload.request_id), "version": payload.version,
+        "connection_version": config.connection_version,
         "thinking_version": payload.thinking_config_version, "option_id": payload.option_id,
         "parameters": parameter_preview(config), "completed": False, "error": None}
     try:

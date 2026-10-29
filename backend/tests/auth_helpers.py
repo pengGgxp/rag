@@ -15,9 +15,17 @@ class StreamingTestProvider(OpenAICompatibleChatProvider):
         yield "complete", result
 
 
+def connection_id(db, *, url="https://example.test/v1", secret="test-only"):
+    from app.models import ModelConnection
+    row = ModelConnection(name="Test", platform="custom", base_url=url, encrypted_api_key=secret)
+    db.add(row)
+    db.flush()
+    return row.id
+
+
 def configured_model(db, workspace_id, monkeypatch=None):
     """Seed persisted configuration for workflow tests; never bypass provider resolution."""
-    from app.models import SiteModelProvider, LLMProviderConfig, UsagePolicy
+    from app.models import SiteModelProvider, ModelConnection, LLMProviderConfig, UsagePolicy
     from app import llm_providers
     from app.credits import DEFAULT_USAGE_POLICIES
     if monkeypatch:
@@ -25,8 +33,10 @@ def configured_model(db, workspace_id, monkeypatch=None):
     prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000,
         "credits_per_unit": 1, "enabled": True} for key in (
             "llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")}
+    connection = ModelConnection(name="Test", base_url="https://example.test/v1", encrypted_api_key="test-only")
+    db.add(connection); db.flush()
     provider = SiteModelProvider(key=f"test-{workspace_id}", name="Test", model="test-model",
-        base_url="https://example.test/v1", encrypted_api_key="test-only", enabled=True, prices=prices)
+        connection_id=connection.id, enabled=True, prices=prices)
     db.add(provider); db.flush()
     binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=provider.id,
         key="test", name="Test", model="test-model", base_url="", encrypted_api_key="", active=True)

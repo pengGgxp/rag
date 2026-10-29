@@ -13,7 +13,7 @@ from app.llm import LLMProviderError, LLMUsage, ToolResponse
 from app.models import (CreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelCallUsage,
                         ModelUsageRequest, UsageEvent, UsagePolicy)
 from test_auth import register
-from auth_helpers import model_id
+from auth_helpers import model_id, connection_id
 
 
 @pytest.fixture
@@ -24,8 +24,8 @@ def metered(accounts, monkeypatch):
     from app.models import LLMProviderConfig, SiteModelProvider
     from app import llm_providers
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: "test-only")
-    shared = SiteModelProvider(key="meter-test", name="Test", base_url="https://example.test/v1", model="test",
-        encrypted_api_key="test-only", enabled=True, prices={key: {"capability": key, "unit": "tokens",
+    shared = SiteModelProvider(key="meter-test", name="Test", connection_id=connection_id(db), model="test",
+        enabled=True, prices={key: {"capability": key, "unit": "tokens",
             "unit_size": 1000, "credits_per_unit": 1, "enabled": True} for key in billing.CAPABILITIES})
     db.add(shared); db.flush()
     binding = LLMProviderConfig(workspace_id=workspace, site_provider_id=shared.id, key="meter-test", name="Test",

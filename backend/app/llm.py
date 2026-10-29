@@ -99,6 +99,8 @@ class ChatProviderConfig:
     context_capacity: int | None = None
     max_output_tokens: int | None = None
     config_version: int = 0
+    connection_id: str | None = None
+    connection_version: int = 0
 
     @property
     def llm_configured(self) -> bool:
@@ -150,7 +152,7 @@ class OpenAICompatibleChatProvider:
             raise LLMConfigurationError("请在问答输入区选择可用模型")
         if self.config.site_provider_id:
             from .shared_providers import assert_available
-            assert_available(self.config.site_provider_id)
+            assert_available(self.config.site_provider_id, self.config.connection_id)
 
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
         thinking = self.config.thinking

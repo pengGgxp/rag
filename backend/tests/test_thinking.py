@@ -115,7 +115,7 @@ def test_all_invocation_modes_use_same_payload_and_hide_reasoning(monkeypatch):
 def test_admin_config_public_options_independent_versions(accounts, monkeypatch):
     client, db, _ = setup_site(accounts, monkeypatch)
     original = provider(client)
-    payload = {key: original[key] for key in ("key", "name", "model", "base_url", "enabled", "version")}
+    payload = {key: original[key] for key in ("name", "model", "connection_id", "connection_version", "enabled", "version")}
     changed = client.put(f"/site/admin/llm-providers/{original['id']}", json={**payload, "thinking": effort()})
     assert changed.status_code == 200, changed.text
     updated = changed.json()
@@ -169,7 +169,7 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     db.commit()
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=SecretStr(key)))
-    monkeypatch.setattr(shared_providers, "assert_available", lambda _: None)
+    monkeypatch.setattr(shared_providers, "assert_available", lambda *args: None)
     observed = []
     def post(url, **kwargs):
         payload = kwargs["json"]

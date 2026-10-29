@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 from sqlalchemy import select
-from app import shared_providers, llm_providers
+from app import shared_providers, llm_providers, model_connections
 from app.models import SiteAuditEvent, UsageEvent, LLMProviderConfig, ModelBillingSettings
 from app.credits import authorization_hold, settle_model_usage
 from test_auth import register, share, switch
@@ -21,7 +21,7 @@ def test_management_requires_site_role_on_every_new_and_legacy_route(accounts):
 
 def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, monkeypatch):
     admin, owner, _, db, a, b = setup(accounts)
-    monkeypatch.setattr(shared_providers, "_encrypt_api_key", lambda value: "enc:" + value)
+    monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: "enc:" + value)
     p = provider(admin)
     db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
     db.commit()
@@ -41,7 +41,7 @@ def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, 
 
 def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch):
     admin, owner, _, db, a, b = setup(accounts)
-    monkeypatch.setattr(shared_providers, "_encrypt_api_key", lambda value: "enc:" + value)
+    monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: "enc:" + value)
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
     p = provider(admin)
     db.get(ModelBillingSettings, 1).shared_pricing_enabled = True

@@ -111,15 +111,28 @@ class CreditLedgerEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-class SiteModelProvider(Base):
-    __tablename__ = "site_model_providers"
+class ModelConnection(Base):
+    __tablename__ = "model_connections"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    key: Mapped[str] = mapped_column(String(100), unique=True)
     name: Mapped[str] = mapped_column(String(120))
+    platform: Mapped[str] = mapped_column(String(30), default="custom")
     base_url: Mapped[str] = mapped_column(Text)
-    model: Mapped[str] = mapped_column(String(200))
     encrypted_api_key: Mapped[str] = mapped_column(Text)
     timeout_seconds: Mapped[float] = mapped_column(default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class SiteModelProvider(Base):
+    __tablename__ = "site_model_providers"
+    __table_args__ = (UniqueConstraint("connection_id", "model", name="uq_connection_model"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    connection_id: Mapped[UUID] = mapped_column(ForeignKey("model_connections.id"), index=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    model: Mapped[str] = mapped_column(String(200))
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     published: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -140,6 +153,7 @@ class ThinkingTest(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     provider_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
     version: Mapped[int] = mapped_column(Integer)
+    connection_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     thinking_version: Mapped[int] = mapped_column(Integer)
     option_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="running")

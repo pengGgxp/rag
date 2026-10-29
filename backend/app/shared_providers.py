@@ -1,5 +1,5 @@
 """Site connections and request-scoped accounting associations with shared prices."""
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -7,11 +7,12 @@ from sqlalchemy import func, select
 
 from .auth import Access, get_access
 from .db import get_db
-from .llm_providers import ProviderInput, _encrypt_api_key, _decrypt_api_key, validate_base_url
+from .llm_providers import _encrypt_api_key, _decrypt_api_key, validate_base_url
+from .model_connections import connection_for, lock_connection, router as connection_router
 from .management_access import ManagementAccess, management_access
 from .model_billing import CAPABILITIES
 from .model_pricing import ModelPrice, complete, settings_locked
-from .models import LLMProviderConfig, ModelBillingSettings, SiteModelProvider, UsagePolicy, Workspace
+from .models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
 from .site_auth import site_admin
 from .site_audit import record
 from .thinking import ThinkingConfig, public_capability
@@ -31,7 +32,13 @@ def provider_writer(request: Request, db=Depends(get_db), actor=Depends(site_adm
         raise
 
 
-class SiteProviderInput(ProviderInput):
+class SiteProviderInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    model: str = Field(min_length=1, max_length=200)
+    connection_id: UUID
+    connection_version: int = Field(ge=1, strict=True)
+    policies: list[ModelPrice] | None = Field(default=None, max_length=3)
     enabled: bool = False
     version: int = Field(default=0, ge=0)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
@@ -76,9 +83,11 @@ def lock_provider(db, identifier, version=None):
 def read_provider(db, row):
     settings = db.get(ModelBillingSettings, 1)
     reason = unavailable_reason(db, row, None, True)
+    connection = connection_for(db, row)
     return {"id": str(row.id), "key": row.key, "name": row.name, "model": row.model,
-        "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
-        "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled,
+        "connection_id": str(row.connection_id), "connection_name": connection.name if connection else "",
+        "connection_version": connection.version if connection else 0,
+        "platform": connection.platform if connection else "custom", "enabled": row.enabled,
         "version": row.version,
         "thinking": row.thinking_config or ThinkingConfig().model_dump(),
         "thinking_version": row.thinking_version,
@@ -91,19 +100,24 @@ def read_provider(db, row):
         "updated_at": row.updated_at.isoformat()}
 
 
-def apply_provider(row, payload):
-    row.key, row.name = payload.key, payload.name.strip()
-    row.base_url, row.model = validate_base_url(payload.base_url), payload.model.strip()
+def apply_provider(db, row, payload):
+    connection = lock_connection(db, payload.connection_id, payload.connection_version)
+    row.connection_id, row.name, row.model = connection.id, payload.name.strip(), payload.model.strip()
     if not row.name or not row.model:
         raise HTTPException(422, "名称和模型不能为空")
-    row.timeout_seconds = payload.timeout_seconds
     row.context_capacity, row.max_output_tokens = payload.context_capacity, payload.max_output_tokens
-    if payload.api_key:
-        row.encrypted_api_key = _encrypt_api_key(payload.api_key.get_secret_value())
-    if not row.encrypted_api_key:
-        raise HTTPException(422, "请配置供应商密钥")
-    if payload.enabled and not row.enabled and not complete(row.prices):
+    if db.scalar(select(SiteModelProvider.id).where(SiteModelProvider.connection_id == connection.id,
+            SiteModelProvider.model == row.model, SiteModelProvider.id != row.id)):
+        raise HTTPException(422, f"该连接已配置模型 {row.model}")
+    if payload.policies is not None:
+        prices = {p.capability: p.model_dump() for p in payload.policies}
+        if len(prices) != len(payload.policies):
+            raise HTTPException(422, "模型价格项目重复")
+        row.prices = prices
+    if payload.enabled and not complete(row.prices):
         raise HTTPException(422, "启用前请补齐三项模型价格")
+    if payload.enabled and (not connection.enabled or not connection.encrypted_api_key):
+        raise HTTPException(422, "请先启用并完善供应商连接")
     row.enabled = payload.enabled
     thinking = payload.thinking.model_dump()
     if ThinkingConfig.model_validate(row.thinking_config or {}).model_dump() != thinking:
@@ -127,11 +141,9 @@ def read_global(identifier: UUID, db=Depends(get_db), actor=Depends(site_admin))
 @router.post("", status_code=201)
 def create_global(payload: SiteProviderInput, db=Depends(get_db), actor=Depends(provider_writer)):
     settings = settings_locked(db)
-    if db.scalar(select(SiteModelProvider.id).where(SiteModelProvider.key == payload.key)):
-        raise HTTPException(409, "供应商标识已存在")
-    row = SiteModelProvider(encrypted_api_key="", enabled=False, prices={key: dict(value)
+    row = SiteModelProvider(key=f"model-{uuid4().hex}", enabled=False, prices={key: dict(value)
         for key, value in settings.template.items() if key in CAPABILITIES}, template_version=settings.version)
-    apply_provider(row, payload)
+    apply_provider(db, row, payload)
     db.add(row)
     db.flush()
     record(db, actor, "models.created", "model_provider", row.id, details={"fields": sorted(payload.model_fields_set - {"api_key"})})
@@ -143,9 +155,7 @@ def create_global(payload: SiteProviderInput, db=Depends(get_db), actor=Depends(
 def update_global(identifier: UUID, payload: SiteProviderInput, db=Depends(get_db), actor=Depends(provider_writer)):
     settings_locked(db)
     row = lock_provider(db, identifier, payload.version)
-    if db.scalar(select(SiteModelProvider.id).where(SiteModelProvider.key == payload.key, SiteModelProvider.id != identifier)):
-        raise HTTPException(409, "供应商标识已存在")
-    apply_provider(row, payload)
+    apply_provider(db, row, payload)
     row.version += 1
     record(db, actor, "models.updated", "model_provider", row.id, details={"fields": sorted(payload.model_fields_set - {"api_key"})})
     db.commit()
@@ -192,7 +202,10 @@ def delete_global(identifier: UUID, payload: VersionInput, db=Depends(get_db), a
 def unavailable_reason(db, provider, binding, shared):
     if not provider.enabled:
         return "model_disabled"
-    if not provider.encrypted_api_key or not provider.model or not provider.base_url:
+    connection = connection_for(db, provider, refresh=True)
+    if connection is not None and not connection.enabled:
+        return "connection_disabled"
+    if not connection or not connection.encrypted_api_key or not provider.model or not connection.base_url:
         return "service_not_ready"
     if shared:
         prices = provider.prices
@@ -245,6 +258,7 @@ def request_binding(db, workspace_id, identifier):
     reason = unavailable_reason(db, row, binding, True)
     if reason:
         messages = {"model_disabled": "模型已停用，请选择其他模型",
+            "connection_disabled": "模型服务已停用，请选择其他模型",
             "pricing_unconfigured": "模型价格尚未配置完整，请联系站点管理员",
             "service_not_ready": "模型服务尚未就绪，请联系站点管理员"}
         raise HTTPException(409, messages[reason])
@@ -278,12 +292,14 @@ def admin_select_model(payload: SelectionInput, db=Depends(get_db), access: Mana
     raise HTTPException(410, "工作区不再设置当前模型")
 
 
-def assert_available(identifier):
+def assert_available(identifier, connection_id=None):
     from .db import SessionLocal
     from .llm import LLMConfigurationError
     with SessionLocal() as db:
         row = db.get(SiteModelProvider, UUID(identifier))
-        if row is None or not row.enabled:
+        connection = (db.get(ModelConnection, UUID(connection_id)) if connection_id
+            else connection_for(db, row) if row else None)
+        if row is None or not row.enabled or not connection or not connection.enabled:
             raise LLMConfigurationError("当前模型已停用，请选择其他模型")
 
 
@@ -301,8 +317,12 @@ def migrate_connections(db, settings):
         _decrypt_api_key(binding.encrypted_api_key)
         prices = {p.capability: {key: getattr(p, key) for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled")}
             for p in db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == binding.id, UsagePolicy.capability.in_(CAPABILITIES)))}
-        row = SiteModelProvider(key=f"legacy-{binding.id}", name=binding.name, base_url=binding.base_url,
-            model=binding.model, encrypted_api_key=binding.encrypted_api_key, timeout_seconds=binding.timeout_seconds,
+        connection = ModelConnection(name=binding.name, platform="custom", base_url=binding.base_url,
+            encrypted_api_key=binding.encrypted_api_key, timeout_seconds=binding.timeout_seconds, enabled=True)
+        db.add(connection)
+        db.flush()
+        row = SiteModelProvider(key=f"legacy-{binding.id}", name=binding.name, connection_id=connection.id,
+            model=binding.model,
             enabled=binding.enabled, published=False, prices=prices)
         db.add(row)
         db.flush()
@@ -315,9 +335,13 @@ def migrate_connections(db, settings):
             raise ValueError("Legacy environment model is incomplete; migration aborted.")
         row = db.scalar(select(SiteModelProvider).where(SiteModelProvider.key == "legacy-environment"))
         if row is None:
-            row = SiteModelProvider(key="legacy-environment", name="平台模型", base_url=validate_base_url(settings.llm_base_url),
-                model=settings.llm_model, encrypted_api_key=_encrypt_api_key(settings.llm_api_key.get_secret_value()),
-                timeout_seconds=settings.llm_timeout_seconds, enabled=True, published=True, prices={})
+            connection = ModelConnection(name="平台模型", platform="custom", base_url=validate_base_url(settings.llm_base_url),
+                encrypted_api_key=_encrypt_api_key(settings.llm_api_key.get_secret_value()),
+                timeout_seconds=settings.llm_timeout_seconds, enabled=True)
+            db.add(connection)
+            db.flush()
+            row = SiteModelProvider(key="legacy-environment", name="平台模型", connection_id=connection.id,
+                model=settings.llm_model, enabled=True, published=True, prices={})
             db.add(row)
             db.flush()
         for workspace in targets:
@@ -332,7 +356,8 @@ def migrate_connections(db, settings):
     db.flush()
     for binding in db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.active.is_(True))):
         row = db.get(SiteModelProvider, binding.site_provider_id)
-        if not row or not row.enabled or not _decrypt_api_key(row.encrypted_api_key):
+        connection = connection_for(db, row) if row else None
+        if not row or not row.enabled or not connection or not _decrypt_api_key(connection.encrypted_api_key):
             raise ValueError("An active workspace connection is unavailable; migration aborted.")
     migration.connections_migrated = True
     record(db, None, "models.migrated", "model_provider", "migration", details={"associations": count})

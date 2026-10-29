@@ -547,7 +547,7 @@ def test_model_budget_admin_validation_versions_and_public_redaction(client):
     user = db.get(User, UUID(http.get("/auth/me").json()["user"]["id"]))
     user.is_site_admin = True; db.commit()
     original = http.get(f"/site/admin/llm-providers/{identifier}").json()
-    payload = {key: original[key] for key in ("key", "name", "base_url", "model", "version", "enabled", "thinking")}
+    payload = {key: original[key] for key in ("connection_id", "connection_version", "name", "model", "version", "enabled", "thinking")}
     path = f"/site/admin/llm-providers/{identifier}"
     for changes in ({"context_capacity": 16000}, {"context_capacity": True, "max_output_tokens": 100},
                     {"context_capacity": 16000, "max_output_tokens": 15999}):

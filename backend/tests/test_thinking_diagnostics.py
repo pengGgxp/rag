@@ -27,7 +27,7 @@ def configured(accounts, monkeypatch):
     row = db.get(SiteModelProvider, UUID(item["id"]))
     row.thinking_config, row.thinking_version = effort("bailian"), 1
     db.commit()
-    monkeypatch.setattr(shared_providers, "assert_available", lambda _: None)
+    monkeypatch.setattr(shared_providers, "assert_available", lambda *args: None)
     return client, db, session, item
 
 
@@ -69,6 +69,7 @@ def test_probe_is_metered_idempotent_rate_limited_and_private(accounts, monkeypa
     monkeypatch.setattr(httpx, "stream", streaming)
     url = f"/site/admin/llm-providers/{item['id']}/thinking/test"
     payload = {"request_id": str(uuid4()), "version": item["version"],
+        "connection_version": item["connection_version"],
         "thinking_config_version": 1, "option_id": "strong"}
     result = client.post(url, json=payload)
     assert result.status_code == 200, result.text
@@ -92,7 +93,8 @@ def test_probe_is_metered_idempotent_rate_limited_and_private(accounts, monkeypa
 def test_probe_conflicts_and_permissions_never_call_upstream(accounts, monkeypatch):
     client, db, session, item = configured(accounts, monkeypatch)
     monkeypatch.setattr(httpx, "stream", lambda *_a, **_k: pytest.fail("Invalid probe reached upstream"))
-    body = {"request_id": str(uuid4()), "version": item["version"], "thinking_config_version": 0}
+    body = {"request_id": str(uuid4()), "version": item["version"],
+        "connection_version": item["connection_version"], "thinking_config_version": 0}
     url = f"/site/admin/llm-providers/{item['id']}/thinking/test"
     assert client.post(url, json=body).status_code == 409
     assert not db.scalars(select(ThinkingTest)).all()

@@ -8,6 +8,7 @@ from app.models import SiteModelProvider, LLMProviderConfig, UsagePolicy, Worksp
 from app.shared_providers import request_binding
 from app.model_billing import CAPABILITIES
 from test_auth_postgres import auth_postgres
+from auth_helpers import connection_id
 
 
 def test_parallel_selection_has_one_association_and_no_price_copies(auth_postgres):
@@ -19,8 +20,8 @@ def test_parallel_selection_has_one_association_and_no_price_copies(auth_postgre
             db.add(settings)
         settings.shared_pricing_enabled = True
         workspace = Workspace(name="Selection concurrency")
-        provider = SiteModelProvider(key=f"pg-{uuid4()}", name="Shared", model="test", base_url="https://example.test/v1",
-            encrypted_api_key="not-used", enabled=True, published=True, prices={key: {"capability": key,
+        provider = SiteModelProvider(key=f"pg-{uuid4()}", name="Shared", model="test", connection_id=connection_id(db),
+            enabled=True, published=True, prices={key: {"capability": key,
                 "unit": "tokens", "unit_size": 1000, "credits_per_unit": 7, "enabled": True} for key in CAPABILITIES})
         db.add_all([workspace, provider]); db.commit()
         workspace_id, provider_id = workspace.id, provider.id
@@ -54,7 +55,7 @@ def test_request_and_administrator_use_same_configuration_lock_order(auth_postgr
             db.add(ModelBillingSettings(id=1))
         workspace = Workspace(name="Concurrent model edit")
         provider = SiteModelProvider(key=f"edit-{uuid4()}", name="Shared", model="before",
-            base_url="https://example.test/v1", encrypted_api_key="not-used", enabled=True,
+            connection_id=connection_id(db), enabled=True,
             published=True, prices={key: {"capability": key, "unit": "tokens", "unit_size": 1000,
                 "credits_per_unit": 1, "enabled": True} for key in CAPABILITIES})
         db.add_all([workspace, provider])

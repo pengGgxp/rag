@@ -46,7 +46,7 @@ def test_postgres_concurrent_probe_calls_upstream_and_charges_once(auth_postgres
         db.commit()
         workspace_id = workspace.id
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _: "test-only")
-    monkeypatch.setattr(shared_providers, "assert_available", lambda _: None)
+    monkeypatch.setattr(shared_providers, "assert_available", lambda *args: None)
     @contextmanager
     def streaming(*_args, **kwargs):
         calls.append(kwargs["json"])
@@ -56,7 +56,7 @@ def test_postgres_concurrent_probe_calls_upstream_and_charges_once(auth_postgres
             'data: {"choices":[{"delta":{"reasoning_content":"not logged","content":"391"},"finish_reason":"stop"}]}\n\n'
             'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"completion_tokens_details":{"reasoning_tokens":15}}}\n\n'))
     monkeypatch.setattr(httpx, "stream", streaming)
-    payload = {"request_id": str(uuid4()), "version": version, "thinking_config_version": 1}
+    payload = {"request_id": str(uuid4()), "version": version, "connection_version": 1, "thinking_config_version": 1}
     url = f"/site/admin/llm-providers/{identifier}/thinking/test"
     def probe():
         with TestClient(main.app, headers={"X-RAG-Request": "1", "X-CSRF-Token": csrf}) as client:

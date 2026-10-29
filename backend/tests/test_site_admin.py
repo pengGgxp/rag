@@ -9,6 +9,7 @@ from app import auth, site_admin
 from app.models import AuthToken, ExternalIdentity, LLMProviderConfig, LoginSession, SiteAuditEvent, SiteAuthSettings, SiteModelProvider, User
 from app.site_audit import prune, record
 from test_auth import PASSWORD, register, share
+from auth_helpers import connection_id
 
 
 def setup(accounts):
@@ -43,7 +44,7 @@ def test_lists_filters_paging_and_read_only_redaction(accounts):
     target.email_verified_at = auth.now()
     db.add(ExternalIdentity(provider="senyu:test:wx", subject="private-social-id", user_id=target.id))
     provider = SiteModelProvider(key="test", name="Provider", model="private-model",
-        base_url="https://secret-host", encrypted_api_key="never-return-this", enabled=True)
+        connection_id=connection_id(db, url="https://secret-host", secret="never-return-this"), enabled=True)
     db.add(provider)
     db.flush()
     db.add(LLMProviderConfig(workspace_id=UUID(b["workspace_id"]), site_provider_id=provider.id, key="test", name="Old name",
