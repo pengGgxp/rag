@@ -80,6 +80,20 @@ def platforms(actor=Depends(site_admin)):
     return PLATFORMS
 
 
+@router.get("/model-presets")
+def model_presets(actor=Depends(site_admin)):
+    # Exact official IDs only. Applying a preset is an explicit administrator action.
+    return [{"platform": "deepseek", "model": model, "context_capacity": 1_000_000,
+        "max_output_tokens": 384_000, "source": "https://api-docs.deepseek.com/quick_start/pricing",
+        "verified_at": "2026-10-29", "thinking": {
+            "kind": "effort", "adapter": "deepseek", "options": [
+                {"id": "off", "label": "关闭", "value": "disabled"},
+                {"id": "low", "label": "低", "value": "low"},
+                {"id": "high", "label": "高", "value": "high"},
+                {"id": "max", "label": "最高", "value": "max"}], "default_option_id": "high"}}
+        for model in ("deepseek-flash", "deepseek-v4-pro")]
+
+
 @router.get("")
 def list_connections(db=Depends(get_db), actor=Depends(site_admin)):
     return [read_connection(db, row) for row in db.scalars(select(ModelConnection).order_by(ModelConnection.created_at))]
@@ -139,3 +153,52 @@ def delete_connection(identifier: UUID, payload: ConnectionVersion, db=Depends(g
     record(db, actor, "model_connections.deleted", "model_connection", row.id)
     db.delete(row)
     db.commit()
+
+
+def discover_models(url, secret, timeout):
+    # Bounded read; credentials stay on the server and are never forwarded on redirects.
+    try:
+        deadline = monotonic() + min(timeout, 10)
+        with httpx.stream("GET", f"{url.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {secret}"}, timeout=min(timeout, 10),
+                follow_redirects=False) as response:
+            if response.status_code != 200:
+                raise HTTPException(502, "未能获取模型列表，请检查连接或手动添加模型")
+            raw = bytearray()
+            for chunk in response.iter_bytes():
+                if monotonic() > deadline:
+                    raise HTTPException(502, "获取模型列表超时，请重试或手动添加模型")
+                raw.extend(chunk)
+                if len(raw) > 1024 * 1024:
+                    raise HTTPException(502, "模型列表过大，请手动添加模型")
+        data = json.loads(raw)
+        entries = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError("invalid model list")
+        return sorted({item["id"].strip() for item in entries if isinstance(item, dict)
+            and isinstance(item.get("id"), str) and 0 < len(item["id"].strip()) <= 200})[:1000]
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(502, "未能获取模型列表，请检查连接或手动添加模型") from None
+
+
+@router.post("/{identifier}/models/discover")
+def discover(identifier: UUID, payload: ConnectionVersion, db=Depends(get_db), actor=Depends(site_admin)):
+    row = lock_connection(db, identifier, payload.version)
+    try:
+        secret = _decrypt_api_key(row.encrypted_api_key)
+    except Exception:
+        raise HTTPException(503, "连接密钥暂不可用，请重新保存密钥") from None
+    if not secret:
+        raise HTTPException(422, "请先保存供应商密钥")
+    url, timeout, version = row.base_url, row.timeout_seconds, row.version
+    db.commit()
+    try:
+        models = discover_models(url, secret, timeout)
+    except HTTPException:
+        record(db, actor, "model_connections.discovered", "model_connection", identifier, result="failure")
+        db.commit()
+        raise
+    lock_connection(db, identifier, version)
+    record(db, actor, "model_connections.discovered", "model_connection", identifier, details={"count": len(models)})
+    db.commit()
+    return {"models": models, "connection_version": version}

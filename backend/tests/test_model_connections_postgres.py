@@ -84,3 +84,30 @@ def test_upgrade_preserves_models_and_does_not_merge_equal_connections(auth_post
         with admin.connect() as db:
             db.execute(text(f'DROP DATABASE "{name}"'))
         admin.dispose()
+
+
+def test_concurrent_bulk_import_is_atomic_and_unique(auth_postgres):
+    from app.models import SiteModelProvider
+    from app.shared_providers import BatchModels, create_models
+    with Session(auth_postgres) as db:
+        connection = ModelConnection(name="Bulk", base_url="https://example.test/v1", encrypted_api_key="ciphertext")
+        db.add(connection); db.commit(); identifier = connection.id
+    payload = BatchModels.model_validate({"connection_version": 1, "models": [
+        {"connection_id": str(identifier), "connection_version": 1, "name": model, "model": model,
+         "enabled": False, "policies": []} for model in ("first", "second")]})
+    barrier = Barrier(2)
+    def save(_):
+        with Session(auth_postgres) as db:
+            barrier.wait(timeout=10)
+            try:
+                rows = create_models(identifier, payload, db=db, actor=None)
+                return len(rows)
+            except HTTPException as exc:
+                db.rollback()
+                return exc.status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(save, range(2))) == [2, 422]
+    with Session(auth_postgres) as db:
+        rows = db.query(SiteModelProvider).filter_by(connection_id=identifier).all()
+        assert sorted(row.model for row in rows) == ["first", "second"]
+        assert all(not row.enabled and not row.prices for row in rows)

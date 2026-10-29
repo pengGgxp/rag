@@ -71,6 +71,12 @@ class SelectionInput(BaseModel):
     version: int = Field(ge=0)
 
 
+class BatchModels(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    connection_version: int = Field(ge=1, strict=True)
+    models: list[SiteProviderInput] = Field(min_length=1, max_length=50)
+
+
 def lock_provider(db, identifier, version=None):
     row = db.get(SiteModelProvider, identifier, with_for_update=True, populate_existing=True)
     if row is None:
@@ -149,6 +155,32 @@ def create_global(payload: SiteProviderInput, db=Depends(get_db), actor=Depends(
     record(db, actor, "models.created", "model_provider", row.id, details={"fields": sorted(payload.model_fields_set - {"api_key"})})
     db.commit()
     return read_provider(db, row)
+
+
+@connection_router.post("/{identifier}/models", status_code=201)
+def create_models(identifier: UUID, payload: BatchModels, db=Depends(get_db), actor=Depends(provider_writer)):
+    settings = settings_locked(db)
+    lock_connection(db, identifier, payload.connection_version)
+    names = [item.model.strip() for item in payload.models]
+    if len(set(names)) != len(names):
+        raise HTTPException(422, "所选模型重复，请检查后保存")
+    rows = []
+    for item in payload.models:
+        if item.connection_id != identifier or item.connection_version != payload.connection_version:
+            raise HTTPException(422, "模型与供应商连接不匹配")
+        row = SiteModelProvider(key=f"model-{uuid4().hex}", enabled=False, prices={
+            key: dict(value) for key, value in settings.template.items() if key in CAPABILITIES},
+            template_version=settings.version)
+        try:
+            apply_provider(db, row, item)
+        except HTTPException as exc:
+            raise HTTPException(exc.status_code, f"{item.model}：{exc.detail}") from None
+        db.add(row)
+        db.flush()
+        rows.append(row)
+    record(db, actor, "models.batch_created", "model_connection", identifier, details={"count": len(rows)})
+    db.commit()
+    return [read_provider(db, row) for row in rows]
 
 
 @router.put("/{identifier}")
