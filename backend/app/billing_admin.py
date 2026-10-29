@@ -3,7 +3,6 @@ import hashlib
 import json
 from decimal import Decimal
 from fractions import Fraction
-from math import ceil
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,6 +17,7 @@ from .models import (BillingSnapshot, Conversation, IngestionJob, JobState, LLMP
 from .site_auth import site_admin
 from .site_audit import record
 from .workspace_billing import MODEL_CAPABILITIES, DOCUMENT_CAPABILITIES, resolve_prices
+from .credit_amounts import amount, exact_charge
 
 router = APIRouter(tags=["site-admin"])
 ROOT = "/site/admin/workspaces/{workspace_id}/billing-settings"
@@ -36,7 +36,7 @@ def display_rate(percent):
 def price_read(price, percent):
     configured = price["configured"]
     base = price.get("credits_per_unit")
-    effective = format(Decimal(base) * Decimal(percent) / Decimal(100), "f") if configured else None
+    effective = format((Decimal(str(base)) * Decimal(percent) / Decimal(100)).normalize(), "f") if configured else None
     return {**price, "effective_credits_per_unit": effective,
             "available": configured and price.get("enabled", True)}
 
@@ -114,10 +114,7 @@ def sample(prices, capability, units, percent, precise):
     price = next((p for p in prices if p["capability"] == capability), None)
     if not price or not price["configured"] or not price.get("enabled", True):
         return None
-    if precise:
-        return Fraction(units * price["credits_per_unit"] * percent, price["unit_size"] * 100)
-    base = ((units + price["unit_size"] - 1) // price["unit_size"]) * price["credits_per_unit"]
-    return Fraction(base * percent, 100)
+    return exact_charge(units, price) * Fraction(percent, 100)
 
 
 def migration_preview(db):
@@ -130,7 +127,7 @@ def migration_preview(db):
         for p in db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.id))]
     fingerprint["policies"] = [{"id": str(p.id), "workspace_id": str(p.workspace_id),
         "provider_id": str(p.provider_id) if p.provider_id else None, "capability": p.capability,
-        "unit_size": p.unit_size, "credits_per_unit": p.credits_per_unit, "enabled": p.enabled, "version": p.version}
+        "unit_size": p.unit_size, "credits_per_unit": str(p.credits_per_unit), "enabled": p.enabled, "version": p.version}
         for p in db.scalars(select(UsagePolicy).order_by(UsagePolicy.id))]
     for workspace in db.scalars(select(Workspace).order_by(Workspace.id)):
         bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id)
@@ -143,8 +140,8 @@ def migration_preview(db):
         for price in new:
             previous = by_key.get(price["capability"])
             if previous and previous["configured"] and price["configured"]:
-                old_unit = Fraction(previous["credits_per_unit"], previous["unit_size"])
-                new_unit = Fraction(price["credits_per_unit"], price["unit_size"])
+                old_unit = exact_charge(1, previous)
+                new_unit = exact_charge(1, price)
                 if new_unit:
                     ratios.add(old_unit / new_unit)
                 elif old_unit:
@@ -159,8 +156,8 @@ def migration_preview(db):
             applicable = items if precise else [(key, units) for key, units in items if key != "llm_cached_input_tokens"]
             old_parts = [sample(old, key, units, 100, precise) for key, units in applicable]
             new_parts = [sample(new, key, units, workspace.billing_multiplier_percent, precise) for key, units in applicable]
-            old_total = ceil(sum(old_parts, Fraction())) if all(p is not None for p in old_parts) else None
-            new_total = ceil(sum(new_parts, Fraction())) if all(p is not None for p in new_parts) else None
+            old_total = amount(sum(old_parts, Fraction())) if all(p is not None for p in old_parts) else None
+            new_total = amount(sum(new_parts, Fraction())) if all(p is not None for p in new_parts) else None
             comparisons.append({"label": name, "old_credits": old_total, "new_credits": new_total,
                 "difference": new_total - old_total if old_total is not None and new_total is not None else None})
         missing = [p["capability"] for p in new if not p["available"]]

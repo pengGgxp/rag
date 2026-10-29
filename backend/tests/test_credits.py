@@ -1,4 +1,5 @@
 from uuid import UUID, uuid4
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -75,11 +76,11 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
     db.commit()
 
     account = db.get(CreditAccount, workspace_id)
-    assert account.balance == 995
+    assert account.balance == Decimal("996.7000")
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
     assert {(event.capability, event.units, event.credits) for event in events} == {
-        ("llm_input_tokens", 1500, 2),
-        ("llm_output_tokens", 600, 3),
+        ("llm_input_tokens", 1500, Decimal("1.5")),
+        ("llm_output_tokens", 600, Decimal("1.8")),
     }
     assert all(event.policy_snapshot["unit_size"] == 1000 for event in events)
 
@@ -91,7 +92,7 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
         "source": "provider",
     }], hold=1)
     db.commit()
-    assert db.get(CreditAccount, workspace_id).balance == 995
+    assert db.get(CreditAccount, workspace_id).balance == Decimal("996.7000")
 
 
 def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts):

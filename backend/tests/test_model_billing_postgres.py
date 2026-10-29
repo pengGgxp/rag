@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from threading import Barrier
 from types import SimpleNamespace
 from uuid import uuid4
@@ -48,9 +49,9 @@ def test_concurrent_finalize_records_one_charge_and_releases_one_hold(auth_postg
             db.commit()
             return amount
     with ThreadPoolExecutor(max_workers=4) as pool:
-        assert list(pool.map(finalize, range(4))) == [2]*4
+        assert list(pool.map(finalize, range(4))) == [Decimal("1.8")]*4
     with Session(engine) as db:
-        assert db.get(CreditAccount, workspace).balance == 998
+        assert db.get(CreditAccount, workspace).balance == Decimal("998.2")
         assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(
             CreditLedgerEntry.workspace_id==workspace, CreditLedgerEntry.kind=="usage_settlement")) == 1
 

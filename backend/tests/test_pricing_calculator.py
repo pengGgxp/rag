@@ -1,6 +1,6 @@
 import json
 from fractions import Fraction
-from math import ceil
+from app.credit_amounts import amount
 from uuid import UUID
 
 import pytest
@@ -53,18 +53,18 @@ def test_quote_conservative_catalog_exact_fee_and_no_writes(accounts, gateway):
     before = [db.scalar(select(func.count()).select_from(model)) for model in (UsagePolicy, ModelBillingSettings, SiteAuditEvent)]
     result = owner.post(ROOT + "/quote", json=body()).json()
     assert result["reference_package"]["id"] == "bonus"
-    assert result["credits_per_unit"] == 5006
+    assert result["credits_per_unit"] == 5005.005
     assert result["unit_size"] == 1_000_000
-    assert result["base_price_yuan"] == "5.00600000"
-    assert result["effective_fee_yuan"] == "0.00500600"
-    assert result["effective_profit_yuan"] == "3.00099400"
-    assert result["target_met"] and not result["loss"] and result["unit_rounding"]
+    assert result["base_price_yuan"] == "5.00500500"
+    assert result["effective_fee_yuan"] == "0.00500501"
+    assert result["effective_profit_yuan"] == "3.00000000"
+    assert not result["loss"] and not result["unit_rounding"]
     assert before == [db.scalar(select(func.count()).select_from(model)) for model in (UsagePolicy, ModelBillingSettings, SiteAuditEvent)]
     assert "secret" not in str(result) and "merchant" not in str(result)
     # A custom fee affects only the quote, not payment configuration or prices.
     custom = owner.post(ROOT + "/quote", json=body(payment_fee_percent="10", overhead_yuan="1")).json()
-    assert custom["credits_per_unit"] == 6667
-    assert custom["effective_profit_yuan"] == "3.00030000"
+    assert custom["credits_per_unit"] == 6666.6667
+    assert custom["effective_profit_yuan"] == "3.00000003"
 
 
 def test_fractional_exchange_ratio_discount_and_rounding_mode(accounts, gateway):
@@ -74,13 +74,13 @@ def test_fractional_exchange_ratio_discount_and_rounding_mode(accounts, gateway)
     payload = body(cost_yuan="0.00000001", profit_yuan="0.12345678", payment_fee_percent="0.1234", multiplier="0.01")
     result = owner.post(ROOT + "/quote", json=payload).json()
     exact = (Fraction("0.00000001") + Fraction("0.12345678")) / (1 - Fraction("0.1234") / 100) * Fraction(56700, 1234)
-    assert result["credits_per_unit"] == ceil(exact)
+    assert str(result["credits_per_unit"]) == str(amount(exact))
     assert not result["target_met"]
     assert owner.post(ROOT + "/quote", json=body(cost_yuan="5", profit_yuan="1", multiplier="0.01")).json()["loss"]
     row = ModelBillingSettings(id=1, enabled=True, template={}, version=0)
     db.add(row); db.commit()
     assert not owner.post(ROOT + "/quote", json=body()).json()["unit_rounding"]
-    assert owner.post(ROOT + "/quote", json=body(capability="ocr_pages", unit_size=1)).json()["unit_rounding"]
+    assert not owner.post(ROOT + "/quote", json=body(capability="ocr_pages", unit_size=1)).json()["unit_rounding"]
 
 
 def test_zero_integer_boundary_and_overflow(accounts, gateway):
@@ -89,7 +89,7 @@ def test_zero_integer_boundary_and_overflow(accounts, gateway):
     settings.recharge_packages_json = json.dumps([{"id": "one", "name": "整数兑换", "amount_fen": 100, "credits": 1000}])
     assert owner.post(ROOT + "/quote", json=body(cost_yuan="0", profit_yuan="0")).json()["credits_per_unit"] == 0
     assert owner.post(ROOT + "/quote", json=body(cost_yuan="0.001", profit_yuan="0", payment_fee_percent="0")).json()["credits_per_unit"] == 1
-    assert owner.post(ROOT + "/quote", json=body(cost_yuan="0.00100001", profit_yuan="0", payment_fee_percent="0")).json()["credits_per_unit"] == 2
+    assert owner.post(ROOT + "/quote", json=body(cost_yuan="0.00100001", profit_yuan="0", payment_fee_percent="0")).json()["credits_per_unit"] == 1
     assert owner.post(ROOT + "/quote", json=body(cost_yuan="999999999")).status_code == 422
 
 

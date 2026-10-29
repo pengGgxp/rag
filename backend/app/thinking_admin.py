@@ -149,7 +149,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
                 credits = settle_model_usage(settled, access.workspace_id, actor.id, payload.request_id,
                     legacy_call_usage(settled, access.workspace_id, payload.request_id), hold)
                 finish_operation(settled, access.workspace_id, payload.request_id)
-            result["credits"] = credits
+            result["credits"] = float(credits)
             test = settled.get(ThinkingTest, payload.request_id, with_for_update=True)
             test.status = "completed" if result["completed"] else "failed"
             test.result = result

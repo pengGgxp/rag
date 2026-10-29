@@ -1,4 +1,5 @@
 from fractions import Fraction
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -65,8 +66,8 @@ def test_request_exact_multiplier_applied_once(shared_billing, percent):
             cached_input_tokens=50, cache_status="reported").measured(), "completed")
     total = billing.finalize_request(db, request, "completed")
     db.commit()
-    from math import ceil
-    assert total == ceil(Fraction(9, 10) * Fraction(percent, 100))
+    from app.credit_amounts import amount
+    assert total == amount(Fraction(9, 10) * Fraction(percent, 100))
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request)).all()
     assert sum(e.credits for e in events) == total
     assert all(e.policy_snapshot["multiplier_percent"] == percent for e in events)
@@ -87,12 +88,12 @@ def test_request_base_price_and_multiplier_are_frozen(shared_billing):
     db.commit()
     second = billing.begin_call(db, request, model(db, workspace))
     billing.finish_call(db, request, second, {"input_tokens": 1000, "completion_tokens": 0}, "completed")
-    assert billing.finalize_request(db, request, "completed") == 3  # ceil((1 + 1) * 1.25)
+    assert billing.finalize_request(db, request, "completed") == Decimal("2.5")
     db.commit()
     assert db.get(ModelUsageRequest, request).billing_context["multiplier_percent"] == 125
 
 
-def test_legacy_engine_rounds_base_units_before_one_request_multiplier(shared_billing):
+def test_legacy_engine_uses_actual_units_before_one_request_multiplier(shared_billing):
     _, db, workspace, user, _ = shared_billing
     db.get(Workspace, workspace).billing_multiplier_percent = 25
     db.commit()
@@ -105,16 +106,16 @@ def test_legacy_engine_rounds_base_units_before_one_request_multiplier(shared_bi
         meter.invoke(model(db, workspace), lambda: None, [])
         usages.append({"prompt_tokens": 1, "completion_tokens": 1,
             "provider_id": str(binding(db, workspace).id), "billing_snapshot_id": meter.last_snapshot_id})
-    assert settle_model_usage(db, workspace, user, request, usages) == 2  # ceil(6 * .25), not 6
+    assert settle_model_usage(db, workspace, user, request, usages) == Decimal("0.0015")
     db.commit()
-    assert db.get(CreditAccount, workspace).balance == 998
+    assert db.get(CreditAccount, workspace).balance == Decimal("999.9985")
     assert not db.get(ModelBillingSettings, 1).enabled
-    assert settle_model_usage(db, workspace, user, request, usages) == 2
-    assert db.get(CreditAccount, workspace).balance == 998
+    assert settle_model_usage(db, workspace, user, request, usages) == Decimal("0.0015")
+    assert db.get(CreditAccount, workspace).balance == Decimal("999.9985")
 
 
 @pytest.mark.parametrize("capability,event_key,units,expected", [
-    ("ocr_pages", "ocr", 3, 38), ("embedding_tokens", "embedding", 1001, 5)])
+    ("ocr_pages", "ocr", 3, Decimal("37.5")), ("embedding_tokens", "embedding", 1001, Decimal("2.5025"))])
 def test_document_snapshot_survives_base_and_multiplier_edits(shared_billing, capability, event_key, units, expected):
     _, db, workspace, user, _ = shared_billing
     db.get(Workspace, workspace).billing_multiplier_percent = 125

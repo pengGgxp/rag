@@ -1,6 +1,5 @@
 """Durable per-call measurement with one exact request-level settlement."""
 from datetime import datetime, timezone
-from fractions import Fraction
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
@@ -10,6 +9,7 @@ from .credits import CreditError, _entry, authorization_hold, ensure_account, re
 from .llm import measured_usage
 from .models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent
 from .workspace_billing import context_for_workspace, resolve_prices, multiplier, allocate, finish_operation
+from .credit_amounts import exact_charge
 
 CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")
 USAGE_FIELDS = ("input_tokens", "cached_input_tokens", "completion_tokens")
@@ -25,8 +25,9 @@ def price_snapshot(db, workspace_id, provider_id=None, *, context=None):
 
 
 def pending_credits(db, workspace_id):
-    return int(db.scalar(select(func.coalesce(func.sum(ModelUsageRequest.credits), 0)).where(
-        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending")) or 0)
+    from decimal import Decimal
+    return db.scalar(select(func.coalesce(func.sum(ModelUsageRequest.credits), 0)).where(
+        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending")) or Decimal(0)
 
 
 def _pay(db, account, row):
@@ -66,7 +67,7 @@ def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold
     authorization_hold(db, workspace_id, actor_user_id, request_id, hold)
     db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
         actor_user_id=actor_user_id, hold=hold, billing_context=context,
-        formula_version="model_request_multiplier_v3" if context["source_mode"] == "shared" else "model_request_v2"))
+        formula_version="model_cache_decimal_v1"))
     db.flush()
 
 
@@ -125,7 +126,7 @@ def finalize_request(db, request_id, outcome):
             if type(units) is not int or units < 0:
                 continue
             price = call.prices[capability]
-            exact = Fraction(units * price["credits_per_unit"], price["unit_size"]) * multiplier(row.billing_context)
+            exact = exact_charge(units, price) * multiplier(row.billing_context)
             parts.append((call, capability, units, exact, order))
     total, allocations = allocate([item[3] for item in parts])
     for (call, capability, units, exact, _), credits in zip(parts, allocations):

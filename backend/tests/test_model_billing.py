@@ -1,4 +1,5 @@
 from fractions import Fraction
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -67,16 +68,16 @@ def test_multiple_rounds_sum_once_and_allocations_equal_one_debit(metered):
     request_id = start(db, workspace, user)
     for _ in range(3):
         call(db, request_id, input=100, cache=300, output=100)
-    assert billing.finalize_request(db, request_id, "completed") == 2  # ceil(3 * .4)
+    assert billing.finalize_request(db, request_id, "completed") == Decimal("1.2")
     db.commit()
-    assert db.get(CreditAccount, workspace).balance == 998
+    assert db.get(CreditAccount, workspace).balance == Decimal("998.8")
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
-    assert len(events) == 9 and sum(e.credits for e in events) == 2
+    assert len(events) == 9 and sum(e.credits for e in events) == Decimal("1.2")
     assert sum(Fraction(int(e.metadata_json["exact_numerator"]), int(e.metadata_json["exact_denominator"])) for e in events) == Fraction(6,5)
     assert len(db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.kind=="usage_settlement")).all()) == 1
-    assert billing.finalize_request(db, request_id, "completed") == 2
+    assert billing.finalize_request(db, request_id, "completed") == Decimal("1.2")
     db.commit()
-    assert db.get(CreditAccount, workspace).balance == 998
+    assert db.get(CreditAccount, workspace).balance == Decimal("998.8")
     assert "policy_snapshot" not in str(owner.get("/usage").json())
 
 
@@ -150,7 +151,7 @@ def test_meter_persists_reported_usage_on_failure_but_does_not_estimate(metered)
     calls = db.scalars(select(ModelCallUsage).order_by(ModelCallUsage.round)).all()
     assert calls[0].usage["prompt_tokens"] == 400
     assert calls[1].usage["prompt_tokens"] is None
-    assert db.get(ModelUsageRequest, request_id).credits == 1
+    assert db.get(ModelUsageRequest, request_id).credits == Decimal("0.46")
 
 
 def test_zero_price_and_maximum_remainder_tie_are_deterministic(metered):
@@ -161,7 +162,7 @@ def test_zero_price_and_maximum_remainder_tie_are_deterministic(metered):
     billing.finalize_request(db, request_id, "cancelled"); db.commit()
     events = db.scalars(select(UsageEvent).where(UsageEvent.capability=="llm_input_tokens")
         .order_by(UsageEvent.idempotency_key)).all()
-    assert [e.credits for e in events] == [1,0]
+    assert [e.credits for e in events] == [Decimal("0.1"), Decimal("0.1")]
     for price in db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace)).all():
         price.credits_per_unit = 0
     db.commit()
@@ -169,7 +170,7 @@ def test_zero_price_and_maximum_remainder_tie_are_deterministic(metered):
     call(db, identifier, input=1000, cache=500, output=1000)
     assert billing.finalize_request(db, identifier, "completed") == 0
     db.commit()
-    assert db.get(CreditAccount, workspace).balance == 999
+    assert db.get(CreditAccount, workspace).balance == Decimal("999.8")
 
 
 @pytest.mark.parametrize("ending", ["success", "fail", "stop"])
@@ -205,13 +206,14 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     assert response.status_code == 200, response.text
     db.expire_all()
     row = db.get(ModelUsageRequest, request_id)
-    assert row.status == "settled" and row.credits == 1
+    expected = Decimal("0.16") if ending == "fail" else Decimal("0.4")
+    assert row.status == "settled" and row.credits == expected
     assert db.scalar(select(func.count()).select_from(ModelCallUsage).where(
         ModelCallUsage.request_id==request_id)) == 2
-    assert db.get(CreditAccount, workspace).balance == 999
+    assert db.get(CreditAccount, workspace).balance == 1000 - expected
     duplicate = owner.post(f"/conversations/{created['id']}/messages", json={"provider_id": model_id(owner), "query":"hello", "request_id":str(request_id)})
     assert duplicate.status_code in (200,409)
-    assert db.get(CreditAccount, workspace).balance == 999
+    assert db.get(CreditAccount, workspace).balance == 1000 - expected
 
 
 def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatch):
@@ -253,7 +255,7 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
     assert {row.capability for row in events} == set(billing.CAPABILITIES)
     assert sum(row.units for row in events if row.capability == "llm_input_tokens") == 600
     assert sum(row.units for row in events if row.capability == "llm_output_tokens") == 60
-    assert db.get(ModelUsageRequest, identifier).credits == 1
+    assert db.get(ModelUsageRequest, identifier).credits == Decimal("0.78")
 
 
 def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeypatch):
@@ -305,7 +307,7 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     asyncio.run(request())
     db.expire_all()
     row = db.get(ModelUsageRequest, identifier)
-    assert row.status == "settled" and row.credits == 3
-    assert db.get(CreditAccount, workspace).balance == 997
+    assert row.status == "settled" and row.credits == Decimal("2.3")
+    assert db.get(CreditAccount, workspace).balance == Decimal("997.7")
     calls = db.scalars(select(ModelCallUsage).where(ModelCallUsage.request_id == identifier)).all()
     assert len(calls) == 1 and calls[0].usage["prompt_tokens"] == 2000

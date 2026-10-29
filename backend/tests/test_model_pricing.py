@@ -37,7 +37,7 @@ def test_template_permissions_completeness_zero_and_version(accounts):
     assert db.scalar(select(SiteAuditEvent).where(SiteAuditEvent.action == "billing.template_updated"))
 
 
-@pytest.mark.parametrize("value", [True, -1, 0.5, None, "1"])
+@pytest.mark.parametrize("value", [True, -1, 0.00001, None, "invalid"])
 def test_template_rejects_unreliable_prices(accounts, value):
     owner, _, _ = administrator(accounts)
     payload = template(); payload["policies"][1]["credits_per_unit"] = value

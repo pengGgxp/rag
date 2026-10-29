@@ -18,6 +18,7 @@ from .models import (
 )
 from .site_auth import site_admin, send_mail
 from .site_audit import record, RETENTION_DAYS
+from .credit_amounts import CreditRate
 
 router = APIRouter(prefix="/site/admin", tags=["site-admin"])
 
@@ -26,8 +27,8 @@ class CreditAdjustment(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID
     direction: Literal["add", "deduct"]
-    amount: int = Field(ge=1, le=2_147_483_647, strict=True)
-    expected_balance: int = Field(ge=0, le=2_147_483_647, strict=True)
+    amount: CreditRate = Field(gt=0)
+    expected_balance: CreditRate
     reason: str = Field(min_length=1, max_length=200)
 
     @field_validator("reason")
@@ -76,8 +77,8 @@ def adjust_workspace_credits(workspace_id: UUID, payload: CreditAdjustment, requ
         signed, payload.reason, payload.expected_balance)
     if created:
         record(db, actor, "workspace.credits_adjusted", "workspace", workspace_id, request=request,
-            details={"request_id": str(payload.request_id), "resource_id": str(entry.id), "amount": signed,
-                     "balance_before": entry.balance_after - signed, "balance_after": entry.balance_after})
+            details={"request_id": str(payload.request_id), "resource_id": str(entry.id), "amount": str(signed),
+                     "balance_before": str(entry.balance_after - signed), "balance_after": str(entry.balance_after)})
     db.commit()
     return {"credits": credit_values(account), "adjustment": adjustment_read(entry, actor.name)}
 

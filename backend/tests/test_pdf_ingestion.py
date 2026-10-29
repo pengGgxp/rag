@@ -129,7 +129,8 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
     assert [chunk.embedding[0] for chunk in chunks] == list(range(114))
     events = db.scalars(select(UsageEvent)).all()
     assert len(events) == 1
-    assert (events[0].capability, events[0].units, events[0].credits) == ("embedding_tokens", 1140, 2)
+    from decimal import Decimal
+    assert (events[0].capability, events[0].units, events[0].credits) == ("embedding_tokens", 1140, Decimal("1.1400"))
 
 
 def test_cos_pdf_is_submitted_by_url_and_resume_reuses_paid_task(pdf_job, monkeypatch):

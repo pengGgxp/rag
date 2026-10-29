@@ -1,4 +1,4 @@
-from math import ceil
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,6 +10,7 @@ from .auth import Access, get_access
 from .config import get_settings
 from .models import CreditAccount, CreditLedgerEntry, UsageEvent, UsagePolicy
 from .management_access import ManagementAccess, management_access
+from .credit_amounts import CreditRate, amount as credit_amount, exact_charge
 
 site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/usage-policies", tags=["site-admin"])
 
@@ -35,7 +36,7 @@ class UsagePolicyUpdate(BaseModel):
     capability: str = Field(min_length=1, max_length=80)
     unit: str = Field(min_length=1, max_length=40)
     unit_size: int = Field(default=1, ge=1, le=2_147_483_647, strict=True)
-    credits_per_unit: int = Field(default=0, ge=0, le=2_147_483_647, strict=True)
+    credits_per_unit: CreditRate = 0
     enabled: bool = True
     version: int = Field(default=0, ge=0)
 
@@ -91,7 +92,7 @@ def _entry(
     account: CreditAccount,
     *,
     actor_user_id: UUID | None,
-    amount: int,
+    amount: Decimal | int,
     kind: str,
     idempotency_key: str,
     metadata: dict,
@@ -101,6 +102,7 @@ def _entry(
     ))
     if existing is not None:
         return existing
+    amount = credit_amount(amount)
     if amount < 0 and account.balance < -amount:
         raise CreditError()
     account.balance += amount
@@ -265,15 +267,18 @@ def settle_usage(
     ))
     if existing is not None:
         return existing
-    from fractions import Fraction
     from .workspace_billing import operation_snapshot, multiplier, finish_operation
     if pricing_context is None:
         pricing_context = operation_snapshot(db, workspace_id, request_id, event_key or capability,
             capabilities=(capability,), provider_id=provider_id).context
     price = pricing_context["prices"][capability]
-    base = ((units + price["unit_size"] - 1) // price["unit_size"]) * price["credits_per_unit"] if units else 0
-    credits = ceil(Fraction(base) * multiplier(pricing_context))
+    exact = exact_charge(units, price) * multiplier(pricing_context)
+    credits = credit_amount(exact)
     account = ensure_account(db, workspace_id)
+    hold_entry = db.scalar(select(CreditLedgerEntry).where(
+        CreditLedgerEntry.idempotency_key == f"usage:{request_id}:hold"))
+    if hold_entry:
+        release_hold(db, workspace_id, actor_user_id, request_id, -hold_entry.amount)
     if credits:
         _entry(
             db, account, actor_user_id=actor_user_id, amount=-credits,
@@ -289,7 +294,7 @@ def settle_usage(
         policy_snapshot={
             **price, **{key: pricing_context[key] for key in (
                 "source_mode", "multiplier_percent", "multiplier_version")},
-            "formula_version": "legacy_event_multiplier_v1",
+            "formula_version": "usage_decimal_v1",
             "provider_id": str(provider_id) if provider_id else None,
             "provider_key": provider_key,
         },
@@ -311,10 +316,11 @@ def settle_model_usage(
     hold: int = CREDIT_RESERVATION,
     provider_id: UUID | None = None,
     provider_key: str | None = None,
-) -> int:
+) -> Decimal:
     if any(usage.get("billing_snapshot_id") for usage in usage_events):
         return settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold)
-    total = 0
+    from .workspace_billing import operation_snapshot, context_for_workspace
+    context = context_for_workspace(db, workspace_id)
     event_provider_id = provider_id
     event_provider_key = provider_key
     if usage_events and event_provider_id is None:
@@ -324,27 +330,18 @@ def settle_model_usage(
         except (TypeError, ValueError):
             event_provider_id = None
         event_provider_key = usage_events[0].get("provider_key")
+    prepared = []
     for index, usage in enumerate(usage_events):
-        for capability, units in (
-            ("llm_input_tokens", usage.get("prompt_tokens")),
-            ("llm_output_tokens", usage.get("completion_tokens")),
-        ):
-            if not isinstance(units, int) or units < 0:
-                continue
-            event = settle_usage(
-                db, workspace_id, actor_user_id, request_id, capability, units,
-                event_key=f"model:{index}:{capability}",
-                metadata={"source": usage.get("source", "unknown"), "round": index},
-                provider_id=event_provider_id,
-                provider_key=event_provider_key,
-            )
-            total += event.credits
-    reconcile_hold(db, workspace_id, actor_user_id, request_id, total, hold)
-    return total
+        snapshot = operation_snapshot(db, workspace_id, request_id, f"model:{index}",
+            capabilities=("llm_input_tokens", "llm_output_tokens"),
+            provider_id=event_provider_id, context=context)
+        prepared.append({**usage, "billing_snapshot_id": str(snapshot.id),
+            "provider_id": str(event_provider_id) if event_provider_id else None,
+            "provider_key": event_provider_key})
+    return settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, prepared, hold)
 
 
 def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold):
-    from fractions import Fraction
     from .models import BillingSnapshot
     from .workspace_billing import allocate, multiplier, finish_operation
     account = ensure_account(db, workspace_id)
@@ -364,8 +361,8 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
             if type(units) is not int or units < 0:
                 continue
             price = snapshot.context["prices"][capability]
-            base = ((units + price["unit_size"] - 1) // price["unit_size"]) * price["credits_per_unit"]
-            parts.append((index, capability, units, price, snapshot, Fraction(base) * multiplier(snapshot.context)))
+            exact = exact_charge(units, price) * multiplier(snapshot.context)
+            parts.append((index, capability, units, price, snapshot, exact))
     total, allocations = allocate([part[-1] for part in parts])
     # Return the reservation atomically before testing the full request debit.
     release_hold(db, workspace_id, actor_user_id, request_id, hold)
@@ -376,7 +373,7 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
         from .models import ModelUsageRequest
         db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
             actor_user_id=actor_user_id, status="pending", credits=total, hold=0,
-            outcome="confirmed_usage", formula_version="legacy_model_multiplier_v1"))
+            outcome="confirmed_usage", formula_version="model_decimal_v1"))
     for (index, capability, units, price, snapshot, exact), credits in zip(parts, allocations):
         usage = usage_events[index]
         db.add(UsageEvent(workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
@@ -384,7 +381,7 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
             provider_key=usage.get("provider_key"), capability=capability, units=units, credits=credits,
             policy_version=price["version"], policy_snapshot={**price, **{
                 key: snapshot.context[key] for key in ("source_mode", "multiplier_percent", "multiplier_version")},
-                "formula_version": "legacy_model_multiplier_v1"},
+                "formula_version": "model_decimal_v1"},
             idempotency_key=f"usage:{request_id}:model:{index}:{capability}",
             metadata_json={"round": index, "source": usage.get("source"), "snapshot_id": str(snapshot.id),
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
@@ -399,7 +396,7 @@ def reconcile_hold(
     workspace_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
-    actual_credits: int,
+    actual_credits: Decimal | int,
     hold: int = 1,
 ) -> None:
     # The hold authorizes the request; it is always returned after measured
@@ -453,7 +450,7 @@ def build_router(get_db):
             "usage": {
                 "events": sum(1 for item in entries if item.kind == "usage_settlement"),
                 "units": {
-                    capability: {"units": int(units or 0), "credits": int(credits or 0)}
+                    capability: {"units": int(units or 0), "credits": credits or Decimal(0)}
                     for capability, units, credits in usage_rows
                 },
             },

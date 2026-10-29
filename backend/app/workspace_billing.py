@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .models import BillingSnapshot, LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
 from .llm import measured_usage
+from .credit_amounts import allocate
 
 MODEL_CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")
 DOCUMENT_CAPABILITIES = ("ocr_pages", "embedding_tokens")
@@ -81,9 +82,14 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
     result = {}
     for key in capabilities:
         price = values.get(key)
-        valid = bool(price and type(price.get("credits_per_unit")) is int and price["credits_per_unit"] >= 0
-            and type(price.get("unit_size")) is int and price["unit_size"] > 0
-            and price.get("unit") == ("pages" if key == "ocr_pages" else "tokens"))
+        from .model_pricing import TemplatePrice
+        try:
+            normalized = TemplatePrice.model_validate({
+                **{field: price[field] for field in ("unit", "unit_size", "credits_per_unit")},
+                "capability": price.get("capability", key), "enabled": price.get("enabled", True)})
+            valid = normalized.capability == key
+        except (TypeError, ValueError, KeyError):
+            valid = False
         if not valid or not price.get("enabled", True):
             if required:
                 raise HTTPException(503, "服务暂不可用，请联系站点管理员完善计费配置")
@@ -97,6 +103,8 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
             result[key].update(connection_id=str(provider.connection_id),
                                connection_version=connection.version if connection else 0,
                                api_protocol=connection.api_protocol if connection else None)
+        if valid:
+            result[key]["credits_per_unit"] = normalized.model_dump()["credits_per_unit"]
     return result
 
 
@@ -130,17 +138,6 @@ def document_snapshot(db, workspace_id, request_id, capability, event_key):
 
 def multiplier(context):
     return Fraction(context.get("multiplier_percent", 100), 100)
-
-
-def allocate(parts):
-    """Largest remainders; stable input order is the documented tie-break."""
-    from math import ceil
-    total = ceil(sum(parts, Fraction()))
-    allocations = [part.numerator // part.denominator for part in parts]
-    ranked = sorted(range(len(parts)), key=lambda i: (-(parts[i] - allocations[i]), i))
-    for index in ranked[:total - sum(allocations)]:
-        allocations[index] += 1
-    return total, allocations
 
 
 def finish_operation(db, workspace_id, request_id, key="model"):

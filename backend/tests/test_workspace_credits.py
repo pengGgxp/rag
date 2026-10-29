@@ -1,4 +1,5 @@
 from uuid import UUID, uuid4
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
@@ -40,7 +41,7 @@ def test_admin_adjustments_share_balance_and_preserve_paid_orders_and_pending(ac
     audit = admin.get("/site/admin/audit?action=workspace.credits_adjusted").json()
     assert audit["total"] == 2 and all(row["target_id"] == wid for row in audit["items"])
     assert "客服补发" not in str(audit)
-    assert sorted(row["details"]["amount"] for row in audit["items"]) == [-1200, 200]
+    assert sorted(Decimal(row["details"]["amount"]) for row in audit["items"]) == [-1200, 200]
 
 
 def test_permissions_csrf_and_role_revocation(accounts):
@@ -57,7 +58,7 @@ def test_permissions_csrf_and_role_revocation(accounts):
 
 
 @pytest.mark.parametrize("changes", [
-    {"amount": 0}, {"amount": -1}, {"amount": True}, {"amount": 1.5}, {"amount": "2"},
+    {"amount": 0}, {"amount": -1}, {"amount": True}, {"amount": 1.50001}, {"amount": "invalid"},
     {"amount": 2147483648}, {"direction": "other"}, {"reason": "  "}, {"reason": "x" * 201},
     {"expected_balance": -1}, {"expected_balance": True}, {"workspace_id": str(uuid4())},
 ])

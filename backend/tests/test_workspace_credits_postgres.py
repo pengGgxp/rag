@@ -33,7 +33,7 @@ def test_concurrent_adjustments_lock_balance_and_retry_once(auth_postgres, same_
             barrier.wait(timeout=10)
             return client.post(f"/site/admin/workspaces/{workspace}/credits/adjustments", json={
                 "request_id": common_id if same_request else str(uuid4()), "direction": "deduct",
-                "amount": initial, "expected_balance": initial, "reason": "Concurrent verification",
+                "amount": str(initial), "expected_balance": str(initial), "reason": "Concurrent verification",
             }).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(debit, range(2))) == ([200, 200] if same_request else [200, 409])

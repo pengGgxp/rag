@@ -9,6 +9,7 @@ from .model_billing import CAPABILITIES
 from .models import Conversation, LLMProviderConfig, ModelBillingSettings, ModelUsageRequest, UsagePolicy, User, Workspace
 from .site_auth import site_admin
 from .site_audit import record
+from .credit_amounts import CreditRate
 
 router = APIRouter(prefix="/site/admin/pricing-template", tags=["site-admin"])
 DOCUMENT_CAPABILITIES = ("ocr_pages", "embedding_tokens")
@@ -20,7 +21,7 @@ class ModelPrice(BaseModel):
     capability: str = Field(pattern=r"^llm_(input|cached_input|output)_tokens$")
     unit: str = Field(pattern=r"^tokens$")
     unit_size: int = Field(ge=1, le=2_147_483_647)
-    credits_per_unit: int = Field(ge=0, le=2_147_483_647)
+    credits_per_unit: CreditRate
     enabled: bool = True
 
 

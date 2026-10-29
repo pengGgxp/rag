@@ -1,9 +1,10 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -88,9 +89,9 @@ class CreditAccount(Base):
     __tablename__ = "credit_accounts"
 
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
-    balance: Mapped[int] = mapped_column(Integer, default=0)
-    lifetime_granted: Mapped[int] = mapped_column(Integer, default=0)
-    lifetime_spent: Mapped[int] = mapped_column(Integer, default=0)
+    balance: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    lifetime_granted: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    lifetime_spent: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -103,8 +104,8 @@ class CreditLedgerEntry(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
-    amount: Mapped[int] = mapped_column(Integer)
-    balance_after: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[Decimal] = mapped_column(Numeric(24, 4))
+    balance_after: Mapped[Decimal] = mapped_column(Numeric(24, 4))
     kind: Mapped[str] = mapped_column(String(40))
     idempotency_key: Mapped[str] = mapped_column(String(200))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
@@ -209,7 +210,7 @@ class UsagePolicy(Base):
     capability: Mapped[str] = mapped_column(String(80))
     unit: Mapped[str] = mapped_column(String(40))
     unit_size: Mapped[int] = mapped_column(Integer, default=1)
-    credits_per_unit: Mapped[int] = mapped_column(Integer, default=0)
+    credits_per_unit: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
     enabled: Mapped[bool] = mapped_column(default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -235,7 +236,7 @@ class UsageEvent(Base):
     provider_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     capability: Mapped[str] = mapped_column(String(80), index=True)
     units: Mapped[int] = mapped_column(Integer)
-    credits: Mapped[int] = mapped_column(Integer)
+    credits: Mapped[Decimal] = mapped_column(Numeric(24, 4))
     policy_version: Mapped[int] = mapped_column(Integer)
     policy_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     idempotency_key: Mapped[str] = mapped_column(String(200))
@@ -275,8 +276,8 @@ class ModelUsageRequest(Base):
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="running", index=True)
     outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    hold: Mapped[int] = mapped_column(Integer, default=0)
-    credits: Mapped[int] = mapped_column(Integer, default=0)
+    hold: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    credits: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
     formula_version: Mapped[str] = mapped_column(String(32), default="model_request_v2")
     billing_context: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

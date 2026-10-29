@@ -1,7 +1,6 @@
 """Read-only RMB-to-credit quotes using the actual recharge catalog."""
 from decimal import Decimal, ROUND_HALF_UP, localcontext
 from fractions import Fraction
-from math import ceil
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,8 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import payments
 from .db import get_db
-from .models import ModelBillingSettings
 from .site_auth import site_admin
+from .credit_amounts import amount
 
 router = APIRouter(prefix="/site/admin/pricing-calculator", tags=["site-admin"])
 Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,8})?$")]
@@ -69,15 +68,14 @@ def quote(payload: QuoteInput, db=Depends(get_db), actor=Depends(site_admin)):
     profit = Fraction(payload.profit_yuan)
     fee = Fraction(payload.payment_fee_percent) / 100
     target = (cost + profit) / (1 - fee)
-    credits = ceil(target * rate)
+    credits = amount(target * rate)
     if credits > 2_147_483_647:
         raise HTTPException(422, "换算积分超出价格上限，请减小每单位用量及对应成本")
-    base_revenue = Fraction(credits, 1) / rate
-    effective_credits = credits * Fraction(payload.multiplier)
+    base_revenue = Fraction(credits) / rate
+    effective_credits = Fraction(credits) * Fraction(payload.multiplier)
     revenue = effective_credits / rate
     actual_fee = revenue * fee
     actual_profit = revenue - actual_fee - cost
-    settings = db.get(ModelBillingSettings, 1)
     return {"unit_size": payload.unit_size, "credits_per_unit": credits,
         "reference_package": package_read(package), "target_price_yuan": decimal_text(target),
         "base_price_yuan": decimal_text(base_revenue), "rounding_extra_yuan": decimal_text(base_revenue - target),
@@ -85,4 +83,4 @@ def quote(payload: QuoteInput, db=Depends(get_db), actor=Depends(site_admin)):
         "effective_revenue_yuan": decimal_text(revenue), "effective_fee_yuan": decimal_text(actual_fee),
         "effective_profit_yuan": decimal_text(actual_profit),
         "target_met": actual_profit >= profit, "loss": actual_profit < 0,
-        "unit_rounding": not (settings and settings.enabled and payload.capability.startswith("llm_"))}
+        "unit_rounding": False}

@@ -360,6 +360,7 @@ def migrate_connections(db, settings):
         _decrypt_api_key(binding.encrypted_api_key)
         prices = {p.capability: {key: getattr(p, key) for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled")}
             for p in db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == binding.id, UsagePolicy.capability.in_(CAPABILITIES)))}
+        prices = {key: ModelPrice.model_validate(value).model_dump() for key, value in prices.items()}
         connection = ModelConnection(name=binding.name, platform="custom", base_url=binding.base_url,
             encrypted_api_key=binding.encrypted_api_key, timeout_seconds=binding.timeout_seconds, enabled=True)
         db.add(connection)
