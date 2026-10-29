@@ -9,9 +9,12 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-os.environ["FRONTEND_URL"] = "http://127.0.0.1:3110"
+os.environ["FRONTEND_URL"] = os.environ.get("PREVIEW_FRONTEND_URL", "http://127.0.0.1:3110")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='rag-conversation45-')) / 'preview.db'}"
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = "local-fixture-only-not-used"
+from cryptography.fernet import Fernet
+os.environ["MCP_CREDENTIAL_KEY"] = Fernet.generate_key().decode()
+THINKING = os.environ.get("PREVIEW_THINKING") == "1"
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -35,8 +38,14 @@ def respond(handler, payload):
         sse(handler, {"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     else:
         tools = sum(message["role"] == "tool" for message in payload["messages"])
+        if THINKING and payload.get("enable_thinking"):
+            reasoning = "先核对已有记录，再按顺序验证关键细节，最后整理结论。"
+            for start in range(0, len(reasoning), 3):
+                sse(handler, {"choices": [{"delta": {"reasoning_content": reasoning[start:start+3]}}]})
+                time.sleep(0.12)
         text = ["我先回查本次对话中的相关记录。", "已经找到记录，再核对一次关键细节。",
-                "### 核对完成\n\n两次工具调用均已完成，以下是结论。\n\n- 保留原始记录。\n- 工具结果按顺序处理。\n\n" + "这是流式正文，用于验证向上阅读时不会被强制滚动。\n\n" * 18][min(tools, 2)]
+                "### 核对完成\n\n两次工具调用均已完成，以下是结论。\n\n- 保留原始记录。\n- 工具结果按顺序处理。\n\n"
+                + ("" if THINKING else "这是流式正文，用于验证向上阅读时不会被强制滚动。\n\n" * 18)][min(tools, 2)]
         for start in range(0, len(text), 7):
             sse(handler, {"choices": [{"delta": {"content": text[start:start+7]}}]})
             time.sleep(0.08)
@@ -65,6 +74,11 @@ if __name__ == "__main__":
         shared = db.get(SiteModelProvider, binding.site_provider_id)
         shared.base_url, shared.context_capacity, shared.max_output_tokens = url, 16000, 2000
         shared.name = "本地流式测试"
+        if THINKING:
+            shared.thinking_config = {"kind": "effort", "adapter": "bailian",
+                "options": [{"id": "high", "label": "高", "value": "high"},
+                    {"id": "low", "label": "低", "value": "low"}], "default_option_id": "high"}
+            shared.thinking_version = 1
         db.add(ModelBillingSettings(id=1, default_provider_id=shared.id, enabled=False, shared_pricing_enabled=False))
         ensure_account(db, binding.workspace_id)
         db.commit()
@@ -87,5 +101,6 @@ if __name__ == "__main__":
                 conversation.next_sequence += 8
                 session.commit()
                 return {"id": str(conversation.id)}
-        print("Local fixture listening at http://127.0.0.1:8125", flush=True)
-        uvicorn.run(main.app, host="127.0.0.1", port=8125, log_level="warning")
+        port = int(os.environ.get("PREVIEW_PORT", "8125"))
+        print(f"Local fixture listening at http://127.0.0.1:{port}", flush=True)
+        uvicorn.run(main.app, host="127.0.0.1", port=port, log_level="warning")

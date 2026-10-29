@@ -771,3 +771,15 @@
   .thinking-budget-row .icon-button { grid-column: 2; grid-row: 2; width: var(--form-touch-height); height: var(--form-touch-height); }
   .thinking-config .provider-enabled, .thinking-advanced summary { min-height: var(--form-touch-height); }
 }
+.thinking-test-option { max-width: 320px; }
+.thinking-diagnostic-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.thinking-parameter-list { margin: 12px 0 0; font-size: var(--form-font-size); }
+.thinking-parameter-list > div { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(0, 2fr); gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.thinking-parameter-list dt { color: var(--muted); overflow-wrap: anywhere; }
+.thinking-parameter-list dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.thinking-test-heading { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+.thinking-test-result { border-top: 1px solid var(--line); padding-top: 12px; }
+@media (max-width: 700px) {
+  .thinking-diagnostic-actions button { min-height: var(--form-touch-height); }
+  .thinking-parameter-list > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}

@@ -10,6 +10,7 @@ import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-u
 import { useAdminChanges } from "./admin/admin-changes";
 import { availabilityLabel, emptyThinking, type ModelProvider, type Policy } from "./model-types";
 import { ThinkingConfigFields, thinkingConfigError } from "./thinking-config-fields";
+import { ThinkingDiagnostics } from "./thinking-diagnostics";
 import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
@@ -175,6 +176,9 @@ export function ModelProviderDetail({ id }: { id: string }) {
                 <label>超时（秒）<input required type="number" min={1} max={600} value={form.timeout_seconds} onChange={e => setForm({ ...form, timeout_seconds: Number(e.target.value) })} /></label>
               </div></section>
               <ThinkingConfigFields value={form.thinking} onChange={thinking => setForm({ ...form, thinking })} />
+              {provider && <ThinkingDiagnostics id={provider.id} version={provider.version}
+                thinkingVersion={provider.thinking_version ?? 0} thinking={form.thinking}
+                maxOutput={form.max_output_tokens} dirty={dirty} />}
               <section className="model-form-section"><h2>上下文预算</h2>
                 <p className="billing-muted model-budget-description">按接口提供方的实际规格填写，两项一同配置。留空保持上游默认，但无法启用上下文保护。</p>
                 <div className="provider-form-grid">

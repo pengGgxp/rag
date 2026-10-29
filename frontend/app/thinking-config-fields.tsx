@@ -14,6 +14,8 @@ const labels: Record<string, string> = {
 };
 
 export function thinkingConfigError(value: ThinkingConfig): string {
+  if (value.always_thinking && value.options.some(item => item.value === "disabled"))
+    return "始终思考的模型不能配置关闭选项。";
   if (["unconfigured", "unsupported", "fixed"].includes(value.kind)) return "";
   if (!value.options.length) return value.kind === "budget" ? "至少配置一个预算预设。" : "至少选择一个支持的等级。";
   if (!value.options.some(item => item.id === value.default_option_id)) return "请选择默认思考设置。";

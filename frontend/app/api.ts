@@ -34,7 +34,8 @@ export async function request<T>(
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = path.startsWith("/site/admin/storage") || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
+  const timeout = path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
+    || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
     ? 30 * 60_000
     : path.startsWith("/auth/") || path.startsWith("/site/settings/auth") || path.endsWith("/resend-verification")
