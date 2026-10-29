@@ -1,8 +1,10 @@
 "use client";
 
-import { CircleAlert, Loader2, Save } from "lucide-react";
+import { useId, useState } from "react";
+import { Calculator, CircleAlert, Loader2, Save } from "lucide-react";
 import { Tooltip } from "../components/ui/tooltip";
 import { policyLabels, type Policy } from "./model-types";
+import { PricingCalculator } from "./pricing-calculator";
 
 // One price-row layout for base-price editing and effective-price previews.
 export function PolicyTable({ name, policies, busy, saving, update, save, isChanged, requirePrices = true, readOnly = false }: {
@@ -16,7 +18,9 @@ export function PolicyTable({ name, policies, busy, saving, update, save, isChan
   requirePrices?: boolean;
   readOnly?: boolean;
 }) {
-  return <div className="policy-table" data-row-save={Boolean(save)} data-readonly={readOnly} role="table" aria-label={name}>
+  const [calculating, setCalculating] = useState<Policy | null>(null);
+  const id = useId();
+  return <><div className="policy-table" data-row-save={Boolean(save)} data-readonly={readOnly} role="table" aria-label={name}>
     <div className="policy-table-header" role="row"><span role="columnheader">能力</span><span role="columnheader">每单位用量</span><span role="columnheader">{readOnly ? "基准积分" : "消耗积分"}</span>{readOnly && <span role="columnheader">倍率后积分</span>}<span role="columnheader">规则状态</span>{save && <span role="columnheader" className="sr-only">操作</span>}</div>
     {policies.map(policy => {
       const label = policyLabels[policy.capability] ?? policy.capability;
@@ -34,6 +38,8 @@ export function PolicyTable({ name, policies, busy, saving, update, save, isChan
         <div className="policy-capability" role="cell"><strong>{label}</strong><small data-missing={policy.configured === false}>
           {policy.configured === false ? <><CircleAlert size={13} aria-hidden="true" />待配置</> : `版本 ${policy.version}`}
           {policy.template_version ? ` · 来源模板 v${policy.template_version}` : ""}{changed && <span className="policy-unsaved">未保存</span>}</small>
+          {update && <button type="button" id={`${id}-${policy.capability}`} className="policy-calculate" disabled={busy}
+            onClick={() => setCalculating(policy)} aria-label={`按成本计算${name}${label}`}><Calculator size={14} />按成本计算</button>}
         </div>
         <label className="policy-field" role="cell"><span className="policy-field-label">每单位用量</span><span className="policy-input"><input aria-label={`${name}${label}单位大小`} required type="number" min={1} max={2147483647} step={1} value={policy.unit_size} disabled={busy} onChange={event => update?.(policy, { unit_size: Number(event.target.value) })} /><span aria-hidden="true">{unit}</span></span></label>
         <label className="policy-field" role="cell"><span className="policy-field-label">消耗积分</span><span className="policy-input"><input aria-label={`${name}${label}积分`} required={requirePrices} type="number" min={0} max={2147483647} step={1} placeholder="待配置" value={policy.credits_per_unit ?? ""} disabled={busy} onChange={event => update?.(policy, { credits_per_unit: event.target.value === "" ? null : Number(event.target.value) })} /><span aria-hidden="true">积分</span></span></label>
@@ -43,5 +49,9 @@ export function PolicyTable({ name, policies, busy, saving, update, save, isChan
       return save ? <form className="policy-row" role="row" key={policy.capability} onSubmit={event => { event.preventDefault(); save(policy); }}>{fields}</form>
         : <div className="policy-row" role="row" key={policy.capability}>{fields}</div>;
     })}
-  </div>;
+  </div>
+    {calculating && update && <PricingCalculator key={calculating.capability} policy={calculating} busy={busy}
+      close={() => setCalculating(null)} restoreFocusSelector={`[id="${id}-${calculating.capability}"]`}
+      apply={patch => update(calculating, patch)} />}
+  </>;
 }

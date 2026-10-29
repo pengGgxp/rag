@@ -107,6 +107,47 @@
 }
 .policy-capability small[data-missing="true"] { color: var(--warning-foreground); }
 .policy-unsaved { color: var(--brand); }
+.policy-calculate {
+  display: inline-flex; align-items: center; justify-self: start; gap: 6px;
+  min-height: var(--form-control-height); padding: 0; border: 0; background: transparent;
+  color: var(--brand); font: inherit; font-size: var(--form-label-size); cursor: pointer;
+}
+.policy-calculate:hover { text-decoration: underline; }
+.policy-calculate:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--form-radius); }
+.modal:has(.price-calculator) .modal-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.price-calculator { min-width: 0; padding: var(--form-section-gap); font-size: var(--form-font-size); }
+.calculator-object { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: var(--form-gap); }
+.calculator-object > span { color: var(--muted); font-size: var(--form-label-size); }
+.calculator-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--form-gap); }
+.calculator-fields > label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: var(--form-label-size); }
+.calculator-reference { margin-block: var(--form-gap); color: var(--muted); font-size: var(--form-label-size); line-height: 1.6; overflow-wrap: anywhere; }
+.calculator-reference > span { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.calculator-results { border-block: 1px solid var(--line); padding-block: var(--form-gap); min-height: 96px; }
+.calculator-total { display: grid; gap: 8px; margin-bottom: var(--form-gap); }
+.calculator-total > span { color: var(--muted); font-size: var(--form-label-size); }
+.calculator-total > strong { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.calculator-total small { font-size: var(--form-label-size); color: var(--muted); font-weight: 400; }
+.calculator-breakdown { margin: 0; display: grid; gap: 8px; font-size: var(--form-label-size); font-variant-numeric: tabular-nums; }
+.calculator-breakdown > div { display: flex; justify-content: space-between; gap: var(--form-gap); }
+.calculator-breakdown dt { color: var(--muted); }
+.calculator-breakdown dd { margin: 0; overflow-wrap: anywhere; text-align: right; min-width: 0; }
+.calculator-profit { border-top: 1px solid var(--line); padding-top: 10px; font-weight: 600; }
+.calculator-profit[data-loss="true"] dd { color: var(--danger); }
+.calculator-warning { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px; color: var(--warning-foreground); font-size: var(--form-label-size); line-height: 1.7; margin-top: var(--form-gap); }
+.calculator-warning > svg { flex: 0 0 auto; margin-top: 2px; }
+.calculator-note, .calculator-empty { color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; margin-top: var(--form-gap); }
+.calculator-empty { display: flex; align-items: center; gap: 8px; }
+.calculator-formula { margin-top: var(--form-gap); color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; }
+.calculator-formula summary { cursor: pointer; min-height: var(--form-control-height); display: list-item; align-content: center; }
+.calculator-formula p { margin-top: 8px; }
+.calculator-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: var(--form-gap); position: sticky; bottom: 0; padding-block: 8px; background: var(--surface); }
+.calculator-footer button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: var(--form-control-height); font-size: var(--form-font-size); }
+@media (max-width: 700px) {
+  .price-calculator { padding: var(--form-gap); }
+  .policy-calculate, .calculator-footer button, .calculator-reference button,
+  .calculator-warning button, .calculator-formula summary { min-height: var(--form-touch-height); }
+  .calculator-fields .policy-input input { min-height: var(--form-touch-height); }
+}
 .policy-field-label { display: none; }
 .policy-input {
   display: flex;
