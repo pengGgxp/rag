@@ -105,12 +105,12 @@ export function ModelProviderDetail({ id }: { id: string }) {
                 {connections.data?.map(c => <option key={c.id} value={c.id}>{c.name}{!c.enabled ? "（已停用）" : ""}</option>)}
               </select></label></div>
             {connections.error && <p className="form-error">{connections.error}<button type="button" className="secondary" onClick={connections.reload}>重试</button></p>}
-            <ModelConfigFields value={form} change={setForm} platform={selected?.platform} />
+            <ModelConfigFields value={form} change={setForm} platform={selected?.platform} apiProtocol={selected?.api_protocol} />
             <label className="provider-enabled"><input type="checkbox" checked={form.enabled}
               onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
           </fieldset>
           <details className="model-advanced"><summary>参数验证</summary>
-            <ThinkingDiagnostics id={provider.id} version={provider.version} connectionVersion={selected?.version ?? provider.connection_version}
+            <ThinkingDiagnostics id={provider.id} version={provider.version} connectionId={selected?.id ?? provider.connection_id} connectionVersion={selected?.version ?? provider.connection_version}
               thinkingVersion={provider.thinking_version ?? 0} thinking={form.thinking} maxOutput={form.max_output_tokens} dirty={dirty} />
           </details></Tabs.Content>
           <Tabs.Content value="pricing">

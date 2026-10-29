@@ -13,13 +13,13 @@ type TestResult = {
   parameters?: Record<string, unknown>;
 };
 
-export function ThinkingDiagnostics({ id, version, connectionVersion, thinkingVersion, thinking, maxOutput, dirty }: {
-  id: string; version: number; connectionVersion: number; thinkingVersion: number; thinking: ThinkingConfig;
+export function ThinkingDiagnostics({ id, version, connectionId, connectionVersion, thinkingVersion, thinking, maxOutput, dirty }: {
+  id: string; version: number; connectionId?: string; connectionVersion: number; thinkingVersion: number; thinking: ThinkingConfig;
   maxOutput: number | null; dirty: boolean;
 }) {
   const [option, setOption] = useState<string | null>(null);
   const optionId = thinking.options.some(item => item.id === option) ? option : thinking.default_option_id;
-  const fingerprint = JSON.stringify({ id, version, connectionVersion, thinkingVersion, thinking, maxOutput, optionId });
+  const fingerprint = JSON.stringify({ id, version, connectionId, connectionVersion, thinkingVersion, thinking, maxOutput, optionId });
   const [preview, setPreview] = useState<{ fingerprint: string; parameters: Record<string, unknown> } | null>(null);
   const [result, setResult] = useState<{ fingerprint: string; value: TestResult } | null>(null);
   const [busy, setBusy] = useState("");
@@ -32,7 +32,8 @@ export function ThinkingDiagnostics({ id, version, connectionVersion, thinkingVe
     setBusy("preview"); setError(""); setConfirm(false);
     try {
       const value = await request<{ parameters: Record<string, unknown> }>(`${base}/preview`,
-        json({ version, thinking, option_id: optionId, max_output_tokens: maxOutput }));
+        json({ version, connection_id: connectionId, connection_version: connectionVersion,
+          thinking, option_id: optionId, max_output_tokens: maxOutput }));
       setPreview({ fingerprint, parameters: value.parameters });
     } catch (e) { setError(e instanceof Error ? e.message : "暂时无法预览，请重试"); }
     finally { setBusy(""); }

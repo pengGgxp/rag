@@ -5,13 +5,12 @@ async (page) => {
   const check = (value, message) => { if (!value) throw new Error(message); };
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
-  page.on("dialog", d => d.accept());
   const thinking = { kind: "unconfigured", adapter: "none", options: [], default_option_id: null,
     budget_min: null, budget_max: null, supports_tools: true, stream_only: false };
   const prices = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"].map(
     capability => ({ capability, unit: "tokens", unit_size: 1000, credits_per_unit: 2, enabled: true, version: 1 }));
   const connections = [{ id: "c1", name: "研发共享连接", platform: "custom", base_url: "https://example.test/v1",
-    timeout_seconds: 60, enabled: true, has_api_key: true, version: 1 }];
+    api_protocol: "chat_completions", timeout_seconds: 60, enabled: true, has_api_key: true, version: 1 }];
   const models = [{ id: "m1", key: "generated", connection_id: "c1", connection_name: "研发共享连接",
     connection_version: 1, platform: "custom", name: "现有模型", model: "existing-chat",
     enabled: true, available: true, unavailable_reason: null, is_default: true, version: 1,
@@ -88,7 +87,7 @@ async (page) => {
   const heading = text => page.getByRole("heading", { level: 1, name: text, exact: true });
   const shot = async name => {
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Overflow ${name}`);
-    await page.screenshot({ path: `output/playwright/issue51-${name}.png`, fullPage: true });
+    await page.screenshot({ path: `output/playwright/issue52-${name}.png`, fullPage: true });
   };
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(`${base}/admin/models`);
@@ -101,6 +100,10 @@ async (page) => {
   await page.getByRole("textbox", { name: "搜索供应商" }).fill("");
   await page.getByRole("button", { name: "查询", exact: true }).click();
   await page.getByRole("link", { name: "添加供应商" }).click();
+  check(await page.getByRole("textbox", { name: "接口地址" }).count() === 0, "Connection fields shown before choosing protocol");
+  check(await page.getByRole("button", { name: "保存并选择模型" }).isDisabled(), "Protocol selection not required");
+  await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).selectOption("responses");
+  await page.getByText("/responses", { exact: true }).waitFor();
   await page.getByRole("button", { name: "DeepSeek", exact: true }).click();
   check(await page.getByRole("textbox", { name: "接口地址" }).inputValue() === "https://api.deepseek.com", "Platform URL");
   await page.getByRole("textbox", { name: "接口地址" }).fill("https://custom.example/v1");
@@ -112,6 +115,7 @@ async (page) => {
   await shot("new-connection-1440");
   await page.getByRole("button", { name: "保存并选择模型" }).click();
   await page.waitForURL(/connections\/c-new/);
+  check(captured.api_protocol === "responses", "Protocol not saved");
   discoveryWait = new Promise(resolve => { releaseDiscovery = resolve; });
   await page.getByRole("button", { name: "获取模型列表" }).click();
   check(await page.getByRole("button", { name: "获取模型列表" }).isDisabled(), "Duplicate discovery allowed");
@@ -190,12 +194,39 @@ async (page) => {
     await page.getByRole("textbox", { name: "供应商名称", exact: true }).waitFor();
     await shot(`connection-${width}`);
     await page.goto(`${base}/admin/models/new`);
+    await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).waitFor();
+    check(await page.getByRole("textbox", { name: "供应商名称", exact: true }).count() === 0, "Protocol must precede details");
+    await shot(`choose-protocol-${width}`);
+    await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).focus();
+    await page.keyboard.press("r");
+    await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).selectOption("responses");
     await page.getByRole("textbox", { name: "供应商名称", exact: true }).waitFor();
     await shot(`new-${width}`);
+    await page.locator(".admin-back").click();
+    await page.getByRole("button", { name: "继续编辑", exact: true }).click();
+    check(await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).inputValue() === "responses", "Unsaved dialog lost protocol");
+    await page.locator(".admin-back").click();
+    await page.getByRole("button", { name: "放弃修改", exact: true }).click();
+    await page.waitForURL(`${base}/admin/models`);
     await page.goto(`${base}/admin/models/new-1?tab=pricing`);
     await page.getByRole("tab", { name: "价格", exact: true }).waitFor();
     await shot(`model-price-${width}`);
   }
+  await page.goto(`${base}/admin/models/connections/c-new?tab=connection`);
+  await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).waitFor();
+  check(await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).inputValue() === "responses", "Saved protocol lost");
+  await page.reload();
+  await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).waitFor();
+  check(await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).inputValue() === "responses", "Refresh lost protocol");
+  await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).selectOption("chat_completions");
+  saveStatus = 503;
+  await page.getByRole("button", { name: "保存连接", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "保存失败" }).waitFor();
+  check(await page.getByRole("combobox", { name: "OpenAI 接口", exact: true }).inputValue() === "chat_completions", "Failed save lost protocol");
+  saveStatus = 200;
+  await page.getByRole("button", { name: "保存连接", exact: true }).click();
+  await page.getByText("供应商连接已保存", { exact: true }).waitFor();
+  check(captured.api_protocol === "chat_completions" && !captured.api_key, "Protocol switch changed credential");
   check(!errors.length, errors.join("\n"));
-  console.log(JSON.stringify({ passed: true, created, discovered, viewportWidths: [1440, 700, 390] }));
+  return { passed: true, created, discovered, viewportWidths: [1440, 700, 390] };
 }

@@ -19,6 +19,7 @@ export type ModelProvider = {
   connection_id: string;
   connection_name: string;
   connection_version: number;
+  api_protocol: "chat_completions" | "responses";
   platform: string;
   enabled: boolean;
   active: boolean;

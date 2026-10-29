@@ -271,6 +271,7 @@
 .model-detail-tabs [role="tab"]:disabled { cursor: not-allowed; opacity: .55; }
 .model-detail-form { max-width: 960px; }
 .connection-platforms { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: var(--form-gap); }
+.connection-endpoint { margin-top: var(--form-gap); color: var(--muted); font-size: var(--form-label-size); }
 .connection-platforms button[aria-pressed="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
 .connection-count { font-size: var(--form-label-size); color: var(--muted); }
 .connection-steps { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 0 0 var(--form-section-gap); margin: 0; list-style: none; color: var(--muted); font-size: var(--form-label-size); border-bottom: 1px solid var(--line); }

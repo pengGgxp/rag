@@ -16,11 +16,13 @@ import "./billing.css";
 
 export type ModelConnection = {
   id: string; name: string; platform: string; base_url: string; timeout_seconds: number;
+  api_protocol: "chat_completions" | "responses";
   has_api_key: boolean; enabled: boolean; version: number; model_count: number; available_model_count: number;
 };
 type Platform = { id: string; name: string; base_url: string; adapter: string };
 const base = "/site/admin/model-connections";
 const platformNames: Record<string, string> = { deepseek: "DeepSeek", bailian: "阿里云百炼", openai: "OpenAI", custom: "自定义兼容接口" };
+const protocolNames = { chat_completions: "OpenAI Chat Completions", responses: "OpenAI Responses" };
 
 export function ConnectionCatalog() {
   const resource = useAdminResource<ModelConnection[]>(base);
@@ -50,7 +52,7 @@ export function ConnectionCatalog() {
         <div className="model-catalog-heading" role="row"><span role="columnheader">供应商 / 平台</span><span role="columnheader">可用模型</span>
           <span role="columnheader">状态</span><span role="columnheader">操作</span></div>
         {items?.map(c => <div className="model-catalog-row" role="row" key={c.id}>
-          <div className="model-catalog-name" role="cell"><Link href={`/admin/models/connections/${c.id}`}>{c.name}</Link><small>{platformNames[c.platform]}</small></div>
+          <div className="model-catalog-name" role="cell"><Link href={`/admin/models/connections/${c.id}`}>{c.name}</Link><small>{platformNames[c.platform]} · {protocolNames[c.api_protocol]}</small></div>
           <div role="cell" className="model-catalog-state"><span className="model-price-label">可用模型</span>{c.available_model_count} / {c.model_count}</div>
           <div role="cell" className="model-catalog-state"><span className="model-price-label">状态</span><span className="model-availability" data-warning={!c.enabled}>{c.enabled ? "已启用" : "已停用"}</span></div>
           <div role="cell" className="model-catalog-action"><Link className="secondary" href={`/admin/models/connections/${c.id}`}>管理<ArrowRight size={15} /></Link></div>
@@ -61,7 +63,7 @@ export function ConnectionCatalog() {
   </>;
 }
 
-const blank = { name: "", platform: "custom", base_url: "", api_key: "", timeout_seconds: 60, enabled: true, version: 0 };
+const blank = { name: "", platform: "custom", api_protocol: "", base_url: "", api_key: "", timeout_seconds: 60, enabled: true, version: 0 };
 export function ConnectionDetail({ id }: { id: string }) {
   const isNew = id === "new", router = useRouter(), params = useSearchParams();
   const resource = useAdminResource<ModelConnection>(isNew ? null : `${base}/${encodeURIComponent(id)}`);
@@ -82,7 +84,7 @@ export function ConnectionDetail({ id }: { id: string }) {
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
   useAdminChanges(dirty || modelsDirty, busy || modelsBusy);
   function accept(c: ModelConnection) {
-    const next = { name: c.name, platform: c.platform, base_url: c.base_url, api_key: "",
+    const next = { name: c.name, platform: c.platform, api_protocol: c.api_protocol, base_url: c.base_url, api_key: "",
       timeout_seconds: c.timeout_seconds, enabled: c.enabled, version: c.version };
     setConnection(c); setForm(next); setOriginal(next);
   }
@@ -98,6 +100,7 @@ export function ConnectionDetail({ id }: { id: string }) {
       base_url: !v.base_url || v.base_url === previous?.base_url ? preset?.base_url ?? "" : v.base_url }));
   }
   async function save() {
+    if (!form.api_protocol) { setError("请选择调用类型"); return; }
     setBusy(true); setError(""); setNotice(""); setConflict(false);
     try {
       const { api_key, ...fields } = form;
@@ -136,6 +139,16 @@ export function ConnectionDetail({ id }: { id: string }) {
         <Tabs.Content value="connection">
           <form className="provider-form model-detail-form" onSubmit={e => { e.preventDefault(); void save(); }}>
             <fieldset className="provider-form-fields" disabled={busy}>
+              <section className="model-form-section"><h2>调用类型</h2>
+                <div className="provider-form-grid"><label>OpenAI 接口<select required value={form.api_protocol}
+                  onChange={e => setForm({ ...form, api_protocol: e.target.value })}>
+                  <option value="" disabled>请选择调用类型</option>
+                  <option value="chat_completions">OpenAI Chat Completions</option>
+                  <option value="responses">OpenAI Responses</option>
+                </select></label></div>
+                {form.api_protocol && <div className="connection-endpoint"><code>{form.api_protocol === "responses" ? "/responses" : "/chat/completions"}</code></div>}
+              </section>
+              {form.api_protocol && <>
               <section className="model-form-section"><h2>平台与名称</h2>
                 <AdminLoad loading={platforms.loading} error={platforms.error} retry={platforms.reload}>
                   <div className="connection-platforms" role="group" aria-label="平台">
@@ -160,8 +173,9 @@ export function ConnectionDetail({ id }: { id: string }) {
                 onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用供应商</label>
                 {!form.enabled && <p className="billing-muted">停用后，该供应商下所有模型将暂停新调用。</p>}
               </section>
+              </>}
               <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : isNew ? "" : "已保存"}</span>
-                <button className="primary" disabled={busy || (!isNew && !dirty)}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并选择模型" : "保存连接"}</button></div>
+                <button className="primary" disabled={busy || !form.api_protocol || (!isNew && !dirty)}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}{isNew ? "保存并选择模型" : "保存连接"}</button></div>
             </fieldset>
           </form>
         </Tabs.Content>
@@ -282,7 +296,7 @@ function ModelImport({ connection, existing, dirty, working, reload, finished }:
           open={invalid ? invalid === d.model : index === 0 ? true : undefined}>
           <summary><ChevronDown size={16} aria-hidden="true" /><span>{d.name || d.model}</span><small>{modelError(d, true) ? "待完善" : "可启用"}</small></summary>
           <fieldset className="provider-form-fields" disabled={!!busy}>
-            <ModelConfigFields value={d} change={value => setDrafts(rows => rows.map((r, i) => i === index ? value : r))} platform={connection.platform} />
+            <ModelConfigFields value={d} change={value => setDrafts(rows => rows.map((r, i) => i === index ? value : r))} platform={connection.platform} apiProtocol={connection.api_protocol} />
             <h3>模型基准价</h3>
             <PolicyTable name={`${d.model}基准价`} policies={d.policies} busy={!!busy} requirePrices={false}
               update={(price, patch) => setDrafts(rows => rows.map((r, i) => i === index ? { ...r,

@@ -39,10 +39,10 @@ export function modelPayload(value: ModelDraft) {
     ({ capability, unit, unit_size, credits_per_unit, enabled }) => ({ capability, unit, unit_size, credits_per_unit, enabled })) };
 }
 
-export function ModelConfigFields({ value, change, platform }: { value: ModelDraft; change: (v: ModelDraft) => void; platform?: string }) {
+export function ModelConfigFields({ value, change, platform, apiProtocol }: { value: ModelDraft; change: (v: ModelDraft) => void; platform?: string; apiProtocol?: string }) {
   const presets = useAdminResource<{ model: string; platform: string; thinking: Partial<ThinkingConfig>;
     context_capacity: number; max_output_tokens: number; source: string }[]>("/site/admin/model-connections/model-presets");
-  const preset = presets.data?.find(p => p.model === value.model && p.platform === platform);
+  const preset = apiProtocol === "responses" ? undefined : presets.data?.find(p => p.model === value.model && p.platform === platform);
   const [confirm, setConfirm] = useState(false);
   return <>
     <section className="model-form-section"><h2>基本信息</h2><div className="provider-form-grid">
@@ -59,7 +59,7 @@ export function ModelConfigFields({ value, change, platform }: { value: ModelDra
     </div>}
     <details className="model-advanced"><summary>思考能力与上下文</summary>
       <ThinkingConfigFields value={value.thinking} suggestedAdapter={
-        platform === "deepseek" || platform === "bailian" || platform === "openai" ? platform : undefined}
+        apiProtocol === "responses" ? "openai" : platform === "deepseek" || platform === "bailian" || platform === "openai" ? platform : undefined}
         onChange={thinking => change({ ...value, thinking })} />
       <section className="model-form-section"><h2>上下文容量</h2>
         <div className="provider-form-grid">
