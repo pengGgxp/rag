@@ -11,6 +11,7 @@ export type RequestModelChoice = {
   name: string;
   model: string;
   available: boolean;
+  supports_images?: boolean;
   unavailable_reason?: string | null;
   thinking?: ThinkingCapability;
 };
@@ -81,7 +82,7 @@ export function RequestModelPicker({ models, modelId, thinkingId, disabled, load
           data-value={item.id} aria-selected={item.id === modelId} disabled={!item.available}
           tabIndex={item.id === tabModelId ? 0 : -1}
           onClick={() => { onModelChange(item.id); setView(null); }}>
-          <span className="request-choice-copy"><strong>{item.name}</strong><small>{item.model}</small>
+          <span className="request-choice-copy"><strong>{item.name}</strong><small>{item.model}{item.supports_images ? " · 支持图片" : ""}</small>
             {!item.available && <span className="request-choice-unavailable">{availabilityLabel(item.unavailable_reason ?? null)}</span>}</span>
           {item.id === modelId && <Check size={16} aria-hidden="true" />}
         </button>) : capability?.options.map(item => <button type="button" role="option" key={item.id}

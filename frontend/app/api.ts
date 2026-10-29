@@ -36,6 +36,7 @@ export async function request<T>(
   let timedOut = false;
   const timeout = path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
     || /\/models\/discover$/.test(path)
+    || path === "/chat/attachments"
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
     ? 30 * 60_000

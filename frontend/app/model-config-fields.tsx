@@ -7,12 +7,12 @@ import { useAdminResource } from "./admin/admin-ui";
 
 export type ModelDraft = {
   name: string; model: string; thinking: ThinkingConfig; context_capacity: number | null;
-  max_output_tokens: number | null; enabled: boolean; policies: Policy[];
+  max_output_tokens: number | null; enabled: boolean; supports_images: boolean; policies: Policy[];
 };
 export const modelCapabilities = ["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"];
 export function draftModel(model = "", prices: Policy[] = []): ModelDraft {
   return { name: model, model, thinking: structuredClone(emptyThinking), context_capacity: null,
-    max_output_tokens: null, enabled: false, policies: modelCapabilities.map(capability => ({
+    max_output_tokens: null, enabled: false, supports_images: false, policies: modelCapabilities.map(capability => ({
       capability, unit: "tokens", unit_size: 1000, credits_per_unit: null, enabled: true, version: 0,
       ...prices.find(p => p.capability === capability),
     })) };
@@ -48,7 +48,11 @@ export function ModelConfigFields({ value, change, platform, apiProtocol }: { va
     <section className="model-form-section"><h2>基本信息</h2><div className="provider-form-grid">
       <label>显示名称<input required maxLength={120} value={value.name} onChange={e => change({ ...value, name: e.target.value })} /></label>
       <label>模型名<input required maxLength={200} value={value.model} onChange={e => change({ ...value, model: e.target.value })} /></label>
-    </div></section>
+    </div><div className="provider-form-grid">
+      <label className="provider-enabled"><input type="checkbox" checked={value.supports_images}
+        onChange={e => change({ ...value, supports_images: e.target.checked })} />支持图片输入</label>
+    </div>
+    </section>
     {preset && <div className="model-preset"><button className="secondary" type="button" onClick={() => setConfirm(true)}>使用官方能力预设</button>
       {confirm && <div className="admin-inline-confirm" role="alert"><span>将替换思考能力、上下文容量和最大输出设置，价格保持不变。</span>
         <a href={preset.source} target="_blank" rel="noreferrer">查看依据</a>

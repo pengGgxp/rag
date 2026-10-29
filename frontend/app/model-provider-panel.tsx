@@ -41,6 +41,7 @@ export function ModelProviderDetail({ id }: { id: string }) {
   function accept(value: ModelProvider) {
     const next = { ...draftModel(value.model, value.prices), name: value.name, enabled: value.enabled,
       thinking: value.thinking ?? draftModel().thinking, context_capacity: value.context_capacity ?? null,
+      supports_images: value.supports_images ?? false,
       max_output_tokens: value.max_output_tokens ?? null };
     setProvider(value); setForm(next); setConnectionId(value.connection_id);
     setOriginal(JSON.stringify({ ...next, connectionId: value.connection_id }));

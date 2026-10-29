@@ -43,6 +43,7 @@ import { citationMarkers } from "./citation-markers";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
 import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
+import { AttachmentButton, DraftAttachments, MessageAttachments, useChatAttachments, type ChatAttachment } from "./chat-attachments";
 
 type Library = {
   id: string;
@@ -72,6 +73,7 @@ type Message = {
   sequence: number;
   role: "user" | "assistant";
   content: string;
+  attachments?: ChatAttachment[];
   status: string;
   request_id?: string | null;
   citations: Citation[];
@@ -90,6 +92,7 @@ type ModelChoice = {
   name: string;
   model: string;
   available: boolean;
+  supports_images?: boolean;
   unavailable_reason?: "model_disabled" | "connection_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
   thinking?: ThinkingCapability;
   context_capacity: number | null;
@@ -190,6 +193,8 @@ export function ChatWorkspace({
     initialLibraryId ? [initialLibraryId] : [],
   );
   const [question, setQuestion] = useState("");
+  const attachments = useChatAttachments();
+  const [dragging, setDragging] = useState(false);
   const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection>({ skill_ids: [], mcp_server_ids: [] });
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
   const [modelId, setModelId] = useState("");
@@ -324,6 +329,7 @@ export function ChatWorkspace({
     sending.current = false;
     setAsking(false);
     setQuestion("");
+    attachments.reset();
     setPreview(null);
     setTrace(null);
     if (viewRef.current) {
@@ -388,6 +394,7 @@ export function ChatWorkspace({
     void stopGeneration();
     generation.current = null;
     sending.current = false;
+    attachments.reset();
     setConversation(null);
     setConversationError("");
     if (conversation)
@@ -407,6 +414,7 @@ export function ChatWorkspace({
     try {
       const saved = await request<Conversation>(`/conversations/${id}`);
       if (epoch.current === currentEpoch) setConversation(saved);
+      return saved;
     } catch (error) {
       if (epoch.current === currentEpoch) report(error);
     }
@@ -436,7 +444,8 @@ export function ChatWorkspace({
       modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
       extensionsBusy ||
-      (!retryId && !question.trim()) ||
+      (!retryId && (!question.trim() && !attachments.ready.length || attachments.blocked ||
+        attachments.hasImages && !selectedModel?.supports_images)) ||
       conversation?.active_request_id
     )
       return;
@@ -478,6 +487,7 @@ export function ChatWorkspace({
         sequence: (current.messages.at(-1)?.sequence ?? -1) + 1,
         role: "user",
         content: query,
+        attachments: attachments.ready,
         status: "completed",
         citations: [],
         traces: [],
@@ -507,7 +517,9 @@ export function ChatWorkspace({
           provider_id: modelId,
           thinking_config_version: thinkingVersion,
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
-          ...(retryId ? { retry_message_id: retryId } : { query }),
+          ...(retryId ? { retry_message_id: retryId } : {
+            ...(query ? { query } : {}), attachment_ids: attachments.ready.map(item => item.id),
+          }),
         },
         controller.signal,
         (name, data) => {
@@ -537,7 +549,10 @@ export function ChatWorkspace({
             setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
             setPhase(status === "running" ? "正在整理早期上下文…" : "正在继续回答…");
           }
-          if (name === "message") received = true;
+          if (name === "message" || name === "done") {
+            received = true;
+            if (!retryId) attachments.reset(false);
+          }
           setConversation((item) => {
             if (!item || item.id !== current!.id) return item;
             if (name === "message" || name === "done") {
@@ -594,7 +609,14 @@ export function ChatWorkspace({
       }
     } finally {
       if (epoch.current === currentEpoch) {
-        if (current) await reloadCurrent(current.id, currentEpoch);
+        if (current) {
+          const saved = await reloadCurrent(current.id, currentEpoch);
+          const acceptedRequestId = active?.requestId;
+          if (!retryId && !received && acceptedRequestId && saved?.messages.some(message => message.request_id === acceptedRequestId)) {
+            attachments.reset(false);
+            setQuestion("");
+          }
+        }
         generation.current = null;
         sending.current = false;
         setAsking(false);
@@ -917,7 +939,8 @@ export function ChatWorkspace({
                     )}
                   </span>
                   {message.role === "user" ? (
-                    <p className="chat-question">{message.content}</p>
+                    <><MessageAttachments items={message.attachments} />
+                      {message.content && <p className="chat-question">{message.content}</p>}</>
                   ) : (
                     <>
                       {message.display_blocks?.length ? message.display_blocks.map(block => {
@@ -1101,12 +1124,24 @@ export function ChatWorkspace({
             </button>
           </div>}
           <form
-            className="composer"
+            className={`composer${dragging ? " attachment-dragging" : ""}`}
+            onDragOver={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
+            onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
+            onDrop={event => {
+              event.preventDefault(); setDragging(false);
+              if (running || loading) return;
+              const error = attachments.add(Array.from(event.dataTransfer.files), !!selectedModel?.supports_images);
+              if (error) report(new Error(error));
+            }}
             onSubmit={(event) => {
               event.preventDefault();
               void send();
             }}
           >
+            <DraftAttachments items={attachments.items} disabled={running || loading}
+              onRemove={attachments.remove} onRetry={item => void attachments.retry(item)} />
+            {attachments.hasImages && !selectedModel?.supports_images &&
+              <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
             <textarea
               aria-label="向知识库提问"
               placeholder={
@@ -1116,6 +1151,13 @@ export function ChatWorkspace({
               value={question}
               disabled={running || loading}
               onChange={(event) => setQuestion(event.target.value)}
+              onPaste={event => {
+                const files = Array.from(event.clipboardData?.files ?? []);
+                if (!files.length) return;
+                event.preventDefault();
+                const error = attachments.add(files, !!selectedModel?.supports_images);
+                if (error) report(new Error(error));
+              }}
               onKeyDown={(event) => {
                 if (
                   event.key === "Enter" &&
@@ -1128,6 +1170,8 @@ export function ChatWorkspace({
               }}
             />
             <div className="composer-footer">
+              <AttachmentButton disabled={running || loading || modelLoading || !selectedModel?.available}
+                add={files => { const error = attachments.add(files, !!selectedModel?.supports_images); if (error) report(new Error(error)); }} />
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
@@ -1164,7 +1208,9 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    !question.trim() || loading || extensionsBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
+                    (!question.trim() && !attachments.ready.length) || attachments.blocked ||
+                    (attachments.hasImages && !selectedModel?.supports_images) ||
+                    loading || extensionsBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)
                   }
                   type="submit"

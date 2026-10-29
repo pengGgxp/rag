@@ -16,6 +16,7 @@ export type ModelProvider = {
   key: string;
   name: string;
   model: string;
+  supports_images: boolean;
   connection_id: string;
   connection_name: string;
   connection_version: number;
