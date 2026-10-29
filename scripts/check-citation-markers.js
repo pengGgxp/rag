@@ -1,4 +1,4 @@
-// Run against a local frontend with playwright-cli run-code.
+// Run against a frontend with controlled API fixtures; never sends model requests.
 async (page) => {
   const base = new URL(page.url()).origin;
   await page.unrouteAll({ behavior: "wait" });
@@ -33,7 +33,7 @@ async (page) => {
     "/conversations": [conversation], "/conversations/citation-regression": conversation,
     "/conversations/citation-regression/context": { eligible: false, status: "idle",
       estimated_input_tokens: 100, capacity: null, output_reserve: null },
-    "/site/announcement": null,
+    "/site/announcement": { announcement: null },
     "/usage": { balance: 1000, pending_credits: 0, entries: [], lifetime_spent: 0, lifetime_granted: 1000 },
   };
   await page.route(url => url.origin === "http://localhost:8000" ||
