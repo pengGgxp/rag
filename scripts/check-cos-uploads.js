@@ -69,9 +69,10 @@ async (page) => {
   await page.getByLabel("SecretId").fill("local-test-identifier");
   await page.getByLabel("SecretKey").fill("local-test-secret");
   await page.getByRole("button", { name: "保存配置", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: "配置已保存" }).waitFor();
+  await page.getByRole("status").filter({ hasText: "已保存" }).waitFor();
   await page.getByRole("button", { name: "测试连接", exact: true }).click();
-  await page.getByRole("status").filter({ hasText: "验证通过" }).waitFor();
+  await page.getByRole("status").filter({ hasText: "连接成功" }).waitFor();
+  assert(await page.getByText(/等待原文件迁移|私有读写|单文件最大 200 MiB|配置版本/).count() === 0, "Storage page exposes deployment diagnostics");
   assert(await page.getByLabel("SecretKey").inputValue() === "", "Secret remained in form");
   for (const width of [1440, 700, 390]) {
     await page.setViewportSize({ width, height: 900 });
