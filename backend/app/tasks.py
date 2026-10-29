@@ -362,6 +362,8 @@ def maintain_uploads() -> None:
     with SessionLocal() as db:
         storage = ocr_storage(db)
         if storage:
+            from .chat_attachments import cleanup
+            cleanup(db, storage)
             for document in db.scalars(select(Document).where(Document.parsing_metadata.is_not(None))):
                 metadata = document.parsing_metadata or {}
                 changed = False

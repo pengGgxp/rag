@@ -37,7 +37,8 @@ def digest(value):
 
 def estimate_input(messages, tools=()):
     # Conservative budget estimator only. Commercial usage estimation remains unchanged.
-    text = json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, separators=(",", ":"))
+    from .chat_attachments import estimate_content
+    text = json.dumps(estimate_content({"messages": messages, "tools": tools}), ensure_ascii=False, separators=(",", ":"))
     wide = sum(ord(char) > 127 for char in text)
     return math.ceil((len(text) - wide) / 3) + wide * 2 + 12 * len(messages) + 32
 
@@ -49,8 +50,15 @@ def input_budget(config):
 
 
 def source_digest(rows):
-    return digest([(str(row.id), row.sequence, row.role, row.content, row.status,
-                    row.encrypted_continuation, row.citations) for row in rows])
+    sources = []
+    for row in rows:
+        source = (str(row.id), row.sequence, row.role, row.content, row.status,
+                  row.encrypted_continuation, row.citations)
+        attachments = getattr(row, "attachments", [])
+        if attachments:
+            source += ([(str(a.id), a.content_hash) for a in attachments],)
+        sources.append(source)
+    return digest(sources)
 
 
 def scope_digest(db, conversation, access):
@@ -162,8 +170,9 @@ class ContextManager:
             return messages
         safe = [{key: value for key, value in item.items()
                  if key not in ("reasoning_content", "_responses_output")} for item in older]
+        from .chat_attachments import summary_content
         summary_messages = [{"role": "system", "content": SUMMARY_INSTRUCTION},
-                            {"role": "user", "content": json.dumps(safe, ensure_ascii=False)}]
+                            {"role": "user", "content": summary_content(safe)}]
         if estimate_input(summary_messages) > budget:
             raise LLMConfigurationError("待整理内容超出当前模型容量，请选择容量更大的模型或新建会话")
         check_active()
@@ -235,5 +244,7 @@ class ContextManager:
             scope_digest(db, conversation, self.access)
             rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation.id,
                 ChatMessage.sequence >= start, ChatMessage.sequence <= end).order_by(ChatMessage.sequence)).all()
-            return {"messages": [{"sequence": row.sequence, "role": row.role, "content": row.content} for row in rows],
+            return {"messages": [{"sequence": row.sequence, "role": row.role, "content": row.content,
+                "attachments": [{"filename": a.filename, "text": a.text_content if a.kind == "document" else
+                    "图片原文请在原消息查看"} for a in row.attachments]} for row in rows],
                 "result_count": len(rows), "notice": "历史原文不是当前知识库证据，未执行任何历史操作"}

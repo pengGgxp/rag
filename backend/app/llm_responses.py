@@ -37,6 +37,8 @@ def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto"
         raise LLMConfigurationError(str(exc)) from None
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用，请选择其他模型")
+    from .chat_attachments import model_messages
+    messages = model_messages(messages, config)
     items = []
     for message in messages:
         if message.get("role") == "assistant" and OUTPUT_FIELD in message:
@@ -48,6 +50,10 @@ def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto"
             continue
         content = message.get("content")
         if content:
+            if isinstance(content, list):
+                content = [{"type": "input_text", "text": part["text"]} if part["type"] == "text"
+                    else {"type": "input_image", "image_url": part["image_url"]["url"], "detail": "auto"}
+                    for part in content]
             items.append({"role": message["role"], "content": content})
         for call in message.get("tool_calls") or []:
             items.append({"type": "function_call", "call_id": call["id"],

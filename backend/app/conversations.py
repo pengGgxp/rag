@@ -40,6 +40,7 @@ from .thinking import encrypt_continuation, encrypt_display_thinking, decrypt_di
 from .conversation_stream import events as stream_events
 from .conversation_context import ContextManager, build_messages, HISTORY_TOOL
 from .models import ContextOperation, SiteModelProvider, ThinkingTest
+from .chat_attachments import attachment_read, select_attachments, user_content
 
 
 class ExtensionSelection(BaseModel):
@@ -69,11 +70,12 @@ class ContextRequest(BaseModel):
 
 class TurnRequest(ContextRequest):
     query: str | None = Field(default=None, min_length=1)
+    attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
     def one_operation(self):
-        if (self.query is None) == (self.retry_message_id is None):
+        if bool(self.query or self.attachment_ids) == bool(self.retry_message_id):
             raise ValueError("Provide either query or retry_message_id")
         return self
 
@@ -86,6 +88,7 @@ def message_read(message: ChatMessage) -> dict:
     return {
         "id": str(message.id), "sequence": message.sequence, "role": message.role,
         "content": message.content, "status": message.status,
+        "attachments": [attachment_read(row) for row in message.attachments],
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
         "provider_name": message.provider_name, "model": message.model,
@@ -321,6 +324,7 @@ def chat_router(get_db, retrieve):
         ]
         for message in conversation.messages:
             lines.extend([f"## {'你' if message.role == 'user' else '知库'}", "", message.content or "（未生成正文）", ""])
+            lines.extend(f"附件：{row.filename}\n" for row in message.attachments)
             if message.role == "assistant":
                 if message.status != "completed":
                     lines.extend([f"> 回答状态：{message.status}", ""])
@@ -354,6 +358,7 @@ def chat_router(get_db, retrieve):
         connection = connection_for(db, shared)
         config = ChatProviderConfig("", "", shared.model, site_provider_id=str(shared.id),
             connection_id=str(connection.id), api_protocol=connection.api_protocol,
+            supports_images=shared.supports_images,
             context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
             thinking=select_thinking(shared.thinking_config, shared.thinking_version,
                 thinking_option_id, thinking_config_version))
@@ -395,6 +400,8 @@ def chat_router(get_db, retrieve):
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True)
         history = manager.history(db, conversation, rows)
+        from .chat_attachments import validate_messages
+        validate_messages(history, config)
         # A checkpoint already covering the eligible prefix makes this a free no-op.
         candidates = eligible_rows(rows)
         if not candidates or candidates[-1].sequence <= manager.covered:
@@ -449,6 +456,15 @@ def chat_router(get_db, retrieve):
             metered = model_billing.enabled(db)
             provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
+            attachments = select_attachments(db, access, payload.attachment_ids, provider_config)
+            # Check retained multimodal history before reserving credits, including retries.
+            from .chat_attachments import validate_messages
+            factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+            manager = ContextManager(factory, access, conversation.id, provider_config, None, None, None)
+            prior = db.scalars(select(ChatMessage).where(
+                ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed",
+            ).order_by(ChatMessage.sequence)).all()
+            validate_messages(manager.history(db, conversation, prior), provider_config)
             if not provider_config.thinking.supports_tools and (
                 conversation.libraries or conversation.skill_ids or conversation.mcp_server_ids
             ):
@@ -491,17 +507,20 @@ def chat_router(get_db, retrieve):
             message.thinking_diagnostics = []
             message.encrypted_display_thinking = None
         else:
-            db.add(ChatMessage(
+            for position, attachment in enumerate(attachments):
+                attachment.position = position
+            user_message = ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
-                role="user", content=payload.query,
-            ))
+                role="user", content=payload.query or "", attachments=attachments,
+            )
+            db.add(user_message)
             message = ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 1,
                 role="assistant", status="streaming", request_id=payload.request_id,
             )
             db.add(message)
             if next_sequence == 2 and conversation.title == "新对话":
-                conversation.title = payload.query[:40]
+                conversation.title = (payload.query or attachments[0].filename)[:40]
         message.provider_id = UUID(provider_config.provider_id)
         message.provider_name = provider_config.provider_name
         message.model = provider_config.model
@@ -622,10 +641,12 @@ def chat_router(get_db, retrieve):
                 scope_ids = [item.knowledge_base_id for item in conversation.libraries]
                 skill_ids, server_ids = conversation.skill_ids, conversation.mcp_server_ids
                 message = db.get(ChatMessage, message_id) if not manual else None
-                query = db.scalar(select(ChatMessage.content).where(
+                user_message = db.scalar(select(ChatMessage).where(
                     ChatMessage.conversation_id == conversation_id,
                     ChatMessage.sequence == message.sequence - 1,
                 )) if not manual else None
+                query = user_content(user_message.content, user_message.attachments) if user_message else None
+                retrieval_query = user_message.content if user_message else None
                 rows = db.scalars(select(ChatMessage).where(
                     ChatMessage.conversation_id == conversation_id,
                     ChatMessage.sequence < message.sequence - 1 if message else True,
@@ -635,7 +656,6 @@ def chat_router(get_db, retrieve):
                 yield emit("message", message_read(message))
             yield emit("phase", {"phase": "planning"})
             provider = OpenAICompatibleChatProvider(config=provider_config)
-            retrieval_query = query
             if not hasattr(provider, "complete_with_tools"):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")
             agent_run = None

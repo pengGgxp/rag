@@ -40,6 +40,7 @@ class SiteProviderInput(BaseModel):
     connection_version: int = Field(ge=1, strict=True)
     policies: list[ModelPrice] | None = Field(default=None, max_length=3)
     enabled: bool = False
+    supports_images: bool = Field(default=False, strict=True)
     version: int = Field(default=0, ge=0)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     context_capacity: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
@@ -96,6 +97,7 @@ def read_provider(db, row):
         "api_protocol": connection.api_protocol if connection else "chat_completions",
         "platform": connection.platform if connection else "custom", "enabled": row.enabled,
         "version": row.version,
+        "supports_images": row.supports_images,
         "thinking": row.thinking_config or ThinkingConfig().model_dump(),
         "thinking_version": row.thinking_version,
         "context_capacity": row.context_capacity, "max_output_tokens": row.max_output_tokens,
@@ -119,6 +121,7 @@ def apply_provider(db, row, payload):
     if not row.name or not row.model:
         raise HTTPException(422, "名称和模型不能为空")
     row.context_capacity, row.max_output_tokens = payload.context_capacity, payload.max_output_tokens
+    row.supports_images = payload.supports_images
     if db.scalar(select(SiteModelProvider.id).where(SiteModelProvider.connection_id == connection.id,
             SiteModelProvider.model == row.model, SiteModelProvider.id != row.id)):
         raise HTTPException(422, f"该连接已配置模型 {row.model}")
@@ -270,6 +273,7 @@ def choices(db, workspace_id):
     for row in visible_providers(db, workspace_id):
         reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
+            "supports_images": row.supports_images,
             "thinking": public_capability(row.thinking_config, row.thinking_version),
             "context_capacity": row.context_capacity, "max_output_tokens": row.max_output_tokens,
             "available": reason is None, "unavailable_reason": reason, "enabled": row.enabled})

@@ -1055,6 +1055,8 @@ app.include_router(site_auth_router)
 app.include_router(site_admin_router)
 app.include_router(storage_settings_router)
 app.include_router(document_uploads_router)
+from .chat_attachments import router as chat_attachments_router
+app.include_router(chat_attachments_router)
 app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)

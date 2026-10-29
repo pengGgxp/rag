@@ -284,6 +284,10 @@ def cleanup_orphans():
                 continue
             if key.startswith(("_ocr/", "_checks/")):
                 storage.delete(key)
+            elif re.fullmatch(r"_chat/[0-9a-f-]{36}/[0-9a-f-]{36}\.[a-z0-9]+", key):
+                from .models import ChatAttachment
+                if not db.scalar(select(ChatAttachment.id).where(ChatAttachment.object_key == key)):
+                    storage.delete(key)
             elif managed.fullmatch(key):
                 # Include soft-deleted originals: restore and references must remain valid.
                 if not db.scalar(select(Document.id).where(Document.object_key == key)) and not db.scalar(

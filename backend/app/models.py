@@ -142,6 +142,7 @@ class SiteModelProvider(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     thinking_config: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     thinking_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    supports_images: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     context_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prices: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -603,6 +604,29 @@ class ChatMessage(Base):
     feedback: Mapped["AnswerFeedback | None"] = relationship(
         uselist=False, cascade="all, delete-orphan", lazy="selectin"
     )
+    attachments: Mapped[list["ChatAttachment"]] = relationship(
+        lazy="selectin", order_by="(ChatAttachment.position, ChatAttachment.created_at, ChatAttachment.id)",
+    )
+
+
+class ChatAttachment(Base):
+    __tablename__ = "chat_attachments"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    object_key: Mapped[str] = mapped_column(String(500), unique=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    position: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    text_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ContextCheckpoint(Base):

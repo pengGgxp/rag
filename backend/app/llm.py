@@ -72,7 +72,8 @@ def measured_usage(usage, messages, output, tools=None, *, success=True):
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Conservative provider-neutral fallback when usage is omitted."""
-    text = json.dumps(messages, ensure_ascii=False)
+    from .chat_attachments import estimate_content
+    text = json.dumps(estimate_content(messages), ensure_ascii=False)
     return max(1, (len(text) + 3) // 4)
 
 
@@ -102,6 +103,7 @@ class ChatProviderConfig:
     connection_id: str | None = None
     connection_version: int = 0
     api_protocol: str = "chat_completions"
+    supports_images: bool = False
 
     @property
     def continuation_required(self):
@@ -166,7 +168,8 @@ class OpenAICompatibleChatProvider:
         thinking = self.config.thinking
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
-        payload = {"model": self.model, "messages": messages}
+        from .chat_attachments import model_messages
+        payload = {"model": self.model, "messages": model_messages(messages, self.config)}
         if thinking.adapter == "none" or (
             thinking.adapter in ("deepseek", "bailian") and thinking.value == "disabled"
         ):

@@ -88,7 +88,7 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
         provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking,
         context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
         config_version=shared.version, connection_id=str(connection.id), connection_version=connection.version,
-        api_protocol=connection.api_protocol)
+        api_protocol=connection.api_protocol, supports_images=shared.supports_images)
 
 
 @site_router.get("")

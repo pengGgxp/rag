@@ -153,6 +153,9 @@ def encrypt_continuation(config, messages):
 
 
 def history_message(row, config):
+    if row.role == "user" and getattr(row, "attachments", None):
+        from .chat_attachments import user_content
+        return [{"role": "user", "content": user_content(row.content, row.attachments)}]
     if row.role == "assistant" and row.encrypted_continuation and config.continuation_required:
         from .mcp_client import decrypt_headers, MCPError
         from .llm import LLMConfigurationError
