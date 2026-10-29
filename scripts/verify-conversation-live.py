@@ -19,7 +19,7 @@ from app.credits import ensure_account
 from app.db import SessionLocal
 from app.models import (
     ChatMessage, ContextCheckpoint, Conversation, LoginSession, Membership, ModelBillingSettings,
-    SiteModelProvider, User, UsageEvent, Workspace,
+    SiteModelProvider, ModelConnection, User, UsageEvent, Workspace,
 )
 from app.site_audit import record
 
@@ -31,8 +31,10 @@ def invariant(db):
         "billing": [settings.enabled, settings.shared_pricing_enabled,
                     str(settings.default_provider_id), settings.template],
         "providers": [(str(row.id), row.prices, row.thinking_config, row.enabled,
-                       row.base_url, row.encrypted_api_key, row.model)
+                       str(row.connection_id), row.model)
                       for row in db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.id))],
+        "connections": [(str(c.id), c.base_url, c.encrypted_api_key, c.version, c.enabled)
+            for c in db.scalars(select(ModelConnection).order_by(ModelConnection.id))],
     }, sort_keys=True).encode()).hexdigest()
 
 

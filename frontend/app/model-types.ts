@@ -15,12 +15,13 @@ export type ModelProvider = {
   id: string;
   key: string;
   name: string;
-  base_url: string;
   model: string;
-  timeout_seconds: number;
+  connection_id: string;
+  connection_name: string;
+  connection_version: number;
+  platform: string;
   enabled: boolean;
   active: boolean;
-  has_api_key: boolean;
   version: number;
   is_default: boolean;
   configured: boolean;
@@ -60,6 +61,7 @@ export const emptyThinking: ThinkingConfig = {
 
 export function availabilityLabel(reason: string | null) {
   return reason === "model_disabled" ? "已停用"
+    : reason === "connection_disabled" ? "供应商已停用"
     : reason === "pricing_unconfigured" ? "价格待配置"
     : reason === "service_not_ready" ? "连接未就绪"
     : reason ? "暂不可用" : "可用";

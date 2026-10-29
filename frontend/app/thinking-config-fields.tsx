@@ -28,8 +28,8 @@ export function thinkingConfigError(value: ThinkingConfig): string {
   return "";
 }
 
-export function ThinkingConfigFields({ value, onChange }: {
-  value: ThinkingConfig; onChange: (next: ThinkingConfig) => void;
+export function ThinkingConfigFields({ value, onChange, suggestedAdapter }: {
+  value: ThinkingConfig; onChange: (next: ThinkingConfig) => void; suggestedAdapter?: ThinkingConfig["adapter"];
 }) {
   const configurable = !["unconfigured", "unsupported"].includes(value.kind);
   function reset(kind: ThinkingConfig["kind"], adapter: ThinkingConfig["adapter"]) {
@@ -61,7 +61,9 @@ export function ThinkingConfigFields({ value, onChange }: {
     <div className="provider-form-grid">
       <label>思考方式<select value={value.kind} onChange={event => {
         const kind = event.target.value as ThinkingConfig["kind"];
-        const adapter = kind === "budget" ? "bailian" : value.adapter === "none" ? "deepseek"
+        const suggested = suggestedAdapter && suggestedAdapter !== "none" ? suggestedAdapter : "deepseek";
+        const adapter = kind === "budget" ? "bailian" : value.adapter === "none"
+          ? kind === "toggle" && suggested === "openai" ? "deepseek" : suggested
           : value.adapter === "openai" && kind === "toggle" ? "deepseek" : value.adapter;
         reset(kind, adapter);
       }}>

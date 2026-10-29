@@ -2,6 +2,10 @@
 
 Issue: #38. Related settlement work: #36.
 
+> Connection ownership superseded by Issue #51: see `model-connections.md`.
+> Connections now own credentials and can serve multiple existing model identities.
+> Models own capability and shared prices; the original implementation below is historical.
+
 > Pricing superseded by Issue #39: see `workspace-billing-multipliers.md`.
 > Connections and historical IDs described here remain valid; new code no longer creates workspace price copies.
 > Selection superseded by Issue #41: see `request-model-selection.md`. Every
@@ -46,5 +50,5 @@ Rollback preserves the added tables, associations and consumption. Do not restor
 
 ## 请求级思考配置
 
-站点模型的连接配置包含独立版本的思考能力，问答与 Agent 按请求选择。
+站点模型设置包含独立版本的思考能力，连接凭据由所属供应商集中管理；问答与 Agent 按请求选择。
 参数适配、默认规则和私有续传边界见 [模型思考配置](model-thinking.md)。

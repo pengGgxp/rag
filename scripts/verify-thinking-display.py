@@ -16,7 +16,7 @@ from app import auth
 from app.config import get_settings
 from app.credits import ensure_account
 from app.db import SessionLocal
-from app.models import ChatMessage, LoginSession, Membership, ModelBillingSettings, SiteModelProvider, ThinkingTest, User, Workspace
+from app.models import ChatMessage, LoginSession, Membership, ModelBillingSettings, ModelConnection, SiteModelProvider, ThinkingTest, User, Workspace
 from app.site_audit import record
 
 
@@ -25,18 +25,20 @@ def invariant(db):
     return hashlib.sha256(json.dumps({
         "billing": [settings.enabled, settings.shared_pricing_enabled, str(settings.default_provider_id), settings.template],
         "providers": [(str(row.id), row.prices, row.thinking_config, row.context_capacity, row.max_output_tokens,
-            row.version, row.enabled, row.encrypted_api_key)
+            row.version, row.enabled, str(row.connection_id))
             for row in db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.id))],
+        "connections": [(str(c.id), c.base_url, c.encrypted_api_key, c.version, c.enabled)
+            for c in db.scalars(select(ModelConnection).order_by(ModelConnection.id))],
     }, sort_keys=True).encode()).hexdigest()
 
 
-def create_state(path):
+def create_state(path, issue=49):
     if path.exists():
         raise SystemExit("Use a fresh state path; never replay live calls accidentally")
     raw, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     with SessionLocal() as db:
-        workspace = Workspace(name="Issue49 思考展示验收")
-        user = User(email=f"thinking49-{uuid4().hex}@example.com", name="思考展示验收",
+        workspace = Workspace(name=f"Issue{issue} 模型受控验收")
+        user = User(email=f"model{issue}-{uuid4().hex}@example.com", name="模型受控验收",
             email_verified_at=auth.now(), is_site_admin=True)
         db.add_all([workspace, user]); db.flush()
         db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
@@ -44,9 +46,9 @@ def create_state(path):
         db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
             workspace_id=workspace.id, expires_at=auth.now() + timedelta(hours=1)))
         record(db, user, "verification.started", "workspace", workspace.id,
-            details={"reason_code": "issue49_controlled_acceptance"})
+            details={"reason_code": f"issue{issue}_controlled_acceptance"})
         state = {"cookie": raw, "csrf": csrf, "user_id": str(user.id), "workspace_id": str(workspace.id),
-            "before": invariant(db), "results": []}
+            "before": invariant(db), "results": [], "issue": issue}
         db.commit()
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as file:
@@ -54,8 +56,8 @@ def create_state(path):
     return state
 
 
-def run(path, *, resume=False):
-    state = json.loads(path.read_text(encoding="utf-8")) if resume else create_state(path)
+def run(path, *, resume=False, issue=49):
+    state = json.loads(path.read_text(encoding="utf-8")) if resume else create_state(path, issue)
     settings = get_settings()
     with httpx.Client(base_url=settings.api_public_url.rstrip("/"), timeout=180,
         cookies={auth.COOKIE: state["cookie"]}, headers={"X-RAG-Request": "1", "X-CSRF-Token": state["csrf"],
@@ -67,7 +69,11 @@ def run(path, *, resume=False):
             if any(row["model"] == model["model"] for row in state["results"]):
                 continue
             detail = client.get(f"/site/admin/llm-providers/{model['id']}").json()
+            discovered = client.post(f"/site/admin/model-connections/{detail['connection_id']}/models/discover",
+                json={"version": detail["connection_version"]})
+            assert discovered.status_code in (200, 502), "Unexpected connection discovery response"
             request = {"request_id": str(uuid4()), "version": detail["version"],
+                "connection_version": detail["connection_version"],
                 "thinking_config_version": detail["thinking_version"], "option_id": detail["thinking"]["default_option_id"]}
             with SessionLocal() as db:
                 previous = db.scalar(select(ThinkingTest).where(
@@ -108,6 +114,9 @@ def run(path, *, resume=False):
                 assert row.encrypted_display_thinking and not row.encrypted_display_thinking.startswith("[")
                 assert invariant(db) == state["before"], "Commercial/model configuration changed"
             record_result = {"model": model["model"], "conversation_id": conversation,
+                "discovery_status": discovered.status_code,
+                "discovered_count": len(discovered.json().get("models", [])),
+                "connection_version": detail["connection_version"],
                 "thinking_characters": thinking_chars, "block_order": [b["type"] for b in last["display_blocks"]],
                 "diagnostics": last["thinking_diagnostics"], "probe_completed": result["completed"],
                 "probe_received_thinking": result.get("received_thinking"), "probe_reasoning_tokens": result.get("reasoning_tokens"),
@@ -127,7 +136,7 @@ def cleanup(path):
         db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
         assert invariant(db) == state["before"]
         record(db, user, "verification.completed", "workspace", state["workspace_id"],
-            details={"reason_code": "issue49_sessions_revoked"})
+            details={"reason_code": f"issue{state.get('issue', 49)}_sessions_revoked"})
         db.commit()
     print("Verification sessions revoked; model and commercial configuration unchanged.")
 
@@ -137,8 +146,9 @@ if __name__ == "__main__":
     parser.add_argument("operation", choices=["run", "cleanup"])
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--issue", type=int, default=49)
     args = parser.parse_args()
     if args.operation == "run":
-        run(args.state, resume=args.resume)
+        run(args.state, resume=args.resume, issue=args.issue)
     else:
         cleanup(args.state)

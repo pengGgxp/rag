@@ -1,5 +1,5 @@
-import { ModelProviderDetail } from "../../../model-provider-panel";
+import { ConnectionDetail } from "../../../model-connections-panel";
 
 export default function NewModelPage() {
-  return <ModelProviderDetail id="new" />;
+  return <ConnectionDetail id="new" />;
 }

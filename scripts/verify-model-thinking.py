@@ -62,8 +62,9 @@ if __name__ == "__main__":
     from uuid import UUID
     with SessionLocal() as db:
         db.execute(text("SET TRANSACTION READ ONLY"))
-        data = db.execute(text("SELECT base_url, encrypted_api_key, model, timeout_seconds, enabled "
-            "FROM site_model_providers WHERE id=:id"), {"id": UUID(args.provider_id)}).mappings().one_or_none()
+        data = db.execute(text("SELECT c.base_url, c.encrypted_api_key, m.model, c.timeout_seconds, "
+            "(m.enabled AND c.enabled) AS enabled FROM site_model_providers m "
+            "JOIN model_connections c ON c.id=m.connection_id WHERE m.id=:id"), {"id": UUID(args.provider_id)}).mappings().one_or_none()
         row = SimpleNamespace(**data) if data else None
         if row is None or not row.enabled:
             raise SystemExit("Enabled provider required")

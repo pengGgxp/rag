@@ -90,7 +90,7 @@ type ModelChoice = {
   name: string;
   model: string;
   available: boolean;
-  unavailable_reason?: "model_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
+  unavailable_reason?: "model_disabled" | "connection_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
   thinking?: ThinkingCapability;
   context_capacity: number | null;
   max_output_tokens: number | null;
