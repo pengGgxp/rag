@@ -7,6 +7,7 @@ import { policyPayload, type Policy } from "../../../model-types";
 import { PolicyTable } from "../../../policy-table";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../../admin-ui";
 import { useAdminChanges } from "../../admin-changes";
+import { validCredits } from "../../../credit-format";
 import "../../../billing.css";
 
 type Template = { version: number; configured: boolean; billing_enabled: boolean; shared_pricing_enabled: boolean; policies: Policy[] };
@@ -20,7 +21,7 @@ export default function PricingTemplatePage() {
   const [notice, setNotice] = useState("");
   useEffect(() => { if (data) { setForm(data); setOriginal(data); } }, [data]);
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
-  const complete = Boolean(form?.policies.every(policy => policy.credits_per_unit !== null && Number.isInteger(policy.credits_per_unit) && policy.credits_per_unit >= 0 && Number.isInteger(policy.unit_size) && policy.unit_size > 0));
+  const complete = Boolean(form?.policies.every(policy => validCredits(policy.credits_per_unit) && Number.isInteger(policy.unit_size) && policy.unit_size > 0));
   useAdminChanges(dirty, busy);
   async function save() {
     if (!form) return;

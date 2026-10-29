@@ -111,7 +111,7 @@ def run():
         print(json.dumps({"passed": True, "storage": "real COS upload/read/delete",
             "cross_workspace_denied": True, "member_admin_denied": True,
             "document_answer": "real provider completed", "model": choice["model"],
-            "deltas": deltas, "usage_records": len(usage), "charged_credits": charged,
+            "deltas": deltas, "usage_records": len(usage), "charged_credits": str(charged),
             "commercial_configuration": "unchanged", "real_vision": "not verified"}, ensure_ascii=False))
     finally:
         for client in clients:

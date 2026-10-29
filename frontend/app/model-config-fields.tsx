@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ThinkingConfigFields, thinkingConfigError } from "./thinking-config-fields";
 import { emptyThinking, type Policy, type ThinkingConfig } from "./model-types";
 import { useAdminResource } from "./admin/admin-ui";
+import { validCredits } from "./credit-format";
 
 export type ModelDraft = {
   name: string; model: string; thinking: ThinkingConfig; context_capacity: number | null;
@@ -27,10 +28,10 @@ export function modelError(value: ModelDraft, enabling = false) {
     !Number.isInteger(value.max_output_tokens) || value.max_output_tokens < 1 || value.max_output_tokens > 10000000 ||
     value.max_output_tokens >= value.context_capacity * .95)) return "请检查容量与输出限制，输出须留出 5% 上下文余量";
   if (value.policies.some(p => !Number.isInteger(p.unit_size) || p.unit_size < 1 || p.unit_size > 2147483647 ||
-    (p.credits_per_unit !== null && (!Number.isInteger(p.credits_per_unit) || p.credits_per_unit < 0 || p.credits_per_unit > 2147483647))))
-    return "单位用量须为正整数，积分须为非负整数，且不超过 2147483647";
+    (p.credits_per_unit !== null && !validCredits(p.credits_per_unit))))
+    return "单位用量须为正整数，积分须非负且最多四位小数，数值不超过 2147483647";
   if ((enabling || value.enabled) && value.policies.some(p => p.credits_per_unit === null ||
-    !Number.isInteger(p.credits_per_unit) || p.credits_per_unit < 0 || !Number.isInteger(p.unit_size) || p.unit_size < 1 || !p.enabled))
+    !validCredits(p.credits_per_unit) || !Number.isInteger(p.unit_size) || p.unit_size < 1 || !p.enabled))
     return "启用前请补齐并启用三项价格，免费请明确填写 0";
   return "";
 }

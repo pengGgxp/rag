@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ArrowDown, ArrowUp, Check, Coins, Loader2 } from "lucide-react";
 import { Dialog } from "../../components/ui/dialog";
 import { ApiError, request } from "../api";
+import { validCredits } from "../credit-format";
 import { useAdminChanges } from "./admin-changes";
 import { AdminLoad, CreditSummary, date, json, number, useAdminResource, type Credits } from "./admin-ui";
 
@@ -47,9 +48,10 @@ function CreditEditor({ id, name, trigger, close, changed }: {
   const [attempt, setAttempt] = useState<Payload | null>(null);
   const dirty = !!amount || !!reason;
   useAdminChanges(dirty || !!attempt, busy);
-  const value = /^[1-9]\d*$/.test(amount) ? Number(amount) : NaN;
-  const valid = Number.isSafeInteger(value) && value <= 2_147_483_647 && reason.trim().length > 0;
-  const after = (data?.credits.balance ?? 0) + (direction === "add" ? value : -value);
+  const value = /^\d+(?:\.\d{1,4})?$/.test(amount) ? Number(amount) : NaN;
+  const valid = validCredits(value) && value > 0 && reason.trim().length > 0;
+  const after = (Math.round((data?.credits.balance ?? 0) * 10000) +
+    (direction === "add" ? 1 : -1) * Math.round(value * 10000)) / 10000;
   function askClose() {
     if (attempt) { setFailure("上次提交结果尚未确认，请重试确认，避免重复调整。"); return; }
     if (dirty) setDiscard(true); else close();
@@ -88,8 +90,8 @@ function CreditEditor({ id, name, trigger, close, changed }: {
               <label>调整方式<select value={direction} onChange={e => setDirection(e.target.value as "add" | "deduct")}>
                 <option value="add">增加积分</option><option value="deduct">扣减积分</option>
               </select></label>
-              <label>积分数量<input autoFocus inputMode="numeric" type="text" pattern="[1-9][0-9]*" required
-                maxLength={10} value={amount} onChange={e => setAmount(e.target.value)} /></label>
+              <label>积分数量<input autoFocus inputMode="decimal" type="text" pattern="[0-9]+(\.[0-9]{1,4})?" required
+                maxLength={15} value={amount} onChange={e => setAmount(e.target.value)} /></label>
               <label>调整原因<textarea required maxLength={200} rows={2} value={reason} onChange={e => setReason(e.target.value)} /></label>
             </fieldset>
             {valid && <div className="admin-credit-preview" aria-live="polite"><span>调整后余额</span>

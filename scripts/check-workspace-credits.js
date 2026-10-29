@@ -3,7 +3,7 @@ async (page) => {
   const base = new URL(page.url()).origin;
   await page.unrouteAll({ behavior: "wait" });
   const check = (ok, message) => { if (!ok) throw new Error(message); };
-  const credits = { w1: { balance: 1000, lifetime_granted: 1000, lifetime_spent: 0 },
+  const credits = { w1: { balance: 1000.1234, lifetime_granted: 1000.1234, lifetime_spent: 0 },
     w2: { balance: 2000, lifetime_granted: 2000, lifetime_spent: 0 } };
   const records = { w1: [], w2: [] }, saved = new Map(), calls = [];
   let mode = "", readFails = false;
@@ -34,8 +34,9 @@ async (page) => {
         return reply({ detail: "积分余额已变化，请刷新余额后重新确认" }, 409); }
       if (!saved.has(body.request_id)) {
         const signed = body.amount * (body.direction === "add" ? 1 : -1);
-        credits[wid].balance += signed;
-        credits[wid][signed > 0 ? "lifetime_granted" : "lifetime_spent"] += Math.abs(signed);
+        credits[wid].balance = Math.round((credits[wid].balance + signed) * 10000) / 10000;
+        const key = signed > 0 ? "lifetime_granted" : "lifetime_spent";
+        credits[wid][key] = Math.round((credits[wid][key] + Math.abs(signed)) * 10000) / 10000;
         const adjustment = { id: body.request_id, amount: signed, balance_after: credits[wid].balance,
           reason: body.reason, actor_name: "站点管理员", created_at: new Date().toISOString() };
         records[wid].unshift(adjustment);
@@ -60,13 +61,17 @@ async (page) => {
   };
   await start();
   check(await dialog().getByRole("button", { name: "下一步" }).isDisabled(), "Empty form must be disabled");
-  await fill("200");
+  check(await dialog().getByText("1,000.1234 积分", { exact: true }).isVisible(), "Four decimal balance lost");
+  await fill("200.00001");
+  check(await dialog().getByRole("button", { name: "下一步" }).isDisabled(), "Fifth decimal must be rejected");
+  await fill("200.0001");
   await dialog().getByRole("button", { name: "下一步" }).click();
   check(calls.length === 0, "Preview must not change balance");
   await dialog().getByRole("button", { name: "确认调整" }).click();
   await dialog().waitFor({ state: "hidden" });
   await page.waitForFunction(() => document.activeElement?.id === "workspace-credits-w1");
-  check(credits.w1.balance === 1200 && credits.w2.balance === 2000, "Wrong workspace updated");
+  check(calls[0].amount === 200.0001 && calls[0].expected_balance === 1000.1234, "Fractional API payload lost precision");
+  check(credits.w1.balance === 1200.1235 && credits.w2.balance === 2000, "Wrong workspace updated");
   await start();
   await dialog().locator("summary").click();
   check(await dialog().getByText("客服补发与余额核对", { exact: true }).isVisible(), "History missing");
@@ -96,10 +101,11 @@ async (page) => {
   for (const width of [1440, 700, 390]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 950 });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await start(); await fill("500");
+    await start(); await fill("500.0001");
     await dialog().getByRole("button", { name: "下一步" }).click();
     check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Page overflow ${width}`);
-    await page.screenshot({ path: `output/playwright/issue53-adjust-${width}.png` });
+    check(await dialog().getByText("1,610.1236 积分", { exact: true }).isVisible(), "Preview lost fourth decimal");
+    await page.screenshot({ path: `output/playwright/issue57-adjust-${width}.png` });
     await page.keyboard.press("Escape");
     await dialog().getByRole("button", { name: "放弃修改", exact: true }).click();
     await dialog().waitFor({ state: "hidden" });
@@ -116,7 +122,7 @@ async (page) => {
   await dialog().waitFor({ state: "hidden" });
   await page.reload();
   await start();
-  check(await dialog().getByText(`${credits.w1.balance.toLocaleString("zh-CN")} 积分`, { exact: true }).count() > 0,
+  check(await dialog().getByText(`${credits.w1.balance.toLocaleString("zh-CN", { maximumFractionDigits: 4 })} 积分`, { exact: true }).count() > 0,
     "Refresh did not restore balance");
   await dialog().getByLabel("积分数量").focus(); await page.keyboard.type("20");
   await page.keyboard.press("Tab"); await page.keyboard.type("键盘验收");

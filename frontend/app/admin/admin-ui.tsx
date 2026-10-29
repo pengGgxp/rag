@@ -9,6 +9,7 @@ import {
 } from "react";
 import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { request } from "../api";
+import { formatCredits } from "../credit-format";
 
 export type Page<T> = {
   items: T[];
@@ -21,7 +22,7 @@ export type Credits = {
   lifetime_granted: number;
   lifetime_spent: number;
 };
-export const number = (value: number) => value.toLocaleString("zh-CN");
+export const number = formatCredits;
 export const date = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { hour12: false });
 export const json = (body: unknown, method = "POST") => ({

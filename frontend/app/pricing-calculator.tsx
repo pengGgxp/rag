@@ -6,6 +6,7 @@ import { Dialog } from "../components/ui/dialog";
 import { request } from "./api";
 import { json, useAdminResource } from "./admin/admin-ui";
 import { policyLabels, type Policy } from "./model-types";
+import { formatCredits } from "./credit-format";
 
 type Package = { id: string; name: string; amount_fen: number; credits: number; credits_per_yuan: string };
 type Context = { ready: boolean; reference_package: Package | null; reason: string | null };
@@ -83,22 +84,21 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
         {calculating ? <p className="calculator-empty"><Loader2 size={16} className="spin" />正在计算</p>
           : error ? <div className="calculator-warning" role="alert">{error}<button type="button" className="secondary" onClick={() => { void context.reload(); setAttempt(value => value + 1); }}><RefreshCw size={14} />重试</button></div>
           : quote ? <>
-            <div className="calculator-total"><span>建议基准价</span><strong>{quote.credits_per_unit.toLocaleString()} <small>积分 / {quote.unit_size.toLocaleString()} {unit}</small></strong></div>
+            <div className="calculator-total"><span>建议基准价</span><strong>{formatCredits(quote.credits_per_unit)} <small>积分 / {quote.unit_size.toLocaleString()} {unit}</small></strong></div>
             <dl className="calculator-breakdown">
               <div><dt>目标售价</dt><dd>{yuan(quote.target_price_yuan)}</dd></div>
-              <div><dt>整数积分对应售价</dt><dd>{yuan(quote.base_price_yuan)}</dd></div>
-              <div><dt>向上取整增加</dt><dd>{yuan(quote.rounding_extra_yuan)}</dd></div>
+              <div><dt>对应售价</dt><dd>{yuan(quote.base_price_yuan)}</dd></div>
+              <div><dt>精度调整差额</dt><dd>{yuan(quote.rounding_extra_yuan)}</dd></div>
               <div><dt>倍率后单位积分</dt><dd>{display(quote.effective_unit_credits)}</dd></div>
               <div><dt>倍率后预计收入</dt><dd>{yuan(quote.effective_revenue_yuan)}</dd></div>
               <div><dt>预计支付手续费</dt><dd>{yuan(quote.effective_fee_yuan)}</dd></div>
               <div className="calculator-profit" data-loss={quote.loss}><dt>倍率后预计利润</dt><dd>{yuan(quote.effective_profit_yuan)}</dd></div>
             </dl>
             {!quote.target_met && <p className="calculator-warning" role="alert"><CircleAlert size={16} />{quote.loss ? "该倍率下预计亏损，请检查基准价或工作区倍率。" : "该倍率下未达到目标利润。"}</p>}
-            {quote.unit_rounding && <p className="calculator-note">当前结算按单位进位，不足一个单位仍按完整单位计费。</p>}
             {quote.unit_size !== policy.unit_size && <p className="calculator-warning"><CircleAlert size={16} />应用将同时把计价用量从 {policy.unit_size.toLocaleString()} 改为 {quote.unit_size.toLocaleString()} {unit}。</p>}
           </> : <p className="calculator-empty">填写成本与目标利润后查看结果</p>}
       </div>
-      <details className="calculator-formula"><summary>计算依据</summary><p>售价 =（成本 + 费用分摊 + 目标利润）÷（1 − 支付费率）；积分 = 售价 × 每元兑换积分，向上取整。</p><p>收益按上述用量估算，未含未填写的税费或固定成本。倍率仅用于试算，支付费率不修改支付渠道设置。</p></details>
+      <details className="calculator-formula"><summary>计算依据</summary><p>售价 =（成本 + 费用分摊 + 目标利润）÷（1 − 支付费率）；积分 = 售价 × 每元兑换积分，保留四位小数。消费按实际用量比例计算。</p><p>收益按上述用量估算，未含未填写的税费或固定成本。倍率仅用于试算，支付费率不修改支付渠道设置。</p></details>
       <div className="calculator-footer"><button type="button" className="secondary" onClick={close}>取消</button><button type="button" className="primary" disabled={busy || !quote} onClick={() => {
         if (quote) { apply({ unit_size: quote.unit_size, credits_per_unit: quote.credits_per_unit }); close(); }
       }}><ArrowDownToLine size={16} />应用到价格</button></div>

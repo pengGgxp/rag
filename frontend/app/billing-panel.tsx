@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, ChevronLeft, ChevronRight, CreditCard, Info, Loader2, RefreshCw } from "lucide-react";
 import { request } from "./api";
+import { formatCredits } from "./credit-format";
 import "./billing.css";
 
 export type CreditUsage = {
@@ -39,7 +40,7 @@ type Order = {
 };
 type OrderPage = { items: Order[]; total: number; page: number; page_size: number };
 
-const count = (value: number) => value.toLocaleString("zh-CN");
+const count = formatCredits;
 const money = (fen: number) =>
   new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(fen / 100);
 const time = (value: string) =>

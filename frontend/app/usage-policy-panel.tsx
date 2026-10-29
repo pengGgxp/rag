@@ -26,7 +26,7 @@ function effective(policies: Policy[], percent: number | null): Policy[] {
   return policies.map(policy => {
     const numerator = policy.credits_per_unit !== null && percent !== null ? policy.credits_per_unit * percent : null;
     return { ...policy, effective_credits_per_unit: numerator === null ? null
-      : `${Math.floor(numerator / 100)}.${String(numerator % 100).padStart(2, "0")}` };
+      : (numerator / 100).toFixed(6).replace(/\.?0+$/, "") };
   });
 }
 
