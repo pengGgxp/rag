@@ -122,6 +122,37 @@ def _entry(
     return entry
 
 
+def adjust_balance(db, workspace_id, actor_user_id, request_id, amount, reason, expected_balance):
+    """Serialize manual adjustments with all existing debit and recharge paths."""
+    from .models import Workspace
+    account = db.get(CreditAccount, workspace_id, with_for_update=True, populate_existing=True)
+    if account is None:
+        workspace = db.get(Workspace, workspace_id, with_for_update=True, populate_existing=True)
+        if workspace is None:
+            raise HTTPException(404, "工作区不存在")
+        account = ensure_account(db, workspace_id, initial=0)
+    key = f"admin-credit:{workspace_id}:{request_id}"
+    existing = db.scalar(select(CreditLedgerEntry).where(CreditLedgerEntry.idempotency_key == key))
+    if existing:
+        if (existing.actor_user_id != actor_user_id or existing.amount != amount
+                or existing.metadata_json.get("reason") != reason):
+            raise HTTPException(409, "这次调整的内容已变更，请重新发起调整")
+        return account, existing, False
+    if account.balance != expected_balance:
+        raise HTTPException(409, "积分余额已变化，请刷新余额后重新确认")
+    if account.balance + amount < 0:
+        raise HTTPException(422, "扣减积分不能超过当前余额")
+    maximum = 2_147_483_647
+    if (account.balance + amount > maximum
+            or (amount > 0 and account.lifetime_granted + amount > maximum)
+            or (amount < 0 and account.lifetime_spent - amount > maximum)):
+        raise HTTPException(422, "调整后积分超出支持范围，请减小数量")
+    entry = _entry(db, account, actor_user_id=actor_user_id, amount=amount,
+        kind="manual_credit" if amount > 0 else "manual_debit", idempotency_key=key,
+        metadata={"reason": reason})
+    return account, entry, True
+
+
 def reserve(
     db: Session,
     workspace_id: UUID,
@@ -432,7 +463,7 @@ def build_router(get_db):
                     "amount": item.amount,
                     "balance_after": item.balance_after,
                     "kind": item.kind,
-                    "metadata": item.metadata_json,
+                    "metadata": {} if item.kind in ("manual_credit", "manual_debit") else item.metadata_json,
                     "created_at": item.created_at.isoformat(),
                 }
                 for item in entries

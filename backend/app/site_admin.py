@@ -2,9 +2,10 @@
 from datetime import datetime, timedelta, timezone
 import secrets
 from uuid import UUID
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import String, delete, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -12,13 +13,73 @@ from . import auth
 from .db import get_db
 from .email_auth import email_rate_limit
 from .models import (
-    CreditAccount, ExternalIdentity, LLMProviderConfig, LoginSession, Membership,
+    CreditAccount, CreditLedgerEntry, ExternalIdentity, LLMProviderConfig, LoginSession, Membership,
     SiteAuditEvent, SiteModelProvider, User, Workspace,
 )
 from .site_auth import site_admin, send_mail
 from .site_audit import record, RETENTION_DAYS
 
 router = APIRouter(prefix="/site/admin", tags=["site-admin"])
+
+
+class CreditAdjustment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    direction: Literal["add", "deduct"]
+    amount: int = Field(ge=1, le=2_147_483_647, strict=True)
+    expected_balance: int = Field(ge=0, le=2_147_483_647, strict=True)
+    reason: str = Field(min_length=1, max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def nonempty_reason(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("请填写调整原因")
+        return value
+
+
+def credit_values(account):
+    return {key: getattr(account, key) if account else 0
+            for key in ("balance", "lifetime_granted", "lifetime_spent")}
+
+
+def adjustment_read(entry, actor_name=None):
+    return {"id": str(entry.id), "amount": entry.amount, "balance_after": entry.balance_after,
+        "reason": entry.metadata_json.get("reason", ""), "actor_name": actor_name,
+        "actor_user_id": str(entry.actor_user_id) if entry.actor_user_id else None,
+        "created_at": entry.created_at.isoformat()}
+
+
+@router.get("/workspaces/{workspace_id}/credits")
+def read_workspace_credits(workspace_id: UUID, db: Session = Depends(get_db), actor: User = Depends(site_admin)):
+    if db.get(Workspace, workspace_id) is None:
+        raise HTTPException(404, "工作区不存在")
+    from .model_billing import pending_credits
+    entries = db.execute(select(CreditLedgerEntry, User.name).outerjoin(User,
+        User.id == CreditLedgerEntry.actor_user_id).where(CreditLedgerEntry.workspace_id == workspace_id,
+        CreditLedgerEntry.kind.in_(("manual_credit", "manual_debit")))
+        .order_by(CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc()).limit(30)).all()
+    return {"credits": credit_values(db.get(CreditAccount, workspace_id)),
+        "pending_credits": pending_credits(db, workspace_id),
+        "adjustments": [adjustment_read(entry, name) for entry, name in entries]}
+
+
+@router.post("/workspaces/{workspace_id}/credits/adjustments")
+def adjust_workspace_credits(workspace_id: UUID, payload: CreditAdjustment, request: Request,
+                             db: Session = Depends(get_db), actor: User = Depends(site_admin)):
+    from .credits import adjust_balance
+    if db.get(Workspace, workspace_id) is None:
+        raise HTTPException(404, "工作区不存在")
+    signed = payload.amount if payload.direction == "add" else -payload.amount
+    account, entry, created = adjust_balance(db, workspace_id, actor.id, payload.request_id,
+        signed, payload.reason, payload.expected_balance)
+    if created:
+        record(db, actor, "workspace.credits_adjusted", "workspace", workspace_id, request=request,
+            details={"request_id": str(payload.request_id), "resource_id": str(entry.id), "amount": signed,
+                     "balance_before": entry.balance_after - signed, "balance_after": entry.balance_after})
+    db.commit()
+    return {"credits": credit_values(account), "adjustment": adjustment_read(entry, actor.name)}
 
 
 def reject_operation(db, actor, action, user, request, status, message):

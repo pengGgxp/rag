@@ -13,6 +13,7 @@ SAFE_FIELDS = {
     "previous_percent", "multiplier_percent", "version", "fingerprint",
     "previous_signup_credits", "signup_credits",
     "request_id", "option_id", "received_thinking", "reasoning_tokens",
+    "amount", "balance_before", "balance_after",
 }
 
 
