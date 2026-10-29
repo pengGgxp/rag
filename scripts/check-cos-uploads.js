@@ -2,6 +2,10 @@
 async (page) => {
   const assert = (ok, text) => { if (!ok) throw new Error(text); };
   const session = await (await page.request.get("http://127.0.0.1:8126/__fixture/session")).json();
+  let configurationReads = 0;
+  page.on("request", request => {
+    if (new URL(request.url()).pathname === "/ingestion/options") configurationReads++;
+  });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.context().addCookies([{ name: "rag_session", value: session.cookie, domain: "127.0.0.1", path: "/" }]);
@@ -20,10 +24,13 @@ async (page) => {
   };
   await page.getByRole("button", { name: "上传文档", exact: true }).first().click();
   let dialog = page.getByRole("dialog");
+  assert(await dialog.getByText(/原文件存储于|PDF 交由|DocMind|关闭窗口不影响传输|正在读取文件处理配置/).count() === 0, "Upload dialog exposes implementation copy");
   const content = Buffer.alloc(9 * 1024 * 1024, "a");
   content.write(String(Date.now()));
   const file = { name: "断点续传验收.txt", mimeType: "text/plain", buffer: content };
   await dialog.getByLabel("选择文件", { exact: true }).setInputFiles(file);
+  assert(await dialog.getByRole("button", { name: "开始上传" }).isEnabled(), "Upload blocked by display-only configuration");
+  assert(configurationReads === 0, "Upload requests display-only processor configuration");
   await dialog.getByRole("button", { name: "开始上传" }).click();
   await dialog.getByText("正在传输", { exact: true }).waitFor();
   await dialog.getByRole("progressbar").waitFor();

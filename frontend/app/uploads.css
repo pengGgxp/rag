@@ -8,7 +8,6 @@
 .upload-window .dropzone > span:not(.upload-symbol), .upload-window .dropzone small { color: var(--muted); font-size: var(--form-label-size); }
 .upload-window .field-hint { margin: 0; }
 .upload-start { display: flex; justify-content: flex-end; }
-.upload-config-error { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .upload-window .upload-file-list { margin: 0; }
 .upload-task-entry { width: 100%; }
 .upload-task-entry small { margin-left: auto; font-variant-numeric: tabular-nums; }

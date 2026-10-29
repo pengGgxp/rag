@@ -48,9 +48,9 @@ function put(url: string, blob: Blob, signal: AbortSignal, progress: (n: number)
     xhr.timeout = 10 * 60_000;
     xhr.upload.onprogress = event => progress(Math.min(event.loaded, blob.size));
     xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 && xhr.getResponseHeader("ETag")
-      ? undefined : new Error("分片上传失败，请检查网络及存储桶跨域配置后重试"));
-    xhr.onerror = () => finish(new Error("无法连接文件存储，请检查网络或跨域配置"));
-    xhr.ontimeout = () => finish(new Error("分片上传超时，请继续上传"));
+      ? undefined : new Error("上传失败，请重试；若仍失败，请联系管理员"));
+    xhr.onerror = () => finish(new Error("上传连接中断，请检查网络后重试"));
+    xhr.ontimeout = () => finish(new Error("上传超时，请继续上传"));
     xhr.onabort = () => finish(new DOMException("上传已暂停", "AbortError"));
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) { finish(new DOMException("上传已暂停", "AbortError")); return; }
@@ -78,8 +78,6 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<{ destination?: Destination } | null>(null);
   const [selected, setSelected] = useState<File[]>([]);
   const [selectionError, setSelectionError] = useState("");
-  const [processor, setProcessor] = useState<{ name: string | null } | null>(null);
-  const [processorError, setProcessorError] = useState("");
   const storageKey = `rag-uploads-v1:${session.user.id}`;
   function publish(next: Task[]) {
     current.current = next; setTasks(next);
@@ -116,17 +114,6 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     // Upload state remains mounted outside the workspace-keyed page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.workspace_id]);
-  async function loadProcessor() {
-    setProcessorError(""); setProcessor(null);
-    try {
-      const value = await request<{ third_party_processor: string | null }>("/ingestion/options");
-      setProcessor({ name: value.third_party_processor });
-    } catch (e) { setProcessorError(message(e)); }
-  }
-  useEffect(() => {
-    if (dialog?.destination) void loadProcessor();
-  }, [dialog?.destination]);
-
   function acceptRemote(task: Task, remote: Remote) {
     let state = remote.state;
     if (state === "completed") state = remote.document_status === "ready" ? "ready"
@@ -296,14 +283,11 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
             <input type="file" aria-label="选择文件" multiple={!dialog.destination.versionOf} accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.xlsx" onChange={e => choose(e.target.files)} />
             <span className="upload-symbol"><Upload size={26} /></span>
             <strong>{selected.length ? `已选择 ${selected.length} 个文件` : "选择文件或拖拽到此处"}</strong>
-            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX</span><small>单文件最大 200 MiB · 支持暂停和续传</small>
+            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX</span><small>单文件最大 200 MiB</small>
           </label>
-          <p className="field-hint">原文件存储于腾讯云{processor?.name ? `；PDF 交由${processor.name}解析` : ""}。请确认你有权上传。关闭窗口不影响传输。</p>
-          {!processor && !processorError && <p className="field-hint" role="status">正在读取文件处理配置…</p>}
-          {processorError && <div className="upload-config-error form-error" role="alert">{processorError}<button className="secondary" onClick={() => void loadProcessor()}><RefreshCw size={14} />重试</button></div>}
           {!!selected.length && <ul className="upload-file-list">{selected.map((file, i) => <li key={i}><FileText size={14} /><span>{file.name}</span><small>{size(file.size)}</small></li>)}</ul>}
           {selectionError && <p className="form-error" role="alert">{selectionError}</p>}
-          <div className="upload-start"><button className="primary" disabled={!selected.length || !processor} onClick={enqueue}><Upload size={15} />开始上传</button></div>
+          <div className="upload-start"><button className="primary" disabled={!selected.length} onClick={enqueue}><Upload size={15} />开始上传</button></div>
         </>}
         <ul className="transfer-list" aria-label="上传任务">
           {visible.map(task => <li key={task.key}>
