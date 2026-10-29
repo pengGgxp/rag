@@ -88,6 +88,8 @@ async page => {
   await page.locator(".site-announcement-content").waitFor();
   await page.waitForFunction(() => Number(getComputedStyle(document.querySelector('[role="dialog"] > div')).opacity) === 1);
   assert(await page.getByRole("dialog").count() === 1, "Nested mobile dialogs");
+  const closeBounds = await page.getByRole("dialog").getByRole("button", { name: "关闭", exact: true }).boundingBox();
+  assert(closeBounds.width >= 44 && closeBounds.height >= 44, "Mobile close target too small");
   await page.screenshot({ path: "output/playwright/issue48-announcement-mobile.png" });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Announcement overflow");
   await page.keyboard.press("Escape");

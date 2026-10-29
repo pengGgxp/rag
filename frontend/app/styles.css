@@ -384,6 +384,8 @@ p {
   .site-announcement-content { padding: 16px; }
   .site-announcement-banner { gap: 6px; }
   .announcement-title { gap: 8px; }
+  .site-announcement-entry { min-height: var(--form-touch-height); }
+  .modal:has(.site-announcement-content) .modal-heading .icon-button { width: 44px; height: 44px; }
 }
 .workspace-body { flex: 1; min-height: 0; overflow: auto; }
 .workspace-context-navigation { min-height: 0; overflow-y: auto; overflow-x: hidden; flex: 1; }
