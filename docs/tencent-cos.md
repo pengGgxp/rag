@@ -100,8 +100,25 @@ Local tests use a disposable database and a COS-shaped HTTP fixture. These prove
 upload ordering, progress, pause, retry, resume validation and admission, not
 Tencent Cloud performance or commercial OCR correctness.
 
-Real acceptance still requires dedicated credentials, approved CORS, verified
-migration of the three originals, small/200 MiB/200 MiB+1 byte boundary tests,
-cancellation/network recovery and a small DocMind -> retrieval -> citation test.
-Do not automatically submit the 200 MiB transfer test for paid OCR.
-Issue #46 must remain open until these checks pass.
+### Live Verification: 2026-10-29
+
+- The upload rejection was caused by tested credentials with storage still
+  inactive. A successful connection test is not evidence of a working upload.
+- Backed up the database, configuration and image references; confirmed no active
+  conversations, ingestion jobs or uploads. Copied the three original documents
+  (30,948,283 bytes), checked their sizes and SHA-256 hashes, then activated COS.
+  Every original was read again through the application's active storage path.
+  Original metadata, billing settings, balances and multipliers were unchanged.
+- Existing CORS permits the production origin. No bucket policy, CORS, `.env` or
+  Compose configuration was changed. API and Worker are running.
+- Playwright uploaded a disposable TXT through the live site and real COS.
+  The upload completed verification, parsing and embedding; its document was
+  ready with one indexed chunk. The controlled embedding used 43 tokens and one
+  credit. The acceptance library was archived and the temporary session revoked.
+- Visually checked screenshots at 1440px and 390px:
+  `output/playwright/issue46-live-upload-ready-1440.png` and
+  `output/playwright/issue46-live-upload-ready-390.png`.
+
+Real 200 MiB/200 MiB+1 byte boundary tests, cancellation/network recovery and a
+small DocMind -> retrieval -> citation test remain pending. Do not automatically
+submit the 200 MiB transfer test for paid OCR. Issue #46 remains open.
