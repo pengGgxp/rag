@@ -160,7 +160,8 @@ class ContextManager:
             if before > budget:
                 raise LLMConfigurationError("当前问题或近期上下文超出模型容量，请缩短输入或新建会话")
             return messages
-        safe = [{key: value for key, value in item.items() if key != "reasoning_content"} for item in older]
+        safe = [{key: value for key, value in item.items()
+                 if key not in ("reasoning_content", "_responses_output")} for item in older]
         summary_messages = [{"role": "system", "content": SUMMARY_INSTRUCTION},
                             {"role": "user", "content": json.dumps(safe, ensure_ascii=False)}]
         if estimate_input(summary_messages) > budget:

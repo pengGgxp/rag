@@ -93,6 +93,7 @@ def read_provider(db, row):
     return {"id": str(row.id), "key": row.key, "name": row.name, "model": row.model,
         "connection_id": str(row.connection_id), "connection_name": connection.name if connection else "",
         "connection_version": connection.version if connection else 0,
+        "api_protocol": connection.api_protocol if connection else "chat_completions",
         "platform": connection.platform if connection else "custom", "enabled": row.enabled,
         "version": row.version,
         "thinking": row.thinking_config or ThinkingConfig().model_dump(),
@@ -108,6 +109,12 @@ def read_provider(db, row):
 
 def apply_provider(db, row, payload):
     connection = lock_connection(db, payload.connection_id, payload.connection_version)
+    from .llm_responses import validate_thinking
+    from .thinking import select_thinking
+    try:
+        validate_thinking(connection.api_protocol, select_thinking(payload.thinking.model_dump(), 0))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     row.connection_id, row.name, row.model = connection.id, payload.name.strip(), payload.model.strip()
     if not row.name or not row.model:
         raise HTTPException(422, "名称和模型不能为空")

@@ -27,6 +27,8 @@ router = APIRouter(prefix="/site/admin/llm-providers", tags=["site-admin"])
 class PreviewInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int = Field(ge=1, strict=True)
+    connection_id: UUID | None = None
+    connection_version: int | None = Field(default=None, ge=1, strict=True)
     thinking: ThinkingConfig
     option_id: str | None = Field(default=None, min_length=1, max_length=40)
     max_output_tokens: int | None = Field(default=None, ge=1, le=10_000_000, strict=True)
@@ -42,18 +44,23 @@ class TestInput(BaseModel):
 
 
 def parameter_preview(config):
-    payload = OpenAICompatibleChatProvider(config=config)._payload([], stream=True)
+    try:
+        payload = OpenAICompatibleChatProvider(config=config)._payload([], stream=True)
+    except LLMConfigurationError as exc:
+        raise HTTPException(422, str(exc)) from None
     allowed = {"thinking", "reasoning_effort", "enable_thinking", "thinking_budget",
-        "max_tokens", "max_completion_tokens", "stream", "stream_options"}
+        "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "stream", "stream_options"}
     return {key: value for key, value in payload.items() if key in allowed}
 
 
 @router.post("/{identifier}/thinking/preview")
 def preview(identifier: UUID, payload: PreviewInput, db=Depends(get_db), actor=Depends(site_admin)):
     row = lock_provider(db, identifier, payload.version)
+    from .model_connections import lock_connection
+    connection = lock_connection(db, payload.connection_id or row.connection_id, payload.connection_version)
     config = ChatProviderConfig("", "", row.model,
         thinking=select_thinking(payload.thinking.model_dump(), row.thinking_version, payload.option_id),
-        max_output_tokens=payload.max_output_tokens)
+        max_output_tokens=payload.max_output_tokens, api_protocol=connection.api_protocol)
     return {"parameters": parameter_preview(config), "version": row.version,
         "thinking_version": row.thinking_version}
 

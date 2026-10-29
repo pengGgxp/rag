@@ -67,13 +67,14 @@ def test_upgrade_preserves_models_and_does_not_merge_equal_connections(auth_post
         migrate("head")
         with engine.connect() as db:
             rows = db.execute(text("""SELECT m.id,m.version,m.enabled,m.prices,c.id AS connection_id,
-                c.platform,c.base_url,c.encrypted_api_key,c.timeout_seconds,c.enabled AS connection_enabled
+                c.platform,c.api_protocol,c.base_url,c.encrypted_api_key,c.timeout_seconds,c.enabled AS connection_enabled
                 FROM site_model_providers m JOIN model_connections c ON c.id=m.connection_id ORDER BY m.key""")).mappings().all()
             assert len(rows) == 2 and rows[0]["connection_id"] != rows[1]["connection_id"]
             for index, row in enumerate(rows):
                 assert row["id"] == identifiers[index] and row["version"] == 9
                 assert row["enabled"] is (index == 0)
                 assert row["platform"] == "custom" and row["connection_enabled"]
+                assert row["api_protocol"] == "chat_completions"
                 assert row["encrypted_api_key"] == "opaque-secret" and row["timeout_seconds"] == 75
                 assert row["prices"] == {"llm_input_tokens": {"credits_per_unit": 17}}
             columns = db.execute(text("""SELECT column_name FROM information_schema.columns

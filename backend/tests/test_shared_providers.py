@@ -34,7 +34,7 @@ def setup_site(accounts, monkeypatch):
 
 def provider(client, key="one", rate=4):
     connection = client.post("/site/admin/model-connections", json={"name": key,
-        "base_url": "https://provider.example/v1", "api_key": "secret"}).json()
+        "api_protocol": "chat_completions", "base_url": "https://provider.example/v1", "api_key": "secret"}).json()
     result = client.post("/site/admin/llm-providers", json={"name": key,
         "model": "model-one", "connection_id": connection["id"], "connection_version": connection["version"]})
     assert result.status_code == 201, result.text
@@ -165,7 +165,7 @@ def test_migration_idempotent_preserves_ids_and_partial_prices(accounts, monkeyp
 
 def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
-    c = owner.post("/site/admin/model-connections", json={"name": "Bad", "base_url": "https://a.example/v1",
+    c = owner.post("/site/admin/model-connections", json={"name": "Bad", "api_protocol": "chat_completions", "base_url": "https://a.example/v1",
         "api_key": "key"}).json()
     result = owner.post("/site/admin/llm-providers", json={"name": "Bad",
         "connection_id": c["id"], "connection_version": c["version"], "model": "m", "enabled": True})

@@ -142,17 +142,18 @@ def select_thinking(raw, version, option_id=None, expected_version=None):
 
 
 def encrypt_continuation(config, messages):
-    if not config.thinking.continuation_required:
+    if not config.continuation_required:
         return None
     from .mcp_client import encrypt_headers
     return encrypt_headers({"continuation": json.dumps({
         "provider": config.site_provider_id, "model": config.model,
+        "protocol": config.api_protocol, "connection": config.connection_id,
         "adapter": config.thinking.adapter, "messages": messages,
     }, ensure_ascii=True)})
 
 
 def history_message(row, config):
-    if row.role == "assistant" and row.encrypted_continuation and config.thinking.continuation_required:
+    if row.role == "assistant" and row.encrypted_continuation and config.continuation_required:
         from .mcp_client import decrypt_headers, MCPError
         from .llm import LLMConfigurationError
         try:
@@ -161,7 +162,9 @@ def history_message(row, config):
             raise LLMConfigurationError("历史模型上下文无法恢复，请联系管理员或新建对话") from exc
         if (private.get("provider") == config.site_provider_id and private.get("model") == config.model
                 and private.get("adapter") == config.thinking.adapter):
-            return private["messages"]
+            if (private.get("protocol", "chat_completions") == config.api_protocol
+                    and private.get("connection", config.connection_id) == config.connection_id):
+                return private["messages"]
     return [{"role": row.role, "content": row.content}]
 
 

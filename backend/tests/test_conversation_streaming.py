@@ -126,11 +126,20 @@ def test_json_fallback_is_one_delta_with_diagnostic():
 
 
 @pytest.mark.parametrize("disconnect", [False, True])
-def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatch, disconnect):
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
+def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatch, disconnect, protocol):
     import uvicorn
     http, db, _ = client
     conversation = create(http, [])
     identifier = model_id(http)
+    from app.models import ModelConnection
+    selected = db.get(SiteModelProvider, UUID(identifier))
+    db.get(ModelConnection, selected.connection_id).api_protocol = protocol
+    db.commit()
+    if protocol == "responses":
+        from app import mcp_client
+        monkeypatch.setattr(mcp_client, "encrypt_headers", lambda value: json.dumps(value))
+        monkeypatch.setattr(mcp_client, "decrypt_headers", json.loads)
     release, ended = Event(), Event()
     stop_signals = []
     bridge = chat.stream_events
@@ -140,10 +149,18 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatc
     monkeypatch.setattr(chat, "stream_events", observed_events)
     def respond(handler, _payload):
         handler.send_response(200); handler.send_header("Content-Type", "text/event-stream"); handler.end_headers()
-        sse(handler, {"choices": [{"delta": {"content": "首段正文"}}]})
+        sse(handler, {"type": "response.output_text.delta", "delta": "首段正文"}
+            if protocol == "responses" else {"choices": [{"delta": {"content": "首段正文"}}]})
         assert release.wait(8)
-        sse(handler, {"choices": [{"delta": {"content": "后续正文"}, "finish_reason": "stop"}]})
-        sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 4}})
+        if protocol == "responses":
+            sse(handler, {"type": "response.output_text.delta", "delta": "后续正文"})
+            sse(handler, {"type": "response.completed", "response": {"status": "completed",
+                "output": [{"type": "message", "role": "assistant",
+                    "content": [{"type": "output_text", "text": "首段正文后续正文"}]}],
+                "usage": {"input_tokens": 8, "output_tokens": 4}}})
+        else:
+            sse(handler, {"choices": [{"delta": {"content": "后续正文"}, "finish_reason": "stop"}]})
+            sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 4}})
         ended.set()
     factory = sessionmaker(bind=db.get_bind())
     def database():

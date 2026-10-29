@@ -113,9 +113,13 @@ class CreditLedgerEntry(Base):
 
 class ModelConnection(Base):
     __tablename__ = "model_connections"
+    __table_args__ = (CheckConstraint("api_protocol IN ('chat_completions', 'responses')",
+                                     name="ck_model_connection_protocol"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120))
     platform: Mapped[str] = mapped_column(String(30), default="custom")
+    api_protocol: Mapped[str] = mapped_column(String(30), default="chat_completions",
+                                             server_default="chat_completions")
     base_url: Mapped[str] = mapped_column(Text)
     encrypted_api_key: Mapped[str] = mapped_column(Text)
     timeout_seconds: Mapped[float] = mapped_column(default=60)

@@ -13,7 +13,7 @@ from test_shared_providers import setup_site, prices
 
 def connection(client):
     result = client.post("/site/admin/model-connections", json={"name": "Shared connection",
-        "platform": "custom", "base_url": "https://provider.example/v1", "api_key": "secret"})
+        "platform": "custom", "api_protocol": "chat_completions", "base_url": "https://provider.example/v1", "api_key": "secret"})
     assert result.status_code == 201, result.text
     assert "secret" not in result.text and "encrypted_api_key" not in result.text
     return result.json()
@@ -36,7 +36,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     config = llm_providers.request_provider_config(db, UUID(identity["workspace_id"]), UUID(first["id"]))
     db.commit()
     changed = client.put(f"/site/admin/model-connections/{c['id']}", json={
-        "name": "Renamed", "base_url": "https://other.example/v1", "api_key": "replacement", "version": 1})
+        "name": "Renamed", "api_protocol": "chat_completions", "base_url": "https://other.example/v1", "api_key": "replacement", "version": 1})
     assert changed.status_code == 200
     assert config.base_url == "https://provider.example/v1" and config.api_key == "secret"
     assert config.connection_version == 1
@@ -48,7 +48,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     assert current.api_key == "replacement" and current.connection_version == 2
     db.commit()
     assert client.put(f"/site/admin/model-connections/{c['id']}", json={
-        "name": "Renamed", "base_url": "https://other.example/v1", "version": 2, "enabled": False}).status_code == 200
+        "name": "Renamed", "api_protocol": "chat_completions", "base_url": "https://other.example/v1", "version": 2, "enabled": False}).status_code == 200
     with pytest.raises(LLMConfigurationError):
         shared_providers.assert_available(first["id"], config.connection_id)
     assert all(p["unavailable_reason"] == "connection_disabled" for p in client.get("/models/available").json()["providers"])
@@ -131,8 +131,69 @@ def test_same_platform_connections_keep_keys_and_accept_explicit_zero(accounts, 
     assert result2.status_code == 201
     before = db.get(ModelConnection, UUID(first["id"])).encrypted_api_key
     saved = client.put(f"/site/admin/model-connections/{first['id']}", json={
-        "name": "Updated without key", "base_url": first["base_url"], "version": 1})
+        "name": "Updated without key", "api_protocol": "chat_completions", "base_url": first["base_url"], "version": 1})
     assert saved.status_code == 200 and saved.json()["has_api_key"]
     assert db.get(ModelConnection, UUID(first["id"])).encrypted_api_key == before
     assert client.put(f"/site/admin/model-connections/{first['id']}", json={
-        "name": "Stale", "base_url": first["base_url"], "version": 1}).status_code == 409
+        "name": "Stale", "api_protocol": "chat_completions", "base_url": first["base_url"], "version": 1}).status_code == 409
+
+
+def test_explicit_protocol_saved_frozen_validated_and_not_public(accounts, monkeypatch):
+    from test_thinking import effort
+    client, db, identity = setup_site(accounts, monkeypatch)
+    payload = {"name": "Responses supplier", "base_url": "https://provider.example/v1",
+               "api_key": "secret", "api_protocol": "responses", "platform": "openai"}
+    assert client.post("/site/admin/model-connections", json={k: v for k, v in payload.items()
+                                                          if k != "api_protocol"}).status_code == 422
+    assert client.post("/site/admin/model-connections", json={**payload, "api_protocol": "completions"}).status_code == 422
+    assert client.post("/site/admin/model-connections", json={**payload,
+        "base_url": "https://provider.example/v1/chat/completions"}).status_code == 422
+    response = client.post("/site/admin/model-connections", json=payload)
+    assert response.status_code == 201, response.text
+    c = response.json()
+    assert c["api_protocol"] == "responses"
+    path = f"/site/admin/model-connections/{c['id']}"
+    assert client.get(path).json()["api_protocol"] == "responses"
+    assert client.post(f"{path}/models", json={"connection_version": 1,
+        "models": [{**model(c), "thinking": effort()}]}).status_code == 422
+    response = client.post(f"{path}/models", json={"connection_version": 1,
+        "models": [{**model(c), "thinking": effort("openai")}]})
+    assert response.status_code == 201, response.text
+    configured = response.json()[0]
+    preview = client.post(f"/site/admin/llm-providers/{configured['id']}/thinking/preview", json={
+        "version": configured["version"], "connection_id": c["id"], "connection_version": 1,
+        "thinking": effort("openai"), "max_output_tokens": 128})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["parameters"]["reasoning"] == {"effort": "high"}
+    assert preview.json()["parameters"]["max_output_tokens"] == 128
+    chosen = llm_providers.request_provider_config(db, UUID(identity["workspace_id"]), UUID(configured["id"]))
+    db.commit()
+    assert chosen.api_protocol == "responses"
+    assert client.put(path, json={**payload, "api_protocol": "chat_completions", "version": 1}).status_code == 200
+    assert client.post(f"/site/admin/llm-providers/{configured['id']}/thinking/preview", json={
+        "version": configured["version"], "connection_id": c["id"], "connection_version": 1,
+        "thinking": effort("openai")}).status_code == 409
+    assert chosen.api_protocol == "responses"
+    assert llm_providers.request_provider_config(db, UUID(identity["workspace_id"]),
+        UUID(configured["id"])).api_protocol == "chat_completions"
+    db.commit()
+    public = client.get("/models/available").text
+    assert "api_protocol" not in public and "base_url" not in public and "secret" not in public
+    preview = client.post(f"/site/admin/llm-providers/{configured['id']}/thinking/preview", json={
+        "version": configured["version"], "thinking": effort("openai"), "max_output_tokens": 128})
+    assert preview.status_code == 200 and preview.json()["parameters"]["reasoning_effort"] == "high"
+    assert client.put(path, json={**payload, "version": 1}).status_code == 409
+
+
+def test_protocol_change_rejects_incompatible_existing_models(accounts, monkeypatch):
+    from test_thinking import effort
+    client, db, _ = setup_site(accounts, monkeypatch)
+    c = connection(client)
+    path = f"/site/admin/model-connections/{c['id']}"
+    response = client.post(f"{path}/models", json={"connection_version": 1,
+        "models": [{**model(c), "thinking": effort()}]})
+    assert response.status_code == 201
+    changed = client.put(path, json={"name": c["name"], "base_url": c["base_url"],
+        "api_protocol": "responses", "version": 1})
+    assert changed.status_code == 422 and "model-a" in changed.text
+    assert client.get(path).json()["api_protocol"] == "chat_completions"

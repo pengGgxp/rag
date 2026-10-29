@@ -72,6 +72,11 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
     connection = lock_connection(db, shared.connection_id)
     thinking = select_thinking(shared.thinking_config, shared.thinking_version,
                               thinking_option_id, thinking_config_version)
+    from .llm_responses import validate_thinking
+    try:
+        validate_thinking(connection.api_protocol, thinking)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
     try:
         api_key = _decrypt_api_key(connection.encrypted_api_key)
     except Exception as exc:
@@ -82,7 +87,8 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
         timeout_seconds=connection.timeout_seconds, provider_id=str(row.id), provider_key=row.key,
         provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking,
         context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
-        config_version=shared.version, connection_id=str(connection.id), connection_version=connection.version)
+        config_version=shared.version, connection_id=str(connection.id), connection_version=connection.version,
+        api_protocol=connection.api_protocol)
 
 
 @site_router.get("")

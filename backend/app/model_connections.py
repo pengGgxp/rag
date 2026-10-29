@@ -29,6 +29,7 @@ class ConnectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
     platform: Literal["deepseek", "bailian", "openai", "custom"] = "custom"
+    api_protocol: Literal["chat_completions", "responses"]
     base_url: str = Field(min_length=1, max_length=1000)
     api_key: SecretStr | None = Field(default=None, min_length=1)
     timeout_seconds: int = Field(default=60, ge=1, le=600, strict=True)
@@ -69,6 +70,7 @@ def read_connection(db, row):
     from .shared_providers import unavailable_reason
     models = db.scalars(select(SiteModelProvider).where(SiteModelProvider.connection_id == row.id)).all()
     return {"id": str(row.id), "name": row.name, "platform": row.platform,
+        "api_protocol": row.api_protocol,
         "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
         "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled, "version": row.version,
         "model_count": len(models), "available_model_count": sum(
@@ -112,6 +114,9 @@ def apply_connection(row, payload):
         raise HTTPException(422, "请填写供应商名称")
     row.name, row.platform = payload.name.strip(), payload.platform
     row.base_url = validate_base_url(payload.base_url)
+    from .llm_responses import endpoint
+    endpoint(row.base_url, payload.api_protocol)
+    row.api_protocol = payload.api_protocol
     row.timeout_seconds, row.enabled = payload.timeout_seconds, payload.enabled
     if payload.api_key:
         row.encrypted_api_key = _encrypt_api_key(payload.api_key.get_secret_value())
@@ -136,6 +141,13 @@ def create_connection(payload: ConnectionInput, db=Depends(get_db), actor=Depend
 def update_connection(identifier: UUID, payload: ConnectionInput, db=Depends(get_db), actor=Depends(connection_writer)):
     settings_locked(db)
     row = lock_connection(db, identifier, payload.version)
+    from .llm_responses import validate_thinking
+    from .thinking import select_thinking
+    for model in db.scalars(select(SiteModelProvider).where(SiteModelProvider.connection_id == identifier)):
+        try:
+            validate_thinking(payload.api_protocol, select_thinking(model.thinking_config, model.thinking_version))
+        except ValueError as exc:
+            raise HTTPException(422, f"{model.name}：{exc}") from None
     apply_connection(row, payload)
     row.version += 1
     record(db, actor, "model_connections.updated", "model_connection", row.id,
@@ -159,7 +171,8 @@ def discover_models(url, secret, timeout):
     # Bounded read; credentials stay on the server and are never forwarded on redirects.
     try:
         deadline = monotonic() + min(timeout, 10)
-        with httpx.stream("GET", f"{url.rstrip('/')}/models",
+        from .llm_responses import api_root
+        with httpx.stream("GET", f"{api_root(url)}/models",
                 headers={"Authorization": f"Bearer {secret}"}, timeout=min(timeout, 10),
                 follow_redirects=False) as response:
             if response.status_code != 200:

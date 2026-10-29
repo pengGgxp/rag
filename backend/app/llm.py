@@ -29,7 +29,7 @@ class ToolResponse:
     content: str | None
     tool_calls: list[ToolCall]
     usage: "LLMUsage | None" = None
-    protocol_fields: dict[str, str] | None = field(default=None, repr=False)
+    protocol_fields: dict[str, Any] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,11 @@ class ChatProviderConfig:
     config_version: int = 0
     connection_id: str | None = None
     connection_version: int = 0
+    api_protocol: str = "chat_completions"
+
+    @property
+    def continuation_required(self):
+        return self.api_protocol == "responses" or self.thinking.continuation_required
 
     @property
     def llm_configured(self) -> bool:
@@ -155,6 +160,9 @@ class OpenAICompatibleChatProvider:
             assert_available(self.config.site_provider_id, self.config.connection_id)
 
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
+        if self.config.api_protocol == "responses":
+            from .llm_responses import payload
+            return payload(self.config, messages, temperature, tools=tools, tool_choice=tool_choice, stream=stream)
         thinking = self.config.thinking
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
@@ -261,6 +269,12 @@ class OpenAICompatibleChatProvider:
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol == "responses":
+            from .llm_responses import complete
+            response = complete(self, messages, temperature=temperature)
+            if not response.content:
+                raise LLMProviderError("模型未返回正文")
+            return response.content.strip()
         if not self.configured:
             raise LLMConfigurationError(
                 "请在问答输入区选择可用模型"
@@ -290,6 +304,9 @@ class OpenAICompatibleChatProvider:
         """
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol == "responses":
+            from .llm_responses import complete
+            return complete(self, messages, tools, tool_choice)
         if not self.configured:
             raise LLMConfigurationError(
                 "回答模型尚未配置，请在工作区设置中选择模型"
@@ -339,6 +356,10 @@ class OpenAICompatibleChatProvider:
         from httpx_sse import EventSource
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol == "responses":
+            from .llm_responses import stream
+            yield from stream(self, messages, tools, tool_choice)
+            return
         self.stream_diagnostic = "sse"
         message = {"content": "", "reasoning_content": ""}
         calls = {}
@@ -436,6 +457,11 @@ class OpenAICompatibleChatProvider:
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol == "responses":
+            from .llm_responses import stream_text
+            async for text in stream_text(self, messages):
+                yield text
+            return
         self.stream_diagnostic = "sse"
         if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")

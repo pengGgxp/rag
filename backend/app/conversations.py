@@ -350,7 +350,10 @@ def chat_router(get_db, retrieve):
         shared = db.get(SiteModelProvider, provider_id)
         if shared is None or unavailable_reason(db, shared, None, True):
             raise HTTPException(409, "当前模型不可用，请重新选择")
+        from .model_connections import connection_for
+        connection = connection_for(db, shared)
         config = ChatProviderConfig("", "", shared.model, site_provider_id=str(shared.id),
+            connection_id=str(connection.id), api_protocol=connection.api_protocol,
             context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
             thinking=select_thinking(shared.thinking_config, shared.thinking_version,
                 thinking_option_id, thinking_config_version))
