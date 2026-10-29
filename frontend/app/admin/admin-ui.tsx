@@ -175,7 +175,7 @@ export function CreditSummary({ credits }: { credits: Credits }) {
         <dd>{number(credits.lifetime_granted)}</dd>
       </div>
       <div>
-        <dt>累计消耗</dt>
+        <dt>累计扣减</dt>
         <dd>{number(credits.lifetime_spent)}</dd>
       </div>
     </dl>

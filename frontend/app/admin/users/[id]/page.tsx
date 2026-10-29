@@ -7,10 +7,10 @@ import { Dialog } from "../../../../components/ui/dialog";
 import { request } from "../../../api";
 import { useAuth } from "../../../auth";
 import type { AdminUser } from "../page";
+import { WorkspaceCredits } from "../../workspace-credits";
 import {
   AdminHeading,
   AdminLoad,
-  CreditSummary,
   date,
   json,
   useAdminResource,
@@ -193,7 +193,8 @@ export default function UserDetailPage() {
                       } as Record<string, string>
                     )[workspace.role] || workspace.role}
                   </h2>
-                  <CreditSummary credits={workspace.credits} />
+                  <WorkspaceCredits id={workspace.id} name={workspace.name} credits={workspace.credits}
+                    changed={setNotice} />
                 </section>
               ))}
             </section>

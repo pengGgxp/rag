@@ -1,18 +1,20 @@
 "use client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useAdminChanges } from "../../admin-changes";
+import { WorkspaceCredits } from "../../workspace-credits";
 import type { AdminWorkspace } from "../page";
 import {
   AdminHeading,
   AdminLoad,
-  CreditSummary,
   date,
   useAdminResource,
 } from "../../admin-ui";
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [notice, setNotice] = useState("");
   useAdminChanges(false, false);
   const { data, loading, error, reload } = useAdminResource<AdminWorkspace>(
     `/site/admin/workspaces/${id}`,
@@ -29,6 +31,7 @@ export default function WorkspaceDetailPage() {
           <Link className="secondary" href={`/admin/pricing?workspace=${data.id}`}>消费倍率</Link>
         </div>}
       </AdminHeading>
+      {notice && <p className="auth-success" role="status">{notice}</p>}
       <AdminLoad loading={loading} error={error} retry={reload}>
         {data && (
           <>
@@ -58,7 +61,8 @@ export default function WorkspaceDetailPage() {
             </dl>
             <section className="admin-section">
               <h2>积分摘要</h2>
-              <CreditSummary credits={data.credits} />
+              <WorkspaceCredits key={data.id} id={data.id} name={data.name} credits={data.credits}
+                changed={setNotice} />
             </section>
             <section className="admin-section">
               <h2>成员 · {data.member_count}</h2>

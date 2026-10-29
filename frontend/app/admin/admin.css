@@ -265,6 +265,33 @@
   display: grid;
   gap: 8px;
 }
+.admin-credit-actions { margin-top: var(--form-gap); }
+.admin-confirm.admin-credit-editor { padding: var(--form-section-gap); }
+.modal:has(.admin-credit-editor) .modal-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.admin-credit-target { display: grid; gap: 6px; overflow-wrap: anywhere; }
+.admin-credit-target span { color: var(--muted); font-size: var(--form-label-size); }
+.admin-credit-form, .admin-credit-form fieldset { display: grid; gap: var(--form-gap); }
+.admin-credit-form input, .admin-credit-form select, .admin-credit-form textarea {
+  width: 100%; max-width: 100%; min-width: 0; min-height: var(--form-control-height);
+  border: 1px solid var(--line); border-radius: var(--form-radius);
+  padding: 9px 12px; background: var(--surface); color: var(--ink); font: inherit;
+}
+.admin-credit-form textarea { resize: vertical; }
+.admin-credit-preview { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--form-gap); margin: 0; font-variant-numeric: tabular-nums; }
+.admin-credit-preview dt, .admin-credit-preview > span { color: var(--muted); }
+.admin-credit-preview dd { margin: 6px 0 0; }
+.admin-credit-confirmation { margin: 0; line-height: 1.6; }
+.admin-credit-history { border-top: 1px solid var(--line); padding-top: var(--form-gap); }
+.admin-credit-history summary { font-size: var(--form-font-size); cursor: pointer; min-height: var(--form-control-height); align-content: center; }
+.admin-credit-entry { border-bottom: 1px solid var(--line); padding: var(--form-gap) 0; overflow-wrap: anywhere; }
+.admin-credit-entry > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.admin-credit-entry p { margin: 8px 0; white-space: pre-wrap; }
+.admin-credit-entry span, .admin-credit-entry small { color: var(--muted); font-size: var(--form-label-size); }
+@media (max-width: 700px) {
+  .admin-credit-form input, .admin-credit-form select, .admin-credit-form textarea,
+  .admin-credit-form button, .admin-credit-actions button, .admin-credit-history summary,
+  .modal:has(.admin-credit-editor) .modal-heading .icon-button { min-height: var(--form-touch-height); }
+}
 .admin-danger {
   color: var(--danger);
 }

@@ -48,6 +48,7 @@ const actions: Record<string, string> = {
   "storage.tested": "测试文件存储",
   "storage.migrated": "迁移原始文件",
   "site.settings_updated": "更新站点设置",
+  "workspace.credits_adjusted": "调整工作区积分",
 };
 export default function SiteAuditPage() {
   const params = useSearchParams();
@@ -104,6 +105,7 @@ export default function SiteAuditPage() {
           >
             <option value="">全部</option>
             <option value="user">用户</option>
+            <option value="workspace">工作区</option>
             <option value="auth_settings">认证配置</option>
             <option value="site_settings">站点设置</option>
           </select>
