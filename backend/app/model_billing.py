@@ -175,7 +175,8 @@ class ModelMeter:
         except BaseException:
             with self.factory() as db:
                 finish_call(db, self.request_id, call_id,
-                    measured_usage(provider.last_usage, messages, {}, tools, success=False), "failed")
+                    {**measured_usage(provider.last_usage, messages, {}, tools, success=False),
+                     "thinking_diagnostic": provider.thinking_diagnostic() if hasattr(provider, "thinking_diagnostic") else {}}, "failed")
                 db.commit()
             raise
         if isinstance(response, str):
@@ -186,6 +187,8 @@ class ModelMeter:
             success = bool(response.content or response.tool_calls)
         usage = measured_usage(getattr(response, "usage", None) or provider.last_usage,
             messages, output, tools, success=success)
+        if hasattr(provider, "thinking_diagnostic"):
+            usage["thinking_diagnostic"] = provider.thinking_diagnostic()
         if getattr(provider, "stream_diagnostic", None) == "upstream_returned_json":
             usage["stream_diagnostic"] = "upstream_returned_json"
         with self.factory() as db:

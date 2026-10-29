@@ -132,6 +132,12 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatc
     conversation = create(http, [])
     identifier = model_id(http)
     release, ended = Event(), Event()
+    stop_signals = []
+    bridge = chat.stream_events
+    def observed_events(execution, stopped):
+        stop_signals.append(stopped)
+        return bridge(execution, stopped)
+    monkeypatch.setattr(chat, "stream_events", observed_events)
     def respond(handler, _payload):
         handler.send_response(200); handler.send_header("Content-Type", "text/event-stream"); handler.end_headers()
         sse(handler, {"choices": [{"delta": {"content": "首段正文"}}]})
@@ -169,6 +175,7 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatc
                     remaining = list(stream)
                     assert remaining[-1].event == "done" and remaining[-1].json()["status"] == "completed"
             if disconnect:
+                assert stop_signals and stop_signals[0].wait(5)
                 release.set()
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:

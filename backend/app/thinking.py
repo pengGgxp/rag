@@ -35,7 +35,7 @@ class ThinkingConfig(BaseModel):
     @model_validator(mode="after")
     def valid_capability(self):
         if self.kind in ("unconfigured", "unsupported"):
-            if self.adapter != "none" or self.options or self.default_option_id:
+            if self.adapter != "none" or self.options or self.default_option_id or self.stream_only or self.always_thinking:
                 raise ValueError("未配置或不支持时不能设置适配器和选项")
             return self
         if self.adapter == "none":
@@ -62,6 +62,8 @@ class ThinkingConfig(BaseModel):
             raise ValueError("开关必须包含 enabled 和 disabled")
         if self.kind == "effort" and any(value not in EFFORTS[self.adapter] for value in values):
             raise ValueError("包含适配器不支持的思考等级")
+        if self.always_thinking and "disabled" in values:
+            raise ValueError("始终思考的模型不能配置关闭选项")
         if self.kind == "budget":
             if self.budget_min > self.budget_max or any(
                 type(value) is not int or not self.budget_min <= value <= self.budget_max for value in values
@@ -102,6 +104,10 @@ class ThinkingSelection:
     @property
     def continuation_required(self):
         return self.adapter == "deepseek" and self.value != "disabled"
+
+    @property
+    def displays_reasoning(self):
+        return self.adapter in ("deepseek", "bailian") and self.kind != "unsupported"
 
     def snapshot(self):
         if self.kind in ("unconfigured", "unsupported"):
@@ -157,3 +163,17 @@ def history_message(row, config):
                 and private.get("adapter") == config.thinking.adapter):
             return private["messages"]
     return [{"role": row.role, "content": row.content}]
+
+
+def encrypt_display_thinking(blocks):
+    if not blocks:
+        return None
+    from .mcp_client import encrypt_headers
+    return encrypt_headers({"display_thinking": json.dumps(blocks, ensure_ascii=True)})
+
+
+def decrypt_display_thinking(value):
+    if not value:
+        return []
+    from .mcp_client import decrypt_headers
+    return json.loads(decrypt_headers(value)["display_thinking"])

@@ -196,12 +196,16 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     final = events[-1].json()
     assert final["status"] == "completed", final
     assert final["thinking"]["config_version"] == 1
-    assert all("private" not in event.data for event in events)
+    assert all("private" not in event.data for event in events if event.event != "thinking_delta")
+    assert any("private-first" in event.data for event in events if event.event == "thinking_delta")
     assert all(item["reasoning_effort"] == "high" for item in observed)
     assert observed[1]["messages"][-2]["reasoning_content"] == "private-first"
     saved = db.scalar(select(ChatMessage).where(ChatMessage.role == "assistant"))
     assert saved.encrypted_continuation and "private" not in saved.encrypted_continuation
+    assert saved.encrypted_display_thinking and "private" not in saved.encrypted_display_thinking
     assert "private" not in client.get(f"/conversations/{conversation}").text
+    display = client.get(f"/conversations/{conversation}/messages/{saved.id}/thinking")
+    assert display.status_code == 200 and display.json()["blocks"][0]["text"] == "private-first"
     assert "private" not in client.get(f"/conversations/{conversation}/export").text
     send(client, conversation, first["id"], thinking_config_version=2)
     assert any(item.get("reasoning_content") == "private-first" for item in observed[-1]["messages"])

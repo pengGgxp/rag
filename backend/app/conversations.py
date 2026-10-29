@@ -36,10 +36,10 @@ from .extensions import ExtensionRuntime, validate_selection
 from .llm_providers import request_provider_config
 from . import model_billing
 from .models import ModelUsageRequest
-from .thinking import encrypt_continuation
+from .thinking import encrypt_continuation, encrypt_display_thinking, decrypt_display_thinking
 from .conversation_stream import events as stream_events
 from .conversation_context import ContextManager, build_messages, HISTORY_TOOL
-from .models import ContextOperation, SiteModelProvider
+from .models import ContextOperation, SiteModelProvider, ThinkingTest
 
 
 class ExtensionSelection(BaseModel):
@@ -90,6 +90,7 @@ def message_read(message: ChatMessage) -> dict:
         "provider_id": str(message.provider_id) if message.provider_id else None,
         "provider_name": message.provider_name, "model": message.model,
         "thinking": message.thinking_snapshot,
+        "thinking_diagnostics": message.thinking_diagnostics,
         "citations": message.citations, "traces": message.traces,
         "tool_events": message.tool_events,
         "display_blocks": message.display_blocks,
@@ -127,6 +128,11 @@ def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Con
 
 def recover_interrupted_conversations(db: Session):
     model_billing.recover_requests(db)
+    for test in db.scalars(select(ThinkingTest).where(ThinkingTest.status == "running")):
+        test.status = "interrupted"
+        test.result = {"request_id": str(test.request_id), "version": test.version,
+            "thinking_version": test.thinking_version, "completed": False,
+            "error": "服务重启，测试已中断，已确认用量按原规则结算"}
     from .models import BillingSnapshot, CreditLedgerEntry
     from .workspace_billing import legacy_call_usage
     for snapshot in db.scalars(select(BillingSnapshot).where(
@@ -143,6 +149,10 @@ def recover_interrupted_conversations(db: Session):
         message.tool_events = [
             {**item, "status": "interrupted"} if item.get("status") in ("waiting", "running") else item
             for item in message.tool_events
+        ]
+        message.display_blocks = [
+            {**block, "status": "interrupted"} if block.get("type") == "thinking" and block.get("status") == "running"
+            else block for block in message.display_blocks
         ]
     db.execute(update(Conversation).where(Conversation.active_request_id.is_not(None)).values(
         active_request_id=None,
@@ -163,6 +173,18 @@ def event_text(payload):
 
 def chat_router(get_db, retrieve):
     router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+    @router.get("/{conversation_id}/messages/{message_id}/thinking")
+    def read_thinking(conversation_id: UUID, message_id: UUID,
+            db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        live_conversation(db, conversation_id, access)
+        message = db.get(ChatMessage, message_id)
+        if message is None or message.conversation_id != conversation_id or message.role != "assistant":
+            raise HTTPException(404, "回答不存在")
+        try:
+            return {"blocks": decrypt_display_thinking(message.encrypted_display_thinking)}
+        except Exception:
+            raise HTTPException(503, "思考内容暂时无法读取，请稍后重试") from None
 
     @router.post("", status_code=201)
     def create(payload: ConversationCreate, request: Request,
@@ -350,6 +372,8 @@ def chat_router(get_db, retrieve):
             raise HTTPException(404, "会话不存在或已删除")
         access.conversation(db, conversation)
         existing = db.get(ContextOperation, payload.request_id)
+        if db.get(ThinkingTest, payload.request_id):
+            raise HTTPException(409, "请求标识已被使用，请重新发起")
         if existing:
             if existing.conversation_id != conversation_id or existing.status == "running":
                 raise HTTPException(409, "整理请求正在执行或已被使用")
@@ -399,6 +423,8 @@ def chat_router(get_db, retrieve):
         if conversation is None:
             raise HTTPException(404, "会话不存在或已删除")
         access.conversation(db, conversation)
+        if db.get(ThinkingTest, payload.request_id):
+            raise HTTPException(409, "请求标识已被使用，请重新发起")
         existing = db.scalar(select(ChatMessage).where(ChatMessage.request_id == payload.request_id))
         if existing:
             if existing.conversation_id != conversation.id or existing.status == "streaming":
@@ -459,6 +485,8 @@ def chat_router(get_db, retrieve):
             message.traces = []
             message.tool_events = []
             message.display_blocks = []
+            message.thinking_diagnostics = []
+            message.encrypted_display_thinking = None
         else:
             db.add(ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
@@ -495,6 +523,8 @@ def chat_router(get_db, retrieve):
         traces = []
         tool_events = []
         display_blocks = []
+        thinking_blocks = []
+        thinking_diagnostics = []
         stopped = Event()
         sequence = 0
         retrieval_query = None
@@ -550,6 +580,8 @@ def chat_router(get_db, retrieve):
                             and message.status == "cancelled"):
                         message.content, message.display_blocks = content, display_blocks
                         message.tool_events = tool_events
+                        message.encrypted_display_thinking = encrypt_display_thinking(thinking_blocks)
+                        message.thinking_diagnostics = thinking_diagnostics
                         db.commit()
                     return message_read(db.get(ChatMessage, message_id)), False
                 row = db.execute(update(ChatMessage).where(
@@ -562,6 +594,8 @@ def chat_router(get_db, retrieve):
                     retrieval_query=retrieval_query, refused=refused,
                     refusal_reason=refusal_reason, error_detail=error_detail,
                     encrypted_continuation=continuation,
+                    encrypted_display_thinking=encrypt_display_thinking(thinking_blocks),
+                    thinking_diagnostics=thinking_diagnostics,
                 ))
                 if row.rowcount and status != "streaming":
                     db.execute(update(Conversation).where(
@@ -646,11 +680,33 @@ def chat_router(get_db, retrieve):
                     continue
                 now = time.monotonic()
                 active = await run_in_threadpool(still_authorized)
-                if not active and name not in ("tool_started", "tool_result", "compaction"):
+                if not active and name not in ("tool_started", "tool_result", "compaction", "thinking_status"):
                     continue
                 if name == "complete":
                     agent_run = data
                 else:
+                    if name in ("thinking_delta", "thinking_status"):
+                        block_id = data["block_id"]
+                        block = next((item for item in display_blocks if item["id"] == block_id), None)
+                        if name == "thinking_delta" and block is None:
+                            block = {"id": block_id, "type": "thinking", "round": data["round"], "status": "running"}
+                            display_blocks.append(block)
+                            thinking_blocks.append({"id": block_id, "round": data["round"], "text": ""})
+                        if name == "thinking_delta":
+                            private_block = next(item for item in thinking_blocks if item["id"] == block_id)
+                            private_block["text"] += data["text"]
+                            if now - last_text_save >= 0.25:
+                                await run_in_threadpool(save)
+                                last_text_save = now
+                        else:
+                            if block:
+                                block["status"] = data["status"]
+                            if data.get("diagnostic") is not None:
+                                diagnostic = {"round": data["round"], "status": data["status"], **data["diagnostic"]}
+                                thinking_diagnostics = [
+                                    item for item in thinking_diagnostics if item["round"] != data["round"]
+                                ] + [diagnostic]
+                            await run_in_threadpool(save)
                     if name == "delta":
                         block_id = data["block_id"]
                         block = next((item for item in display_blocks if item["id"] == block_id), None)
@@ -721,6 +777,9 @@ def chat_router(get_db, retrieve):
                 for item in tool_events:
                     if item.get("status") in ("waiting", "running"):
                         item["status"] = "cancelled" if final_status == "cancelled" else "interrupted"
+                for block in display_blocks:
+                    if block["type"] == "thinking" and block.get("status") == "running":
+                        block["status"] = "cancelled" if final_status == "cancelled" else "interrupted"
                 if metered:
                     with factory() as usage_db:
                         model_billing.finalize_request(usage_db, request_id, final_status)

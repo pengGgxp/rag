@@ -167,7 +167,9 @@ def stream_retrieval_agent(
                     if name == "complete":
                         response = data
                     else:
-                        write((name, {**data, "block_id": f"text-{state.get('steps', 0) + 1}"}))
+                        round_number = state.get("steps", 0) + 1
+                        write((name, {**data, "round": round_number,
+                            "block_id": f"{'thinking' if name.startswith('thinking_') else 'text'}-{round_number}"}))
                 if response is None:
                     raise LLMProviderError("模型未完成响应")
                 return response
@@ -175,7 +177,18 @@ def stream_retrieval_agent(
             if response.content:
                 write(("delta", {"text": response.content, "block_id": f"text-{state.get('steps', 0) + 1}"}))
             return response
-        response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
+        try:
+            response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
+        except BaseException:
+            if hasattr(provider, "thinking_diagnostic"):
+                write(("thinking_status", {"round": state.get("steps", 0) + 1,
+                    "block_id": f"thinking-{state.get('steps', 0) + 1}", "status": "interrupted",
+                    "diagnostic": provider.thinking_diagnostic()}))
+            raise
+        if hasattr(provider, "thinking_diagnostic"):
+            write(("thinking_status", {"round": state.get("steps", 0) + 1,
+                "block_id": f"thinking-{state.get('steps', 0) + 1}", "status": "completed",
+                "diagnostic": provider.thinking_diagnostic()}))
         check_active()
         calls = response.tool_calls
         usage_events = list(state.get("usage_events", []))

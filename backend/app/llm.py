@@ -41,6 +41,7 @@ class LLMUsage:
     cached_input_tokens: int | None = None
     cache_status: str = "missing"
     diagnostics: tuple[str, ...] = ()
+    reasoning_tokens: int | None = None
 
     def measured(self) -> dict:
         result = asdict(self)
@@ -109,6 +110,20 @@ class OpenAICompatibleChatProvider:
         self.settings = settings or get_settings()
         self.config = config
         self.last_usage: LLMUsage | None = None
+        self.thinking_characters = 0
+        self.stream_diagnostic = None
+
+    def reset_observation(self):
+        self.last_usage = None
+        self.thinking_characters = 0
+        self.stream_diagnostic = None
+
+    def thinking_diagnostic(self):
+        return {
+            "received_thinking": self.thinking_characters > 0,
+            "reasoning_tokens": self.last_usage.reasoning_tokens if self.last_usage else None,
+            "stream": self.stream_diagnostic or "not_streamed",
+        }
 
     @property
     def configured(self) -> bool:
@@ -159,6 +174,7 @@ class OpenAICompatibleChatProvider:
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             if self.config.thinking.stream_only:
+                self.stream_diagnostic = "sse"
                 payload.update(stream=True, stream_options={"include_usage": True})
                 with httpx.stream("POST", self._chat_url(self.base_url), headers=headers,
                                   json=payload, timeout=self.timeout_seconds) as response:
@@ -177,6 +193,11 @@ class OpenAICompatibleChatProvider:
         except (KeyError, TypeError, AttributeError, SSEError) as exc:
             raise LLMProviderError("模型返回无效响应") from exc
         self.last_usage = _parse_usage(body.get("usage") if isinstance(body, dict) else None)
+        if isinstance(body, dict):
+            for choice in body.get("choices", [])[:1]:
+                reasoning = (choice.get("message") or {}).get("reasoning_content")
+                if isinstance(reasoning, str):
+                    self.thinking_characters += len(reasoning)
         return body
 
     def _collect_tool_stream(self, response):
@@ -204,6 +225,8 @@ class OpenAICompatibleChatProvider:
                 for key in ("content", "reasoning_content"):
                     if isinstance(delta.get(key), str):
                         message[key] += delta[key]
+                        if key == "reasoning_content":
+                            self.thinking_characters += len(delta[key])
                 for part in delta.get("tool_calls", []):
                     index = part["index"]
                     call = calls.setdefault(index, {"id": "", "type": "function",
@@ -234,8 +257,8 @@ class OpenAICompatibleChatProvider:
         )
 
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
+        self.reset_observation()
         self.check_available()
-        self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
                 "请在问答输入区选择可用模型"
@@ -263,8 +286,8 @@ class OpenAICompatibleChatProvider:
         runtime does not depend on a vendor SDK or on provider-specific
         message classes.
         """
+        self.reset_observation()
         self.check_available()
-        self.last_usage = None
         if not self.configured:
             raise LLMConfigurationError(
                 "回答模型尚未配置，请在工作区设置中选择模型"
@@ -312,9 +335,9 @@ class OpenAICompatibleChatProvider:
     def stream_with_tools(self, messages, tools, *, tool_choice="auto") -> Iterator[tuple[str, Any]]:
         """Forward public text as received; assemble private protocol fields and tool JSON server-side."""
         from httpx_sse import EventSource
+        self.reset_observation()
         self.check_available()
-        self.last_usage = None
-        self.stream_diagnostic = None
+        self.stream_diagnostic = "sse"
         message = {"content": "", "reasoning_content": ""}
         calls = {}
         finished = False
@@ -330,9 +353,19 @@ class OpenAICompatibleChatProvider:
                     body = json.loads(response.read())
                     self.last_usage = _parse_usage(body.get("usage"))
                     self.stream_diagnostic = "upstream_returned_json"
+                    raw_message = (body.get("choices") or [{}])[0].get("message") or {}
+                    reasoning = raw_message.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        self.thinking_characters += len(reasoning)
+                        if self.config.thinking.displays_reasoning:
+                            yield "thinking_delta", {"text": reasoning}
                     result = self._tool_response(body)
                     if result.content:
+                        if self.thinking_characters and self.config.thinking.displays_reasoning:
+                            yield "thinking_status", {"status": "completed"}
                         yield "delta", {"text": result.content}
+                    elif self.thinking_characters and self.config.thinking.displays_reasoning:
+                        yield "thinking_status", {"status": "completed"}
                     yield "complete", result
                     return
                 for event in EventSource(response).iter_sse():
@@ -354,13 +387,18 @@ class OpenAICompatibleChatProvider:
                         raise LLMProviderError("模型流式调用失败")
                     for choice in body.get("choices", [])[:1]:
                         delta = choice.get("delta") or {}
-                        text = delta.get("content")
-                        if isinstance(text, str) and text:
-                            message["content"] += text
-                            yield "delta", {"text": text}
                         reasoning = delta.get("reasoning_content")
                         if isinstance(reasoning, str):
                             message["reasoning_content"] += reasoning
+                            self.thinking_characters += len(reasoning)
+                            if reasoning and self.config.thinking.displays_reasoning:
+                                yield "thinking_delta", {"text": reasoning}
+                        text = delta.get("content")
+                        if isinstance(text, str) and text:
+                            if self.thinking_characters and not message["content"] and self.config.thinking.displays_reasoning:
+                                yield "thinking_status", {"status": "completed"}
+                            message["content"] += text
+                            yield "delta", {"text": text}
                         for part in delta.get("tool_calls", []):
                             index = part.get("index")
                             if type(index) is not int or index < 0 or index > 1024:
@@ -385,6 +423,8 @@ class OpenAICompatibleChatProvider:
                 if not finished:
                     raise LLMProviderError("模型响应未完成，请重试")
                 message["tool_calls"] = [calls[index] for index in sorted(calls)]
+                if self.thinking_characters and self.config.thinking.displays_reasoning:
+                    yield "thinking_status", {"status": "completed"}
                 yield "complete", self._tool_response({"choices": [{"message": message}]})
         except LLMProviderError:
             raise
@@ -392,8 +432,9 @@ class OpenAICompatibleChatProvider:
             raise LLMProviderError("模型流式连接或响应异常，请重试") from exc
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        self.reset_observation()
         self.check_available()
-        self.last_usage = None
+        self.stream_diagnostic = "sse"
         if not self.configured:
             raise LLMConfigurationError("回答模型尚未配置")
         payload = self._payload(messages, stream=True)
@@ -409,7 +450,11 @@ class OpenAICompatibleChatProvider:
                     # Some compatible providers ignore stream=True and return one JSON response.
                     if "application/json" in source.response.headers.get("content-type", ""):
                         body = json.loads(await source.response.aread())
+                        self.stream_diagnostic = "upstream_returned_json"
                         self.last_usage = _parse_usage(body.get("usage"))
+                        reasoning = body["choices"][0]["message"].get("reasoning_content")
+                        if isinstance(reasoning, str):
+                            self.thinking_characters += len(reasoning)
                         content = body["choices"][0]["message"]["content"]
                         if not isinstance(content, str) or not content.strip():
                             raise LLMProviderError("回答服务未返回正文")
@@ -446,6 +491,9 @@ class OpenAICompatibleChatProvider:
                         if reason is not None:
                             finished = True
                         content = choice.get("delta", {}).get("content")
+                        reasoning = choice.get("delta", {}).get("reasoning_content")
+                        if isinstance(reasoning, str):
+                            self.thinking_characters += len(reasoning)
                         if isinstance(content, str) and content:
                             received = True
                             yield content
@@ -492,5 +540,13 @@ def _parse_usage(raw: Any) -> LLMUsage | None:
     if any(raw.get(key) is not None and value is None for key, value in zip(
             ("prompt_tokens", "completion_tokens", "total_tokens"), values)):
         diagnostics.append("invalid_token_count")
+    output_details = raw.get("completion_tokens_details")
+    reasoning = output_details.get("reasoning_tokens") if isinstance(output_details, dict) else None
+    if reasoning is not None and (
+        type(reasoning) is not int or reasoning < 0 or (values[1] is not None and reasoning > values[1])
+    ):
+        diagnostics.append("invalid_reasoning_token_count")
+        reasoning = None
     return LLMUsage(prompt_tokens=values[0], completion_tokens=values[1], total_tokens=values[2],
-                    cached_input_tokens=cached, cache_status=status, diagnostics=tuple(diagnostics))
+                    cached_input_tokens=cached, cache_status=status, diagnostics=tuple(diagnostics),
+                    reasoning_tokens=reasoning)

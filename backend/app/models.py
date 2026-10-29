@@ -133,6 +133,20 @@ class SiteModelProvider(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class ThinkingTest(Base):
+    __tablename__ = "model_thinking_tests"
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    provider_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
+    version: Mapped[int] = mapped_column(Integer)
+    thinking_version: Mapped[int] = mapped_column(Integer)
+    option_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class LLMProviderConfig(Base):
     __tablename__ = "llm_provider_configs"
     __table_args__ = (
@@ -556,6 +570,8 @@ class ChatMessage(Base):
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     thinking_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     encrypted_continuation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_display_thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thinking_diagnostics: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
     traces: Mapped[list[dict]] = mapped_column(JSON, default=list)
     tool_events: Mapped[list[dict]] = mapped_column(JSON, default=list)

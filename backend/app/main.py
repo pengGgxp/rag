@@ -1067,6 +1067,8 @@ app.include_router(llm_providers_router)
 app.include_router(site_llm_providers_router)
 from .shared_providers import router as shared_providers_router, selection_router
 app.include_router(shared_providers_router)
+from .thinking_admin import router as thinking_admin_router
+app.include_router(thinking_admin_router)
 app.include_router(selection_router)
 from .billing_admin import router as workspace_billing_router
 app.include_router(workspace_billing_router)

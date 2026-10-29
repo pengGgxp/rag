@@ -33,10 +33,14 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
         row.thinking_config, row.thinking_version = effort(), 1
         message.thinking_snapshot = select_thinking(effort(), 1).snapshot()
         message.encrypted_continuation = "opaque-ciphertext"
+        message.encrypted_display_thinking = "separate-display-ciphertext"
+        message.thinking_diagnostics = [{"round": 1, "received_thinking": True, "reasoning_tokens": 12}]
         db.commit()
         db.expire_all()
         assert db.get(ChatMessage, message.id).thinking_snapshot["config_version"] == 1
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0029_conversation_streaming"
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0032_thinking_diagnostics"
+        assert message.encrypted_display_thinking == "separate-display-ciphertext"
+        assert message.thinking_diagnostics[0]["reasoning_tokens"] == 12
         assert message.display_blocks == []
         assert row.context_capacity is None and row.max_output_tokens is None
 

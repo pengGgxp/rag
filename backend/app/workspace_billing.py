@@ -168,12 +168,17 @@ class LegacyPriceMeter:
         try:
             response = operation()
         except BaseException:
-            self._finish(snapshot_id, measured_usage(provider.last_usage, messages, {}, tools, success=False), status, "failed")
+            usage = measured_usage(provider.last_usage, messages, {}, tools, success=False)
+            if hasattr(provider, "thinking_diagnostic"):
+                usage["thinking_diagnostic"] = provider.thinking_diagnostic()
+            self._finish(snapshot_id, usage, status, "failed")
             raise
         output = {"content": response} if isinstance(response, str) else {
             "content": getattr(response, "content", None),
             "tool_calls": [call.arguments for call in getattr(response, "tool_calls", [])]}
         usage = measured_usage(getattr(response, "usage", None) or provider.last_usage, messages, output, tools)
+        if hasattr(provider, "thinking_diagnostic"):
+            usage["thinking_diagnostic"] = provider.thinking_diagnostic()
         if getattr(provider, "stream_diagnostic", None) == "upstream_returned_json":
             usage["stream_diagnostic"] = "upstream_returned_json"
         self._finish(snapshot_id, usage, status, "completed")

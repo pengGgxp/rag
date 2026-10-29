@@ -12,6 +12,7 @@ SAFE_FIELDS = {
     "workspace_id", "resource_id",
     "previous_percent", "multiplier_percent", "version", "fingerprint",
     "previous_signup_credits", "signup_credits",
+    "request_id", "option_id", "received_thinking", "reasoning_tokens",
 }
 
 
