@@ -47,6 +47,7 @@ const actions: Record<string, string> = {
   "storage.updated": "更新文件存储配置",
   "storage.tested": "测试文件存储",
   "storage.migrated": "迁移原始文件",
+  "site.settings_updated": "更新站点设置",
 };
 export default function SiteAuditPage() {
   const params = useSearchParams();
@@ -104,6 +105,7 @@ export default function SiteAuditPage() {
             <option value="">全部</option>
             <option value="user">用户</option>
             <option value="auth_settings">认证配置</option>
+            <option value="site_settings">站点设置</option>
           </select>
         </label>
         <label>
@@ -172,6 +174,8 @@ export default function SiteAuditPage() {
                           <Link href={`/admin/users/${event.target_id}`}>
                             {event.target_id}
                           </Link>
+                        ) : event.target_type === "site_settings" ? (
+                          <Link href="/admin/settings">站点设置</Link>
                         ) : event.target_type === "auth_settings" ? (
                           "认证配置"
                         ) : (

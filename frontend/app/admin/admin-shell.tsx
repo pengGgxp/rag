@@ -13,6 +13,7 @@ import {
   ScrollText,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   UsersRound,
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
@@ -28,6 +29,7 @@ const navigation = [
   { href: "/admin/storage", label: "文件存储", icon: HardDrive },
   { href: "/admin/audit", label: "站点审计", icon: ScrollText },
   { href: "/admin/auth", label: "认证与登录", icon: Settings2 },
+  { href: "/admin/settings", label: "站点设置", icon: SlidersHorizontal },
 ];
 
 export function AdminShell({ children }: { children: ReactNode }) {

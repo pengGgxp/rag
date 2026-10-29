@@ -361,6 +361,30 @@ p {
   font-size: 12px;
 }
 .workspace-header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.site-announcement-banner {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 0 var(--workspace-content-padding); min-height: 48px;
+  border-bottom: 1px solid var(--line); background: var(--brand-soft); color: var(--brand);
+}
+.site-announcement-banner > svg { flex-shrink: 0; }
+.announcement-title {
+  display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; min-height: 44px;
+  text-align: left; border: 0; background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px;
+}
+.announcement-title > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.announcement-title small { flex-shrink: 0; font-size: 12px; font-weight: 400; }
+.site-announcement-banner .icon-button { width: 44px; height: 44px; flex-shrink: 0; }
+.site-announcement-entry { width: 100%; text-align: left; background: transparent; border: 0; cursor: pointer; }
+.announcement-title:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 6px; }
+.site-announcement-content { padding: 24px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; font-size: 14px; }
+.modal:has(.site-announcement-content) .modal-heading { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.modal:has(.site-announcement-content) .modal-heading h2 { overflow-wrap: anywhere; min-width: 0; }
+.modal:has(.site-announcement-content) .modal-heading .icon-button { flex-shrink: 0; }
+@media (max-width: 700px) {
+  .site-announcement-content { padding: 16px; }
+  .site-announcement-banner { gap: 6px; }
+  .announcement-title { gap: 8px; }
+}
 .workspace-body { flex: 1; min-height: 0; overflow: auto; }
 .workspace-context-navigation { min-height: 0; overflow-y: auto; overflow-x: hidden; flex: 1; }
 .workspace .sidebar-footer, .modal-side-panel .sidebar-footer { padding-bottom: 0; }

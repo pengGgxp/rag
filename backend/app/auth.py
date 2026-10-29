@@ -21,7 +21,7 @@ from .config import get_settings
 from .db import get_db
 from .audit_log import record_audit
 from .models import (
-    AuthToken, Conversation, CreditAccount, CreditLedgerEntry, ExternalIdentity,
+    AuthToken, Conversation, ExternalIdentity,
     KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, LoginSession, Membership,
     QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
 )
@@ -197,22 +197,8 @@ def create_user(db, email, name, password=None, workspace_id=None):
         if workspace is None:
             raise HTTPException(500, "默认工作区不存在")
     db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-    if db.get(CreditAccount, workspace.id) is None:
-        db.add(CreditAccount(
-            workspace_id=workspace.id,
-            balance=1000,
-            lifetime_granted=1000,
-            lifetime_spent=0,
-        ))
-        db.add(CreditLedgerEntry(
-            workspace_id=workspace.id,
-            actor_user_id=None,
-            amount=1000,
-            balance_after=1000,
-            kind="initial_grant",
-            idempotency_key=f"workspace:{workspace.id}:initial",
-            metadata_json={"reason": "workspace_created"},
-        ))
+    from .credits import ensure_account
+    ensure_account(db, workspace.id)
     db.flush()
     return user, workspace.id
 

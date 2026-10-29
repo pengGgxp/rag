@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Menu } from "lucide-react";
 import { Tooltip } from "../components/ui/tooltip";
 import { useUiStore } from "./ui-store";
+import { SiteAnnouncementBanner } from "./site-announcement";
 
 export function WorkspaceHeader({ title, context, actions }: {
   title: string;
@@ -11,7 +12,7 @@ export function WorkspaceHeader({ title, context, actions }: {
   actions?: ReactNode;
 }) {
   const openNavigation = useUiStore((state) => state.setSidebarOpen);
-  return <header className="workspace-header">
+  return <><header className="workspace-header">
     <Tooltip content="打开导航">
       <button className="icon-button mobile-only" data-workspace-menu
         aria-label="打开导航" aria-haspopup="dialog"
@@ -22,7 +23,7 @@ export function WorkspaceHeader({ title, context, actions }: {
       {context && <span className="workspace-header-context">{context}</span>}
     </div>
     {actions && <div className="workspace-header-actions">{actions}</div>}
-  </header>;
+  </header><SiteAnnouncementBanner /></>;
 }
 
 export function WorkspaceSkeleton() {

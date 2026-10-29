@@ -13,7 +13,6 @@ from .management_access import ManagementAccess, management_access
 
 site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/usage-policies", tags=["site-admin"])
 
-INITIAL_CREDITS = 1000
 CREDIT_RESERVATION = 1
 
 
@@ -59,10 +58,13 @@ def require_policy(db, workspace_id, capability):
     return resolve_prices(db, workspace_id, (capability,))[capability]
 
 
-def ensure_account(db: Session, workspace_id: UUID, *, initial: int = INITIAL_CREDITS) -> CreditAccount:
+def ensure_account(db: Session, workspace_id: UUID, *, initial: int | None = None) -> CreditAccount:
     account = db.get(CreditAccount, workspace_id, with_for_update=True, populate_existing=True)
     if account is not None:
         return account
+    from .site_settings import signup_grant
+    grant, settings_version = signup_grant(db)
+    initial = grant if initial is None else initial
     account = CreditAccount(
         workspace_id=workspace_id,
         balance=initial,
@@ -79,7 +81,7 @@ def ensure_account(db: Session, workspace_id: UUID, *, initial: int = INITIAL_CR
             balance_after=initial,
             kind="initial_grant",
             idempotency_key=f"workspace:{workspace_id}:initial",
-            metadata_json={"reason": "workspace_created"},
+            metadata_json={"reason": "workspace_created", "site_settings_version": settings_version},
         ))
     return account
 

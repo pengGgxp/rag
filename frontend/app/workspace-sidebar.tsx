@@ -6,6 +6,7 @@ import { BookOpen, Layers3, MessageSquare, Puzzle } from "lucide-react";
 import { AccountButton } from "./auth";
 import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
+import { SiteAnnouncementEntry } from "./site-announcement";
 
 const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
@@ -33,6 +34,6 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
       ))}
     </nav>
     {children}
-    <div className="sidebar-footer"><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
+    <div className="sidebar-footer"><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
   </>;
 }

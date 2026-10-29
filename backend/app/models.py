@@ -12,6 +12,21 @@ from .db import Base
 LEGACY_WORKSPACE_ID = UUID("00000000-0000-4000-a000-000000000001")
 
 
+class SiteSettings(Base):
+    __tablename__ = "site_settings"
+    __table_args__ = (
+        CheckConstraint("signup_credits BETWEEN 0 AND 1000000", name="ck_site_signup_credits"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    signup_credits: Mapped[int] = mapped_column(Integer, default=1000)
+    announcement_title: Mapped[str] = mapped_column(String(120), default="")
+    announcement_body: Mapped[str] = mapped_column(Text, default="")
+    announcement_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    announcement_revision: Mapped[int] = mapped_column(Integer, default=0)
+    announcement_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SiteStorageSettings(Base):
     __tablename__ = "site_storage_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
