@@ -39,6 +39,7 @@ import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
 import { ConversationActivity } from "./conversation-activity";
 import { ConversationThinking } from "./conversation-thinking";
+import { citationMarkers } from "./citation-markers";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
 import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
@@ -138,16 +139,11 @@ function AnswerMarkdown({
   onCitation: (item: Citation) => void;
   text?: string;
 }) {
-  let markdown = text ?? message.content;
-  message.citations.forEach((citation, index) => {
-    markdown = markdown
-      .split(`[${citation.chunk_id}]`)
-      .join(`[${index + 1}](#source-${citation.chunk_id})`);
-  });
   return (
     <div className="answer-text">
       <ReactMarkdown
         skipHtml
+        remarkPlugins={[citationMarkers(message.citations)]}
         components={{
           img: ({ alt }) => <span>{alt}</span>,
           a: ({ href, children }) => {
@@ -171,7 +167,7 @@ function AnswerMarkdown({
           },
         }}
       >
-        {markdown}
+        {text ?? message.content}
       </ReactMarkdown>
     </div>
   );
