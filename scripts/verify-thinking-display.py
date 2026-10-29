@@ -16,7 +16,7 @@ from app import auth
 from app.config import get_settings
 from app.credits import ensure_account
 from app.db import SessionLocal
-from app.models import ChatMessage, LoginSession, Membership, ModelBillingSettings, SiteModelProvider, User, Workspace
+from app.models import ChatMessage, LoginSession, Membership, ModelBillingSettings, SiteModelProvider, ThinkingTest, User, Workspace
 from app.site_audit import record
 
 
@@ -40,7 +40,7 @@ def create_state(path):
             email_verified_at=auth.now(), is_site_admin=True)
         db.add_all([workspace, user]); db.flush()
         db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-        ensure_account(db, workspace.id)
+        ensure_account(db, workspace.id, initial=1_000_000)
         db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
             workspace_id=workspace.id, expires_at=auth.now() + timedelta(hours=1)))
         record(db, user, "verification.started", "workspace", workspace.id,
@@ -54,8 +54,8 @@ def create_state(path):
     return state
 
 
-def run(path):
-    state = create_state(path)
+def run(path, *, resume=False):
+    state = json.loads(path.read_text(encoding="utf-8")) if resume else create_state(path)
     settings = get_settings()
     with httpx.Client(base_url=settings.api_public_url.rstrip("/"), timeout=180,
         cookies={auth.COOKIE: state["cookie"]}, headers={"X-RAG-Request": "1", "X-CSRF-Token": state["csrf"],
@@ -64,9 +64,19 @@ def run(path):
         models = [row for row in models if row["available"] and row["thinking"]["kind"] == "effort"]
         assert 0 < len(models) <= 2, "This bounded verification expects at most two configured models"
         for model in models:
+            if any(row["model"] == model["model"] for row in state["results"]):
+                continue
             detail = client.get(f"/site/admin/llm-providers/{model['id']}").json()
             request = {"request_id": str(uuid4()), "version": detail["version"],
                 "thinking_config_version": detail["thinking_version"], "option_id": detail["thinking"]["default_option_id"]}
+            with SessionLocal() as db:
+                previous = db.scalar(select(ThinkingTest).where(
+                    ThinkingTest.workspace_id == UUID(state["workspace_id"]),
+                    ThinkingTest.provider_id == UUID(model["id"]),
+                ))
+                if previous:
+                    assert previous.status == "completed", "Do not automatically repeat an unfinished probe"
+                    request["request_id"] = str(previous.request_id)
             probe = client.post(f"/site/admin/llm-providers/{model['id']}/thinking/test", json=request)
             assert probe.status_code == 200
             result = probe.json()
@@ -126,5 +136,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=["run", "cleanup"])
     parser.add_argument("--state", required=True, type=Path)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    (run if args.operation == "run" else cleanup)(args.state)
+    if args.operation == "run":
+        run(args.state, resume=args.resume)
+    else:
+        cleanup(args.state)
