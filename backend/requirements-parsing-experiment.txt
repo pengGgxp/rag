@@ -1,0 +1,5 @@
+# Isolated evaluation environment; production requirements remain unchanged.
+-r requirements.txt
+markitdown[docx,pdf]==0.1.9
+Pillow==13.0.0
+reportlab==5.1.0

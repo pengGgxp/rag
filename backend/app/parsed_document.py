@@ -11,6 +11,7 @@ class ParsedDocument:
     text: str
     parser_name: str
     pages: list[dict[str, Any]] = field(default_factory=list)
+    source_locations: list[dict[str, Any]] = field(default_factory=list)
 
 
 def assemble_pages(pages: list[tuple[int, list[dict]]], parser_name: str) -> ParsedDocument:
@@ -50,7 +51,9 @@ def assemble_pages(pages: list[tuple[int, list[dict]]], parser_name: str) -> Par
 
 def parsed_chunks(parsed: ParsedDocument) -> list[tuple[ChunkDraft, list[dict]]]:
     if not parsed.pages:
-        return [(draft, []) for draft in chunk_text(parsed.text)]
+        return [(draft, [location for location in parsed.source_locations
+                         if location["char_start"] < draft.char_end and location["char_end"] > draft.char_start])
+                for draft in chunk_text(parsed.text)]
     result = []
     for page in parsed.pages:
         base = page["char_start"]
