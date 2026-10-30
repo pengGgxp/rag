@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from .agent import AGENT_SYSTEM_PROMPT, SEARCH_TOOL, AgentCancelled
 from .llm import LLMConfigurationError, LLMProviderError
-from .models import ChatMessage, ContextCheckpoint, Conversation, Document, KnowledgeBase, AgentSkill, MCPServer
+from .models import ChatMessage, ContextCheckpoint, Conversation, Document, KnowledgeBase, SiteSkill
 from .thinking import history_message
 
 SUMMARY_PREFIX = (
@@ -61,7 +61,7 @@ def source_digest(rows):
     return digest(sources)
 
 
-def scope_digest(db, conversation, access):
+def scope_digest(db, conversation, access, skill_versions=None):
     if conversation is None or conversation.deleted_at is not None:
         raise HTTPException(404, "会话不存在或已删除")
     checked = access.revalidate(db)
@@ -71,10 +71,8 @@ def scope_digest(db, conversation, access):
         for row in db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(ids)).order_by(KnowledgeBase.id))]
     documents = list(db.execute(select(Document.id, Document.version_number, Document.is_active,
         Document.status, Document.updated_at).where(Document.knowledge_base_id.in_(ids)).order_by(Document.id)))
-    extensions = []
-    for model, identifiers in ((AgentSkill, conversation.skill_ids), (MCPServer, conversation.mcp_server_ids)):
-        for row in db.scalars(select(model).where(model.id.in_([UUID(identifier) for identifier in identifiers])).order_by(model.id)):
-            extensions.append((str(row.id), row.enabled, row.updated_at))
+    extensions = skill_versions if skill_versions is not None else [(str(row.id), row.version) for row in db.scalars(
+        select(SiteSkill).where(SiteSkill.enabled.is_(True)).order_by(SiteSkill.id))]
     return digest({"libraries": libraries, "documents": [tuple(row) for row in documents],
                    "extensions": extensions, "role": checked.role, "user": str(access.user_id)})
 
@@ -84,7 +82,8 @@ def build_messages(db, conversation, rows, config, extensions, query=None):
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT
         + "\n可用 Skill 摘要（按需加载）：" + json.dumps(extensions.skills, ensure_ascii=False)
         + "\n本会话知识库：" + json.dumps(libraries, ensure_ascii=False)}]
-    messages.extend(item for row in rows for item in history_message(row, config))
+    messages.extend(item for row in rows for item in history_message(row, config,
+        sorted((skill["id"], skill["version"]) for skill in extensions.skills)))
     if query is not None:
         messages.append({"role": "user", "content": query})
     tools = ([SEARCH_TOOL] if libraries else []) + extensions.tools
@@ -97,10 +96,12 @@ def eligible_rows(rows):
 
 
 class ContextManager:
-    def __init__(self, factory, access, conversation_id, config, provider, meter, request_id, *, manual=False):
+    def __init__(self, factory, access, conversation_id, config, provider, meter, request_id, *, manual=False,
+                 skill_versions=None):
         self.factory, self.access, self.conversation_id = factory, access, conversation_id
         self.config, self.provider, self.meter, self.request_id = config, provider, meter, request_id
         self.manual = manual
+        self.skill_versions = skill_versions
         self.attempt = 0
         self.did_compact = False
         self.persisted_rows = []
@@ -109,7 +110,7 @@ class ContextManager:
 
     def history(self, db, conversation, rows):
         self.persisted_rows = rows
-        self.scope = scope_digest(db, conversation, self.access)
+        self.scope = scope_digest(db, conversation, self.access, self.skill_versions)
         checkpoints = db.scalars(select(ContextCheckpoint).where(
             ContextCheckpoint.conversation_id == conversation.id, ContextCheckpoint.through_sequence >= 0)
             .order_by(ContextCheckpoint.created_at.desc())).all()
@@ -119,8 +120,9 @@ class ContextManager:
                     and checkpoint.source_digest == source_digest(covered)):
                 self.covered = checkpoint.through_sequence
                 return [{"role": "user", "content": SUMMARY_PREFIX + checkpoint.summary}] + [
-                    item for row in rows if row.sequence > self.covered for item in history_message(row, self.config)]
-        return [item for row in rows for item in history_message(row, self.config)]
+                    item for row in rows if row.sequence > self.covered
+                    for item in history_message(row, self.config, self.skill_versions)]
+        return [item for row in rows for item in history_message(row, self.config, self.skill_versions)]
 
     def prepare(self, messages, tools, emit, check_active):
         budget = input_budget(self.config)
@@ -196,7 +198,7 @@ class ContextManager:
                 raise LLMProviderError("整理未缩小上下文，已保留原文")
             with self.factory() as db:
                 conversation = db.get(Conversation, self.conversation_id, with_for_update=True)
-                scope = scope_digest(db, conversation, self.access)
+                scope = scope_digest(db, conversation, self.access, self.skill_versions)
                 if scope != self.scope or conversation.active_request_id != self.request_id:
                     raise AgentCancelled()
                 covered = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == self.conversation_id,

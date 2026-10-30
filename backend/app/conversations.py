@@ -235,20 +235,7 @@ def chat_router(get_db, retrieve):
     @router.put("/{conversation_id}/extensions")
     def extensions(conversation_id: UUID, payload: ExtensionSelection,
                    db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        conversation = db.scalar(select(Conversation).where(
-            Conversation.id == conversation_id, Conversation.deleted_at.is_(None),
-        ).with_for_update())
-        if conversation is None:
-            raise HTTPException(404, "会话不存在或已删除")
-        access.conversation(db, conversation)
-        if conversation.active_request_id:
-            raise HTTPException(409, "请先停止或等待当前回答完成")
-        validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
-        conversation.skill_ids = list(dict.fromkeys(map(str, payload.skill_ids)))
-        conversation.mcp_server_ids = list(dict.fromkeys(map(str, payload.mcp_server_ids)))
-        db.commit()
-        return conversation_read(conversation, True)
-
+        raise HTTPException(410, "个人扩展选择已关闭")
     @router.patch("/{conversation_id}")
     def rename(conversation_id: UUID, payload: ConversationRename, request: Request,
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -368,8 +355,11 @@ def chat_router(get_db, retrieve):
             thinking=select_thinking(shared.thinking_config, shared.thinking_version,
                 thinking_option_id, thinking_config_version))
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-        runtime = ExtensionRuntime(factory, access, conversation.skill_ids, conversation.mcp_server_ids)
-        manager = ContextManager(factory, access, conversation_id, config, None, None, None)
+        runtime = ExtensionRuntime(factory, access)
+        if not config.thinking.supports_tools:
+            runtime.skills, runtime.tools = [], []
+        manager = ContextManager(factory, access, conversation_id, config, None, None, None,
+            skill_versions=sorted((row["id"], row["version"]) for row in runtime.skills))
         rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
             ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
         history = manager.history(db, conversation, rows)
@@ -476,10 +466,8 @@ def chat_router(get_db, retrieve):
                 ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed",
             ).order_by(ChatMessage.sequence)).all()
             validate_messages(manager.history(db, conversation, prior), provider_config)
-            if not provider_config.thinking.supports_tools and (
-                conversation.libraries or conversation.skill_ids or conversation.mcp_server_ids
-            ):
-                raise HTTPException(422, "此模型不支持当前协议的工具调用，请移除检索与扩展或选择其他模型")
+            if not provider_config.thinking.supports_tools and conversation.libraries:
+                raise HTTPException(422, "此模型不支持知识库检索，请选择其他模型")
             if metered:
                 if payload.web_search and provider_config.thinking.supports_tools:
                     from .search_settings import runtime_config
@@ -656,7 +644,6 @@ def chat_router(get_db, retrieve):
             with factory() as db:
                 conversation = live_conversation(db, conversation_id, access.revalidate(db))
                 scope_ids = [item.knowledge_base_id for item in conversation.libraries]
-                skill_ids, server_ids = conversation.skill_ids, conversation.mcp_server_ids
                 message = db.get(ChatMessage, message_id) if not manual else None
                 user_message = db.scalar(select(ChatMessage).where(
                     ChatMessage.conversation_id == conversation_id,
@@ -677,10 +664,13 @@ def chat_router(get_db, retrieve):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")
             agent_run = None
             extension_runtime = await run_in_threadpool(
-                ExtensionRuntime, factory, access, skill_ids, server_ids,
+                ExtensionRuntime, factory, access,
             )
+            if not provider_config.thinking.supports_tools:
+                extension_runtime.skills, extension_runtime.tools = [], []
             manager = ContextManager(factory, access, conversation_id, provider_config, provider, meter,
-                request_id, manual=manual)
+                request_id, manual=manual,
+                skill_versions=sorted((row["id"], row["version"]) for row in extension_runtime.skills))
             with factory() as db:
                 conversation = live_conversation(db, conversation_id, access.revalidate(db))
                 history = manager.history(db, conversation, rows)
@@ -772,7 +762,8 @@ def chat_router(get_db, retrieve):
                         if name == "compaction":
                             data = {**data, "kind": "compaction", "name": "compact_context"}
                         summary = {
-                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary")
+                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary",
+                                                       "skill_id", "skill_name", "skill_version")
                             if key in data
                         }
                         summary.setdefault("status", "running")

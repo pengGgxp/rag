@@ -229,7 +229,7 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
             pass
         def execute(self, name, arguments, check_active):
             return {"content": "SKILL_TEXT" if name == "load_skill" else "MCP_RESULT"}
-        def label(self, name):
+        def label(self, name, *_args):
             return name
     class Provider:
         status = provider().status

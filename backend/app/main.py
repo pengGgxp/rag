@@ -1070,6 +1070,10 @@ app.include_router(search_settings_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 app.include_router(extensions_router)
+from .site_skills import router as site_skills_router
+app.include_router(site_skills_router)
+from .suggestions import router as suggestions_router
+app.include_router(suggestions_router)
 app.include_router(llm_providers_router)
 app.include_router(site_llm_providers_router)
 from .shared_providers import router as shared_providers_router, selection_router

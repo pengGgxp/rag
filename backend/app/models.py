@@ -722,6 +722,36 @@ class LibraryGrant(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
 
 
+class SiteSkill(Base):
+    __tablename__ = "site_skills"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str] = mapped_column(Text)
+    markdown: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ProductSuggestion(Base):
+    __tablename__ = "product_suggestions"
+    __table_args__ = (UniqueConstraint("user_id", "request_id", name="uq_suggestion_request"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    category: Mapped[str] = mapped_column(String(24))
+    content: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    handled_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class AgentSkill(Base):
     __tablename__ = "agent_skills"
 

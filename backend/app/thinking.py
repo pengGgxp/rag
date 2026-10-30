@@ -152,7 +152,7 @@ def encrypt_continuation(config, messages):
     }, ensure_ascii=True)})
 
 
-def history_message(row, config):
+def history_message(row, config, skill_versions=None):
     if row.role == "user" and getattr(row, "attachments", None):
         from .chat_attachments import user_content
         return [{"role": "user", "content": user_content(row.content, row.attachments)}]
@@ -167,7 +167,25 @@ def history_message(row, config):
                 and private.get("adapter") == config.thinking.adapter):
             if (private.get("protocol", "chat_completions") == config.api_protocol
                     and private.get("connection", config.connection_id) == config.connection_id):
-                return private["messages"]
+                messages = private["messages"]
+                allowed_skills = dict(skill_versions) if skill_versions is not None else None
+                for message in messages:
+                    for call in message.get("tool_calls") or []:
+                        name = call.get("function", {}).get("name", "")
+                        if name == "read_skill_file" or name.startswith("mcp_"):
+                            return [{"role": row.role, "content": row.content}]
+                        if name == "load_skill":
+                            result = next((item for item in messages if item.get("role") == "tool"
+                                and item.get("tool_call_id") == call.get("id")), None)
+                            try:
+                                loaded = json.loads(result["content"]) if result else {}
+                            except (ValueError, TypeError):
+                                loaded = {}
+                            if (not isinstance(loaded, dict) or not isinstance(loaded.get("id"), str)
+                                    or type(loaded.get("version")) is not int
+                                    or allowed_skills is not None and allowed_skills.get(loaded["id"]) != loaded["version"]):
+                                return [{"role": row.role, "content": row.content}]
+                return messages
     return [{"role": row.role, "content": row.content}]
 
 
