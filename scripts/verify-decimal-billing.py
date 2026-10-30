@@ -51,7 +51,7 @@ def snapshot(db):
     }}
 
 
-def live():
+def live(model_name=None):
     from app.credit_amounts import amount
     settings = get_settings()
     identifier = None
@@ -69,9 +69,9 @@ def live():
             cookies={auth.COOKIE: token}, headers={"X-RAG-Request": "1",
                 "Origin": settings.frontend_url, "X-CSRF-Token": json.loads(response.body)["csrf_token"]}) as client:
             choices = client.get("/models/available").json()
-            choice = next((row for row in choices["providers"] if row["available"]
-                and row["id"] == choices["default_provider_id"]),
-                next(row for row in choices["providers"] if row["available"]))
+            available = [row for row in choices["providers"] if row["available"]]
+            choice = (next(row for row in available if row["model"] == model_name) if model_name else
+                next((row for row in available if row["id"] == choices["default_provider_id"]), available[0]))
             conversation = client.post("/conversations", json={})
             assert conversation.status_code == 201
             path = f"/conversations/{conversation.json()['id']}/messages"
@@ -102,9 +102,14 @@ def live():
                     ModelUsageRequest.workspace_id == workspace, ModelUsageRequest.status == "pending")).all()
                 saved_balance = account.balance
             replay = client.post(path, json=payload)
-            assert replay.status_code == 409, f"Expected replay rejection, received {replay.status_code}"
+            assert replay.status_code in (200, 409), f"Unexpected replay HTTP {replay.status_code}"
+            if replay.status_code == 200:
+                restored = next(event.json() for event in EventSource(replay).iter_sse() if event.event == "done")
+                assert restored["id"] == terminal["id"], "Replay created another answer"
             with SessionLocal() as db:
                 assert db.get(CreditAccount, workspace).balance == saved_balance
+                assert {row.id for row in db.scalars(select(UsageEvent).where(
+                    UsageEvent.request_id == request))} == {row.id for row in events}
             print(json.dumps({"passed": True, "model": choice["model"], "deltas": deltas,
                 "tokens": {key: sum(row.units for row in events if row.capability == key)
                     for key in {row.capability for row in events}},
@@ -125,11 +130,12 @@ if __name__ == "__main__":
     parser.add_argument("operation", choices=["snapshot", "check", "live"])
     parser.add_argument("--file", type=Path)
     parser.add_argument("--run-live", action="store_true")
+    parser.add_argument("--model", help="Exact configured model for the bounded paid question")
     args = parser.parse_args()
     if args.operation == "live":
         if not args.run_live:
             parser.error("Live consumption requires --run-live")
-        live()
+        live(args.model)
     else:
         with SessionLocal() as db:
             state = snapshot(db)

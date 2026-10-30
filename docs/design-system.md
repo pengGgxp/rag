@@ -3,7 +3,7 @@
 - 状态：已确认，作为前端开发约束
 - 适用范围：知库 Web 前端、知识库工作台、知识问答、Agent 状态、账号与计费界面
 - 关联 Issue：[Issue #10](https://github.com/pengGgxp/rag/issues/10)、[Issue #19](https://github.com/pengGgxp/rag/issues/19)
-- 最后更新：2026-10-29
+- 最后更新：2026-10-30
 
 ## 1. 产品气质
 

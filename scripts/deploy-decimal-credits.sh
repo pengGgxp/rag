@@ -45,10 +45,10 @@ done
 test "$drained" = 1
 docker compose stop -t 120 api web worker
 docker compose exec -T db pg_dump -U rag -d rag -Fc > "$release/database.drained.dump"
-docker compose run --rm --no-deps -v "$project/scripts:/verify:ro" --entrypoint python \
+docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$project/scripts:/verify:ro" --entrypoint python \
   api /verify/verify-decimal-billing.py snapshot > "$release/accounting.before.json"
 docker compose run --rm --no-deps --entrypoint alembic api upgrade head > "$release/migration.log" 2>&1
-docker compose run --rm --no-deps -v "$project/scripts:/verify:ro" -v "$release:/release:ro" \
+docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$project/scripts:/verify:ro" -v "$release:/release:ro" \
   --entrypoint python api /verify/verify-decimal-billing.py check --file /release/accounting.before.json
 resume
 trap - EXIT
