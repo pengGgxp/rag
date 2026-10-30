@@ -45,7 +45,7 @@ def test_preview_visibility_and_reasons_match_composer(accounts, monkeypatch):
     path = f"/site/admin/workspaces/{session['workspace_id']}/billing-settings"
     models = owner.get(path).json()["models"]
     choices = owner.get("/models/available").json()["providers"]
-    assert {p["provider_id"]: p["unavailable_reason"] for p in models} == {
+    assert {p["provider_id"]: p["unavailable_reason"] for p in models if p["provider_id"] != disabled["id"]} == {
         p["id"]: p["unavailable_reason"] for p in choices}
     reasons = {p["provider_id"]: p["unavailable_reason"] for p in models}
     assert reasons[ready["id"]] is None

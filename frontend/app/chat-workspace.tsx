@@ -36,7 +36,6 @@ import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
 import { Motion } from "../components/ui/motion";
 import "./chat.css";
-import { AgentExtensionPicker, type ExtensionSelection } from "./extensions";
 import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
 import { ConversationActivity } from "./conversation-activity";
@@ -188,12 +187,10 @@ export function ChatWorkspace({
   libraries,
   initialLibraryId,
   conversationId,
-  onExtensions,
 }: {
   libraries: Library[];
   initialLibraryId: string;
   conversationId: string | null;
-  onExtensions: () => void;
 }) {
   const router = useRouter();
   const { session } = useAuth();
@@ -205,7 +202,6 @@ export function ChatWorkspace({
   const [question, setQuestion] = useState("");
   const attachments = useChatAttachments();
   const [dragging, setDragging] = useState(false);
-  const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection>({ skill_ids: [], mcp_server_ids: [] });
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
   const [modelId, setModelId] = useState("");
   const [thinkingId, setThinkingId] = useState("");
@@ -227,7 +223,6 @@ export function ChatWorkspace({
     return () => controller.abort();
   }, [webAttempt, session.workspace_id]);
   useEffect(() => { setWebEnabled(true); }, [session.workspace_id]);
-  const [extensionsBusy, setExtensionsBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -361,7 +356,6 @@ export function ChatWorkspace({
     setTrace(null);
     if (viewRef.current) {
       setScope(viewRef.current.knowledge_bases.map(item => item.id));
-      setDraftExtensions({ skill_ids: viewRef.current.skill_ids ?? [], mcp_server_ids: viewRef.current.mcp_server_ids ?? [] });
     }
     setConversation(null);
     setConversationError("");
@@ -443,8 +437,6 @@ export function ChatWorkspace({
     setConversationError("");
     if (conversation)
       setScope(conversation.knowledge_bases.map((item) => item.id));
-    if (conversation)
-      setDraftExtensions({ skill_ids: conversation.skill_ids ?? [], mcp_server_ids: conversation.mcp_server_ids ?? [] });
     setLoading(false);
     setQuestion("");
     setAsking(false);
@@ -487,7 +479,6 @@ export function ChatWorkspace({
       sending.current ||
       modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
-      extensionsBusy ||
       (!retryId && (!question.trim() && !attachments.ready.length || attachments.blocked ||
         attachments.hasImages && !selectedModel?.supports_images)) ||
       conversation?.active_request_id
@@ -507,7 +498,7 @@ export function ChatWorkspace({
         current = await request<Conversation>("/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ knowledge_base_ids: scope, ...draftExtensions }),
+          body: JSON.stringify({ knowledge_base_ids: scope }),
           signal: controller.signal,
         });
         if (epoch.current !== currentEpoch) return;
@@ -915,23 +906,6 @@ export function ChatWorkspace({
               </fieldset>
             </div>
           </details>
-          <AgentExtensionPicker
-            selection={conversation ? { skill_ids: conversation.skill_ids ?? [], mcp_server_ids: conversation.mcp_server_ids ?? [] } : draftExtensions}
-            disabled={running || loading || extensionsBusy}
-            onManage={onExtensions}
-            onChange={async value => {
-              setExtensionsBusy(true);
-              try {
-                if (conversation) {
-                  const currentId = conversation.id;
-                  const updated = await request<Conversation>(`/conversations/${currentId}/extensions`, {
-                    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
-                  });
-                  setConversation(current => current?.id === currentId ? updated : current);
-                } else setDraftExtensions(value);
-              } finally { setExtensionsBusy(false); }
-            }}
-          />
         </div>
         <section
           className="chat-messages"
@@ -1268,7 +1242,7 @@ export function ChatWorkspace({
                   disabled={
                     (!question.trim() && !attachments.ready.length) || attachments.blocked ||
                     (attachments.hasImages && !selectedModel?.supports_images) ||
-                    loading || extensionsBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
+                    loading || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)
                   }
                   type="submit"

@@ -1,5 +1,7 @@
 # Multi-file Agent Skills
 
+> Historical acceptance only. Issue #61 replaces this runtime with [administrator-managed text skills](platform-skills-feedback.md). Personal bundles and files remain private and retained; their management and execution are disabled.
+
 ## Goal And Scope
 
 Treat a Skill as a directory, using the Agent Skills specification

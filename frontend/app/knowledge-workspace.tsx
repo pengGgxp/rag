@@ -1,7 +1,6 @@
 "use client";
 
 import { ChatWorkspace } from "./chat-workspace";
-import { AgentExtensions } from "./extensions";
 import { Modal } from "./modal";
 import { request } from "./api";
 import { LibraryAccess, useAuth } from "./auth";
@@ -88,7 +87,10 @@ export default function KnowledgeWorkspace() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const screen: WorkspaceScreen = params.has("conversation") || params.has("chat")
-    ? "chat" : params.has("extensions") ? "extensions" : selectedId ? "knowledge" : "catalog";
+    ? "chat" : selectedId ? "knowledge" : "catalog";
+  useEffect(() => {
+    if (pathname === "/" && params.has("extensions")) router.replace("/", { scroll: false });
+  }, [pathname, params, router]);
   const requestedView = params.get("view");
   const view: KnowledgeView = requestedView === "retrieval" || requestedView === "permissions" || requestedView === "settings"
     ? requestedView : "documents";
@@ -430,17 +432,13 @@ export default function KnowledgeWorkspace() {
       .toLowerCase()
       .includes(librarySearch.toLowerCase()),
   );
-  function showExtensions() {
-    router.push("/?extensions=1", { scroll: false });
-    setSidebarOpen(false);
-  }
 
   return (
     <>
       <WorkspaceShell screen={screen}>
-      {screen === "extensions" ? <AgentExtensions /> : screen === "chat" ? (
+      {screen === "chat" ? (
         <ChatWorkspace libraries={libraries} initialLibraryId={selectedId}
-          conversationId={params.get("conversation")} onExtensions={showExtensions} />
+          conversationId={params.get("conversation")} />
       ) : <>
       <WorkspaceNavigation>
         <KnowledgeNavigation
