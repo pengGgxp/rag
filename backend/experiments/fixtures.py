@@ -114,8 +114,6 @@ def generate(root: Path):
             location2 = {"page_number": 2 if kind == "pdf-mixed" else 1}
         manifest.append({"id": path.stem, "path": path.name, "kind": kind, "origin": "generated",
                          "facts": [code, amount], "order": [code, amount], "expected_locations": [location1, location2],
-                         "questions": [{"query": "项目编号是什么？", "answer": code},
-                                       {"query": "审批金额是多少元？", "answer": amount}],
                          "original_excerpt": f"{heading}\n{fact1}\n{fact2}"})
     # Calibration is disjoint from scored samples and has explicit routing labels.
     calibration = []

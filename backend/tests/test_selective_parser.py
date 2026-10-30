@@ -97,5 +97,5 @@ def test_mixed_pdf_calls_only_scan_page_and_keeps_original_number(tmp_path):
 
 def test_fixture_manifest_has_twelve_cases_and_independent_calibration(tmp_path):
     samples = generate(tmp_path)
-    assert len(samples) == 12 and all(len(s["questions"]) == 2 for s in samples)
+    assert len(samples) == 12 and all(len(s["facts"]) == 2 for s in samples)
     assert not any("calibration" in s["path"] for s in samples)

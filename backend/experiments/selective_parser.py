@@ -55,7 +55,7 @@ def image_pdf(data: bytes) -> bytes:
             if image.width * image.height > MAX_PIXELS:
                 raise ValueError("Image exceeds pixel limit")
             output = io.BytesIO()
-            image.convert("RGB").save(output, "PDF", resolution=150)
+            image.convert("RGB").save(output, "PDF", resolution=150, creationDate="", modDate="")
             return output.getvalue()
 
 
@@ -149,7 +149,6 @@ def _marked_docx(data: bytes):
             kind = etree.QName(block).localname
             if kind not in ("p", "tbl"):
                 continue
-            value = "".join(block.itertext())
             style = block.find("w:pPr/w:pStyle", NS)
             if style is not None and "heading" in (style.get(f"{{{W}}}val") or "").lower():
                 section = "".join(block.xpath(".//w:t/text()", namespaces=NS))
