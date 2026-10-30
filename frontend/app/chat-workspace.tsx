@@ -89,6 +89,7 @@ type Message = {
   error_detail?: string | null;
   feedback?: Feedback | null;
   provider_name?: string | null;
+  site_provider_id?: string | null;
   model?: string | null;
   thinking?: { label: string; option_id: string | null; config_version: number; kind: string } | null;
 };
@@ -259,6 +260,7 @@ export function ChatWorkspace({
   const scrollArea = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const draftScopeInitialized = useRef(!!initialLibraryId);
+  const restoredModelFor = useRef<string | null>(null);
   viewRef.current = conversation;
   const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
   const thinking = selectedModel?.thinking;
@@ -331,7 +333,9 @@ export function ChatWorkspace({
     request<ModelOptions>("/models/available", { signal: controller.signal }).then(data => {
       if (!controller.signal.aborted) {
         setModelOptions(data);
-        setModelId(current => data.providers.some(item => item.id === current) ? current : data.default_provider_id ?? "");
+        setModelId(current => data.providers.some(item => item.id === current && item.available) ? current
+          : data.providers.find(item => item.id === data.default_provider_id && item.available)?.id
+            ?? data.providers.find(item => item.available)?.id ?? "");
       }
     }).catch(error => {
       if (!controller.signal.aborted) setModelError(error instanceof Error ? error.message : "模型加载失败");
@@ -377,6 +381,23 @@ export function ChatWorkspace({
       });
     return () => controller.abort();
   }, [conversationId, reloadAttempt, stopGeneration]);
+  useEffect(() => {
+    if (!modelOptions || loading || (conversationId && conversation?.id !== conversationId)) return;
+    const target = conversationId ?? "new";
+    if (restoredModelFor.current === target) return;
+    restoredModelFor.current = target;
+    const previous = conversation?.messages.findLast(item => item.role === "assistant" && item.site_provider_id)?.site_provider_id;
+    const available = modelOptions.providers.filter(item => item.available);
+    setModelId(current => {
+      const restored = available.find(item => item.id === previous);
+      const fallback = available.find(item => item.id === modelOptions.default_provider_id)
+        ?? available.find(item => item.id === current) ?? available[0];
+      return restored?.id ?? (previous ? fallback?.id : available.find(item => item.id === current)?.id ?? fallback?.id) ?? "";
+    });
+    if (previous && !available.some(item => item.id === previous)) {
+      setNotice({ text: available.length ? "之前的模型暂不可用，已选择其他可用模型" : "之前的模型暂不可用，请稍后重试" });
+    }
+  }, [conversationId, conversation, loading, modelOptions]);
   useEffect(() => {
     if (!draftScopeInitialized.current && libraries.length) {
       setScope([initialLibraryId || libraries[0].id]);

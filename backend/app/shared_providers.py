@@ -263,8 +263,7 @@ def unavailable_reason(db, provider, binding, shared):
 
 def visible_providers(db, workspace_id):
     # Site providers are centrally managed and selectable by every workspace.
-    # Availability is reported separately so disabled or incomplete models
-    # remain discoverable without becoming callable.
+    # Management previews retain disabled entries; the user endpoint filters them.
     return db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.created_at)).all()
 
 
@@ -283,7 +282,8 @@ def choices(db, workspace_id):
 
 @selection_router.get("/models/available")
 def available_models(db=Depends(get_db), access: Access = Depends(get_access)):
-    providers = choices(db, access.workspace_id)
+    providers = [item for item in choices(db, access.workspace_id)
+                 if item["unavailable_reason"] not in ("model_disabled", "connection_disabled")]
     settings = db.get(ModelBillingSettings, 1)
     default = str(settings.default_provider_id) if settings and settings.default_provider_id else None
     if not any(item["id"] == default and item["available"] for item in providers):

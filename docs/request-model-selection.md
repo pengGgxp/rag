@@ -3,8 +3,11 @@
 ## Goal and Boundary
 
 Users choose a site-managed model for each question. There is no workspace or
-conversation current-model setting. Current-page React state retains the choice;
-refresh, workspace changes and reopening the page use an available site default.
+conversation current-model setting. Reopening a conversation restores its last
+recorded request model, including after refresh. A new conversation retains the
+current available choice; an initial page uses the available site default, or
+the first available model when the default cannot be used. An unavailable
+historical choice falls back with a short notice.
 Generation disables selection; a genuine retry uses the current choice.
 
 Reuse the existing chat/Agent runtime, shared pricing, workspace multiplier and
@@ -15,12 +18,15 @@ persist browser preferences or add another Agent conversation surface.
 
 - Authenticated GET /models/available returns sanitized model choices and an
   available site default. Centrally configured models are visible to all
-  workspaces; disabled or incomplete models remain listed with a reason.
+  workspaces; disabled models or connections are omitted from the user list,
+  while enabled but incomplete models remain listed with a safe reason.
 - Conversation messages and single-answer requests require a site provider ID.
   Resolve it against the workspace, validate availability, and create/reuse the
   unique accounting association without changing any active workspace model.
 - Persist immutable provider name/model on assistant messages and request
   accounting context. Historical messages remain unknown, never backfilled.
+  Return the associated site provider ID separately from the workspace billing
+  provider ID, so restoring a choice never guesses by mutable name or model.
 - Each request pins its connection, model and base prices; existing multiplier,
   usage, idempotency and settlement semantics remain intact. A stopped provider
   prevents subsequent upstream rounds without rewriting confirmed usage.
@@ -93,7 +99,15 @@ gates, dual current-model flows or migration product pages.
 
 ## 思考设置
 
-思考设置与模型选择均仅保留当前页面状态，不保存为会话偏好。
+思考设置仅保留当前页面状态，不保存为会话偏好；模型按上文规则从历史回答恢复。
 切换模型恢复目标模型默认值；生成期间禁用，重试使用当前设置。
 服务端返回过期版本时保留问题，重新加载并要求确认，不静默换档。
 回答的“请求思考设置”是请求快照，不表示实测思考深度。
+
+## 2026-10-30 模型选择体验验证（#60）
+
+- 停用模型及停用连接不出现在用户列表，后台管理和价格预览继续保留。
+- 通过已有回答关联恢复站点模型 ID，不新增数据迁移、浏览器偏好或工作区当前模型。
+- 后端相关回归 38 项通过；前端构建和 `git diff --check` 通过。
+- 隔离浏览器验证默认选择、新会话沿用、历史恢复、刷新、真实发送请求的模型 ID、历史模型失效回退及慢响应；人工检查 1440px、390px 截图。
+- 浏览器调用使用本地测试服务，未触发付费上游，不修改 OCR、商业价格或计费开关。

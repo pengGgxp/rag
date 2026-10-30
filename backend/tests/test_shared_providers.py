@@ -200,9 +200,13 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
         db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
     db.commit()
     result = owner.get("/models/available").json()
-    choice = next(item for item in result["providers"] if item["id"] == p["id"])
-    assert choice["unavailable_reason"] == reason
-    assert choice["available"] is (reason is None)
+    if mode == "disabled":
+        assert not any(item["id"] == p["id"] for item in result["providers"])
+        assert owner.get(f"/site/admin/llm-providers/{p['id']}").status_code == 200
+    else:
+        choice = next(item for item in result["providers"] if item["id"] == p["id"])
+        assert choice["unavailable_reason"] == reason
+        assert choice["available"] is (reason is None)
     if reason:
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc:

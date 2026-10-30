@@ -614,6 +614,7 @@ class ChatMessage(Base):
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
     provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("llm_provider_configs.id"), nullable=True)
     provider_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider: Mapped["LLMProviderConfig | None"] = relationship(lazy="selectin")
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     thinking_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     encrypted_continuation: Mapped[str | None] = mapped_column(Text, nullable=True)

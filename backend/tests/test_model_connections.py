@@ -51,7 +51,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
         "name": "Renamed", "api_protocol": "chat_completions", "base_url": "https://other.example/v1", "version": 2, "enabled": False}).status_code == 200
     with pytest.raises(LLMConfigurationError):
         shared_providers.assert_available(first["id"], config.connection_id)
-    assert all(p["unavailable_reason"] == "connection_disabled" for p in client.get("/models/available").json()["providers"])
+    assert client.get("/models/available").json()["providers"] == []
     assert client.request("DELETE", f"/site/admin/model-connections/{c['id']}", json={"version": 3}).status_code == 409
 
 

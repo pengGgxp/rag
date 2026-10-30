@@ -92,6 +92,8 @@ def message_read(message: ChatMessage) -> dict:
         "attachments": [attachment_read(row) for row in message.attachments],
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
+        "site_provider_id": str(message.provider.site_provider_id)
+            if message.provider and message.provider.site_provider_id else None,
         "provider_name": message.provider_name, "model": message.model,
         "thinking": message.thinking_snapshot,
         "thinking_diagnostics": message.thinking_diagnostics,

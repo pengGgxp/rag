@@ -66,6 +66,7 @@ def test_each_request_selects_actual_model_and_pins_prices(accounts, monkeypatch
     assert db.get(CreditAccount, workspace).balance == 982
     detail = client.get(f"/conversations/{conversation}").json()
     assert [item["provider_name"] for item in detail["messages"] if item["role"] == "assistant"] == ["first", "second"]
+    assert [item["site_provider_id"] for item in detail["messages"] if item["role"] == "assistant"] == [first["id"], second["id"]]
     assert "provider_id" not in detail  # No conversation-level selected model.
 
 
@@ -125,11 +126,35 @@ def test_real_retry_uses_current_choice_and_old_messages_remain_unknown(accounts
     assert failed["status"] == "failed"
     retried, _ = send(client, conversation, second["id"], query=None, retry_message_id=failed["id"])
     assert retried[-1].json()["provider_name"] == "second"
+    assert retried[-1].json()["site_provider_id"] == second["id"]
     assert calls == [first["id"], second["id"]]
     db.add(ChatMessage(conversation_id=UUID(conversation), sequence=20, role="assistant", content="old"))
     db.commit()
     old = client.get(f"/conversations/{conversation}").json()["messages"][-1]
     assert old["provider_id"] is old["provider_name"] is old["model"] is None
+    assert old["site_provider_id"] is None
+
+
+def test_model_history_identity_remains_readable_after_disabling(accounts, monkeypatch):
+    client, db, identity = setup_site(accounts, monkeypatch)
+    chosen = provider(client)
+    from auth_helpers import StreamingTestProvider
+    class Model(StreamingTestProvider):
+        def complete_with_tools(self, messages, tools, tool_choice):
+            self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
+            return ToolResponse("done", [], self.last_usage)
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Model)
+    conversation = client.post("/conversations", json={}).json()["id"]
+    send(client, conversation, chosen["id"])
+    db.get(SiteModelProvider, UUID(chosen["id"])).enabled = False
+    db.commit()
+    assert client.get("/models/available").json()["providers"] == []
+    detail = client.get(f"/conversations/{conversation}").json()
+    assert detail["messages"][-1]["site_provider_id"] == chosen["id"]
+    assert all(key not in detail["messages"][-1] for key in ("base_url", "api_key", "prices", "encrypted_api_key"))
+    (_, outsider, _), _ = accounts
+    register(outsider, "other-model-history@example.com")
+    assert outsider.get(f"/conversations/{conversation}").status_code == 404
 
 
 def test_single_answer_uses_explicit_model(accounts, monkeypatch):
