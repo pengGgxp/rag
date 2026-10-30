@@ -584,6 +584,7 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     skill_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     mcp_server_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    extensions_initialized: Mapped[bool] = mapped_column(default=True)
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
     active_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -772,6 +773,8 @@ class AgentSkill(Base):
     description: Mapped[str] = mapped_column(Text)
     markdown: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(default=1)
+    limitations_acknowledged: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
@@ -805,9 +808,27 @@ class MCPServer(Base):
     tools: Mapped[list[dict]] = mapped_column(JSON, default=list)
     allowed_tools: Mapped[list[str]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(default=1)
+    authorization_version: Mapped[int] = mapped_column(default=1)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
     )
+
+
+class RemoteToolExecution(Base):
+    __tablename__ = "remote_tool_executions"
+    __table_args__ = (UniqueConstraint("message_id", "tool_name", "arguments_digest"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    tool_name: Mapped[str] = mapped_column(String(64))
+    authorization_version: Mapped[int] = mapped_column(Integer)
+    arguments_digest: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="running")
+    encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
