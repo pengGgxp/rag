@@ -71,7 +71,7 @@ type Trace = {
   knowledge_base_name: string;
   knowledge_base_id: string;
 };
-type WebSource = { source_id: string; type: "web"; title: string; url: string; fetched_at: string; site_name?: string | null };
+type WebSource = { source_id: string; type: "web"; title: string; url: string; fetched_at: string; site_name?: string | null; call_ids?: string[] };
 type Message = {
   id: string;
   sequence: number;
@@ -973,8 +973,15 @@ export function ChatWorkspace({
                         if (block.type === "thinking") return <ConversationThinking key={`${message.request_id}-${block.id}`} block={block}
                           conversationId={conversation.id} messageId={message.id} messageStatus={message.status} />;
                         const activity = message.tool_events?.find(item => item.call_id === block.call_id);
+                        const firstWebCall = message.tool_events?.find(item => item.name === "web_search" || item.name === "web_fetch");
+                        const sources = message.web_sources?.filter(source => source.call_ids?.length
+                          ? source.call_ids.includes(block.call_id) : block.call_id === firstWebCall?.call_id) ?? [];
                         return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]}
-                          finished={!["waiting", "running"].includes(activity.status)} /> : null;
+                          finished={!["waiting", "running"].includes(activity.status)}>
+                          {!!sources.length && <div className="source-list activity-sources" aria-label="网页来源">{sources.map(source => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
+                            <Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
+                          </a>)}</div>}
+                        </ConversationActivity> : null;
                       }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
                       {message.status === "streaming" && !message.display_blocks?.some(
                         block => block.type === "thinking" && block.status === "running",
@@ -1008,10 +1015,11 @@ export function ChatWorkspace({
                         </div>
                       )}
                       {!!message.citations.length && (
-                        <div className="sources">
-                          <div className="sources-heading">
+                        <details className="sources source-disclosure">
+                          <summary className="activity-toggle">
+                            <ChevronRight size={14} className="activity-chevron" aria-hidden="true" />
                             参考来源<span>{message.citations.length}</span>
-                          </div>
+                          </summary>
                           <div className="source-list">
                             {message.citations.map((citation, number) => (
                               <Motion.button
@@ -1040,14 +1048,8 @@ export function ChatWorkspace({
                               </Motion.button>
                             ))}
                           </div>
-                        </div>
+                        </details>
                       )}
-                      {!!message.web_sources?.length && <div className="sources">
-                        <div className="sources-heading">网页来源<span>{message.web_sources.length}</span></div>
-                        <div className="source-list">{message.web_sources.map((source, index) => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
-                          <span>{message.citations.length + index + 1}</span><Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
-                        </a>)}</div>
-                      </div>}
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
                           {message.content && (

@@ -87,10 +87,16 @@
 .context-breakdown dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 .context-note { color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; }
 .web-search-toggle[aria-pressed="true"] { color: var(--accent); background: var(--surface-muted); }
-.source-list a.source-chip { text-decoration: none; }
+.source-list a.source-chip { display: inline-flex; align-items: center; text-decoration: none; }
+.activity-sources { margin: 4px 0 8px 24px; }
+.source-disclosure > summary { display: flex; align-items: center; cursor: pointer; color: var(--muted); font-size: var(--form-font-size); list-style: none; }
+.source-disclosure > summary::-webkit-details-marker { display: none; }
+.source-disclosure[open] > summary .activity-chevron { transform: rotate(90deg); }
+.source-disclosure > .source-list { margin-top: 8px; }
 @media (max-width: 700px) {
   .composer-footer .web-search-toggle { min-width: var(--form-touch-height); min-height: var(--form-touch-height); }
   .source-list a.source-chip { min-height: var(--form-touch-height); }
+  .source-disclosure > summary { min-height: var(--form-touch-height); }
 }
 .context-panel-footer { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .context-compact { min-height: var(--form-control-height); border: 1px solid var(--line); border-radius: var(--form-radius); font-size: var(--form-font-size); }

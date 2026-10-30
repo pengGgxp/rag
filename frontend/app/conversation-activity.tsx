@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Check, ChevronRight, CircleAlert, CircleDashed, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
 
@@ -29,9 +29,10 @@ function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) 
 }
 
 // Only presentation state lives here. Tool execution and safe summaries belong to the server.
-export function ConversationActivity({ items, finished }: {
+export function ConversationActivity({ items, finished, children }: {
   items: ConversationActivityItem[];
   finished: boolean;
+  children?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(items.length > 1 && !finished);
   const [userExpanded, setUserExpanded] = useState(false);
@@ -61,7 +62,7 @@ export function ConversationActivity({ items, finished }: {
         : <Wrench size={14} aria-hidden="true" />}
       <span>{headline}</span>
     </button>
-    {expanded && <ol className="activity-steps" aria-label="执行活动">
+    {expanded && <><ol className="activity-steps" aria-label="执行活动">
       {items.map(item => <Motion.li key={item.id} className={`activity-step activity-${item.status}`}
         initial={false} animate={{ opacity: 1 }} transition={{ duration: 0.14 }}>
         <span className="activity-state-icon" aria-hidden="true"><StatusIcon status={item.status} /></span>
@@ -74,7 +75,7 @@ export function ConversationActivity({ items, finished }: {
           {item.summary && <span className="activity-step-summary">{item.summary}</span>}
         </div>
       </Motion.li>)}
-    </ol>}
+    </ol>{children}</>}
     <span className="sr-only" role="status">{headline}</span>
   </div>;
 }

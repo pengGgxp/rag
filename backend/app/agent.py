@@ -273,8 +273,11 @@ def stream_retrieval_agent(
                     sources = result.get("results", []) if call.name == "web_search" else (
                         [result] if result.get("source_id") else [])
                     for item in sources:
+                        previous = web_sources.get(item["source_id"], {})
                         web_sources[item["source_id"]] = {key: item[key] for key in
                             ("source_id", "type", "title", "url", "site_name", "fetched_at")}
+                        web_sources[item["source_id"]]["call_ids"] = list(dict.fromkeys(
+                            [*previous.get("call_ids", []), activity["call_id"]]))
                     write(("web_sources", {"sources": list(web_sources.values())}))
                     write(("tool_result", {**activity, "status": status,
                         "result_count": result.get("result_count", 0),

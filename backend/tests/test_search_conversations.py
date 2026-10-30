@@ -55,9 +55,10 @@ def test_search_fetch_interleaved_persisted_and_single_settlement(client, monkey
     assert calls == ["web_search", "web_fetch"]
     assert all("web_search" in tools and "web_fetch" in tools for tools in seen)
     assert [block["type"] for block in done["display_blocks"]] == ["text", "activity", "text", "activity", "text"]
-    assert done["web_sources"] == [source] and done["citations"] == []
+    expected_source = {**source, "call_ids": [block["call_id"] for block in done["display_blocks"] if block["type"] == "activity"]}
+    assert done["web_sources"] == [expected_source] and done["citations"] == []
     assert "content" not in done["web_sources"][0]
-    assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["web_sources"] == [source]
+    assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["web_sources"] == [expected_source]
     row = db.get(ModelUsageRequest, UUID(payload["request_id"]))
     assert float(row.credits) == .055
     assert len(db.scalars(select(SearchToolCall).where(SearchToolCall.request_id == row.request_id)).all()) == 2
