@@ -8,6 +8,7 @@ import { useUiStore } from "./ui-store";
 import type { WorkspaceScreen } from "./workspace-types";
 import { usePathname } from "next/navigation";
 import { SiteAnnouncementProvider } from "./site-announcement";
+import { SuggestionProvider } from "./suggestion";
 
 const NavigationSlot = createContext<HTMLDivElement | null>(null);
 
@@ -40,7 +41,7 @@ export function WorkspaceShell({
   const navigation = <WorkspaceSidebar screen={screen} onNavigate={() => setSidebarOpen(false)}>
     <div className="workspace-context-navigation" ref={setTarget} />
   </WorkspaceSidebar>;
-  return <SiteAnnouncementProvider><NavigationSlot.Provider value={target}>
+  return <SiteAnnouncementProvider><SuggestionProvider><NavigationSlot.Provider value={target}>
     <div className="workspace">
       {!mobile && <aside className="sidebar" aria-label="工作空间导航">{navigation}</aside>}
       <main className="main">{children}</main>
@@ -49,5 +50,5 @@ export function WorkspaceShell({
       onClose={() => setSidebarOpen(false)} restoreFocusSelector="[data-workspace-menu]">
       <aside className="sidebar" aria-label="工作空间导航">{navigation}</aside>
     </Dialog>}
-  </NavigationSlot.Provider></SiteAnnouncementProvider>;
+  </NavigationSlot.Provider></SuggestionProvider></SiteAnnouncementProvider>;
 }

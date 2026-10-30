@@ -16,6 +16,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   UsersRound,
+  FileText,
+  MessageSquare,
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useAuth } from "../auth";
@@ -27,6 +29,8 @@ const navigation = [
   { href: "/admin/workspaces", label: "工作区", icon: Building2 },
   { href: "/admin/models", label: "模型管理", icon: Cpu },
   { href: "/admin/search", label: "联网搜索", icon: Globe },
+  { href: "/admin/skills", label: "Skill 管理", icon: FileText },
+  { href: "/admin/feedback", label: "意见反馈", icon: MessageSquare },
   { href: "/admin/pricing", label: "计费管理", icon: Coins },
   { href: "/admin/storage", label: "文件存储", icon: HardDrive },
   { href: "/admin/audit", label: "站点审计", icon: ScrollText },

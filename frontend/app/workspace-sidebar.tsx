@@ -2,16 +2,16 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BookOpen, Layers3, MessageSquare, Puzzle } from "lucide-react";
+import { BookOpen, Layers3, MessageSquare } from "lucide-react";
 import { AccountButton } from "./auth";
 import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
 import { SiteAnnouncementEntry } from "./site-announcement";
+import { SuggestionEntry } from "./suggestion";
 
 const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
   { mode: "chat", href: "/?chat=1", label: "知识问答", icon: MessageSquare },
-  { mode: "extensions", href: "/?extensions=1", label: "Agent 扩展", icon: Puzzle },
 ] as const;
 
 export function WorkspaceSidebar({ screen, children, onNavigate }: {
@@ -34,6 +34,6 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
       ))}
     </nav>
     {children}
-    <div className="sidebar-footer"><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
+    <div className="sidebar-footer"><SuggestionEntry onOpen={onNavigate} /><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
   </>;
 }
