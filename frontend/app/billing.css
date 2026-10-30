@@ -270,6 +270,13 @@
 }
 .model-detail-tabs [role="tab"]:disabled { cursor: not-allowed; opacity: .55; }
 .model-detail-form { max-width: 960px; }
+.search-settings-form { container-type: inline-size; min-width: 0; }
+.policy-input select { width: 100%; min-width: 0; min-height: var(--form-control-height); padding: 8px 12px; border: 0; background: transparent; color: var(--ink); font-size: var(--form-font-size); }
+.provider-form.search-settings-form .policy-input input { border: 0; background: transparent; }
+.search-settings-form .pricing-footer { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .policy-input select { min-height: var(--form-touch-height); }
+}
 .connection-platforms { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: var(--form-gap); }
 .connection-endpoint { margin-top: var(--form-gap); color: var(--muted); font-size: var(--form-label-size); }
 .connection-platforms button[aria-pressed="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }

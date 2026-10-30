@@ -129,4 +129,5 @@ def test_downgrade_refuses_to_destroy_fractional_credits(auth_postgres, monkeypa
         get_settings.cache_clear()
     with Session(auth_postgres) as db:
         assert db.get(CreditAccount, identifier).balance == Decimal("0.0001")
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0036_decimal_credits"
+        from alembic.script import ScriptDirectory
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()

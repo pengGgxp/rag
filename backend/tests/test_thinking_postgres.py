@@ -39,7 +39,9 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
         db.commit()
         db.expire_all()
         assert db.get(ChatMessage, message.id).thinking_snapshot["config_version"] == 1
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0036_decimal_credits"
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         assert message.encrypted_display_thinking == "separate-display-ciphertext"
         assert message.thinking_diagnostics[0]["reasoning_tokens"] == 12
         assert message.display_blocks == []

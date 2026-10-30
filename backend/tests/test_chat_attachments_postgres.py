@@ -26,7 +26,9 @@ def test_concurrent_binding_is_once_and_preserves_original(auth_postgres):
             kind="document", text_content="facts")
         db.add(row); db.commit()
         identifier, owner, wid, ids = row.id, user.id, workspace.id, [item.id for item in conversations]
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0036_decimal_credits"
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
     barrier = Barrier(2)
     def bind(cid):
         with Session(auth_postgres) as db:

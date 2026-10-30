@@ -30,7 +30,7 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
   close: () => void; restoreFocusSelector: string;
 }) {
   const label = policyLabels[policy.capability] ?? policy.capability;
-  const unit = policy.unit === "pages" ? "页" : "Token";
+  const unit = policy.unit === "pages" ? "页" : policy.unit === "calls" ? "次" : "Token";
   const context = useAdminResource<Context>(root);
   const [cost, setCost] = useState("");
   const [profit, setProfit] = useState("");
@@ -40,7 +40,8 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
   const [multiplier, setMultiplier] = useState("1.00");
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ key: string; quote?: Quote; error?: string }>({ key: "" });
-  const validUnit = /^\d+$/.test(units) && Number(units) >= 1 && Number(units) <= 2147483647;
+  const validUnit = /^\d+$/.test(units) && Number(units) >= 1 && Number(units) <= 2147483647
+    && (policy.unit !== "calls" || [1, 1000].includes(Number(units)));
   const valid = [cost, profit, overhead].every(value => amountPattern.test(value))
     && feePattern.test(fee) && validUnit && multiplierPattern.test(multiplier);
   const payload = JSON.stringify({ capability: policy.capability, unit_size: Number(units),
@@ -66,7 +67,7 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
     }}>
       <div className="calculator-object"><strong>{label}</strong><span>每 {validUnit ? Number(units).toLocaleString() : "—"} {unit}</span></div>
       <div className="calculator-fields">
-        <label>计价用量<span className="policy-input"><input aria-label="计价用量" inputMode="numeric" value={units} onChange={e => setUnits(e.target.value)} disabled={busy} /><span>{unit}</span></span></label>
+        <label>计价用量<span className="policy-input">{policy.unit === "calls" ? <select aria-label="计价用量" value={units} onChange={e => setUnits(e.target.value)} disabled={busy}><option value="1">1</option><option value="1000">1,000</option></select> : <input aria-label="计价用量" inputMode="numeric" value={units} onChange={e => setUnits(e.target.value)} disabled={busy} />}<span>{unit}</span></span></label>
         <label>人民币成本<span className="policy-input"><input aria-label="人民币成本" autoFocus inputMode="decimal" placeholder="0.00" value={cost} onChange={e => setCost(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>目标利润<span className="policy-input"><input aria-label="目标利润" inputMode="decimal" placeholder="0.00" value={profit} onChange={e => setProfit(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>其他费用分摊<span className="policy-input"><input aria-label="其他费用分摊" inputMode="decimal" value={overhead} onChange={e => setOverhead(e.target.value)} disabled={busy} /><span>元</span></span></label>

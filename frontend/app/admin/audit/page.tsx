@@ -21,6 +21,8 @@ type Event = {
   created_at: string;
 };
 const actions: Record<string, string> = {
+  "search.updated": "更新联网搜索配置",
+  "search.tested": "测试联网搜索",
   "auth.login": "登录成功",
   "auth.login_failed": "密码登录失败",
   "auth.login_blocked_suspended": "停用账号登录被阻止",

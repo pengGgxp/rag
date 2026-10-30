@@ -1,7 +1,7 @@
 import type { Link, Parent, Root, RootContent } from "mdast";
 
-export function citationMarkers(citations: readonly { chunk_id: string }[]) {
-  const sources = new Map(citations.map((citation, index) => [citation.chunk_id, index + 1]));
+export function citationMarkers(citations: readonly ({ chunk_id: string } | { source_id: string })[]) {
+  const sources = new Map(citations.map((citation, index) => ["chunk_id" in citation ? citation.chunk_id : citation.source_id, index + 1]));
   return () => (tree: Root) => {
     function visit(parent: Parent) {
       const children: RootContent[] = [];

@@ -35,7 +35,7 @@ export async function request<T>(
   const controller = new AbortController();
   let timedOut = false;
   const timeout = path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
-    || /\/models\/discover$/.test(path)
+    || /\/models\/discover$/.test(path) || path === "/site/admin/search/test"
     || path === "/chat/attachments"
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)

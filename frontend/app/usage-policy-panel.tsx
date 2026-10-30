@@ -12,6 +12,7 @@ import "./billing.css";
 type BillingSettings = {
   version: number; multiplier: string; shared_pricing_enabled: boolean; billing_enabled: boolean;
   document_policies: Policy[];
+  search_policies?: Policy[];
   models: { provider_id: string; name: string; model: string; available: boolean; unavailable_reason: string | null; policies: Policy[] }[];
 };
 
@@ -64,7 +65,7 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
         <form className="multiplier-form" onSubmit={event => { event.preventDefault(); void save(); }}>
           <label htmlFor="workspace-multiplier">消费倍率<span className="policy-input"><input id="workspace-multiplier" aria-describedby="multiplier-note" type="number" required min="0.01" max="100" step="0.01" inputMode="decimal" value={multiplier} disabled={busy} onChange={e => setMultiplier(e.target.value)} /><span>×</span></span></label>
           <button className="primary" disabled={busy || !dirty || percent === null}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存倍率</button>
-          <span className="billing-muted" id="multiplier-note">统一作用于模型、OCR 与 Embedding · 版本 {saved.version}{dirty ? " · 未保存" : ""}</span>
+          <span className="billing-muted" id="multiplier-note">统一作用于模型、文档处理与联网工具 · 版本 {saved.version}{dirty ? " · 未保存" : ""}</span>
         </form>
         <section className="pricing-group">
           <div className="pricing-group-heading"><h2>模型价格 <small className="billing-muted">{dirty ? "未保存预览" : "当前价格预览"}</small></h2>
@@ -89,6 +90,9 @@ export function UsagePolicyPanel({ workspaceId }: { workspaceId: string }) {
         <section className="pricing-group"><div className="pricing-group-heading"><h2>文档处理</h2><span>{dirty ? "未保存预览" : "平台基准价 × 工作区倍率"}</span></div>
           <PolicyTable name="文档处理价格预览" readOnly policies={effective(saved.document_policies, percent)} busy={busy} />
         </section>
+        {!!saved.search_policies?.length && <section className="pricing-group"><div className="pricing-group-heading"><h2>联网工具</h2><span>{dirty ? "未保存预览" : "平台基准价 × 工作区倍率"}</span></div>
+          <PolicyTable name="联网工具价格预览" readOnly policies={effective(saved.search_policies, percent)} busy={busy} />
+        </section>}
       </>}
     </AdminLoad>
   </section>;

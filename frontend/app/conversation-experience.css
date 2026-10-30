@@ -86,6 +86,12 @@
 .context-breakdown > div { display: flex; justify-content: space-between; gap: 12px; }
 .context-breakdown dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 .context-note { color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; }
+.web-search-toggle[aria-pressed="true"] { color: var(--accent); background: var(--surface-muted); }
+.source-list a.source-chip { text-decoration: none; }
+@media (max-width: 700px) {
+  .composer-footer .web-search-toggle { min-width: var(--form-touch-height); min-height: var(--form-touch-height); }
+  .source-list a.source-chip { min-height: var(--form-touch-height); }
+}
 .context-panel-footer { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 14px; margin-top: 16px; }
 .context-compact { min-height: var(--form-control-height); border: 1px solid var(--line); border-radius: var(--form-radius); font-size: var(--form-font-size); }
 .context-compact:hover:not(:disabled) { background: var(--surface-muted); }

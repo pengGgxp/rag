@@ -12,6 +12,7 @@ import {
   Copy,
   Download,
   FileText,
+  Globe,
   Layers3,
   Loader2,
   MessageSquare,
@@ -25,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { API_URL, ApiError, request, streamRequest } from "./api";
+import { useAuth } from "./auth";
 import type { ThinkingCapability } from "./model-types";
 import { Modal } from "./modal";
 import { WorkspaceNavigation } from "./workspace-shell";
@@ -40,6 +42,7 @@ import { RequestModelPicker } from "./request-model-picker";
 import { ConversationActivity } from "./conversation-activity";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
+import { Tooltip } from "../components/ui/tooltip";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
 import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
@@ -68,6 +71,7 @@ type Trace = {
   knowledge_base_name: string;
   knowledge_base_id: string;
 };
+type WebSource = { source_id: string; type: "web"; title: string; url: string; fetched_at: string; site_name?: string | null };
 type Message = {
   id: string;
   sequence: number;
@@ -77,6 +81,7 @@ type Message = {
   status: string;
   request_id?: string | null;
   citations: Citation[];
+  web_sources?: WebSource[];
   traces: Trace[];
   tool_events?: ToolEvent[];
   display_blocks?: DisplayBlock[];
@@ -93,6 +98,7 @@ type ModelChoice = {
   model: string;
   available: boolean;
   supports_images?: boolean;
+  supports_tools?: boolean;
   unavailable_reason?: "model_disabled" | "connection_disabled" | "pricing_unconfigured" | "service_not_ready" | null;
   thinking?: ThinkingCapability;
   context_capacity: number | null;
@@ -145,10 +151,12 @@ function AnswerMarkdown({
     <div className="answer-text">
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[citationMarkers(message.citations)]}
+        remarkPlugins={[citationMarkers([...message.citations, ...(message.web_sources ?? [])])]}
         components={{
           img: ({ alt }) => <span>{alt}</span>,
           a: ({ href, children }) => {
+            const web = message.web_sources?.find(item => href === `#source-${item.source_id}`);
+            if (web) return <a className="inline-citation" href={web.url} target="_blank" rel="noopener noreferrer" title={`查看网页：${web.title}`}>{children}</a>;
             const citation = message.citations.find(
               (item) => href === `#source-${item.chunk_id}`,
             );
@@ -187,6 +195,7 @@ export function ChatWorkspace({
   onExtensions: () => void;
 }) {
   const router = useRouter();
+  const { session } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [scope, setScope] = useState<string[]>(
@@ -204,6 +213,19 @@ export function ChatWorkspace({
   const [modelError, setModelError] = useState("");
   const [modelLoading, setModelLoading] = useState(true);
   const [modelAttempt, setModelAttempt] = useState(0);
+  const [webEnabled, setWebEnabled] = useState(true);
+  const [webAvailable, setWebAvailable] = useState(false);
+  const [webFailed, setWebFailed] = useState(false);
+  const [webAttempt, setWebAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setWebFailed(false);
+    request<{ available: boolean }>("/search/availability", { signal: controller.signal })
+      .then(value => { if (!controller.signal.aborted) setWebAvailable(value.available); })
+      .catch(() => { if (!controller.signal.aborted) { setWebAvailable(false); setWebFailed(true); } });
+    return () => controller.abort();
+  }, [webAttempt, session.workspace_id]);
+  useEffect(() => { setWebEnabled(true); }, [session.workspace_id]);
   const [extensionsBusy, setExtensionsBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -252,6 +274,7 @@ export function ChatWorkspace({
     setContextInfo(emptyContext);
     setContextLoading(true);
     const params = new URLSearchParams({ provider_id: modelId, thinking_config_version: String(thinkingVersion) });
+    params.set("web_search", String(webEnabled && webAvailable));
     if (thinkingId) params.set("thinking_option_id", thinkingId);
     request<ContextResponse>(`/conversations/${conversation.id}/context?${params}`,
       { signal: controller.signal }).then(value => {
@@ -261,7 +284,7 @@ export function ChatWorkspace({
           error instanceof Error ? error.message : "上下文状态加载失败");
       }).finally(() => { if (!controller.signal.aborted) setContextLoading(false); });
     return () => controller.abort();
-  }, [conversation?.id, modelId, selectedModel, thinkingId, thinkingVersion, contextAttempt]);
+  }, [conversation?.id, modelId, selectedModel, thinkingId, thinkingVersion, contextAttempt, webEnabled, webAvailable]);
   const selectedNames = conversation
     ? conversation.knowledge_bases.map((item) => item.name)
     : libraries
@@ -504,7 +527,7 @@ export function ChatWorkspace({
                     status: "streaming",
                     error_detail: null,
                     citations: [],
-                    traces: [], tool_events: [], display_blocks: [],
+                    traces: [], web_sources: [], tool_events: [], display_blocks: [],
                   }
                 : item,
             )
@@ -515,6 +538,7 @@ export function ChatWorkspace({
         {
           request_id: active.requestId,
           provider_id: modelId,
+          web_search: webEnabled && webAvailable,
           thinking_config_version: thinkingVersion,
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
           ...(retryId ? { retry_message_id: retryId } : {
@@ -586,6 +610,7 @@ export function ChatWorkspace({
                   ? tools.map(tool => tool.call_id === update.call_id ? next : tool) : [...tools, next],
                   display_blocks: appendActivity(message.display_blocks ?? [], update.call_id) };
               }
+              if (name === "web_sources") return { ...message, web_sources: (data as { sources: WebSource[] }).sources };
               if (name === "sources")
                 return {
                   ...message,
@@ -1017,6 +1042,12 @@ export function ChatWorkspace({
                           </div>
                         </div>
                       )}
+                      {!!message.web_sources?.length && <div className="sources">
+                        <div className="sources-heading">网页来源<span>{message.web_sources.length}</span></div>
+                        <div className="source-list">{message.web_sources.map((source, index) => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
+                          <span>{message.citations.length + index + 1}</span><Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
+                        </a>)}</div>
+                      </div>}
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
                           {message.content && (
@@ -1175,6 +1206,10 @@ export function ChatWorkspace({
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
+              <Tooltip content={webFailed ? "联网状态加载失败，点击重试" : webAvailable ? `${webEnabled ? "自动联网" : "联网已关闭"} · 按有效调用计费` : "联网搜索暂不可用"}>
+                <button type="button" className="icon-button web-search-toggle" aria-label={webFailed ? "重试联网状态" : "自动联网"} aria-pressed={webEnabled && webAvailable}
+                  disabled={running || loading || selectedModel?.supports_tools === false || (!webAvailable && !webFailed)} onClick={() => webFailed ? setWebAttempt(value => value + 1) : setWebEnabled(value => !value)}><Globe size={17} /></button>
+              </Tooltip>
               <ConversationContextControl state={contextInfo} loading={contextLoading || modelLoading || loading}
                 modelSelected={!!selectedModel} loadError={modelError || contextError || conversationError}
                 disabled={running || loading || modelLoading || thinkingStale || !conversation || !selectedModel?.available}

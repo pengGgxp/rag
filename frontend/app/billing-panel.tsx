@@ -60,6 +60,8 @@ export function creditKind(kind: string) {
   } as Record<string, string>)[kind] ?? "积分变动";
 }
 const usageLabel: Record<string, string> = {
+  web_search: "联网搜索次数",
+  web_fetch: "网页读取次数",
   llm_input_tokens: "模型输入量",
   llm_cached_input_tokens: "模型缓存读取量",
   llm_output_tokens: "模型输出量",
