@@ -127,3 +127,40 @@ def test_document_can_spend_exact_balance_after_hold_refund(shared_billing):
     assert account.balance == 0
     assert settle_usage(db, workspace, user, request, "embedding_tokens", 1250).id == event.id
     assert account.balance == 0
+
+
+@pytest.mark.parametrize("cached", [0, 700, 1000])
+def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(shared_billing, cached):
+    from app.llm import _parse_usage
+    from app.models import CreditLedgerEntry, ModelCallUsage
+    _, db, workspace, user, identifier = shared_billing
+    provider = db.get(SiteModelProvider, identifier)
+    provider.prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000000,
+        "credits_per_unit": rate, "enabled": True} for key, rate in (
+        ("llm_input_tokens", 1402), ("llm_cached_input_tokens", 51), ("llm_output_tokens", 3804))}
+    db.get(Workspace, workspace).billing_multiplier_percent = 125
+    db.commit()
+    request = uuid4()
+    model_billing.start_request(db, workspace, user, request, binding(db, workspace).id, 1)
+    db.commit()
+    for _ in range(2):
+        call = model_billing.begin_call(db, request, model(db, workspace))
+        usage = _parse_usage({"prompt_tokens": 1000, "completion_tokens": 17,
+            "prompt_tokens_details": {"cached_tokens": cached},
+            "completion_tokens_details": {"reasoning_tokens": 10}}).measured()
+        model_billing.finish_call(db, request, call, usage, "completed")
+        provider.prices = {key: {**price, "credits_per_unit": 99999} for key, price in provider.prices.items()}
+        db.get(Workspace, workspace).billing_multiplier_percent = 10000
+        db.commit()
+    exact = Fraction(2 * ((1000-cached)*1402 + cached*51 + 17*3804), 1000000) * Fraction(125, 100)
+    assert model_billing.finalize_request(db, request, "cancelled") == amount(exact)
+    db.commit()
+    assert model_billing.finalize_request(db, request, "cancelled") == amount(exact)
+    events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request)).all()
+    assert len(events) == 6 and sum(row.credits for row in events) == amount(exact)
+    assert sum(row.units for row in events if row.capability == "llm_input_tokens") == 2*(1000-cached)
+    assert sum(row.units for row in events if row.capability == "llm_cached_input_tokens") == 2*cached
+    assert db.get(CreditAccount, workspace).balance == 1000-amount(exact)
+    assert len(db.scalars(select(CreditLedgerEntry).where(
+        CreditLedgerEntry.workspace_id == workspace, CreditLedgerEntry.kind == "usage_settlement")).all()) == 1
+    assert len(db.scalars(select(ModelCallUsage).where(ModelCallUsage.request_id == request)).all()) == 2

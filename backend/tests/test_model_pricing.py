@@ -4,6 +4,7 @@ from sqlalchemy import select
 from app import model_pricing as prices
 from app.models import ModelBillingSettings, SiteAuditEvent, UsagePolicy, User, Workspace
 from test_auth import accounts, register
+from test_workspace_billing import shared_billing
 
 
 def template(version=0, rate=4):
@@ -77,3 +78,45 @@ def test_draft_does_not_enable_billing_and_units_are_checked(accounts):
     assert not db.get(ModelBillingSettings, 1).enabled
     bad = template(version=1); bad["policies"][-1]["unit"] = "pages"
     assert owner.put("/site/admin/pricing-template", json=bad).status_code == 422
+
+
+def test_enable_shared_billing_checks_models_not_workspace_active_or_template(shared_billing):
+    from app.models import LLMProviderConfig
+    _, db, _, _, _ = shared_billing
+    for binding in db.scalars(select(LLMProviderConfig)):
+        binding.active = False
+    settings = db.get(ModelBillingSettings, 1)
+    settings.template = {}
+    db.commit()
+    before = db.scalar(select(UsagePolicy.id).limit(1))
+    assert prices.switch_billing(db, "enable")["billing_enabled"]
+    db.commit()
+    assert db.scalar(select(UsagePolicy.id).limit(1)) == before
+
+
+def test_enable_validates_unassociated_model_and_allows_explicit_zero(shared_billing):
+    from app.models import SiteModelProvider
+    _, db, _, _, identifier = shared_billing
+    existing = db.get(SiteModelProvider, identifier)
+    other = SiteModelProvider(key="unassociated", name="Unassociated", model="other",
+        connection_id=existing.connection_id, enabled=True, prices={})
+    db.add(other); db.commit()
+    with pytest.raises(ValueError, match="Unassociated"):
+        prices.switch_billing(db, "enable")
+    db.rollback()
+    assert not db.get(ModelBillingSettings, 1).enabled
+    other.prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000000,
+        "credits_per_unit": 0, "enabled": True} for key in prices.CAPABILITIES}
+    db.commit()
+    assert prices.switch_billing(db, "enable")["billing_enabled"]
+
+
+def test_switch_rejects_running_manual_compaction(shared_billing):
+    from uuid import uuid4
+    from app.models import ContextOperation
+    client, db, _, _, _ = shared_billing
+    conversation = client.post("/conversations", json={}).json()
+    db.add(ContextOperation(request_id=uuid4(), conversation_id=UUID(conversation["id"]), status="running"))
+    db.commit()
+    with pytest.raises(ValueError, match="Drain"):
+        prices.switch_billing(db, "enable")

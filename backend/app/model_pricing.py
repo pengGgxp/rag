@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .model_billing import CAPABILITIES
-from .models import Conversation, LLMProviderConfig, ModelBillingSettings, ModelUsageRequest, UsagePolicy, User, Workspace
+from .models import (ContextOperation, Conversation, LLMProviderConfig, ModelBillingSettings,
+                     ModelConnection, ModelUsageRequest, SiteModelProvider, UsagePolicy, User, Workspace)
 from .site_auth import site_admin
 from .site_audit import record
 from .credit_amounts import CreditRate
@@ -125,15 +126,24 @@ def switch_billing(db, operation):
     if operation == "status":
         return template_read(row)
     if db.scalar(select(Conversation.id).where(Conversation.active_request_id.is_not(None)).limit(1)) or db.scalar(
-        select(ModelUsageRequest.request_id).where(ModelUsageRequest.status == "running").limit(1)):
+        select(ModelUsageRequest.request_id).where(ModelUsageRequest.status == "running").limit(1)) or db.scalar(
+        select(ContextOperation.request_id).where(ContextOperation.status == "running").limit(1)):
         raise ValueError("Drain active model requests before switching billing.")
     if operation == "enable":
-        if not complete({k: v for k, v in row.template.items() if k in CAPABILITIES}):
-            raise ValueError("Configure the complete model pricing template first.")
-        for workspace in db.scalars(select(Workspace)):
-            active = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id,
-                LLMProviderConfig.active.is_(True), LLMProviderConfig.enabled.is_(True)))
-            price_snapshot(db, workspace.id, active.id if active else None)
+        if row.shared_pricing_enabled:
+            # Request-level selection also exposes models without a workspace binding.
+            providers = db.scalars(select(SiteModelProvider).join(ModelConnection).where(
+                SiteModelProvider.enabled.is_(True), ModelConnection.enabled.is_(True)))
+            for provider in providers:
+                if not complete(provider.prices):
+                    raise ValueError(f"Configure all three model prices for {provider.name} ({provider.id}).")
+        else:
+            if not complete({k: v for k, v in row.template.items() if k in CAPABILITIES}):
+                raise ValueError("Configure the complete model pricing template first.")
+            for workspace in db.scalars(select(Workspace)):
+                active = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id,
+                    LLMProviderConfig.active.is_(True), LLMProviderConfig.enabled.is_(True)))
+                price_snapshot(db, workspace.id, active.id if active else None)
     elif operation == "disable":
         if db.scalar(select(ModelUsageRequest.request_id).where(ModelUsageRequest.status == "pending").limit(1)):
             raise ValueError("Settle pending charges before disabling model billing.")
