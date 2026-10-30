@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 
 from .credits import CreditError, _entry, authorization_hold, ensure_account, release_hold
 from .llm import measured_usage
-from .models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent
+from .models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, SearchToolCall, UsageEvent
 from .workspace_billing import context_for_workspace, resolve_prices, multiplier, allocate, finish_operation
 from .credit_amounts import exact_charge
 
@@ -49,14 +49,16 @@ def settle_pending(db, workspace_id, hold=0):
         _pay(db, account, row)
 
 
-def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold):
+def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold, *, search_config=None, tool_only=False):
     account = ensure_account(db, workspace_id)
     existing = db.get(ModelUsageRequest, request_id, populate_existing=True)
     if existing:
         raise HTTPException(409, "模型请求已存在，请勿重复提交")
     context = context_for_workspace(db, workspace_id)
-    prices = price_snapshot(db, workspace_id, provider_id, context=context)
+    prices = {} if tool_only else price_snapshot(db, workspace_id, provider_id, context=context)
     context.update(model_provider_id=str(provider_id), model_prices=prices)
+    if search_config:
+        context["search"] = search_config.snapshot()
     debts = db.scalars(select(ModelUsageRequest).where(
         ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
     ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()
@@ -67,7 +69,7 @@ def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold
     authorization_hold(db, workspace_id, actor_user_id, request_id, hold)
     db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
         actor_user_id=actor_user_id, hold=hold, billing_context=context,
-        formula_version="model_cache_decimal_v1"))
+        formula_version="model_tools_decimal_v1" if search_config else "model_cache_decimal_v1"))
     db.flush()
 
 
@@ -128,8 +130,16 @@ def finalize_request(db, request_id, outcome):
             price = call.prices[capability]
             exact = exact_charge(units, price) * multiplier(row.billing_context)
             parts.append((call, capability, units, exact, order))
-    total, allocations = allocate([item[3] for item in parts])
-    for (call, capability, units, exact, _), credits in zip(parts, allocations):
+    tool_calls = db.scalars(select(SearchToolCall).where(SearchToolCall.request_id == request_id)
+        .order_by(SearchToolCall.created_at, SearchToolCall.id)).all()
+    tool_parts = []
+    for tool in tool_calls:
+        if tool.status == "started":
+            tool.status = "interrupted"
+        if tool.units:
+            tool_parts.append((tool, exact_charge(tool.units, tool.price) * multiplier(row.billing_context)))
+    total, allocations = allocate([item[3] for item in parts] + [item[1] for item in tool_parts])
+    for (call, capability, units, exact, _), credits in zip(parts, allocations[:len(parts)]):
         price = call.prices[capability]
         db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id,
             request_id=request_id, provider_id=call.provider_id, provider_key=call.provider_key,
@@ -141,6 +151,16 @@ def finalize_request(db, request_id, outcome):
             idempotency_key=f"usage:{request_id}:model:{call.round}:{capability}",
             metadata_json={"call_id": str(call.id), "round": call.round,
                 "source": call.usage.get("source"), "cache_status": call.usage.get("cache_status"),
+                "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
+    for (tool, exact), credits in zip(tool_parts, allocations[len(parts):]):
+        db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id,
+            request_id=request_id, capability=tool.capability, units=tool.units, credits=credits,
+            policy_version=tool.price["version"], policy_snapshot={**tool.price,
+                "formula_version": row.formula_version,
+                "multiplier_percent": row.billing_context.get("multiplier_percent", 100),
+                "multiplier_version": row.billing_context.get("multiplier_version", 0)},
+            idempotency_key=f"usage:{request_id}:tool:{tool.id}",
+            metadata_json={"call_id": str(tool.id), "source": "deepseek_search",
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
     row.credits, row.outcome = total, outcome
     finish_operation(db, row.workspace_id, request_id)

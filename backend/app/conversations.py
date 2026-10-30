@@ -69,6 +69,7 @@ class ContextRequest(BaseModel):
 
 
 class TurnRequest(ContextRequest):
+    web_search: bool = True
     query: str | None = Field(default=None, min_length=1)
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     retry_message_id: UUID | None = None
@@ -94,7 +95,7 @@ def message_read(message: ChatMessage) -> dict:
         "provider_name": message.provider_name, "model": message.model,
         "thinking": message.thinking_snapshot,
         "thinking_diagnostics": message.thinking_diagnostics,
-        "citations": message.citations, "traces": message.traces,
+        "citations": message.citations, "web_sources": message.web_sources, "traces": message.traces,
         "tool_events": message.tool_events,
         "display_blocks": message.display_blocks,
         "refused": message.refused, "refusal_reason": message.refusal_reason,
@@ -338,6 +339,8 @@ def chat_router(get_db, retrieve):
                         f"{citation['chunk_id']}）",
                         "", citation["text"], "",
                     ])
+                for source in message.web_sources:
+                    lines.extend([f"网页来源：{source['title']} — {source['url']}", ""])
         return Response(
             "\n".join(lines), media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="conversation-{conversation.id}.md"'},
@@ -345,7 +348,7 @@ def chat_router(get_db, retrieve):
 
     @router.get("/{conversation_id}/context")
     def context(conversation_id: UUID, provider_id: UUID, thinking_option_id: str | None = None,
-                thinking_config_version: int | None = None,
+                thinking_config_version: int | None = None, web_search: bool = True,
                 db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = live_conversation(db, conversation_id, access)
         from .shared_providers import unavailable_reason
@@ -370,6 +373,11 @@ def chat_router(get_db, retrieve):
         history = manager.history(db, conversation, rows)
         messages, tools = build_messages(db, conversation, [], config, runtime)
         messages.extend(history)
+        if web_search and config.thinking.supports_tools and model_billing.enabled(db):
+            from .search_settings import runtime_config
+            from .web_search import tools as search_tools
+            if runtime_config(db):
+                tools += search_tools()
         return manager.state(messages, tools + ([HISTORY_TOOL] if config.thinking.supports_tools else []))
 
     @router.post("/{conversation_id}/compact")
@@ -454,6 +462,7 @@ def chat_router(get_db, retrieve):
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
+            search_config = None
             provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
             attachments = select_attachments(db, access, payload.attachment_ids, provider_config)
@@ -470,8 +479,11 @@ def chat_router(get_db, retrieve):
             ):
                 raise HTTPException(422, "此模型不支持当前协议的工具调用，请移除检索与扩展或选择其他模型")
             if metered:
+                if payload.web_search and provider_config.thinking.supports_tools:
+                    from .search_settings import runtime_config
+                    search_config = runtime_config(db)
                 model_billing.start_request(db, access.workspace_id, access.user_id,
-                    payload.request_id, UUID(provider_config.provider_id), hold_amount)
+                    payload.request_id, UUID(provider_config.provider_id), hold_amount, search_config=search_config)
             else:
                 from .workspace_billing import operation_snapshot
                 model_billing.settle_pending(db, access.workspace_id, hold_amount)
@@ -501,6 +513,7 @@ def chat_router(get_db, retrieve):
             message.refused = False
             message.refusal_reason = None
             message.citations = []
+            message.web_sources = []
             message.traces = []
             message.tool_events = []
             message.display_blocks = []
@@ -531,17 +544,18 @@ def chat_router(get_db, retrieve):
         message_id = message.id
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         return StreamingResponse(
-            generate(factory, conversation.id, message_id, payload.request_id, access, hold_amount, provider_config),
+            generate(factory, conversation.id, message_id, payload.request_id, access, hold_amount, provider_config, search_config),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def generate(factory, conversation_id, message_id, request_id, access, hold_amount, provider_config):
+    async def generate(factory, conversation_id, message_id, request_id, access, hold_amount, provider_config, search_config=None):
         manual = message_id is None
         final_status = "cancelled"
         error_detail = None
         content = ""
         citations = []
+        web_sources = []
         traces = []
         tool_events = []
         display_blocks = []
@@ -594,7 +608,7 @@ def chat_router(get_db, retrieve):
                         conversation.active_request_id = None
                     db.commit()
                     result = message_read(message)
-                    result.update(content="", citations=[], traces=[], tool_events=[], display_blocks=[])
+                    result.update(content="", citations=[], web_sources=[], traces=[], tool_events=[], display_blocks=[])
                     return result, False
                 if conversation.active_request_id != request_id or conversation.deleted_at is not None:
                     message = db.get(ChatMessage, message_id)
@@ -602,6 +616,7 @@ def chat_router(get_db, retrieve):
                             and message.status == "cancelled"):
                         message.content, message.display_blocks = content, display_blocks
                         message.tool_events = tool_events
+                        message.web_sources = web_sources
                         message.encrypted_display_thinking = encrypt_display_thinking(thinking_blocks)
                         message.thinking_diagnostics = thinking_diagnostics
                         db.commit()
@@ -610,7 +625,7 @@ def chat_router(get_db, retrieve):
                     ChatMessage.id == message_id, ChatMessage.request_id == request_id,
                     ChatMessage.status == "streaming",
                 ).values(
-                    content=content, status=status, citations=citations, traces=traces,
+                    content=content, status=status, citations=citations, web_sources=web_sources, traces=traces,
                     tool_events=tool_events,
                     display_blocks=display_blocks,
                     retrieval_query=retrieval_query, refused=refused,
@@ -688,6 +703,7 @@ def chat_router(get_db, retrieve):
                         [HISTORY_TOOL] if provider_config.thinking.supports_tools else []))
                 execution = manual_execution()
             else:
+                from .search_billing import SearchRuntime
                 execution = stream_retrieval_agent(
                 query=query, knowledge_base_ids=scope_ids, history=history,
                 factory=factory, access=access, retrieve=retrieve, provider=provider,
@@ -695,6 +711,7 @@ def chat_router(get_db, retrieve):
                 extensions=extension_runtime,
                 meter=meter,
                 context_manager=manager,
+                search=SearchRuntime(factory, access, request_id, search_config) if search_config else None,
             )
             bridge = stream_events(execution, stopped)
             async for name, data in bridge:
@@ -746,6 +763,9 @@ def chat_router(get_db, retrieve):
                     if name == "sources":
                         citations, traces = data["citations"], data["traces"]
                         await run_in_threadpool(save)
+                    if name == "web_sources":
+                        web_sources = data["sources"]
+                        await run_in_threadpool(save)
                     if name in ("tool_call", "tool_started", "tool_result", "compaction"):
                         if name == "compaction":
                             data = {**data, "kind": "compaction", "name": "compact_context"}
@@ -771,6 +791,7 @@ def chat_router(get_db, retrieve):
                 final_status = "completed"
                 return
             citations, traces = agent_run.citations, agent_run.traces
+            web_sources = agent_run.web_sources
             continuation = encrypt_continuation(provider_config, agent_run.protocol_messages)
             _, active = await run_in_threadpool(save)
             if not active:

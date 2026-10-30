@@ -117,3 +117,30 @@ def test_failure_does_not_retry_or_expose_upstream_body(monkeypatch, status):
     with pytest.raises(web_search.SearchError) as failure:
         web_search.invoke(web_search.SearchConfig(1, "secret"), "web_search", {"query": "facts"})
     assert len(calls) == 1 and "secret" not in str(failure.value)
+
+
+def test_timeout_is_uncertain_and_never_retried(monkeypatch):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        raise httpx.ReadTimeout("secret upstream details")
+    transport(monkeypatch, handler)
+    with pytest.raises(web_search.SearchError) as error:
+        web_search.invoke(web_search.SearchConfig(1, "secret"), "web_search", {"query": "x"})
+    assert error.value.uncertain and len(calls) == 1
+    assert "secret" not in str(error.value)
+
+
+def test_fetch_returns_bounded_content_and_search_prices_reject_noninteger_units(monkeypatch):
+    def handler(request):
+        assert str(request.url).endswith("/fetch")
+        assert json.loads(request.content) == {"url": "https://example.com/page"}
+        return httpx.Response(200, json={"title": "Page", "content": "x" * 20000})
+    transport(monkeypatch, handler)
+    monkeypatch.setattr(web_search.socket, "getaddrinfo", lambda *_: [(2, 1, 6, "", ("93.184.216.34", 0))])
+    result = web_search.invoke(web_search.SearchConfig(1, "secret"), "web_fetch", {"url": "https://example.com/page"})
+    assert result["effective"] and result["result_count"] == 1 and result["truncated"]
+    assert len(result["content"]) == 16000 and result["source_id"].startswith("web-")
+    for value in (True, 2, "1000", 1.0):
+        with pytest.raises(ValueError):
+            search_settings.SearchPrice(capability="web_search", unit_size=value)

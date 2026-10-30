@@ -1,8 +1,9 @@
 """Independent encrypted web-search configuration and explicit platform prices."""
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import text
 
 from .auth import get_access
@@ -23,6 +24,13 @@ class SearchPrice(BaseModel):
     unit_size: Literal[1, 1000] = 1
     credits_per_unit: CreditRate | None = None
     enabled: bool = True
+
+    @field_validator("unit_size", mode="before")
+    @classmethod
+    def call_units(cls, value):
+        if type(value) is not int or value not in (1, 1000):
+            raise ValueError("请选择每次或每千次")
+        return value
 
 
 def complete(prices):
@@ -112,3 +120,53 @@ def save_settings(payload: SearchSettingsInput, request: Request, db=Depends(get
 def availability(db=Depends(get_db), access=Depends(get_access)):
     from . import model_billing
     return {"available": bool(model_billing.enabled(db) and runtime_config(db))}
+
+
+class SearchTestInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: int = Field(ge=1)
+    request_id: UUID = Field(strict=False)
+
+
+@router.post("/site/admin/search/test")
+def test_settings(payload: SearchTestInput, request: Request, db=Depends(get_db),
+        actor=Depends(site_admin), access=Depends(get_access)):
+    from sqlalchemy.orm import sessionmaker
+    from . import model_billing
+    from .models import ModelUsageRequest
+    from .search_billing import SearchRuntime
+    from .auth import rate_limit
+    config = runtime_config(db)
+    if not config or not model_billing.enabled(db):
+        raise HTTPException(422, "请先保存并启用完整的联网搜索配置")
+    if config.version != payload.version:
+        raise HTTPException(409, "联网搜索配置已更新，请重新加载后测试")
+    existing = db.get(ModelUsageRequest, payload.request_id)
+    if existing:
+        if (existing.workspace_id != access.workspace_id or existing.actor_user_id != actor.id
+                or not existing.billing_context.get("search_test")):
+            raise HTTPException(409, "请求标识已被使用")
+        if existing.status == "running":
+            raise HTTPException(409, "测试正在进行，请等待结果")
+        return {"completed": existing.outcome == "completed", "credits": existing.credits,
+                "request_id": str(existing.request_id)}
+    rate_limit(request, f"search-test:{actor.id}", limit=3)
+    model_billing.start_request(db, access.workspace_id, actor.id, payload.request_id, None, 0,
+        search_config=config, tool_only=True)
+    row = db.get(ModelUsageRequest, payload.request_id)
+    row.billing_context = {**row.billing_context, "search_test": True}
+    db.commit()
+    runtime = SearchRuntime(sessionmaker(bind=db.get_bind()), access, payload.request_id, config)
+    result = {}
+    try:
+        result = runtime.execute("web_search", {"query": "DeepSeek 官方 API 文档"}, "admin-test", lambda: None)
+    finally:
+        credits = model_billing.finalize_request(db, payload.request_id,
+            "completed" if result.get("effective") else "failed")
+        record(db, actor, "search.tested", "search_settings", 1,
+            details={"version": payload.version, "accepted": bool(result.get("effective")),
+                "request_id": str(payload.request_id)})
+        db.commit()
+    return {"completed": bool(result.get("effective")), "credits": credits,
+        "result_count": result.get("result_count", 0), "error": result.get("error"),
+        "request_id": str(payload.request_id)}

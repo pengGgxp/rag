@@ -86,7 +86,17 @@ def settings_read(db, workspace_id):
             "multiplier_percent": workspace.billing_multiplier_percent,
             "shared_pricing_enabled": bool(row and row.shared_pricing_enabled),
             "billing_enabled": bool(row and row.enabled),
-            "document_policies": effective_prices(db, workspace, None), "models": models}
+            "document_policies": effective_prices(db, workspace, None), "models": models,
+            "search_policies": search_prices(db, workspace.billing_multiplier_percent)}
+
+
+def search_prices(db, percent):
+    from .models import SiteSearchSettings
+    from .search_settings import read
+    settings = db.get(SiteSearchSettings, 1)
+    return [price_read({**policy, "source": "platform_search", "source_id": "1",
+        "enabled": policy["enabled"] and bool(settings and settings.enabled)}, percent)
+        for policy in read(settings)["policies"]]
 
 
 @router.get(ROOT)

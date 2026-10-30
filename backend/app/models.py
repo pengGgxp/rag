@@ -620,6 +620,7 @@ class ChatMessage(Base):
     encrypted_display_thinking: Mapped[str | None] = mapped_column(Text, nullable=True)
     thinking_diagnostics: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    web_sources: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     traces: Mapped[list[dict]] = mapped_column(JSON, default=list)
     tool_events: Mapped[list[dict]] = mapped_column(JSON, default=list)
     display_blocks: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")

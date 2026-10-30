@@ -4,7 +4,7 @@ from fractions import Fraction
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import payments
 from .db import get_db
@@ -17,7 +17,7 @@ Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,8})?$"
 
 class QuoteInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    capability: Literal["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens", "ocr_pages", "embedding_tokens"]
+    capability: Literal["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens", "ocr_pages", "embedding_tokens", "web_search", "web_fetch"]
     unit_size: int = Field(ge=1, le=2_147_483_647)
     cost_yuan: Money
     profit_yuan: Money
@@ -25,6 +25,12 @@ class QuoteInput(BaseModel):
     payment_fee_percent: str = Field(default="0.1", pattern=r"^(?:0|[1-9][0-9]?)(?:\.[0-9]{1,4})?$")
     multiplier: str = Field(default="1.00",
         pattern=r"^(?:0\.(?:0[1-9]|[1-9][0-9]?)|[1-9][0-9]?(?:\.[0-9]{1,2})?|100(?:\.0{1,2})?)$")
+
+    @model_validator(mode="after")
+    def call_units(self):
+        if self.capability in ("web_search", "web_fetch") and self.unit_size not in (1, 1000):
+            raise ValueError("联网工具按每次或每千次计价")
+        return self
 
 
 def decimal_text(value):

@@ -1,5 +1,6 @@
 """Bounded DeepSeek Search/Fetch adapter. Credentials never leave this service."""
 from dataclasses import dataclass, field
+from copy import deepcopy
 from datetime import datetime, timezone
 import ipaddress
 import socket
@@ -14,7 +15,9 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class SearchError(RuntimeError):
-    pass
+    def __init__(self, message, *, uncertain=False):
+        super().__init__(message)
+        self.uncertain = uncertain
 
 
 def public_url(value, *, resolve=True):
@@ -24,7 +27,7 @@ def public_url(value, *, resolve=True):
         parsed = urlsplit(value)
         if (parsed.scheme not in ("http", "https") or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None
-                or parsed.port not in (None, 80, 443)):
+                or parsed.port not in (None, 80, 443) or "\\" in value or any(char.isspace() for char in value)):
             raise ValueError()
         host = parsed.hostname.rstrip(".").lower()
         if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
@@ -35,7 +38,7 @@ def public_url(value, *, resolve=True):
             if not resolve:
                 return value
             addresses = [ipaddress.ip_address(item[4][0]) for item in socket.getaddrinfo(host, None)]
-        if not addresses or any(not item.is_global for item in addresses):
+        if not addresses or any(not item.is_global or item.is_multicast for item in addresses):
             raise ValueError()
     except (ValueError, OSError):
         raise SearchError("仅支持读取公开网页，请更换链接") from None
@@ -53,7 +56,7 @@ class SearchConfig:
     prices: dict = field(default_factory=dict)
 
     def snapshot(self):
-        return {key: getattr(self, key) for key in (
+        return {key: deepcopy(getattr(self, key)) for key in (
             "version", "timeout_seconds", "result_count", "max_search_calls", "max_fetch_calls", "prices")}
 
 
@@ -102,7 +105,7 @@ def invoke(config, capability, arguments):
                 import json
                 data = json.loads(body)
     except (httpx.HTTPError, ValueError):
-        raise SearchError("搜索未能完成，请稍后重试") from None
+        raise SearchError("联网操作结果未确认，请尝试其他来源", uncertain=True) from None
     if not isinstance(data, dict):
         raise SearchError("搜索未能完成，请稍后重试")
     if capability == "web_search":

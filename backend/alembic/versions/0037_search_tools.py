@@ -10,6 +10,7 @@ depends_on = None
 
 
 def upgrade():
+    op.add_column("chat_messages", sa.Column("web_sources", sa.JSON(), nullable=False, server_default="[]"))
     op.create_table("site_search_settings",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("version", sa.Integer(), nullable=False),
@@ -39,3 +40,4 @@ def downgrade():
         raise RuntimeError("Search accounting exists; retain the compatible schema and settlement.")
     op.drop_table("search_tool_calls")
     op.drop_table("site_search_settings")
+    op.drop_column("chat_messages", "web_sources")
