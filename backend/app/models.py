@@ -28,6 +28,19 @@ class SiteSettings(Base):
     announcement_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SiteSearchSettings(Base):
+    __tablename__ = "site_search_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=20)
+    result_count: Mapped[int] = mapped_column(Integer, default=5)
+    max_search_calls: Mapped[int] = mapped_column(Integer, default=3)
+    max_fetch_calls: Mapped[int] = mapped_column(Integer, default=5)
+    prices: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class SiteStorageSettings(Base):
     __tablename__ = "site_storage_settings"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -296,6 +309,20 @@ class ModelCallUsage(Base):
     status: Mapped[str] = mapped_column(String(24), default="started")
     usage: Mapped[dict] = mapped_column(JSON, default=dict)
     prices: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SearchToolCall(Base):
+    __tablename__ = "search_tool_calls"
+    __table_args__ = (UniqueConstraint("request_id", "call_key", name="uq_search_tool_call"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    request_id: Mapped[UUID] = mapped_column(ForeignKey("model_usage_requests.request_id"), index=True)
+    call_key: Mapped[str] = mapped_column(String(160))
+    capability: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(24), default="started")
+    units: Mapped[int] = mapped_column(Integer, default=0)
+    price: Mapped[dict] = mapped_column(JSON)
+    encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
