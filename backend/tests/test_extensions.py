@@ -56,8 +56,9 @@ def test_admin_crud_import_permissions_conflicts_and_audit(accounts, monkeypatch
     plain = admin.post("/site/admin/skills/import", files={"file": ("plain.md", b"# Plain instructions")})
     assert plain.status_code == 200 and plain.json()["description"] == ""
     assert admin.get("/site/admin/skills").json()["total"] == 1  # Import only fills a draft.
-    for name, content in (("file.zip", b"bad"), ("file.md", b"\xff"), ("file.md", b"a" * 210001)):
+    for name, content in (("file.zip", b"bad"), ("file.md", b"\xff")):
         assert admin.post("/site/admin/skills/import", files={"file": (name, content)}).status_code == 422
+    assert admin.post("/site/admin/skills/import", files={"file": ("file.md", b"a" * 210001)}).status_code == 413
     assert admin.request("DELETE", f"/site/admin/skills/{item['id']}", json={"version": 2}).status_code == 204
     assert admin.get(f"/site/admin/skills/{item['id']}").status_code == 404
     events = db.scalars(select(SiteAuditEvent).where(SiteAuditEvent.target_type == "site_skill")).all()
@@ -65,7 +66,7 @@ def test_admin_crud_import_permissions_conflicts_and_audit(accounts, monkeypatch
 
 
 @pytest.mark.parametrize("change", [{"name": " "}, {"name": "x" * 65}, {"description": "x" * 1025},
-    {"markdown": " "}, {"markdown": "x" * 50001}, {"files": []}])
+    {"markdown": " "}, {"markdown": "x" * 50001}, {"files": [{"path": "../x", "content": "eA=="}]}])
 def test_skill_validation(accounts, monkeypatch, change):
     admin, _, _ = setup_site(accounts, monkeypatch)
     body = {"name": "test", "description": "test", "markdown": "test", **change}
@@ -90,6 +91,7 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
     row.markdown, row.version = "CHANGED", 2
     db.commit()
     assert runtime.execute("load_skill", args)["instructions"] == item["markdown"]
+    assert runtime.execute("load_skill", args)["resources"] == []
     assert runtime.execute("load_skill", args)["version"] == 1
     assert runtime.execute("load_skill", {"skill_id": str(private.id)}).get("error")
     assert runtime.execute("read_skill_file", args).get("error")
@@ -192,5 +194,8 @@ def test_retired_or_stale_skill_protocol_content_does_not_reenter_requests(monke
     assert history_message(row, config, [("platform", 1)]) == messages
     assert history_message(row, config, [("platform", 2)]) == plain
     assert history_message(row, config, []) == plain
+    messages[0]["tool_calls"][0]["function"]["name"] = "read_skill_resource"
+    assert history_message(row, config, [("platform", 1)]) == messages
+    assert history_message(row, config, [("platform", 2)]) == plain
     messages[0]["tool_calls"][0]["function"]["name"] = "mcp_old_tool"
     assert history_message(row, config, [("platform", 1)]) == plain

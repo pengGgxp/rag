@@ -94,6 +94,7 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
                 raise HTTPException(413, "ZIP 条目过多")
             entries, total = [], 0
             for info in infos:
+                safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
                 safe_path(info.filename.rstrip("/") if info.is_dir() else info.filename)
                 mode = info.external_attr >> 16
                 kind = stat.S_IFMT(mode)

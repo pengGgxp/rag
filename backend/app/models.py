@@ -734,6 +734,16 @@ class SiteSkill(Base):
     updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    files: Mapped[list["SiteSkillFile"]] = relationship(cascade="all, delete-orphan")
+
+
+class SiteSkillFile(Base):
+    __tablename__ = "site_skill_files"
+    __table_args__ = (UniqueConstraint("skill_id", "path"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    skill_id: Mapped[UUID] = mapped_column(ForeignKey("site_skills.id", ondelete="CASCADE"), index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
 
 
 class ProductSuggestion(Base):

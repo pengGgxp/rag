@@ -174,7 +174,7 @@ def history_message(row, config, skill_versions=None):
                         name = call.get("function", {}).get("name", "")
                         if name == "read_skill_file" or name.startswith("mcp_"):
                             return [{"role": row.role, "content": row.content}]
-                        if name == "load_skill":
+                        if name in ("load_skill", "read_skill_resource"):
                             result = next((item for item in messages if item.get("role") == "tool"
                                 and item.get("tool_call_id") == call.get("id")), None)
                             try:
