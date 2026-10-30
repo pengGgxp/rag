@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <title>文字提取与 OCR 对比</title>
 <style>
 :root{--ink:#182925;--muted:#60716c;--line:#dce5e1;--surface:#f4f7f6;--green:#137658;--red:#b33e4d;--blue:#245ab7}
@@ -23,6 +24,8 @@ const pages=arm=>rows.reduce((n,r)=>n+r.arms[arm].ocr_pages,0);
 let selected=rows[0]?.sample.id;
 el('summary').innerHTML=`<div><strong>${rows.length}</strong><span>对比样本 · 独立校准 ${data.calibration.trials[0].checks.length} 页</span></div><div><strong>${sum('baseline','facts_found')} → ${sum('candidate','facts_found')}</strong><span>提取关键事实 / ${sum('candidate','fact_count')} · 非全文准确率</span></div><div><strong>${pages('baseline')} → ${pages('candidate')}</strong><span>各方案所需 OCR 页数，包含 Word 图片</span></div><div><strong>≤ ¥${data.budget.reserved_upper_yuan.toFixed(4)}</strong><span>累计保守预留 / ¥20 预算</span></div>`;
 el('limits').innerHTML=`<strong>结果边界</strong><p>${data.live_ocr?'OCR 为真实接口结果；费用按保守费率预留，不代表实际账单。':'未启用外部调用，待识别项标为不完整。'} 事实检查只覆盖标注片段，不能当作全文准确率，也不评估检索与回答质量。</p><p>耗时分别展示本次本地处理和首次记录的 OCR 等待，复用不代表首次处理速度。复杂表格、双栏阅读顺序和不可靠隐藏文字层仍需补测；少量固定事实通过不能证明这些场景已经解决。</p>`;
+const anomalous=rows.filter(r=>r.arms.candidate.metrics.compatibility_radicals>0);
+if(anomalous.length)el('limits').insertAdjacentHTML('beforeend',`<p class="warning">已发现 ${anomalous.length} 份候选结果含外观近似汉字的特殊字形字符，须先修正；不能以少量事实通过就直接替换正式解析。</p>`);
 function locationText(l){return l.page_number?`第 ${l.page_number} 页`:[l.section,l.block_type==='table'?'表格':l.block_type==='image'?'图片':'段落',`位置 ${l.document_block??'—'}`].filter(Boolean).join(' · ')}
 function show(id){selected=id;const row=rows.find(r=>r.sample.id===id);if(!row)return;const s=row.sample;
 document.querySelectorAll('nav button').forEach(b=>b.setAttribute('aria-current',String(b.dataset.id===id)));el('mobile').value=id;
