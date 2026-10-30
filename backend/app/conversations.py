@@ -32,7 +32,7 @@ from .credits import (
     CreditError, authorization_hold, authorization_hold_amount,
     release_hold, settle_model_usage,
 )
-from .extensions import ExtensionRuntime, validate_selection
+from .extensions import ExtensionRuntime, validate_selection, defaults as extension_defaults
 from .llm_providers import request_provider_config
 from . import model_billing
 from .models import ModelUsageRequest
@@ -115,7 +115,8 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
             for item in conversation.libraries
         ],
         "active_request_id": str(conversation.active_request_id) if conversation.active_request_id else None,
-        "skill_ids": conversation.skill_ids, "mcp_server_ids": conversation.mcp_server_ids,
+        "skill_ids": conversation.skill_ids if conversation.extensions_initialized else [],
+        "mcp_server_ids": conversation.mcp_server_ids if conversation.extensions_initialized else [],
         "created_at": conversation.created_at.isoformat(),
         "updated_at": conversation.updated_at.isoformat(),
     }
@@ -133,6 +134,8 @@ def live_conversation(db: Session, conversation_id: UUID, access: Access) -> Con
 
 
 def recover_interrupted_conversations(db: Session):
+    from .models import RemoteToolExecution
+    db.execute(update(RemoteToolExecution).where(RemoteToolExecution.status == "running").values(status="uncertain"))
     model_billing.recover_requests(db)
     for test in db.scalars(select(ThinkingTest).where(ThinkingTest.status == "running")):
         test.status = "interrupted"
@@ -196,13 +199,16 @@ def chat_router(get_db, retrieve):
     def create(payload: ConversationCreate, request: Request,
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
         ids = list(dict.fromkeys(payload.knowledge_base_ids))
+        if not ({"skill_ids", "mcp_server_ids"} & payload.model_fields_set):
+            skill_ids, server_ids = extension_defaults(db, access)
+            payload.skill_ids, payload.mcp_server_ids = list(map(UUID, skill_ids)), list(map(UUID, server_ids))
         validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
         for id in ids:
             library = access.library(db, id)
             if library.status == KnowledgeBaseStatus.ARCHIVED:
                 raise HTTPException(409, "归档知识库不能用于新对话")
         conversation = Conversation(
-            title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id,
+            title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id, extensions_initialized=True,
             skill_ids=list(dict.fromkeys(map(str, payload.skill_ids))),
             mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))), libraries=[
             ConversationLibrary(knowledge_base_id=id) for id in ids
@@ -235,7 +241,18 @@ def chat_router(get_db, retrieve):
     @router.put("/{conversation_id}/extensions")
     def extensions(conversation_id: UUID, payload: ExtensionSelection,
                    db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        raise HTTPException(410, "个人扩展选择已关闭")
+        conversation = db.scalar(select(Conversation).where(Conversation.id == conversation_id).with_for_update())
+        if conversation is None or conversation.deleted_at is not None:
+            raise HTTPException(404, "会话不存在或已删除")
+        access.conversation(db, conversation)
+        if conversation.active_request_id:
+            raise HTTPException(409, "请等待当前回答完成后再调整扩展")
+        validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
+        conversation.skill_ids = list(dict.fromkeys(map(str, payload.skill_ids)))
+        conversation.mcp_server_ids = list(dict.fromkeys(map(str, payload.mcp_server_ids)))
+        conversation.extensions_initialized = True
+        db.commit()
+        return conversation_read(conversation)
     @router.patch("/{conversation_id}")
     def rename(conversation_id: UUID, payload: ConversationRename, request: Request,
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -355,11 +372,13 @@ def chat_router(get_db, retrieve):
             thinking=select_thinking(shared.thinking_config, shared.thinking_version,
                 thinking_option_id, thinking_config_version))
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-        runtime = ExtensionRuntime(factory, access)
+        runtime = ExtensionRuntime(factory, access,
+            conversation.skill_ids if conversation.extensions_initialized else [],
+            conversation.mcp_server_ids if conversation.extensions_initialized else [])
         if not config.thinking.supports_tools:
             runtime.skills, runtime.tools = [], []
         manager = ContextManager(factory, access, conversation_id, config, None, None, None,
-            skill_versions=sorted((row["id"], row["version"]) for row in runtime.skills))
+            skill_versions=runtime.versions if config.thinking.supports_tools else [])
         rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
             ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
         history = manager.history(db, conversation, rows)
@@ -665,12 +684,15 @@ def chat_router(get_db, retrieve):
             agent_run = None
             extension_runtime = await run_in_threadpool(
                 ExtensionRuntime, factory, access,
+                conversation.skill_ids if conversation.extensions_initialized else [],
+                conversation.mcp_server_ids if conversation.extensions_initialized else [],
+                message_id, request_id,
             )
             if not provider_config.thinking.supports_tools:
                 extension_runtime.skills, extension_runtime.tools = [], []
             manager = ContextManager(factory, access, conversation_id, provider_config, provider, meter,
                 request_id, manual=manual,
-                skill_versions=sorted((row["id"], row["version"]) for row in extension_runtime.skills))
+                skill_versions=extension_runtime.versions if provider_config.thinking.supports_tools else [])
             with factory() as db:
                 conversation = live_conversation(db, conversation_id, access.revalidate(db))
                 history = manager.history(db, conversation, rows)

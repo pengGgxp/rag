@@ -172,8 +172,18 @@ def history_message(row, config, skill_versions=None):
                 for message in messages:
                     for call in message.get("tool_calls") or []:
                         name = call.get("function", {}).get("name", "")
-                        if name == "read_skill_file" or name.startswith("mcp_"):
+                        if name == "read_skill_file":
                             return [{"role": row.role, "content": row.content}]
+                        if name.startswith("mcp_"):
+                            result = next((item for item in messages if item.get("role") == "tool"
+                                and item.get("tool_call_id") == call.get("id")), None)
+                            try:
+                                binding = json.loads(result["content"]).get("_extension", {}) if result else {}
+                            except (ValueError, TypeError, AttributeError):
+                                binding = {}
+                            if (allowed_skills is None or allowed_skills.get(name) != binding.get("version")
+                                    or binding.get("tool") != name):
+                                return [{"role": row.role, "content": row.content}]
                         if name in ("load_skill", "read_skill_resource"):
                             result = next((item for item in messages if item.get("role") == "tool"
                                 and item.get("tool_call_id") == call.get("id")), None)

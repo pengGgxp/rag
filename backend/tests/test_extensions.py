@@ -83,7 +83,7 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
         url="https://example.com", transport="sse", enabled=True, header_names=[], tools=[], allowed_tools=[]))
     db.commit()
     item = create(admin)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [str(private.id)], [])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access)
     assert [tool["function"]["name"] for tool in runtime.tools] == ["load_skill"]
     assert "SECRET" not in str(runtime.skills) and "instructions" not in str(runtime.skills)
     args = {"skill_id": item["id"]}
@@ -107,12 +107,11 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
     with pytest.raises(AgentCancelled):
         runtime.execute("load_skill", args, lambda: (_ for _ in ()).throw(AgentCancelled()))
     assert db.get(AgentSkill, private.id).files[0].content == b"PRIVATE"
-    for path in ("/agent/skills", f"/agent/skills/{private.id}", "/agent/mcp", "/agent/mcp/anything/sync"):
-        assert admin.get(path).status_code == 410
-        assert admin.post(path, json={}).status_code == 410
-    assert admin.post("/conversations", json={"skill_ids": [str(private.id)]}).status_code == 422
+    assert admin.get("/agent/skills").status_code == 200
+    assert admin.get("/agent/mcp").status_code == 200
+    assert admin.post("/conversations", json={"skill_ids": [str(private.id)]}).status_code == 201
     chat = admin.post("/conversations", json={}).json()
-    assert admin.put(f"/conversations/{chat['id']}/extensions", json={}).status_code == 410
+    assert admin.put(f"/conversations/{chat['id']}/extensions", json={}).status_code == 200
 
 
 def test_agent_automatically_discovers_loads_and_records_method(accounts, monkeypatch):
@@ -199,3 +198,8 @@ def test_retired_or_stale_skill_protocol_content_does_not_reenter_requests(monke
     assert history_message(row, config, [("platform", 2)]) == plain
     messages[0]["tool_calls"][0]["function"]["name"] = "mcp_old_tool"
     assert history_message(row, config, [("platform", 1)]) == plain
+    messages[-1]["content"] = json.dumps({"content": "Private external result",
+        "_extension": {"tool": "mcp_old_tool", "version": 3}})
+    assert history_message(row, config, [("mcp_old_tool", 3)]) == messages
+    assert history_message(row, config, [("mcp_old_tool", 4)]) == plain
+    assert history_message(row, config, []) == plain

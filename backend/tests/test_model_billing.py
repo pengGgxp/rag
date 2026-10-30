@@ -223,6 +223,7 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
     seen = []
     class Extensions:
         skills = []
+        versions = []
         tools = [{"type": "function", "function": {"name": "load_skill"}},
                  {"type": "function", "function": {"name": "mcp_test"}}]
         def __init__(self, *_args):

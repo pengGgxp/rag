@@ -24,6 +24,22 @@ class MCPError(RuntimeError):
     pass
 
 
+class BoundedStream(httpx.AsyncByteStream):
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __aiter__(self):
+        total = 0
+        async for chunk in self.inner:
+            total += len(chunk)
+            if total > 2 * 1024 * 1024:
+                raise MCPError("MCP 返回内容过大，请缩小任务范围")
+            yield chunk
+
+    async def aclose(self):
+        await self.inner.aclose()
+
+
 def validate_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
@@ -41,13 +57,14 @@ def validate_url(value: str) -> str:
 
 
 def _cipher() -> Fernet:
-    secret = get_settings().mcp_credential_key
+    settings = get_settings()
+    secret = settings.mcp_credential_key or settings.site_config_encryption_key
     if not secret:
-        raise MCPError("管理员尚未配置 MCP 凭据加密密钥")
+        raise MCPError("连接暂不可用，请联系管理员检查加密配置")
     try:
         return Fernet(secret.get_secret_value().encode())
     except (ValueError, TypeError) as exc:
-        raise MCPError("MCP 凭据加密密钥格式不正确") from exc
+        raise MCPError("连接暂不可用，请联系管理员检查加密配置") from exc
 
 
 def encrypt_headers(headers: dict[str, str]) -> str | None:
@@ -121,7 +138,12 @@ class PinnedTransport(httpx.AsyncBaseTransport):
             headers=request.headers, stream=request.stream,
             extensions={**request.extensions, "sni_hostname": url.host},
         )
-        return await self.inner.handle_async_request(pinned)
+        response = await self.inner.handle_async_request(pinned)
+        if response.headers.get("content-encoding", "identity").lower() != "identity":
+            await response.aclose()
+            raise MCPError("服务返回了不支持的压缩内容，请调整服务后重试")
+        response.stream = BoundedStream(response.stream)
+        return response
 
     async def aclose(self):
         await self.inner.aclose()
@@ -134,7 +156,7 @@ async def session(endpoint: str, transport: str, headers: dict[str, str]):
 
     def client_factory(**kwargs):
         return httpx.AsyncClient(
-            **{**kwargs, "headers": headers, "timeout": httpx.Timeout(timeout)},
+            **{**kwargs, "headers": {**headers, "Accept-Encoding": "identity"}, "timeout": httpx.Timeout(timeout)},
             transport=PinnedTransport(endpoint), follow_redirects=False, trust_env=False,
         )
 
@@ -210,7 +232,11 @@ async def _tools(client: ClientSession, headers) -> list[dict]:
         for tool in page.tools:
             definition = redact_credentials(tool.model_dump(mode="json", exclude_none=True), headers)
             validate_tool(definition)
+            if len(result) >= 100 or any(item["name"] == definition["name"] for item in result):
+                raise MCPError("MCP 工具过多或名称重复，请调整服务")
             result.append(definition)
+            if len(json.dumps(result, ensure_ascii=True)) > 512000:
+                raise MCPError("MCP 工具定义过大，请调整服务")
         cursor = page.nextCursor
         if not cursor:
             return result
@@ -255,6 +281,8 @@ async def _call(endpoint, transport, headers, tool, arguments, before_call):
             await anyio.to_thread.run_sync(before_call)
         result = await client.call_tool(tool["name"], arguments)
         payload = result.model_dump(mode="json", exclude_none=True)
+        if len(json.dumps(payload, ensure_ascii=True)) > 512000:
+            raise MCPError("MCP 返回内容过大，操作可能已完成；未自动重试，请核对远端执行状态")
         # A remote service may echo authentication values; do not propagate them.
         return redact_credentials(payload, headers)
 

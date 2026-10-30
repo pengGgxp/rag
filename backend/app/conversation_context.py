@@ -83,7 +83,7 @@ def build_messages(db, conversation, rows, config, extensions, query=None):
         + "\n可用 Skill 摘要（按需加载）：" + json.dumps(extensions.skills, ensure_ascii=False)
         + "\n本会话知识库：" + json.dumps(libraries, ensure_ascii=False)}]
     messages.extend(item for row in rows for item in history_message(row, config,
-        sorted((skill["id"], skill["version"]) for skill in extensions.skills)))
+        getattr(extensions, "versions", sorted((skill["id"], skill["version"]) for skill in extensions.skills))))
     if query is not None:
         messages.append({"role": "user", "content": query})
     tools = ([SEARCH_TOOL] if libraries else []) + extensions.tools
