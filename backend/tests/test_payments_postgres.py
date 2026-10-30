@@ -121,7 +121,8 @@ def test_different_orders_concurrently_do_not_lose_balance_updates(postgres):
         assert sorted(balances) == [1000 + n * 567 for n in range(1, 9)]
 
 
-def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch):
+@pytest.mark.parametrize("custom", [False, True])
+def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch, custom):
     engine, workspace_id, user_id, settings, token = postgres
     calls = []
     lock = Lock()
@@ -143,14 +144,15 @@ def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch)
     main.app.dependency_overrides[auth.get_access] = lambda: Access(user_id, workspace_id, "admin", token)
     key = uuid4().hex
     quote = payments.package_quote(payments.configured_packages(settings)[0])
+    payload = {"package_id": "custom_amount" if custom else "test", "idempotency_key": key, "quote": quote}
+    if custom:
+        payload["custom_amount_fen"] = 2345
 
     def submit(_):
         client = TestClient(main.app, headers={"X-RAG-Request": "1"})
         try:
             barrier.wait(timeout=15)
-            response = client.post("/payments/orders", json={
-                "package_id": "test", "idempotency_key": key, "quote": quote,
-            })
+            response = client.post("/payments/orders", json=payload)
             assert response.status_code == 201, response.text
             return response.json()["id"]
         finally:
@@ -160,6 +162,10 @@ def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch)
         with ThreadPoolExecutor(max_workers=8) as pool:
             ids = list(pool.map(submit, range(8)))
         assert len(set(ids)) == len(calls) == 1
+        with Session(engine) as db:
+            order = db.get(RechargeOrder, calls[0])
+            assert order.amount_fen == (2345 if custom else 1234)
+            assert order.credits == (2345 * 567 // 1234 if custom else 567)
     finally:
         main.app.dependency_overrides.pop(main.get_db, None)
         main.app.dependency_overrides.pop(auth.get_access, None)

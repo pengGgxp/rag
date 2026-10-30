@@ -333,6 +333,116 @@ def test_price_change_requires_a_new_customer_confirmation(accounts, gateway):
     assert create(owner).json()["amount_fen"] == 2000
 
 
+def custom_order(client, amount_fen, *, key=None, quote=None):
+    policy = client.get("/payments/catalog").json()["custom"]
+    return client.post("/payments/orders", json={
+        "package_id": policy["id"], "custom_amount_fen": amount_fen,
+        "idempotency_key": key or uuid4().hex, "quote": quote or policy["quote"],
+    })
+
+
+def test_presets_preserve_existing_packages_and_conversion(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, _ = gateway
+    settings.recharge_packages_json = json.dumps([
+        {"id": "starter", "name": "基础包", "amount_fen": 1000, "credits": 1000},
+    ])
+    catalog = owner.get("/payments/catalog").json()
+    assert [(p["amount_fen"], p["credits"]) for p in catalog["packages"]] == [
+        (1000, 1000), (2000, 2000), (5000, 5000), (10000, 10000), (20000, 20000),
+    ]
+    assert catalog["packages"][0]["id"] == "starter"
+    for fen in (2000, 5000, 10000, 20000):
+        response = create(owner, package=f"amount_{fen}")
+        assert response.status_code == 201
+        assert response.json()["amount_fen"] == response.json()["credits"] == fen
+
+
+def test_custom_amount_is_quoted_idempotent_and_paid_once(accounts, gateway):
+    (owner, _, anonymous), db = accounts
+    register(owner)
+    settings, calls = gateway
+    key = uuid4().hex
+    response = custom_order(owner, 2345, key=key)
+    assert response.status_code == 201
+    order = response.json()
+    assert order["amount_fen"] == 2345
+    assert order["credits"] == 2345 * 567 // 1234  # no new volume discount
+    assert custom_order(owner, 2345, key=key).json()["id"] == order["id"]
+    assert custom_order(owner, 2346, key=key).status_code == 409
+    assert len(calls) == 1
+    assert owner.get("/usage").json()["balance"] == 1000
+    data = notification(order, settings, amount="23.45")
+    assert anonymous.get(CALLBACK_PATH, params=data).text == "success"
+    assert anonymous.get(CALLBACK_PATH, params=data).text == "success"
+    assert owner.get("/usage").json()["balance"] == 1000 + order["credits"]
+    entries = db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.kind == "paid_recharge")).all()
+    assert len(entries) == 1 and entries[0].amount == order["credits"]
+    settings.zhifux_enabled = False
+    # A retry recovers its original order even after the catalogue is disabled.
+    assert custom_order_payload(owner, order["amount_fen"], key).json()["id"] == order["id"]
+
+
+def custom_order_payload(client, amount_fen, key):
+    return client.post("/payments/orders", json={"package_id": "custom_amount",
+        "custom_amount_fen": amount_fen, "idempotency_key": key, "quote": "0" * 64})
+
+
+@pytest.mark.parametrize("value", [0, 99, 1_000_001, -100, True, 2345.1, "2345", None])
+def test_custom_invalid_amount_never_starts_payment(accounts, gateway, value):
+    (owner, _, _), _ = accounts
+    register(owner)
+    _, calls = gateway
+    assert custom_order(owner, value).status_code == 422
+    assert not calls
+    assert owner.get("/payments/orders").json()["total"] == 0
+
+
+def test_custom_quote_changes_and_payload_tampering_fail_before_checkout(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, calls = gateway
+    policy = owner.get("/payments/catalog").json()["custom"]
+    packages = json.loads(settings.recharge_packages_json)
+    packages[0]["credits"] += 1
+    settings.recharge_packages_json = json.dumps(packages)
+    assert custom_order(owner, 2345, quote=policy["quote"]).status_code == 409
+    for changes in ({"credits": 999999}, {"amount_fen": 1}, {"custom_amount_fen": 2000}):
+        assert owner.post("/payments/orders", json={"package_id": "test",
+            "idempotency_key": uuid4().hex, "quote": "0" * 64, **changes}).status_code == 422
+    assert not calls
+
+
+def test_catalog_avoids_configured_id_collisions_and_keeps_discounts(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, _ = gateway
+    settings.recharge_packages_json = json.dumps([
+        {"id": "custom_amount", "name": "原套餐", "amount_fen": 1000, "credits": 1000},
+        {"id": "amount_2000", "name": "优惠套餐", "amount_fen": 5000, "credits": 6000},
+    ])
+    catalog = owner.get("/payments/catalog").json()
+    assert len({p["id"] for p in catalog["packages"]}) == len(catalog["packages"])
+    assert catalog["custom"]["id"] == "custom_amount_"
+    assert next(p for p in catalog["packages"] if p["amount_fen"] == 5000)["credits"] == 6000
+    assert custom_order(owner, 5000).json()["credits"] == 5000
+
+
+def test_custom_limits_avoid_zero_or_excessive_integer_credits(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, calls = gateway
+    settings.recharge_packages_json = json.dumps([
+        {"id": "one", "name": "高比例", "amount_fen": 100, "credits": 1000000},
+    ])
+    catalog = owner.get("/payments/catalog").json()
+    assert catalog["custom"]["max_amount_fen"] == 100
+    assert custom_order(owner, 101).status_code == 422
+    assert custom_order(owner, 100).json()["credits"] == 1000000
+    assert len(calls) == 1
+
+
 def test_real_adapter_sends_official_query_protocol_with_tls_and_no_secret_exposure(accounts, gateway, monkeypatch):
     (owner, _, _), db = accounts
     register(owner)

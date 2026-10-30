@@ -514,7 +514,7 @@
   background: var(--brand-soft);
 }
 .recharge-option:focus-within {
-  outline: 2px solid var(--brand-soft);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 .recharge-option input {
@@ -533,15 +533,9 @@
   font-size: 18px;
   font-weight: 600;
 }
-.recharge-option strong small {
+.recharge-option span > small {
   font-size: 12px;
   font-weight: 400;
-}
-.recharge-option b {
-  grid-column: 2;
-  color: var(--ink);
-  font-weight: 500;
-  font-size: 14px;
 }
 .recharge-checkout {
   display: flex;
@@ -558,8 +552,56 @@
 }
 .recharge-checkout button {
   min-width: 124px;
-  min-height: 38px;
+  min-height: 44px;
   justify-content: center;
+}
+.recharge-custom-option {
+  align-items: center;
+}
+.recharge-custom-option strong {
+  font-size: 14px;
+}
+.recharge-custom-fields {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  max-width: 360px;
+  color: var(--muted);
+  font-size: var(--form-label-size);
+}
+.recharge-amount-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.recharge-amount-input:focus-within {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+.recharge-amount-input input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--form-font-size);
+}
+.recharge-custom-fields p {
+  margin: 0;
+  min-height: 20px;
+  font-size: 13px;
+}
+.recharge-custom-fields strong {
+  color: var(--ink);
 }
 .billing-section {
   border-top: 1px solid var(--line);
@@ -679,7 +721,17 @@
 }
 @media (max-width: 520px) {
   .recharge-options {
-    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .recharge-option {
+    padding: 12px;
+    gap: 8px;
+  }
+  .recharge-option strong {
+    font-size: 16px;
+  }
+  .recharge-custom-option strong {
+    font-size: 14px;
   }
   .recharge-order-detail {
     flex-wrap: wrap;

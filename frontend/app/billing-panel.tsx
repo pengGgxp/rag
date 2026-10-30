@@ -25,7 +25,8 @@ export type CreditUsage = {
   }[];
 };
 type Package = { id: string; name: string; amount_fen: number; credits: number; quote: string };
-type Catalog = { enabled: boolean; packages: Package[] };
+type CustomRecharge = { id: string; min_amount_fen: number; max_amount_fen: number; rate_credits: number; rate_amount_fen: number; quote: string };
+type Catalog = { enabled: boolean; packages: Package[]; custom?: CustomRecharge };
 type Order = {
   id: string;
   order_no: string;
@@ -45,12 +46,18 @@ const money = (fen: number) =>
   new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(fen / 100);
 const time = (value: string) =>
   new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-const errorText = (error: unknown) => error instanceof Error ? error.message : "请求失败，请稍后重试";
+const errorText = (error: unknown) => error instanceof TypeError ? "网络连接失败，请重试"
+  : error instanceof Error ? error.message : "请求失败，请稍后重试";
 const pending = (order: Order) => ["pending", "creating", "confirming"].includes(order.status);
 const STATUS = {
   creating: "创建中", confirming: "确认中", pending: "待支付",
   expired: "已过期", failed: "创建失败", paid: "已到账",
 };
+function parseAmount(value: string): number | null {
+  if (!/^\d{1,5}(?:\.\d{1,2})?$/.test(value.trim())) return null;
+  const [whole, fraction = ""] = value.trim().split(".");
+  return Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+}
 export function creditKind(kind: string) {
   return ({
     paid_recharge: "充值到账", admin_grant: "历史赠送", initial_grant: "初始赠送",
@@ -78,11 +85,12 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
   const [orders, setOrders] = useState<OrderPage | null>(null);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState("");
+  const [customAmount, setCustomAmount] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const attempt = useRef<{ packageId: string; key: string; quote: string } | null>(null);
+  const attempt = useRef<{ packageId: string; amount: number; key: string; quote: string } | null>(null);
   const previousStates = useRef(new Map<string, string>());
   const generation = useRef(0);
 
@@ -104,7 +112,8 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
       setUsage(balance);
       setCatalog(options);
       setOrders(history);
-      setSelected((value) => options.packages.some((item) => item.id === value) ? value : options.packages[0]?.id ?? "");
+      setSelected((value) => (value === options.custom?.id) || options.packages.some((item) => item.id === value)
+        ? value : options.packages[0]?.id ?? "");
       setError("");
       if (newlyPaid) setNotice("充值成功，积分已到账");
     } catch (e) {
@@ -131,20 +140,31 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     };
   }, [load, hasPending]);
 
+  const customFen = parseAmount(customAmount);
+  const custom = catalog?.custom;
+  const isCustom = Boolean(custom && selected === custom.id);
+  const customValid = custom && customFen !== null
+    && customFen >= custom.min_amount_fen && customFen <= custom.max_amount_fen;
+  const selectedPackage = isCustom
+    ? customValid ? { id: custom.id, name: "自定义充值", amount_fen: customFen,
+      credits: Number(BigInt(customFen) * BigInt(custom.rate_credits) / BigInt(custom.rate_amount_fen)), quote: custom.quote } : undefined
+    : catalog?.packages.find((item) => item.id === selected);
+
   async function checkout() {
-    const option = catalog?.packages.find((item) => item.id === selected);
+    const option = selectedPackage;
     if (!option || busy) return;
     setBusy(true);
     onBusyChange(true);
     setError("");
     setNotice("");
-    if (attempt.current?.packageId !== selected || attempt.current.quote !== option.quote) {
-      attempt.current = { packageId: selected, key: crypto.randomUUID(), quote: option.quote };
+    if (attempt.current?.packageId !== selected || attempt.current.quote !== option.quote || attempt.current.amount !== option.amount_fen) {
+      attempt.current = { packageId: selected, amount: option.amount_fen, key: crypto.randomUUID(), quote: option.quote };
     }
     try {
       const order = await request<Order>("/payments/orders", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ package_id: selected, idempotency_key: attempt.current.key, quote: option.quote }),
+        body: JSON.stringify({ package_id: selected, idempotency_key: attempt.current.key, quote: option.quote,
+          ...(isCustom ? { custom_amount_fen: option.amount_fen } : {}) }),
       });
       attempt.current = null;
       previousStates.current.set(order.id, order.status);
@@ -171,7 +191,6 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     }
   }
 
-  const selectedPackage = catalog?.packages.find((item) => item.id === selected);
   const totalPages = Math.max(1, Math.ceil((orders?.total ?? 0) / 10));
   return (
     <section className="billing-panel" aria-label="积分与充值">
@@ -199,11 +218,31 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
               <label className="recharge-option" key={item.id} data-selected={selected === item.id}>
                 <input type="radio" name="recharge-package" value={item.id}
                   checked={selected === item.id} onChange={() => setSelected(item.id)} />
-                <span>{item.name}<strong>{count(item.credits)}<small> 积分</small></strong></span>
-                <b>{money(item.amount_fen)}</b>
+                <span><strong>{money(item.amount_fen)}</strong><small>{count(item.credits)} 积分</small></span>
               </label>
             ))}
+            {custom && <label className="recharge-option recharge-custom-option" data-selected={isCustom}>
+              <input type="radio" name="recharge-package" value={custom.id}
+                checked={isCustom} onChange={() => setSelected(custom.id)} aria-controls="custom-recharge-fields" />
+              <span><strong>自定义金额</strong><small>输入充值金额</small></span>
+            </label>}
           </fieldset>
+          {isCustom && custom && <div className="recharge-custom-fields" id="custom-recharge-fields">
+            <label htmlFor="custom-recharge-amount">充值金额</label>
+            <div className="recharge-amount-input"><span aria-hidden="true">¥</span>
+              <input id="custom-recharge-amount" inputMode="decimal" type="text" autoComplete="off"
+                value={customAmount} maxLength={8} disabled={busy}
+                placeholder={`${custom.min_amount_fen / 100}–${custom.max_amount_fen / 100}`}
+                aria-describedby="custom-recharge-hint custom-recharge-result" aria-invalid={Boolean(customAmount && !customValid)}
+                onChange={(event) => setCustomAmount(event.target.value)} />
+              <span>元</span>
+            </div>
+            <small id="custom-recharge-hint">{money(custom.min_amount_fen)}–{money(custom.max_amount_fen)}，最多两位小数</small>
+            <p id="custom-recharge-result" aria-live="polite" className={customAmount && !customValid ? "form-error" : ""}>
+              {selectedPackage ? <>到账 <strong>{count(selectedPackage.credits)}</strong> 积分</>
+                : customAmount ? "请输入范围内的金额，最多保留两位小数" : "输入金额后查看到账积分"}
+            </p>
+          </div>}
           <div className="recharge-checkout">
             <span>应付 <strong>{selectedPackage ? money(selectedPackage.amount_fen) : "--"}</strong></span>
             <button className="primary" type="submit" disabled={busy || !selectedPackage}>

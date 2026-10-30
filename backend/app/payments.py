@@ -7,6 +7,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from fractions import Fraction
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
@@ -43,10 +44,65 @@ class CreateOrder(BaseModel):
     package_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
     quote: str = Field(pattern=r"^[a-f0-9]{64}$")
+    custom_amount_fen: int | None = Field(default=None, strict=True, ge=100, le=1_000_000)
 
 
 def package_quote(package: RechargePackage) -> str:
     return hashlib.sha256(package.model_dump_json().encode("utf-8")).hexdigest()
+
+
+CUSTOM_PACKAGE_ID = "custom_amount"
+
+
+def recharge_options(settings: Settings):
+    packages = configured_packages(settings)
+    if not packages:
+        return [], None
+    # Added amounts never introduce a better exchange rate than existing offers.
+    reference = min(packages, key=lambda item: Fraction(item.credits, item.amount_fen))
+    rate = Fraction(reference.credits, reference.amount_fen)
+    minimum = max(100, (rate.denominator + rate.numerator - 1) // rate.numerator)
+    maximum = min(1_000_000, 1_000_000 * rate.denominator // rate.numerator)
+    identifiers = {item.id for item in packages}
+    custom_id = CUSTOM_PACKAGE_ID
+    while custom_id in identifiers:
+        custom_id += "_"
+    options = list(packages)
+    for fen in (2000, 5000, 10000, 20000):
+        credits = fen * rate.numerator // rate.denominator
+        if minimum <= fen <= maximum and not any(item.amount_fen == fen for item in options):
+            identifier = f"amount_{fen}"
+            while identifier in identifiers:
+                identifier += "_"
+            options.append(RechargePackage(id=identifier, name=f"{fen // 100} 元充值",
+                                           amount_fen=fen, credits=credits))
+    options.sort(key=lambda item: item.amount_fen)
+    custom = {"id": custom_id, "min_amount_fen": minimum, "max_amount_fen": maximum,
+              "rate_credits": reference.credits, "rate_amount_fen": reference.amount_fen,
+              "quote": package_quote(reference)} if minimum <= maximum else None
+    return options, custom
+
+
+def resolve_package(settings: Settings, payload: CreateOrder):
+    packages, custom = recharge_options(settings)
+    if custom and payload.package_id == custom["id"]:
+        if payload.custom_amount_fen is None:
+            raise HTTPException(422, "请输入充值金额")
+        fen = payload.custom_amount_fen
+        if not custom["min_amount_fen"] <= fen <= custom["max_amount_fen"]:
+            raise HTTPException(422, "充值金额超出范围，请重新输入")
+        if payload.quote != custom["quote"]:
+            raise HTTPException(409, "充值价格已更新，请刷新并确认到账积分后重试")
+        return RechargePackage(id=custom["id"], name="自定义充值", amount_fen=fen,
+                               credits=fen * custom["rate_credits"] // custom["rate_amount_fen"])
+    if payload.custom_amount_fen is not None:
+        raise HTTPException(422, "请选择自定义金额后再输入金额")
+    package = next((item for item in packages if item.id == payload.package_id), None)
+    if package is None:
+        raise HTTPException(409, "该充值档位已不可用，请刷新后重试")
+    if payload.quote != package_quote(package):
+        raise HTTPException(409, "充值档位已更新，请刷新并确认价格后重试")
+    return package
 
 
 def https_url(value: str) -> bool:
@@ -252,12 +308,13 @@ def build_router(get_db):
     @router.get("/catalog")
     def catalog(access: Access = Depends(get_access)):
         try:
-            packages = configured_packages(get_settings())
+            packages, custom = recharge_options(get_settings())
         except HTTPException:
-            packages = []
+            packages, custom = [], None
         return {
             "enabled": bool(packages),
             "packages": [{**item.model_dump(), "quote": package_quote(item)} for item in packages],
+            **({"custom": custom} if custom else {}),
         }
 
     @router.post("/orders", status_code=201)
@@ -274,20 +331,20 @@ def build_router(get_db):
             RechargeOrder.idempotency_key == payload.idempotency_key,
         ))
         if order:
-            if order.package_id != payload.package_id:
+            requested_id = (f"{payload.package_id}:{payload.custom_amount_fen}"
+                            if payload.custom_amount_fen is not None else payload.package_id)
+            if order.package_id != requested_id:
                 raise HTTPException(409, "此充值请求已使用其他档位，请重新选择")
             result = order_read(order)
             db.commit()
             return result
         settings = get_settings()
-        package = next((item for item in configured_packages(settings) if item.id == payload.package_id), None)
-        if package is None:
-            raise HTTPException(409, "该充值档位已不可用，请刷新后重试")
-        if payload.quote != package_quote(package):
-            raise HTTPException(409, "充值档位已更新，请刷新并确认价格后重试")
+        package = resolve_package(settings, payload)
         order = RechargeOrder(
             id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
-            idempotency_key=payload.idempotency_key, package_id=package.id, package_name=package.name,
+            idempotency_key=payload.idempotency_key,
+            package_id=f"{package.id}:{package.amount_fen}" if payload.custom_amount_fen is not None else package.id,
+            package_name=package.name,
             amount_fen=package.amount_fen, credits=package.credits,
             merchant_num=settings.zhifux_merchant_num, pay_type=settings.zhifux_pay_type,
             status="creating", expires_at=now() + timedelta(minutes=PAY_DURATION_MINUTES),
