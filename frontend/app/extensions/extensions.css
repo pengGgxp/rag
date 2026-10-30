@@ -1,0 +1,56 @@
+.extension-page { padding: 24px var(--workspace-content-padding); overflow-y: auto; }
+.extension-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--line); margin-bottom: 24px; }
+.extension-tabs [role="tab"] { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: 10px 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); }
+.extension-tabs [data-state="active"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.extension-toolbar { display: flex; gap: 16px; align-items: end; margin-bottom: 24px; }
+.extension-toolbar label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.extension-toolbar .extension-search { display: flex; align-items: center; flex: 1; position: relative; }
+.extension-search svg { position: absolute; left: 10px; }
+.extension-page input:not([type="checkbox"]), .extension-page select, .extension-page textarea { padding: 10px 12px; min-height: 40px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; min-width: 0; }
+.extension-search input { width: 100%; padding-left: 34px !important; }
+.extension-list { border-top: 1px solid var(--line); }
+.extension-row { display: flex; align-items: center; gap: 16px; padding: 20px 4px; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+.extension-row:hover { background: var(--surface-muted); }
+.extension-symbol { width: 40px; height: 40px; display: grid; place-items: center; background: var(--surface-muted); border-radius: 6px; color: var(--accent); flex-shrink: 0; }
+.extension-copy { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.extension-copy strong { font-size: 14px; overflow-wrap: anywhere; }
+.extension-copy > span { color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.extension-meta { display: grid; gap: 6px; text-align: right; color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.extension-empty { color: var(--muted); text-align: center; padding: 72px 16px; }
+.extension-form { max-width: 1040px; display: grid; gap: 24px; }
+.extension-fields { display: contents; }
+.extension-form label:not(.extension-check) { display: grid; gap: 8px; font-size: 12px; color: var(--muted); }
+.extension-form textarea { width: 100%; min-height: 340px; resize: vertical; line-height: 1.7; }
+.extension-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.extension-form h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+.extension-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.extension-section { border-top: 1px solid var(--line); padding-top: 24px; }
+.extension-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.7; }
+.extension-check input { margin-top: 5px; flex-shrink: 0; accent-color: var(--accent); }
+.extension-warning { color: var(--muted); font-size: 13px; line-height: 1.7; padding: 12px 0; overflow-wrap: anywhere; }
+.extension-warning ul { padding-left: 20px; }
+.extension-error { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; color: var(--danger); }
+.extension-back { display: inline-flex; gap: 8px; color: var(--muted); margin-bottom: 24px; }
+.extension-header-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 44px; gap: 8px; margin-bottom: 8px; }
+.extension-tool { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.extension-tool span { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.extension-tool small { color: var(--muted); }
+.admin-changes-boundary:has(.extension-page) { height: 100dvh; }
+.admin-changes-boundary:has(.extension-page) .admin-inline-confirm { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 16px; background: var(--surface-muted); }
+.admin-changes-boundary:has(.extension-page) .admin-navigation-confirm { position: fixed; z-index: 80; top: 12px; left: 50%; transform: translateX(-50%); width: min(700px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 6px; }
+.extension-picker-body { padding: 12px; width: min(360px, calc(100vw - 32px)); max-height: 65dvh; overflow-y: auto; }
+.extension-picker-body h3 { font-size: 12px; color: var(--muted); margin: 16px 0 8px; }
+.extension-picker-body label { min-height: 44px; padding: 8px 0; }
+.extension-picker-body a { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; color: var(--accent); }
+.extension-picker-body p { font-size: 13px; line-height: 1.6; color: var(--muted); }
+@media (max-width: 700px) {
+  .extension-page { padding-top: 16px; }
+  .extension-toolbar { flex-wrap: wrap; gap: 12px; }
+  .extension-toolbar .extension-search { flex-basis: 100%; order: -1; }
+  .extension-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .extension-row { gap: 10px; }
+  .extension-page button, .extension-page input:not([type="checkbox"]), .extension-page select, .extension-check { min-height: 44px; }
+  .extension-header-field { grid-template-columns: minmax(0, 1fr) 44px; }
+  .extension-header-field input:nth-child(2) { grid-row: 2; }
+  .extension-header-field button { grid-column: 2; grid-row: 1 / 3; align-self: center; }
+}

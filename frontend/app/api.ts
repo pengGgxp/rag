@@ -38,6 +38,7 @@ export async function request<T>(
     || /\/models\/discover$/.test(path) || path === "/site/admin/search/test"
     || path === "/chat/attachments"
     || path.startsWith("/site/admin/skills")
+    || path.startsWith("/agent/")
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
     ? 30 * 60_000

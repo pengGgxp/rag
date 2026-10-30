@@ -9,7 +9,7 @@ export type ConversationActivityItem = {
   label: string;
   summary?: string;
   kind: "retrieval" | "tool" | "compaction";
-  status: "waiting" | "running" | "completed" | "failed" | "cancelled";
+  status: "waiting" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
 };
 
 const statusLabel = {
@@ -18,12 +18,13 @@ const statusLabel = {
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
+  uncertain: "结果待确认",
 };
 
 function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) {
   if (status === "running") return <Loader2 size={14} className="spin" />;
   if (status === "completed") return <Check size={14} />;
-  if (status === "failed") return <CircleAlert size={14} />;
+  if (status === "failed" || status === "uncertain") return <CircleAlert size={14} />;
   if (status === "cancelled") return <Square size={12} />;
   return <CircleDashed size={14} />;
 }
@@ -45,7 +46,7 @@ export function ConversationActivity({ items, finished, children }: {
   const cancelled = items.some(item => item.status === "cancelled");
   const single = items.length === 1 ? items[0] : null;
   const headline = single
-    ? `${single.label}${single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
+    ? `${single.label}${single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
     : finished
     ? cancelled ? `已停止 · ${items.length} 项活动` : failed ? `${items.length} 项活动 · ${failed} 项失败` : `已完成 ${items.length} 项活动`
     : current?.label ?? "等待下一步";

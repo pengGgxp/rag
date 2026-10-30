@@ -11,13 +11,13 @@ function decode(file: SkillFile): string | null {
   } catch { return null; }
 }
 
-export function SkillResources({ files, review, path, onSelect, onRemove }: {
-  files: SkillFile[]; review?: PackageReview; path: string; onSelect: (path: string) => void; onRemove: (path: string) => void;
+export function SkillResources({ files, review, path, onSelect, onRemove, personal = false }: {
+  files: SkillFile[]; review?: PackageReview; path: string; onSelect: (path: string) => void; onRemove?: (path: string) => void; personal?: boolean;
 }) {
   const [removing, setRemoving] = useState("");
   const selected = files.find(file => file.path === path) ?? files[0];
   const text = useMemo(() => selected ? decode(selected) : null, [selected]);
-  if (!files.length) return <p className="admin-empty">没有补充资料。SKILL.md 在“编辑指令”中维护。</p>;
+  if (!files.length) return <p className="admin-empty">没有补充资料。</p>;
   return <div className="skill-resource-layout">
     <nav className="skill-file-list" aria-label="包内文件">
       {files.map(file => {
@@ -31,7 +31,7 @@ export function SkillResources({ files, review, path, onSelect, onRemove }: {
     </nav>
     {selected && <section className="skill-file-preview" aria-label="文件预览">
       <div className="skill-file-heading"><strong>{selected.path}</strong>
-        <button className="secondary" type="button" onClick={() => setRemoving(selected.path)}><Trash2 size={16} />移除文件</button>
+        {onRemove && <button className="secondary" type="button" onClick={() => setRemoving(selected.path)}><Trash2 size={16} />移除文件</button>}
       </div>
       {removing === selected.path && <div className="admin-inline-confirm"><span>移除此文件后，请一并调整引用它的指令。</span>
         <button className="secondary" type="button" onClick={() => {
@@ -39,12 +39,13 @@ export function SkillResources({ files, review, path, onSelect, onRemove }: {
           requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".skill-file-heading button")?.focus());
         }}>保留</button>
         <button className="danger" type="button" onClick={() => {
-          onRemove(selected.path); setRemoving("");
+          onRemove?.(selected.path); setRemoving("");
           requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".skill-file-list button")?.focus());
         }}>确认移除</button>
       </div>}
-      {text === null ? <p>此文件可以保存在草稿中，当前无法供模型读取。启用前请移除并调整相关指令。</p>
-        : <pre tabIndex={0}>{text.slice(0, 50000)}{text.length > 50000 ? "\n\n……预览仅显示前 50000 字；模型可分段读取完整文字。" : ""}</pre>}
+      {personal && review?.manifest.find(item => item.path === selected.path)?.readable === false && <p className="extension-warning">此文件仅保留供查看或导出，不会执行或供模型读取。</p>}
+      {text === null ? <p>{personal ? "此文件无法预览，可导出后查看。" : "此文件可以保存在草稿中，当前无法供模型读取。启用前请移除并调整相关指令。"}</p>
+        : <pre tabIndex={0}>{text.slice(0, 50000)}{text.length > 50000 ? "\n\n……仅显示前 50000 字，可导出后查看完整文件。" : ""}</pre>}
     </section>}
   </div>;
 }

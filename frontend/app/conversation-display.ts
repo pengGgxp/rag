@@ -14,7 +14,7 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "cancelled"
-      : ["waiting", "running", "completed", "cancelled"].includes(item.status)
+      : ["waiting", "running", "completed", "cancelled", "uncertain"].includes(item.status)
         ? item.status as ConversationActivityItem["status"] : "waiting",
   };
 }

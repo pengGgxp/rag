@@ -89,7 +89,7 @@ export default function KnowledgeWorkspace() {
   const screen: WorkspaceScreen = params.has("conversation") || params.has("chat")
     ? "chat" : selectedId ? "knowledge" : "catalog";
   useEffect(() => {
-    if (pathname === "/" && params.has("extensions")) router.replace("/", { scroll: false });
+    if (pathname === "/" && params.has("extensions")) router.replace("/extensions", { scroll: false });
   }, [pathname, params, router]);
   const requestedView = params.get("view");
   const view: KnowledgeView = requestedView === "retrieval" || requestedView === "permissions" || requestedView === "settings"

@@ -38,6 +38,8 @@ import { Motion } from "../components/ui/motion";
 import "./chat.css";
 import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
+import { ExtensionPicker } from "./extensions/extension-picker";
+import type { ExtensionSelection } from "./extensions/extension-data";
 import { ConversationActivity } from "./conversation-activity";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
@@ -196,6 +198,7 @@ export function ChatWorkspace({
   const { session } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection | null>(null);
   const [scope, setScope] = useState<string[]>(
     initialLibraryId ? [initialLibraryId] : [],
   );
@@ -428,6 +431,7 @@ export function ChatWorkspace({
       router.push(`/?conversation=${encodeURIComponent(item.id)}`, { scroll: false });
   }
   function newChat() {
+    setDraftExtensions(null);
     ++epoch.current;
     void stopGeneration();
     generation.current = null;
@@ -498,7 +502,7 @@ export function ChatWorkspace({
         current = await request<Conversation>("/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ knowledge_base_ids: scope }),
+          body: JSON.stringify({ knowledge_base_ids: scope, ...(draftExtensions ?? {}) }),
           signal: controller.signal,
         });
         if (epoch.current !== currentEpoch) return;
@@ -1203,6 +1207,16 @@ export function ChatWorkspace({
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
+              <ExtensionPicker disabled={running || loading} supportsTools={selectedModel?.supports_tools !== false}
+                selection={conversation ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
+                onChange={async value => {
+                  if (!conversation) { setDraftExtensions(value); return; }
+                  const id = conversation.id;
+                  const updated = await request<Conversation>(`/conversations/${id}/extensions`, {
+                    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+                  });
+                  setConversation(current => current?.id === id ? { ...current, skill_ids: updated.skill_ids, mcp_server_ids: updated.mcp_server_ids } : current);
+                }} />
               <Tooltip content={webFailed ? "联网状态加载失败，点击重试" : webAvailable ? `${webEnabled ? "自动联网" : "联网已关闭"} · 按有效调用计费` : "联网搜索暂不可用"}>
                 <button type="button" className="icon-button web-search-toggle" aria-label={webFailed ? "重试联网状态" : "自动联网"} aria-pressed={webEnabled && webAvailable}
                   disabled={running || loading || selectedModel?.supports_tools === false || (!webAvailable && !webFailed)} onClick={() => webFailed ? setWebAttempt(value => value + 1) : setWebEnabled(value => !value)}><Globe size={17} /></button>
