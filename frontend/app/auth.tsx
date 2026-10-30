@@ -118,15 +118,18 @@ export function AccountButton() {
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
         setOpen(false);
         rootRef.current?.querySelector<HTMLButtonElement>("[aria-haspopup='menu']")?.focus();
       }
     };
     document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", escape);
+    // Close this menu before the mobile drawer handles Escape.
+    window.addEventListener("keydown", escape, true);
     return () => {
       document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", escape);
+      window.removeEventListener("keydown", escape, true);
     };
   }, [open]);
 
@@ -200,10 +203,6 @@ export function AccountButton() {
             } else if (event.key === "ArrowUp") {
               event.preventDefault();
               focusMenuItem(-1);
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              setOpen(false);
-              rootRef.current?.querySelector<HTMLButtonElement>("[aria-haspopup='menu']")?.focus();
             }
           }}
         >

@@ -503,9 +503,9 @@
 .account-menu-panel {
   position: absolute;
   z-index: 30;
-  right: 0;
+  left: 0;
   bottom: calc(100% + 8px);
-  width: min(248px, calc(100vw - 24px));
+  width: min(248px, 100%);
   padding: 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -517,6 +517,7 @@
   min-height: 36px;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 9px;
   padding: 8px 10px;
   border-radius: 6px;
@@ -556,6 +557,11 @@
   height: 1px;
   margin: 6px 4px;
   background: var(--line);
+}
+@media (max-width: 700px) {
+  .account-menu-item {
+    min-height: var(--form-touch-height);
+  }
 }
 .account-identity {
   display: flex;

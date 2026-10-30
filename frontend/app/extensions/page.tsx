@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { ChevronRight, FileText, Plug, Plus, Search, Upload } from "lucide-react";
+import { ChevronRight, FileText, Plug, Plus, Search } from "lucide-react";
 import * as Tabs from "../../components/ui/tabs";
 import { WorkspaceHeader, WorkspaceSkeleton } from "../workspace-header";
 import { useExtensionResource, type MCPConnection, type PersonalSkill } from "./extension-data";
@@ -21,7 +21,7 @@ export default function ExtensionsPage() {
     && (!status || (item.enabled !== false ? "enabled" : "disabled") === status));
   return <>
     <WorkspaceHeader title="扩展" actions={<Link className="primary" href={tab === "mcp" ? "/extensions/mcp/new" : "/extensions/skills/new"}>
-      {tab === "mcp" ? <Plus size={16} /> : <Upload size={16} />}{tab === "mcp" ? "添加 MCP" : "添加 Skill"}
+      <Plus size={16} />{tab === "mcp" ? "添加 MCP" : "添加 Skill"}
     </Link>} />
     <div className="workspace-body extension-page">
       <Tabs.Root value={tab} onValueChange={value => { router.push(`/extensions?tab=${value}`); setQuery(""); setStatus(""); }}>
