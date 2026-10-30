@@ -5,7 +5,9 @@ import { Plus, Search } from "lucide-react";
 import { AdminHeading, AdminLoad, date, Pagination, type Page, useAdminResource } from "../admin-ui";
 import "../platform-content.css";
 
-export type Skill = { id: string; name: string; description: string; markdown: string; enabled: boolean; version: number; updated_at: string };
+export type SkillFile = { path: string; content: string };
+export type PackageReview = { manifest: { path: string; size: number; text: boolean; readable: boolean }[]; issues: string[]; can_enable: boolean };
+export type Skill = { id: string; name: string; description: string; markdown: string; files: SkillFile[]; review: PackageReview; enabled: boolean; version: number; updated_at: string };
 
 export default function SkillsPage() {
   const params = useSearchParams();

@@ -21,6 +21,18 @@
 .managed-dialog-body { padding: 24px; }
 .skill-preview { min-height: 300px; overflow-wrap: anywhere; }
 .skill-preview pre { max-width: 100%; overflow: auto; }
+.skill-preview .skill-resource-link { display: inline; padding: 0; min-height: 0; border: 0; border-radius: 0; background: transparent; color: var(--accent); font: inherit; text-decoration: underline; text-align: inherit; }
+.skill-resource-layout { display: grid; grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); gap: 24px; min-height: 300px; }
+.skill-file-list { display: flex; flex-direction: column; gap: 4px; border-right: 1px solid var(--line); padding-right: 16px; }
+.skill-file-list button { display: flex; justify-content: flex-start; align-items: flex-start; gap: 8px; min-height: 44px; text-align: left; background: transparent; border: 0; color: var(--muted); padding: 10px 8px; border-radius: 4px; font: inherit; }
+.skill-file-list button svg { flex-shrink: 0; margin-top: 3px; }
+.skill-file-list button span { overflow-wrap: anywhere; }
+.skill-file-list button[aria-current="true"] { background: var(--surface-muted); color: var(--accent); }
+.skill-file-preview { min-width: 0; }
+.skill-file-heading { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; overflow-wrap: anywhere; }
+.skill-file-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 560px; overflow: auto; font-size: 13px; line-height: 1.7; padding: 16px 0; }
+.skill-package-check { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin: 24px 0; color: var(--muted); font-size: 13px; }
+.skill-package-check li { overflow-wrap: anywhere; margin-top: 6px; }
 .suggestion-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; padding: 24px 0; }
 .suggestion-meta { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 13px; }
 .suggestion-form { display: grid; gap: 18px; }
@@ -30,6 +42,9 @@
 .suggestion-form .managed-actions { justify-content: flex-end; }
 .suggestion-form .admin-inline-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 @media (max-width: 700px) {
+  .skill-resource-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .skill-file-list { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 16px; max-height: 220px; overflow-y: auto; }
+  .skill-file-heading button, .skill-package-check button, .skill-editor .provider-enabled { min-height: 44px; }
   .managed-dialog-body { padding: 20px 16px; }
   .modal:has(.managed-dialog-body) .modal-heading .icon-button { min-width: 44px; min-height: 44px; }
   .managed-row { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 16px 0; }
