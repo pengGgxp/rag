@@ -2,7 +2,7 @@ import base64, hashlib, json
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from .auth import Access, get_access, now
@@ -37,6 +37,37 @@ class TextWrite(BaseModel):
 class PatchWrite(BaseModel):
     patch: str = Field(min_length=1, max_length=500_000)
     expected_version: int = Field(ge=1)
+
+
+def _save_bytes(workspace_id, access, db, path, data, content_type="application/octet-stream", expected_version=None):
+    path = valid_path(path)
+    if len(data) > MAX_BYTES:
+        raise HTTPException(413, "文件不能超过 200 MiB")
+    row = db.scalar(select(WorkspaceFile).where(
+        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path))
+    if row and row.deleted_at is None:
+        if expected_version is not None and expected_version != row.current_version:
+            raise HTTPException(409, "文件已被修改，请重新读取")
+        version = row.current_version + 1
+    else:
+        version = (row.current_version + 1) if row is not None else 1
+        if row is None:
+            row = WorkspaceFile(workspace_id=access.workspace_id, path=path,
+                content_type=content_type, size_bytes=0, content_hash="", current_version=1,
+                created_by=access.user_id, updated_by=access.user_id)
+            db.add(row)
+            db.flush()
+    digest = hashlib.sha256(data).hexdigest()
+    row.content_type = content_type or row.content_type or "application/octet-stream"
+    row.size_bytes, row.content_hash = len(data), digest
+    row.current_version, row.updated_by, row.deleted_at = version, access.user_id, None
+    key = f"workspaces/{access.workspace_id}/files/{row.id}/{version}/{path}"
+    upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
+    db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
+        object_key=key, content_type=row.content_type, size_bytes=len(data), content_hash=digest,
+        created_by=access.user_id))
+    db.commit()
+    return read_file(row)
 @router.get("")
 def listing(workspace_id: UUID, q: str = "", offset: int = 0, limit: int = 100, db=Depends(get_db), access: Access=Depends(get_access)):
     check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%")).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
@@ -48,17 +79,13 @@ def upload(workspace_id: UUID, file: UploadFile=File(...), db=Depends(get_db), a
     check_workspace(access,workspace_id); access.editor(); path=valid_path(file.filename or "")
     data=file.file.read(MAX_BYTES+1)
     if len(data)>MAX_BYTES: raise HTTPException(413,"文件不能超过 200 MiB")
-    digest=hashlib.sha256(data).hexdigest(); row=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path))
-    if row and not row.deleted_at: version=row.current_version+1; fid=row.id
-    else: row=WorkspaceFile(workspace_id=access.workspace_id,path=path,content_type=file.content_type or "application/octet-stream",size_bytes=len(data),content_hash=digest,current_version=1,created_by=access.user_id,updated_by=access.user_id); db.add(row); db.flush(); version=1; fid=row.id
-    key=f"workspaces/{access.workspace_id}/files/{fid}/{version}/{path}"; upload_fileobj(__import__('io').BytesIO(data),key,row.content_type)
-    row.current_version=version; row.size_bytes=len(data); row.content_hash=digest; row.updated_by=access.user_id; row.deleted_at=None; db.add(WorkspaceFileVersion(file_id=fid,workspace_id=access.workspace_id,version=version,object_key=key,content_type=row.content_type,size_bytes=len(data),content_hash=digest,created_by=access.user_id)); db.commit(); return read_file(row)
+    expected_version = None
+    return _save_bytes(workspace_id, access, db, path, data, file.content_type, expected_version)
 @router.post("/text", status_code=201)
 def write_text(workspace_id: UUID, payload: TextWrite, db=Depends(get_db), access: Access=Depends(get_access)):
-    access.editor(); valid_path(payload.path); row=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==payload.path))
-    if row and payload.expected_version != row.current_version: raise HTTPException(409,"文件已被修改，请重新读取")
-    from starlette.datastructures import UploadFile as _U
-    data=payload.content.encode(); fake=type("F",(),{"filename":payload.path,"content_type":payload.content_type,"file":__import__('io').BytesIO(data)})(); return upload(workspace_id,fake,db,access)
+    check_workspace(access, workspace_id); access.editor()
+    return _save_bytes(workspace_id, access, db, payload.path, payload.content.encode("utf-8"),
+        payload.content_type, payload.expected_version)
 @router.delete("/{file_id}", status_code=204)
 def delete(workspace_id: UUID,file_id: UUID,db=Depends(get_db),access: Access=Depends(get_access)):
     row=owned(db,access,workspace_id,file_id,True); row.deleted_at=now(); db.commit(); return None
@@ -71,11 +98,65 @@ def versions(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Acce
     row=owned(db,access,workspace_id,file_id)
     return [{"version": item.version, "size_bytes": item.size_bytes, "sha256": item.content_hash, "created_at": item.created_at.isoformat(), "current": item.version == row.current_version} for item in row.versions]
 
+
+@router.post("/{file_id}/restore")
+def restore(workspace_id: UUID, file_id: UUID, version: int = Form(...), db=Depends(get_db), access: Access=Depends(get_access)):
+    row = owned(db, access, workspace_id, file_id, True)
+    source = db.scalar(select(WorkspaceFileVersion).where(
+        WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == version,
+        WorkspaceFileVersion.deleted_at.is_(None)))
+    if source is None:
+        raise HTTPException(404, "文件版本不存在")
+    stream = download_fileobj(source.object_key)
+    return _save_bytes(workspace_id, access, db, row.path, stream.read(MAX_BYTES + 1), source.content_type,
+        row.current_version)
+
+
+def _apply_unified_patch(original: str, patch: str) -> str:
+    lines = original.splitlines(keepends=True)
+    patch_lines = patch.splitlines(keepends=True)
+    out, cursor, i = [], 0, 0
+    while i < len(patch_lines):
+        line = patch_lines[i]
+        if not line.startswith("@@"):
+            i += 1
+            continue
+        import re
+        match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+        if not match:
+            raise HTTPException(422, "补丁格式无效")
+        start = int(match.group(1)) - 1
+        if start < cursor or start > len(lines):
+            raise HTTPException(409, "补丁目标已变化，请重新读取文件")
+        out.extend(lines[cursor:start]); cursor = start; i += 1
+        while i < len(patch_lines) and not patch_lines[i].startswith("@@"):
+            item = patch_lines[i]; i += 1
+            if item.startswith("\\ No newline"):
+                continue
+            if not item:
+                continue
+            prefix, value = item[0], item[1:]
+            if prefix == " ":
+                if cursor >= len(lines) or lines[cursor] != value:
+                    raise HTTPException(409, "补丁目标已变化，请重新读取文件")
+                out.append(lines[cursor]); cursor += 1
+            elif prefix == "-":
+                if cursor >= len(lines) or lines[cursor] != value:
+                    raise HTTPException(409, "补丁目标已变化，请重新读取文件")
+                cursor += 1
+            elif prefix == "+":
+                out.append(value)
+            else:
+                raise HTTPException(422, "补丁格式无效")
+    out.extend(lines[cursor:])
+    return "".join(out)
+
 def tool_definitions():
     return [{"type":"function","function":{"name":n,"description":d,"parameters":p}} for n,d,p in [
         ("list_files","列出当前工作区文件",{"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":False}),
         ("read_file","读取当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0}},"required":["path"],"additionalProperties":False}),
         ("write_file","创建或覆盖当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","content"],"additionalProperties":False}),
+        ("apply_patch","按版本应用文本文件补丁",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
         ("run_command","在当前工作区隔离环境执行 Python、Node 或 sh 命令",{"type":"object","properties":{"command":{"type":"string","maxLength":2000}},"required":["command"],"additionalProperties":False}),
     ]]
@@ -89,6 +170,18 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         row=rows[0]; ver=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version)); stream=download_fileobj(ver.object_key); content=stream.read(12000); return {"path":row.path,"version":row.current_version,"content":content.decode("utf-8",errors="replace")}
     if name=="write_file":
         access.editor(); payload=TextWrite(path=arguments["path"],content=arguments["content"],expected_version=arguments.get("expected_version")); return write_text(workspace_id,payload,db,access)
+    if name=="apply_patch":
+        access.editor(); path = valid_path(arguments["path"])
+        row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+            WorkspaceFile.path == path, WorkspaceFile.deleted_at.is_(None)))
+        if row is None: return {"error": "文件不存在"}
+        if row.current_version != arguments["expected_version"]: raise HTTPException(409, "文件已被修改，请重新读取")
+        version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
+            WorkspaceFileVersion.version == row.current_version))
+        content = download_fileobj(version.object_key).read(MAX_BYTES + 1)
+        try: updated = _apply_unified_patch(content.decode("utf-8"), arguments["patch"])
+        except UnicodeDecodeError: return {"error": "只能对文本文件应用补丁"}
+        return _save_bytes(workspace_id, access, db, path, updated.encode("utf-8"), row.content_type, row.current_version)
     if name=="delete_file":
         access.editor(); path=valid_path(arguments["path"]); row=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
         if not row: return {"error":"文件不存在"}
@@ -111,12 +204,15 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             job.status="failed"; job.stderr_summary="隔离执行环境暂时不可用"; job.finished_at=now(); db.commit()
             return {"error":"隔离执行环境暂时不可用，脚本未执行"}
         job.status=result.get("status", "failed"); job.exit_code=result.get("exit_code"); job.stdout_summary=str(result.get("stdout", ""))[-MAX_OUTPUT:]; job.stderr_summary=str(result.get("stderr", ""))[-MAX_OUTPUT:]; job.finished_at=now(); db.commit()
+        changed_files = []
         for path, encoded in result.pop("files", {}).items():
             try:
                 data=base64.b64decode(encoded); current=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
                 if current and current.content_hash == hashlib.sha256(data).hexdigest(): continue
-                payload=TextWrite(path=path,content=data.decode("utf-8"),expected_version=current.current_version if current else None); write_text(workspace_id,payload,db,access)
+                _save_bytes(workspace_id, access, db, path, data, current.content_type if current else "application/octet-stream", current.current_version if current else None)
+                changed_files.append(path)
             except Exception:
                 result.setdefault("warnings", []).append(f"无法保存文件：{path}")
+        job.changed_files = changed_files; db.commit()
         return result
     return {"error":"未知文件工具"}

@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     recharge_packages_json: str = "[]"
     usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
     workspace_executor_url: str | None = None
+    workspace_runner_image: str = "rag-workspace-executor:latest"
 
     @property
     def oidc_configured(self) -> bool:

@@ -79,7 +79,11 @@ class ExtensionRuntime(SkillRuntime):
                     self.mcp_tokens[alias] = row.authorization_version
         self.skills = [{key: value for key, value in row.items()
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
-        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else []), *tool_definitions()]
+        script_suffixes = {".py", ".js", ".mjs", ".cjs", ".sh", ".bash"}
+        has_script_skill = any(any(path.lower().endswith(tuple(script_suffixes)) for path in row.get("resources", {}))
+            for row in self.snapshots.values())
+        workspace_tools = tool_definitions() if has_script_skill else []
+        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else []), *workspace_tools]
             if self.skills else []) + [{"type": "function", "function": {"name": alias,
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]

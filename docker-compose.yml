@@ -106,12 +106,15 @@ services:
         condition: service_healthy
 
   workspace-executor:
+    image: rag-workspace-executor:latest
     build:
       context: ./backend
       dockerfile: executor.Dockerfile
     command: uvicorn app.executor_service:app --host 0.0.0.0 --port 8090
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WORKSPACE_RUNNER_IMAGE: rag-workspace-executor:latest
     ports: []
 
   worker:
