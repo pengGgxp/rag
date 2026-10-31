@@ -43,3 +43,15 @@ def download_fileobj(object_key: str):
     output.seek(0)
     return output
 
+
+def delete_object(object_key: str) -> None:
+    backend = cos_backend()
+    if backend:
+        backend.delete(object_key)
+        return
+    settings = get_settings()
+    try:
+        client().delete_object(Bucket=settings.s3_bucket, Key=object_key)
+    except Exception as exc:
+        raise HTTPException(503, "对象存储删除失败，请稍后重试") from exc
+

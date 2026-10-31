@@ -1,8 +1,8 @@
 import base64, hashlib, json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from .auth import Access, get_access, now
@@ -26,7 +26,7 @@ def read_file(row):
     return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": row.current_version, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
 def owned(db, access, workspace_id, file_id, write=False):
     check_workspace(access, workspace_id); row = db.get(WorkspaceFile, file_id)
-    if not row or row.workspace_id != access.workspace_id or row.deleted_at: raise HTTPException(404, "文件不存在")
+    if not row or row.workspace_id != access.workspace_id or row.deleted_at or row.expires_at <= datetime.now(timezone.utc): raise HTTPException(404, "文件不存在")
     if write: access.editor()
     return row
 class TextWrite(BaseModel):
@@ -45,7 +45,12 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
         raise HTTPException(413, "文件不能超过 200 MiB")
     row = db.scalar(select(WorkspaceFile).where(
         WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path))
-    if row and row.deleted_at is None:
+    settings = get_settings()
+    quota = settings.workspace_file_quota_mb * 1024 * 1024
+    current_total = sum(size for size, in db.execute(select(WorkspaceFile.size_bytes).where(
+        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
+        WorkspaceFile.expires_at > datetime.now(timezone.utc))).all())
+    if row and row.deleted_at is None and row.expires_at > datetime.now(timezone.utc):
         if expected_version is not None and expected_version != row.current_version:
             raise HTTPException(409, "文件已被修改，请重新读取")
         version = row.current_version + 1
@@ -58,9 +63,13 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
             db.add(row)
             db.flush()
     digest = hashlib.sha256(data).hexdigest()
+    previous_size = row.size_bytes if row and row.deleted_at is None and row.expires_at > datetime.now(timezone.utc) else 0
+    if current_total - previous_size + len(data) > quota:
+        raise HTTPException(413, "工作区临时文件空间已满，请等待文件自动清理")
     row.content_type = content_type or row.content_type or "application/octet-stream"
     row.size_bytes, row.content_hash = len(data), digest
     row.current_version, row.updated_by, row.deleted_at = version, access.user_id, None
+    row.expires_at = datetime.now(timezone.utc) + timedelta(days=settings.workspace_file_retention_days)
     key = f"workspaces/{access.workspace_id}/files/{row.id}/{version}/{path}"
     upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
     db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
@@ -70,48 +79,18 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
     return read_file(row)
 @router.get("")
 def listing(workspace_id: UUID, q: str = "", offset: int = 0, limit: int = 100, db=Depends(get_db), access: Access=Depends(get_access)):
-    check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%")).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
+    check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.expires_at > datetime.now(timezone.utc), WorkspaceFile.path.ilike(f"%{q}%")).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
 @router.get("/{file_id}")
 def detail(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     return read_file(owned(db,access,workspace_id,file_id))
-@router.post("/upload", status_code=201)
-def upload(workspace_id: UUID, file: UploadFile=File(...), db=Depends(get_db), access: Access=Depends(get_access)):
-    check_workspace(access,workspace_id); access.editor(); path=valid_path(file.filename or "")
-    data=file.file.read(MAX_BYTES+1)
-    if len(data)>MAX_BYTES: raise HTTPException(413,"文件不能超过 200 MiB")
-    expected_version = None
-    return _save_bytes(workspace_id, access, db, path, data, file.content_type, expected_version)
-@router.post("/text", status_code=201)
-def write_text(workspace_id: UUID, payload: TextWrite, db=Depends(get_db), access: Access=Depends(get_access)):
+def write_text(workspace_id: UUID, payload: TextWrite, db, access):
     check_workspace(access, workspace_id); access.editor()
     return _save_bytes(workspace_id, access, db, payload.path, payload.content.encode("utf-8"),
         payload.content_type, payload.expected_version)
-@router.delete("/{file_id}", status_code=204)
-def delete(workspace_id: UUID,file_id: UUID,db=Depends(get_db),access: Access=Depends(get_access)):
-    row=owned(db,access,workspace_id,file_id,True); row.deleted_at=now(); db.commit(); return None
 @router.get("/{file_id}/download")
 def download(workspace_id: UUID,file_id: UUID,db=Depends(get_db),access: Access=Depends(get_access)):
     from fastapi.responses import StreamingResponse
     row=owned(db,access,workspace_id,file_id); version=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version)); stream=download_fileobj(version.object_key); return StreamingResponse(stream,media_type=row.content_type,headers={"Content-Disposition":f'attachment; filename="{row.path.split("/")[-1]}"'})
-@router.get("/{file_id}/versions")
-def versions(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
-    row=owned(db,access,workspace_id,file_id)
-    return [{"version": item.version, "size_bytes": item.size_bytes, "sha256": item.content_hash, "created_at": item.created_at.isoformat(), "current": item.version == row.current_version} for item in row.versions]
-
-
-@router.post("/{file_id}/restore")
-def restore(workspace_id: UUID, file_id: UUID, version: int = Form(...), db=Depends(get_db), access: Access=Depends(get_access)):
-    row = owned(db, access, workspace_id, file_id, True)
-    source = db.scalar(select(WorkspaceFileVersion).where(
-        WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == version,
-        WorkspaceFileVersion.deleted_at.is_(None)))
-    if source is None:
-        raise HTTPException(404, "文件版本不存在")
-    stream = download_fileobj(source.object_key)
-    return _save_bytes(workspace_id, access, db, row.path, stream.read(MAX_BYTES + 1), source.content_type,
-        row.current_version)
-
-
 def _apply_unified_patch(original: str, patch: str) -> str:
     lines = original.splitlines(keepends=True)
     patch_lines = patch.splitlines(keepends=True)
@@ -164,7 +143,7 @@ def tool_definitions():
 def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None):
     check_workspace(access,workspace_id)
     if name=="list_files": return listing(workspace_id,arguments.get("query", ""),0,100,db,access)
-    rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==valid_path(arguments["path"]),WorkspaceFile.deleted_at.is_(None))).all() if name=="read_file" else []
+    rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==valid_path(arguments["path"]),WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all() if name=="read_file" else []
     if name=="read_file":
         if not rows:return {"error":"文件不存在"}
         row=rows[0]; ver=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version)); stream=download_fileobj(ver.object_key); content=stream.read(12000); return {"path":row.path,"version":row.current_version,"content":content.decode("utf-8",errors="replace")}
@@ -191,7 +170,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         if not settings.workspace_executor_url: return {"error":"脚本执行环境尚未配置，请联系站点管理员"}
         import httpx
         files={}
-        for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.deleted_at.is_(None))).all():
+        for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all():
             version=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version))
             stream=download_fileobj(version.object_key); files[row.path]=base64.b64encode(stream.read(MAX_BYTES+1)).decode()
         payload={"workspace_id":str(access.workspace_id),"command":arguments["command"],"files":files}

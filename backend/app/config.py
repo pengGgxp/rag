@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
     workspace_executor_url: str | None = None
     workspace_runner_image: str = "rag-workspace-executor:latest"
+    workspace_file_retention_days: int = Field(default=3, ge=1, le=30)
+    workspace_file_quota_mb: int = Field(default=500, ge=50, le=5000)
 
     @property
     def oidc_configured(self) -> bool:

@@ -364,6 +364,7 @@ p {
 .workspace-file-upload { display:inline-flex; align-items:center; justify-content:center; gap:8px; text-decoration:none; cursor:pointer; }
 .workspace-file-upload input { display:none; }
 .workspace-files-page { padding: 20px var(--workspace-content-padding); }
+.workspace-files-hint { color: var(--muted); font-size: 13px; margin: 14px 0; }
 .workspace-files-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
 .workspace-files-toolbar .extension-search { flex:1; max-width:560px; }
 .workspace-file-list { border-top:1px solid var(--line); }

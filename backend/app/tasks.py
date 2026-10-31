@@ -1,6 +1,7 @@
 from celery import Celery
 from sqlalchemy import select
 from uuid import UUID
+from datetime import datetime, timezone
 import io
 
 from .config import get_settings
@@ -20,6 +21,7 @@ from .models import (
     JobState,
     KnowledgeBaseStatus,
     SiteStorageSettings,
+    WorkspaceFile,
 )
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
@@ -33,7 +35,7 @@ celery_app.conf.update(task_track_started=True, task_serializer="json", result_s
 
 
 def ocr_storage(session):
-    from .cos_storage import CosStorage
+    from .storage import delete_object
     settings = session.get(SiteStorageSettings, 1)
     return CosStorage(settings) if settings and settings.active else None
 
@@ -359,6 +361,7 @@ def maintain_uploads() -> None:
     cleanup_uploads()
     recover_uploads()
     cleanup_orphans()
+    cleanup_workspace_files()
     with SessionLocal() as db:
         storage = ocr_storage(db)
         if storage:
@@ -376,6 +379,25 @@ def maintain_uploads() -> None:
                     from sqlalchemy.orm.attributes import flag_modified
                     flag_modified(document, "parsing_metadata")
                     db.commit()
+
+
+def cleanup_workspace_files() -> None:
+    """Remove expired temporary Skill outputs from object storage and metadata."""
+    from .cos_storage import CosStorage
+    with SessionLocal() as db:
+        expired = db.scalars(select(WorkspaceFile).where(
+            WorkspaceFile.deleted_at.is_(None),
+            WorkspaceFile.expires_at <= datetime.now(timezone.utc))).all()
+        for row in expired:
+            for version in row.versions:
+                try:
+                    delete_object(version.object_key)
+                except Exception:
+                    continue
+                version.deleted_at = datetime.now(timezone.utc)
+            if all(version.deleted_at is not None for version in row.versions):
+                row.deleted_at = datetime.now(timezone.utc)
+        db.commit()
 
 
 @celery_app.task(bind=True, max_retries=3)
