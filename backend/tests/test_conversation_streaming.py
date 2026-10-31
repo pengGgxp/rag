@@ -47,6 +47,44 @@ def sse(handler, data):
     handler.wfile.flush()
 
 
+def test_real_multiturn_stream_normalizes_legacy_empty_tool_calls():
+    from app.thinking import ThinkingSelection
+    captured = []
+    def respond(handler, payload):
+        captured.append(payload)
+        if any(message.get("tool_calls") == [] for message in payload["messages"]):
+            handler.send_response(400); handler.end_headers()
+            handler.wfile.write(b'{"error":{"message":"tool_calls: empty array"}}')
+            return
+        handler.send_response(200); handler.send_header("Content-Type", "text/event-stream"); handler.end_headers()
+        sse(handler, {"choices": [{"delta": {"reasoning_content": "thinking"}}]})
+        time.sleep(0.02)
+        sse(handler, {"choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}]})
+        sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 3}})
+    with upstream(respond) as url:
+        provider = OpenAICompatibleChatProvider(config=ChatProviderConfig(url, "test-only", "deepseek",
+            thinking=ThinkingSelection(adapter="deepseek", kind="fixed")))
+        first = list(provider.stream_with_tools([{"role": "user", "content": "hello"}], []))[-1][1]
+        legacy = {"role": "assistant", "content": first.content, "tool_calls": [], **first.protocol_fields}
+        history = [{"role": "user", "content": "hello"}, legacy, {"role": "user", "content": "again"}]
+        second = list(provider.stream_with_tools(history, []))[-1][1]
+    assert second.content == "answer"
+    assert legacy["tool_calls"] == []
+    assert "tool_calls" not in captured[-1]["messages"][1]
+    assert captured[-1]["messages"][1]["reasoning_content"] == "thinking"
+
+
+def test_real_stream_http_error_remains_provider_error_and_does_not_echo_body():
+    def respond(handler, _payload):
+        handler.send_response(400); handler.send_header("Content-Type", "application/json"); handler.end_headers()
+        handler.wfile.write(b'{"error":{"message":"sensitive-request-content"}}')
+    with upstream(respond) as url:
+        provider = OpenAICompatibleChatProvider(config=ChatProviderConfig(url, "test-only", "test"))
+        with pytest.raises(LLMProviderError, match="HTTP 400") as error:
+            list(provider.stream_with_tools([], []))
+    assert "sensitive-request-content" not in str(error.value)
+
+
 def test_real_stream_delivers_text_before_upstream_finishes_and_assembles_tools():
     release, ended = Event(), Event()
     captured = []

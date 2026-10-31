@@ -210,6 +210,14 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     assert observed[1]["messages"][-2]["reasoning_content"] == "private-first"
     saved = db.scalar(select(ChatMessage).where(ChatMessage.role == "assistant"))
     assert saved.encrypted_continuation and "private" not in saved.encrypted_continuation
+    import json
+    private = json.loads(mcp_client.decrypt_headers(saved.encrypted_continuation)["continuation"])
+    assert "tool_calls" not in private["messages"][-1]
+    # Existing conversations retain old encrypted snapshots; only the outbound
+    # copy is normalized, without losing valid calls and their tool responses.
+    private["messages"][-1]["tool_calls"] = []
+    saved.encrypted_continuation = mcp_client.encrypt_headers({"continuation": json.dumps(private)})
+    db.commit()
     assert saved.encrypted_display_thinking and "private" not in saved.encrypted_display_thinking
     assert "private" not in client.get(f"/conversations/{conversation}").text
     display = client.get(f"/conversations/{conversation}/messages/{saved.id}/thinking")
@@ -217,6 +225,8 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     assert "private" not in client.get(f"/conversations/{conversation}/export").text
     send(client, conversation, first["id"], thinking_config_version=2)
     assert any(item.get("reasoning_content") == "private-first" for item in observed[-1]["messages"])
+    assert all(item.get("tool_calls") != [] for item in observed[-1]["messages"])
+    assert any(item.get("tool_calls") for item in observed[-1]["messages"])
     send(client, conversation, second["id"])
     assert all("reasoning_content" not in item for item in observed[-1]["messages"])
     assert "reasoning_effort" not in observed[-1]

@@ -232,14 +232,15 @@ def stream_retrieval_agent(
         assistant_message = {
             "role": "assistant",
             "content": response.content,
-            "tool_calls": [
+        }
+        if calls:
+            assistant_message["tool_calls"] = [
                 {"id": call.id, "type": "function", "function": {
                     "name": call.name,
                     "arguments": json.dumps(call.arguments, ensure_ascii=False),
                 }}
                 for call in calls
-            ],
-        }
+            ]
         if response.protocol_fields:
             assistant_message.update(response.protocol_fields)
         return {
