@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from .auth import Access, get_access, now
+from .auth import Access, get_access, now, aware
 from .db import get_db
 from .models import WorkspaceFile, WorkspaceFileVersion, WorkspaceExecutionJob
 from .storage import download_fileobj, upload_fileobj
@@ -26,7 +26,7 @@ def read_file(row):
     return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": row.current_version, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat()}
 def owned(db, access, workspace_id, file_id, write=False):
     check_workspace(access, workspace_id); row = db.get(WorkspaceFile, file_id)
-    if not row or row.workspace_id != access.workspace_id or row.deleted_at or row.expires_at <= datetime.now(timezone.utc): raise HTTPException(404, "文件不存在")
+    if not row or row.workspace_id != access.workspace_id or row.deleted_at or aware(row.expires_at) <= datetime.now(timezone.utc): raise HTTPException(404, "文件不存在")
     if write: access.editor()
     return row
 class TextWrite(BaseModel):
@@ -50,7 +50,8 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
     current_total = sum(size for size, in db.execute(select(WorkspaceFile.size_bytes).where(
         WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
         WorkspaceFile.expires_at > datetime.now(timezone.utc))).all())
-    if row and row.deleted_at is None and row.expires_at > datetime.now(timezone.utc):
+    active = row is not None and row.deleted_at is None and aware(row.expires_at) > datetime.now(timezone.utc)
+    if active:
         if expected_version is not None and expected_version != row.current_version:
             raise HTTPException(409, "文件已被修改，请重新读取")
         version = row.current_version + 1
@@ -63,7 +64,7 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
             db.add(row)
             db.flush()
     digest = hashlib.sha256(data).hexdigest()
-    previous_size = row.size_bytes if row and row.deleted_at is None and row.expires_at > datetime.now(timezone.utc) else 0
+    previous_size = row.size_bytes if active else 0
     if current_total - previous_size + len(data) > quota:
         raise HTTPException(413, "工作区临时文件空间已满，请等待文件自动清理")
     row.content_type = content_type or row.content_type or "application/octet-stream"
@@ -140,7 +141,7 @@ def tool_definitions():
         ("run_command","在当前工作区隔离环境执行 Python、Node 或 sh 命令",{"type":"object","properties":{"command":{"type":"string","maxLength":2000}},"required":["command"],"additionalProperties":False}),
     ]]
 
-def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None):
+def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, skill_packages=None, check_active=None):
     check_workspace(access,workspace_id)
     if name=="list_files": return listing(workspace_id,arguments.get("query", ""),0,100,db,access)
     rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==valid_path(arguments["path"]),WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all() if name=="read_file" else []
@@ -170,10 +171,16 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         if not settings.workspace_executor_url: return {"error":"脚本执行环境尚未配置，请联系站点管理员"}
         import httpx
         files={}
+        versions={}
         for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all():
             version=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version))
             stream=download_fileobj(version.object_key); files[row.path]=base64.b64encode(stream.read(MAX_BYTES+1)).decode()
-        payload={"workspace_id":str(access.workspace_id),"command":arguments["command"],"files":files}
+            versions[row.path] = row.current_version
+        if check_active:
+            check_active()
+        payload={"workspace_id":str(access.workspace_id),"command":arguments["command"],"files":files,
+            "skill_files": {f"{identifier}/{path}": base64.b64encode(data).decode()
+                for identifier, package in (skill_packages or {}).items() for path, data in package.items()}}
         job=WorkspaceExecutionJob(workspace_id=access.workspace_id,user_id=access.user_id,conversation_id=conversation_id,request_id=request_id,command_digest=hashlib.sha256(arguments["command"].encode()).hexdigest())
         db.add(job); db.commit()
         try:
@@ -181,17 +188,23 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             response.raise_for_status(); result=response.json()
         except Exception:
             job.status="failed"; job.stderr_summary="隔离执行环境暂时不可用"; job.finished_at=now(); db.commit()
-            return {"error":"隔离执行环境暂时不可用，脚本未执行"}
+            return {"error":"执行结果未确认，请先检查已有输出，不要自动重复运行", "uncertain": True}
         job.status=result.get("status", "failed"); job.exit_code=result.get("exit_code"); job.stdout_summary=str(result.get("stdout", ""))[-MAX_OUTPUT:]; job.stderr_summary=str(result.get("stderr", ""))[-MAX_OUTPUT:]; job.finished_at=now(); db.commit()
         changed_files = []
+        generated_files = []
         for path, encoded in result.pop("files", {}).items():
             try:
                 data=base64.b64decode(encoded); current=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
                 if current and current.content_hash == hashlib.sha256(data).hexdigest(): continue
-                _save_bytes(workspace_id, access, db, path, data, current.content_type if current else "application/octet-stream", current.current_version if current else None)
+                if current and current.current_version != versions.get(path):
+                    result.setdefault("warnings", []).append(f"文件已被其他任务修改，请重新读取后处理：{path}")
+                    continue
+                saved = _save_bytes(workspace_id, access, db, path, data, current.content_type if current else "application/octet-stream", versions.get(path))
+                generated_files.append(saved)
                 changed_files.append(path)
             except Exception:
                 result.setdefault("warnings", []).append(f"无法保存文件：{path}")
         job.changed_files = changed_files; db.commit()
+        result["generated_files"] = generated_files
         return result
     return {"error":"未知文件工具"}

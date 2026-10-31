@@ -17,6 +17,9 @@ from .personal_mcp import router as mcp_router
 from .site_skills import SkillRuntime, LOAD_SKILL, READ_SKILL_RESOURCE
 from .skill_files import text_content
 from .workspace_files import tool_definitions, execute_tool
+from .config import get_settings
+
+SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
 
 router = APIRouter()
 router.include_router(skills_router)
@@ -59,10 +62,13 @@ class ExtensionRuntime(SkillRuntime):
                     continue
                 identifier = str(row.id)
                 self.personal_ids.add(identifier)
-                readable = {item["path"] for item in checked["manifest"] if item["readable"]}
+                scripts = [item["path"] for item in checked["manifest"]
+                    if item["text"] and item["path"].lower().endswith(SCRIPT_SUFFIXES)]
+                readable = {item["path"] for item in checked["manifest"] if item["readable"]} | set(scripts)
                 self.snapshots[identifier] = {"id": identifier, "name": row.name, "description": row.description,
                     "version": row.version, "source": "personal", "instructions": row.markdown,
                     "limitations": checked["issues"],
+                    "scripts": scripts, "package_files": {"SKILL.md": row.markdown.encode("utf-8"), **files},
                     "resources": {path: text_content(content) for path, content in files.items() if path in readable}}
             for row in db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
                     MCPServer.workspace_id == access.workspace_id,
@@ -79,10 +85,10 @@ class ExtensionRuntime(SkillRuntime):
                     self.mcp_tokens[alias] = row.authorization_version
         self.skills = [{key: value for key, value in row.items()
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
-        script_suffixes = {".py", ".js", ".mjs", ".cjs", ".sh", ".bash"}
-        has_script_skill = any(any(path.lower().endswith(tuple(script_suffixes)) for path in row.get("resources", {}))
-            for row in self.snapshots.values())
-        workspace_tools = tool_definitions() if has_script_skill else []
+        self.execution_available = bool(get_settings().workspace_executor_url) and access.role in ("admin", "editor")
+        has_script_skill = any(row.get("scripts") for row in self.snapshots.values())
+        workspace_tools = tool_definitions() if has_script_skill and self.execution_available else []
+        self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
         self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else []), *workspace_tools]
             if self.skills else []) + [{"type": "function", "function": {"name": alias,
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
@@ -91,6 +97,9 @@ class ExtensionRuntime(SkillRuntime):
 
     def label(self, name, arguments=None):
         binding = self.bindings.get(name)
+        if name in self.workspace_tool_names:
+            return {"list_files": "查看工作区输出", "read_file": "读取文件", "write_file": "生成文件",
+                "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "运行脚本"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
 
     def execute(self, name, arguments, check_active=None):
@@ -106,10 +115,28 @@ class ExtensionRuntime(SkillRuntime):
             return self._personal_read(name, arguments)
         if name not in self.bindings:
             if name in {item["function"]["name"] for item in tool_definitions()}:
+                if name not in self.workspace_tool_names:
+                    return {"error": "当前请求没有可用的脚本执行工具"}
+                definition = next(item["function"] for item in self.tools if item["function"]["name"] == name)
+                try:
+                    Draft202012Validator(definition["parameters"]).validate(arguments)
+                except ValidationError:
+                    return {"error": "工具参数不符合定义，请修正后重试"}
+                loaded = self.loaded & self.personal_ids
+                if not any(self.snapshots[identifier].get("scripts") for identifier in loaded):
+                    return {"error": "请先加载本次选择的脚本 Skill"}
                 with self.factory() as db:
                     self.access.revalidate(db)
+                    for identifier in loaded:
+                        row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
+                        if row is None or not row.enabled or row.owner_id != self.access.user_id or row.workspace_id != self.access.workspace_id:
+                            return {"error": "已加载的 Skill 已停用或无权使用，请重新开始请求"}
+                    from .models import ChatMessage
+                    message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     return execute_tool(name, arguments, db, self.access, self.access.workspace_id,
-                        conversation_id=self.message_id, request_id=self.request_id)
+                        conversation_id=message.conversation_id if message else None, request_id=self.request_id,
+                        skill_packages={identifier: self.snapshots[identifier]["package_files"] for identifier in loaded},
+                        check_active=check_active)
             return super().execute(name, arguments, check_active)
         item = self.bindings[name]
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
@@ -201,7 +228,12 @@ class ExtensionRuntime(SkillRuntime):
                 return {"error": "工具参数无效"}
             self.loaded.add(snapshot["id"])
             return {key: snapshot[key] for key in ("id", "name", "version", "instructions", "limitations")} | {
-                "resources": [{"path": path} for path in snapshot["resources"]], "execute_scripts": False}
+                "resources": [{"path": path} for path in snapshot["resources"]],
+                "execute_scripts": bool(snapshot["scripts"]) and self.execution_available,
+                "execution": {"tool": "run_command", "directory": f"/skills/{snapshot['id']}",
+                    "working_directory": "/workspace", "scripts": snapshot["scripts"], "read_only": True,
+                    "instructions": "使用解释器和目录中的绝对脚本路径运行；包内相对资料位于同一目录。输出写入 /workspace，不要修改 Skill 包。"}
+                    if snapshot["scripts"] and self.execution_available else None}
         if (set(arguments) - {"skill_id", "path", "offset"} or snapshot["id"] not in self.loaded
                 or not isinstance(arguments.get("path"), str)):
             return {"error": "请先加载 Skill，再读取清单内的文字资料"}

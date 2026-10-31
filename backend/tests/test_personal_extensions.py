@@ -70,8 +70,8 @@ def test_personal_package_draft_limits_reading_ownership_and_conflicts(accounts,
     args = {"skill_id": row["id"]}
     assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
     loaded = runtime.execute("load_skill", args)
-    assert loaded["execute_scripts"] is False and loaded["resources"] == [{"path": "references/guide.md"}]
-    assert runtime.execute("read_skill_resource", {**args, "path": "scripts/task.py"}).get("error")
+    assert loaded["resources"] == [{"path": "references/guide.md"}, {"path": "scripts/task.py"}]
+    assert "NEVER RUN" in runtime.execute("read_skill_resource", {**args, "path": "scripts/task.py"})["content"]
     assert runtime.execute("read_skill_resource", {**args, "path": "assets/binary.png"}).get("error")
     assert runtime.execute("read_skill_resource", {**args, "path": "../x"}).get("error")
     assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
