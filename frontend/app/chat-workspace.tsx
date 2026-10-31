@@ -39,6 +39,7 @@ import "./chat.css";
 import { useRouter } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
 import { ExtensionPicker } from "./extensions/extension-picker";
+import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension-slash-menu";
 import type { ExtensionSelection } from "./extensions/extension-data";
 import { ConversationActivity } from "./conversation-activity";
 import { ConversationThinking } from "./conversation-thinking";
@@ -203,6 +204,13 @@ export function ChatWorkspace({
     initialLibraryId ? [initialLibraryId] : [],
   );
   const [question, setQuestion] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [extensionBusy, setExtensionBusy] = useState(false);
+  const [slashState, setSlashState] = useState<{ open: boolean; option?: string }>({ open: false });
+  const composerInput = useRef<HTMLTextAreaElement>(null);
+  const slashMenu = useRef<SlashMenuHandle>(null);
+  const updateSlashState = useCallback((open: boolean, option?: string) => setSlashState(current =>
+    current.open === open && current.option === option ? current : { open, option }), []);
   const attachments = useChatAttachments();
   const [dragging, setDragging] = useState(false);
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
@@ -478,9 +486,21 @@ export function ChatWorkspace({
       }
     }
   }
+  async function changeExtensions(value: ExtensionSelection) {
+    if (!conversation) { setDraftExtensions(value); return; }
+    const id = conversation.id;
+    setExtensionBusy(true);
+    try {
+      const updated = await request<Conversation>(`/conversations/${id}/extensions`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
+      });
+      setConversation(current => current?.id === id ? { ...current, skill_ids: updated.skill_ids, mcp_server_ids: updated.mcp_server_ids } : current);
+    } finally { setExtensionBusy(false); }
+  }
+
   async function send(retryId?: string) {
     if (
-      sending.current ||
+      sending.current || extensionBusy ||
       modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
       (!retryId && (!question.trim() && !attachments.ready.length || attachments.blocked ||
@@ -1174,15 +1194,27 @@ export function ChatWorkspace({
               onRemove={attachments.remove} onRetry={item => void attachments.retry(item)} />
             {attachments.hasImages && !selectedModel?.supports_images &&
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
+            <ExtensionSlashMenu key={`${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
+              draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy}
+              supportsTools={selectedModel?.supports_tools !== false} selection={conversation
+                ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
+              onActive={updateSlashState} onChange={changeExtensions} onInsert={(value, position) => {
+                setQuestion(value); setCaret(position);
+                requestAnimationFrame(() => { composerInput.current?.focus(); composerInput.current?.setSelectionRange(position, position); });
+              }} />
             <textarea
+              ref={composerInput}
               aria-label="向知识库提问"
+              aria-autocomplete="list" aria-controls={slashState.open ? "composer-extension-options" : undefined}
+              aria-activedescendant={slashState.option}
               placeholder={
                 selectedNames.length ? "向知识库提问…" : "发送消息…"
               }
               rows={2}
               value={question}
-              disabled={running || loading}
-              onChange={(event) => setQuestion(event.target.value)}
+              disabled={running || loading || extensionBusy}
+              onChange={(event) => { setQuestion(event.target.value); setCaret(event.target.selectionStart); }}
+              onSelect={event => setCaret(event.currentTarget.selectionStart)}
               onPaste={event => {
                 const files = Array.from(event.clipboardData?.files ?? []);
                 if (!files.length) return;
@@ -1191,6 +1223,7 @@ export function ChatWorkspace({
                 if (error) report(new Error(error));
               }}
               onKeyDown={(event) => {
+                if (slashMenu.current?.keyDown(event)) return;
                 if (
                   event.key === "Enter" &&
                   !event.shiftKey &&
@@ -1207,16 +1240,9 @@ export function ChatWorkspace({
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
-              <ExtensionPicker disabled={running || loading} supportsTools={selectedModel?.supports_tools !== false}
+              <ExtensionPicker disabled={running || loading || extensionBusy} supportsTools={selectedModel?.supports_tools !== false}
                 selection={conversation ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
-                onChange={async value => {
-                  if (!conversation) { setDraftExtensions(value); return; }
-                  const id = conversation.id;
-                  const updated = await request<Conversation>(`/conversations/${id}/extensions`, {
-                    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
-                  });
-                  setConversation(current => current?.id === id ? { ...current, skill_ids: updated.skill_ids, mcp_server_ids: updated.mcp_server_ids } : current);
-                }} />
+                onChange={changeExtensions} />
               <Tooltip content={webFailed ? "联网状态加载失败，点击重试" : webAvailable ? `${webEnabled ? "自动联网" : "联网已关闭"} · 按有效调用计费` : "联网搜索暂不可用"}>
                 <button type="button" className="icon-button web-search-toggle" aria-label={webFailed ? "重试联网状态" : "自动联网"} aria-pressed={webEnabled && webAvailable}
                   disabled={running || loading || selectedModel?.supports_tools === false || (!webAvailable && !webFailed)} onClick={() => webFailed ? setWebAttempt(value => value + 1) : setWebEnabled(value => !value)}><Globe size={17} /></button>
@@ -1256,7 +1282,7 @@ export function ChatWorkspace({
                   disabled={
                     (!question.trim() && !attachments.ready.length) || attachments.blocked ||
                     (attachments.hasImages && !selectedModel?.supports_images) ||
-                    loading || !!conversationError || modelLoading || !!modelError || thinkingStale ||
+                    loading || extensionBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)
                   }
                   type="submit"

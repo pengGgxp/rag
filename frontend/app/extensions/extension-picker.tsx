@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2, Puzzle } from "lucide-react";
 import { Dialog } from "../../components/ui/dialog";
 import { Tooltip } from "../../components/ui/tooltip";
-import { request } from "../api";
-import type { MCPConnection, PersonalSkill, ExtensionSelection } from "./extension-data";
+import type { ExtensionSelection } from "./extension-data";
+import { useExtensionCatalog } from "./extension-catalog";
 import "./extensions.css";
 
 export function ExtensionPicker({ selection, disabled, supportsTools, onChange }: {
@@ -13,27 +13,11 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
   onChange: (value: ExtensionSelection) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const [skills, setSkills] = useState<PersonalSkill[]>([]);
-  const [platform, setPlatform] = useState<PersonalSkill[]>([]);
-  const [servers, setServers] = useState<MCPConnection[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { skills, platform, servers, loading, error: loadError, retry } = useExtensionCatalog(open);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [reload, setReload] = useState(0);
   const anchor = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  useEffect(() => {
-    if (!open) return;
-    const controller = new AbortController();
-    setLoading(true); setError("");
-    Promise.all([request<PersonalSkill[]>("/agent/skills", { signal: controller.signal }),
-      request<PersonalSkill[]>("/agent/skills/platform", { signal: controller.signal }),
-      request<MCPConnection[]>("/agent/mcp", { signal: controller.signal })])
-      .then(([s, p, m]) => { if (!controller.signal.aborted) { setSkills(s); setPlatform(p); setServers(m); } })
-      .catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "加载失败"); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [open, reload]);
   const effective = selection ?? { skill_ids: skills.filter(item => item.enabled).map(item => item.id),
     mcp_server_ids: servers.filter(item => item.enabled && item.allowed_tools.length).map(item => item.id) };
   const unavailable = effective.skill_ids.filter(id => !skills.some(item => item.id === id && item.enabled)).length
@@ -51,7 +35,7 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
     {open && <Dialog title="对话扩展" anchor={anchor.current} onClose={() => setOpen(false)}>
       <div className="extension-picker-body">
         {!supportsTools && <p>当前模型无法使用扩展工具，选择支持工具调用的模型后即可使用。</p>}
-        {loading ? <Loader2 size={18} className="spin" aria-label="正在加载扩展" /> : error ? <div role="alert"><p>{error}</p><button type="button" className="secondary" onClick={() => setReload(value => value + 1)}>重试</button></div> : <>
+        {loading ? <Loader2 size={18} className="spin" aria-label="正在加载扩展" /> : error || loadError ? <div role="alert"><p>{error || loadError}</p><button type="button" className="secondary" onClick={() => { setError(""); retry(); }}>重试</button></div> : <>
           <h3>平台 Skill · 自动发现</h3>{platform.map(item => <p key={item.id}>{item.name}</p>)}{!platform.length && <p>暂无平台 Skill</p>}
           <h3>我的 Skill</h3>{skills.filter(item => item.enabled).map(item => <label className="extension-check" key={item.id}>
             <input type="checkbox" disabled={saving || !supportsTools} checked={effective.skill_ids.includes(item.id)} onChange={e => void change({ ...effective,
