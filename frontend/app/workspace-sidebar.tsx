@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BookOpen, Layers3, MessageSquare, Puzzle } from "lucide-react";
+import { BookOpen, Files, Layers3, MessageSquare, Puzzle } from "lucide-react";
 import { AccountButton } from "./auth";
 import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
@@ -13,6 +13,7 @@ const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
   { mode: "chat", href: "/?chat=1", label: "知识问答", icon: MessageSquare },
   { mode: "extensions", href: "/extensions", label: "扩展", icon: Puzzle },
+  { mode: "files", href: "/workspace-files", label: "工作区文件", icon: Files },
 ] as const;
 
 export function WorkspaceSidebar({ screen, children, onNavigate }: {
