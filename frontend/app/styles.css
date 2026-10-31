@@ -361,18 +361,28 @@ p {
   font-size: 12px;
 }
 .workspace-header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.workspace-file-upload { display:inline-flex; align-items:center; justify-content:center; gap:8px; text-decoration:none; cursor:pointer; }
-.workspace-file-upload input { display:none; }
-.workspace-files-page { padding: 20px var(--workspace-content-padding); }
-.workspace-files-hint { color: var(--muted); font-size: 13px; margin: 14px 0; }
-.workspace-files-toolbar { display:flex; gap:8px; align-items:center; margin-bottom:16px; }
-.workspace-files-toolbar .extension-search { flex:1; max-width:560px; }
-.workspace-file-list { border-top:1px solid var(--line); }
-.workspace-file-row { min-height:58px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--line); }
-.workspace-file-row > div { flex:1; min-width:0; display:grid; gap:3px; }
-.workspace-file-row strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.workspace-file-row small { color:var(--muted); font-size:12px; }
-.workspace-file-row .danger { color:var(--danger); }
+.workspace-files-page { padding: 24px var(--workspace-content-padding) 40px; }
+.workspace-files-content { width: min(100%, 960px); }
+.workspace-files-toolbar { display: flex; align-items: center; gap: 8px; }
+.workspace-files-search { display: flex; align-items: center; gap: 8px; width: min(100%, 560px); min-height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); }
+.workspace-files-search:focus-within { border-color: var(--focus-ring); box-shadow: 0 0 0 3px #2563eb16; }
+.workspace-files-search input { width: 100%; min-width: 0; height: 38px; padding: 0; border: 0; outline: 0; background: transparent; box-shadow: none; }
+.workspace-files-refresh { width: 40px; height: 40px; }
+.workspace-files-hint { max-width: 680px; margin: 12px 0 24px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.workspace-files-results { min-height: 96px; }
+.workspace-files-state { padding: 28px 16px; border-top: 1px solid var(--line); color: var(--muted); text-align: left; }
+.workspace-files-error { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 16px; padding: 12px 14px; border: 1px solid #fecaca; border-radius: 6px; background: #fff7f7; color: var(--danger); }
+.workspace-files-error span { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.workspace-files-error button { min-height: 32px; padding: 0 10px; border: 1px solid #fca5a5; border-radius: 5px; color: var(--danger); }
+.workspace-files-error button:hover { background: #fee2e2; }
+.workspace-file-list { border-top: 1px solid var(--line); }
+.workspace-file-row { display: flex; align-items: center; gap: 12px; min-height: 68px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.workspace-file-row:hover { background: var(--surface-muted); }
+.workspace-file-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 6px; background: var(--surface-muted); color: var(--reference); flex-shrink: 0; }
+.workspace-file-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.workspace-file-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.workspace-file-copy small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-file-download { width: 40px; height: 40px; }
 .workspace-header-actions > .primary,
 .workspace-header-actions > .secondary {
   display: inline-flex;
@@ -1744,6 +1754,15 @@ thead {
 }
 @media (max-width: 700px) {
   :root { --workspace-header-height: 56px; --workspace-content-padding: 16px; }
+  .workspace-files-page { padding-top: 16px; }
+  .workspace-files-toolbar { align-items: stretch; }
+  .workspace-files-search { min-height: 44px; }
+  .workspace-files-search input { height: 42px; }
+  .workspace-files-refresh,
+  .workspace-file-download { width: 44px; height: 44px; }
+  .workspace-file-row { min-height: 72px; padding: 10px 4px; }
+  .workspace-file-copy small { white-space: normal; line-height: 1.4; }
+  .workspace-file-icon { width: 34px; height: 34px; }
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .workspace > .sidebar { display: none; }
   .workspace .icon-button, .modal-side-panel .icon-button { min-width: 44px; min-height: 44px; }
