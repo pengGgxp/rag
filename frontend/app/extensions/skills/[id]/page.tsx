@@ -132,7 +132,7 @@ export default function PersonalSkillPage({ params }: { params: Promise<{ id: st
             catch (e) { setError(e instanceof Error ? e.message : "检查失败"); } finally { setBusy(false); }
           }}>检查文件</button><label className="extension-check"><input type="checkbox" checked={form.enabled} onChange={e => edit({ enabled: e.target.checked })} />启用</label></div>
           {!!review?.issues.length && <div className="extension-warning"><ul>{review.issues.map(issue => <li key={issue}>{issue}</li>)}</ul>
-            <label className="extension-check"><input type="checkbox" checked={form.limitations_acknowledged} onChange={e => edit({ limitations_acknowledged: e.target.checked })} />我已了解：脚本不会执行，依赖脚本或缺失资料的任务可能无法完成。</label></div>}
+            <label className="extension-check"><input type="checkbox" checked={form.limitations_acknowledged} onChange={e => edit({ limitations_acknowledged: e.target.checked })} />我已了解：脚本会在当前工作区的临时隔离环境中运行，可能读取或生成工作区输出；缺少依赖或权限时任务可能无法完成。</label></div>}
         </section>}
         {error && <p role="alert" className="extension-error">{error}</p>}
         {notice && <p role="status">{notice}</p>}

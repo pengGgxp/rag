@@ -116,7 +116,7 @@ def apply(row, payload):
     files = decode_files(payload.files, payload.markdown)
     checked = package_review(files)
     if payload.enabled and checked["has_limitations"] and not payload.limitations_acknowledged:
-        raise HTTPException(422, "请先确认脚本不会执行，依赖脚本或缺失资料的任务可能无法完成")
+        raise HTTPException(422, "请先确认脚本会在当前工作区的临时隔离环境中运行，可能读取或生成工作区输出")
     previous = {item.path: item for item in row.files}
     for key in ("name", "description", "markdown", "enabled", "limitations_acknowledged"):
         setattr(row, key, getattr(payload, key))
