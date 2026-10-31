@@ -17,6 +17,20 @@ class LLMProviderError(RuntimeError):
     """Raised when the chat provider returns an invalid response."""
 
 
+def _upstream_error(response, fallback):
+    """Expose a short provider diagnostic without echoing request data or credentials."""
+    try:
+        body = response.json()
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str) and message.strip():
+            compact = " ".join(message.split())[:300]
+            return f"{fallback}: {compact}"
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return fallback
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str
@@ -192,12 +206,12 @@ class OpenAICompatibleChatProvider:
                 with httpx.stream("POST", self._chat_url(self.base_url), headers=headers,
                                   json=payload, timeout=self.timeout_seconds) as response:
                     if response.status_code >= 400:
-                        raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                        raise LLMProviderError(_upstream_error(response, f"模型请求失败（HTTP {response.status_code}）"))
                     return self._collect_tool_stream(response)
             response = httpx.post(self._chat_url(self.base_url), headers=headers,
                                   json=payload, timeout=self.timeout_seconds)
             if response.status_code >= 400:
-                raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                raise LLMProviderError(_upstream_error(response, f"模型请求失败（HTTP {response.status_code}）"))
             body = response.json()
         except httpx.HTTPError as exc:
             raise LLMProviderError("模型连接失败，请重试") from exc
@@ -349,9 +363,10 @@ class OpenAICompatibleChatProvider:
             content=content.strip() if isinstance(content, str) else None,
             tool_calls=calls,
             usage=usage,
-            protocol_fields=({"reasoning_content": message.get("reasoning_content", "")}
+            protocol_fields=({"reasoning_content": message["reasoning_content"]}
                 if self.config.thinking.continuation_required
-                and isinstance(message.get("reasoning_content", ""), str) else None),
+                and isinstance(message.get("reasoning_content"), str)
+                and message["reasoning_content"] else None),
         )
 
     def stream_with_tools(self, messages, tools, *, tool_choice="auto") -> Iterator[tuple[str, Any]]:
@@ -374,7 +389,7 @@ class OpenAICompatibleChatProvider:
                     json=self._payload(messages, tools=tools, tool_choice=tool_choice, stream=True),
                     timeout=self.timeout_seconds) as response:
                 if response.status_code >= 400:
-                    raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                    raise LLMProviderError(_upstream_error(response, f"模型请求失败（HTTP {response.status_code}）"))
                 if "application/json" in response.headers.get("content-type", ""):
                     body = json.loads(response.read())
                     self.last_usage = _parse_usage(body.get("usage"))

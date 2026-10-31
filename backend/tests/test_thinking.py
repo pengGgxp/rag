@@ -112,6 +112,14 @@ def test_all_invocation_modes_use_same_payload_and_hide_reasoning(monkeypatch):
         OpenAICompatibleChatProvider(config=incompatible).complete_with_tools([], [{"function": {}}])
 
 
+def test_deepseek_does_not_replay_empty_reasoning_field(monkeypatch):
+    config = ChatProviderConfig("https://model.example/v1", "secret", "model", thinking=select_thinking(effort(), 1))
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: httpx.Response(200, json={
+        "choices": [{"message": {"content": "answer"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}))
+    response = OpenAICompatibleChatProvider(config=config).complete_with_tools([], [])
+    assert response.protocol_fields is None
+
+
 def test_admin_config_public_options_independent_versions(accounts, monkeypatch):
     client, db, _ = setup_site(accounts, monkeypatch)
     original = provider(client)
