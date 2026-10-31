@@ -35,7 +35,7 @@ celery_app.conf.update(task_track_started=True, task_serializer="json", result_s
 
 
 def ocr_storage(session):
-    from .storage import delete_object
+    from .cos_storage import CosStorage
     settings = session.get(SiteStorageSettings, 1)
     return CosStorage(settings) if settings and settings.active else None
 
@@ -383,7 +383,7 @@ def maintain_uploads() -> None:
 
 def cleanup_workspace_files() -> None:
     """Remove expired temporary Skill outputs from object storage and metadata."""
-    from .cos_storage import CosStorage
+    from .storage import delete_object
     with SessionLocal() as db:
         expired = db.scalars(select(WorkspaceFile).where(
             WorkspaceFile.deleted_at.is_(None),
