@@ -37,3 +37,11 @@ change billing. Issue #69; refs #67, #66.
 - The cancelled historical record does not retain its exact tool error; its
   list/write-before-load sequence matches the reproduced prerequisite defect.
   This fix does not re-execute that cancelled request or its side effects.
+
+## Download links follow-up (Issue #70)
+
+- A successful save includes only file ID, relative path, size and version in its
+  tool activity. The authenticated download action appears under that exact call
+  and remains available from saved conversation history.
+- The model is instructed to name confirmed output files and direct users to the
+  activity download action without inventing a URL or claiming unsaved files.

@@ -55,6 +55,10 @@
 .activity-step-title strong { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
 .activity-state-label { font-size: var(--form-label-size); color: var(--muted); }
 .activity-step-summary { font-size: var(--form-label-size); overflow-wrap: anywhere; }
+.activity-file-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 4px 23px; }
+.activity-file-download { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--form-radius); color: var(--accent); font: inherit; text-align: left; text-decoration: none; overflow-wrap: anywhere; }
+.activity-file-download:hover { background: var(--surface-muted); color: var(--ink); }
+.activity-file-download-error { color: var(--danger); font-size: var(--form-label-size); }
 .activity-running .activity-state-icon, .activity-running .activity-state-label { color: var(--agent); }
 .activity-completed .activity-state-icon { color: var(--success); }
 .activity-failed .activity-state-icon, .activity-failed .activity-state-label { color: var(--danger); }
@@ -112,7 +116,7 @@
 .conversation-latest { position: sticky; bottom: 12px; display: flex; justify-content: center; height: 0; z-index: 2; }
 .conversation-latest button { transform: translateY(-44px); height: 36px; border: 1px solid var(--line); border-radius: var(--form-radius); background: var(--surface); padding: 0 12px; box-shadow: var(--selection-shadow); color: var(--muted); font-size: var(--form-label-size); }
 @media (max-width: 700px) {
-  .activity-toggle, .context-trigger, .context-compact { min-height: var(--form-touch-height); }
+  .activity-toggle, .context-trigger, .context-compact, .activity-file-download { min-height: var(--form-touch-height); }
   .context-trigger { min-width: var(--form-touch-height); }
   .context-trigger > span { display: none; }
   .context-panel .icon-button { width: var(--form-touch-height); height: var(--form-touch-height); }

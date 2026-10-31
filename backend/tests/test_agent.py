@@ -297,6 +297,41 @@ def test_file_failure_stream_uses_safe_actionable_summary(runtime, name, result,
     assert "检查连接或授权" not in event["summary"]
 
 
+def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime):
+    from app.agent import AGENT_SYSTEM_PROMPT
+
+    output = {"id": "file-1", "path": "reports/summary.md", "size_bytes": 21, "version": 1,
+        "object_key": "must-not-be-public"}
+
+    class Extensions:
+        tools = []
+        skills = []
+
+        def label(self, *args):
+            return "生成文件"
+
+        def execute(self, *args, **kwargs):
+            return {"path": output["path"], "generated_files": [output]}
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            if self.count == 1:
+                assert "点击该次工具活动下方的下载入口" in messages[0]["content"]
+                return ToolResponse(content=None, tool_calls=[ToolCall(id="file", name="run_command", arguments={})])
+            return ToolResponse(content="已生成 reports/summary.md。", tool_calls=[])
+
+    events = list(stream_retrieval_agent(**runtime.arguments, provider=Provider(), extensions=Extensions()))
+    event = next(value for kind, value in events if kind == "tool_result")
+    assert event["summary"] == "已生成 1 个文件"
+    assert event["files"] == [{key: output[key] for key in ("id", "path", "size_bytes", "version")}]
+    assert "object_key" not in json.dumps(event)
+    assert "不要编造 Markdown、URL 或下载地址" in AGENT_SYSTEM_PROMPT
+    assert "同时说明脚本未完成并列出这些文件" in AGENT_SYSTEM_PROMPT
+
+
 def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):
     class Provider:
         count = 0

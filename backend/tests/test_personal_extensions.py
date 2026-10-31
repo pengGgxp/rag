@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import conversations, mcp_client
+from app import conversations, mcp_client, workspace_files
 from app.agent import AgentCancelled
 from app.extensions import ExtensionRuntime
 from app.llm import LLMUsage, ToolCall, ToolResponse
@@ -131,7 +131,7 @@ def test_model_without_tools_does_not_claim_extension_use(accounts, monkeypatch)
     chat = admin.post("/conversations",json={}).json()
     events,_ = send(admin,chat["id"],model["id"])
     final = events[-1].json()
-    assert final["status"] == "completed", final.get("error_detail")
+    assert final["status"] == "completed", {key: final.get(key) for key in ("status", "error_detail", "tool_events")}
     assert not final["tool_events"]
 
 
@@ -261,7 +261,7 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     chat = admin.post("/conversations", json={}).json()
     events, _ = send(admin, chat["id"], model["id"])
     final = events[-1].json()
-    assert final["status"] == "completed", final.get("error_detail")
+    assert final["status"] == "completed", final
     assert final["content"].endswith("7. ONLY RESOURCE MARKER")
     assert [item["kind"] for item in final["tool_events"]] == ["skill", "skill", "mcp"]
     assert connection_args["state"]["calls"] == 1
@@ -280,3 +280,44 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
         UUID(final["id"]), uuid4())
     assert restarted.execute(alias, {"a": 3, "b": 4})["uncertain"]
     assert connection_args["state"]["calls"] == 1
+
+
+def test_generated_file_download_link_data_persists_with_chat_and_enforces_workspace(accounts, monkeypatch):
+    owner, db, session = setup_site(accounts, monkeypatch)
+    model = provider(owner)
+    stored = {}
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
+    monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: __import__("io").BytesIO(stored[key]))
+    access = access_for(owner, db)
+    saved = workspace_files._save_bytes(access.workspace_id, access, db, "reports/answer.md",
+        b"Downloadable result", "text/markdown")
+    db.commit()
+    monkeypatch.setattr(ExtensionRuntime, "execute", lambda self, name, arguments, **kwargs:
+        saved if name == "write_file" else {"error": "Unexpected test call"})
+
+    class Model(StreamingTestProvider):
+        def complete_with_tools(self, messages, tools, tool_choice):
+            self.last_usage = LLMUsage(prompt_tokens=10, completion_tokens=5)
+            assert any(item["function"]["name"] == "write_file" for item in tools)
+            assert "点击该次工具活动下方的下载入口" in messages[0]["content"]
+            previous = [item for item in messages if item["role"] == "tool"]
+            if not previous:
+                return ToolResponse(None, [ToolCall("write", "write_file", {
+                    "path": "reports/answer.md", "content": "Downloadable result"})], self.last_usage)
+            return ToolResponse("已生成 reports/answer.md，可点击本次操作下方的下载入口。", [], self.last_usage)
+
+    monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Model)
+    conversation = owner.post("/conversations", json={}).json()["id"]
+    events, _ = send(owner, conversation, model["id"])
+    final = events[-1].json()
+    assert final["status"] == "completed", final
+    artifact = next(item for item in final["tool_events"] if item["name"] == "write_file")["files"][0]
+    assert artifact["path"] == "reports/answer.md" and artifact["size_bytes"] == len(b"Downloadable result")
+    assert "object_key" not in json.dumps(final["tool_events"])
+    restored = owner.get(f"/conversations/{conversation}").json()["messages"][-1]
+    assert restored["tool_events"] == final["tool_events"]
+    download = owner.get(f"/workspaces/{session['workspace_id']}/files/{artifact['id']}/download")
+    assert download.status_code == 200 and download.content == b"Downloadable result"
+    (_, other, _), _ = accounts
+    register(other, "output-isolation@example.com")
+    assert other.get(f"/workspaces/{session['workspace_id']}/files/{artifact['id']}/download").status_code == 404

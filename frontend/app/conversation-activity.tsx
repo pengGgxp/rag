@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, Loader2, Search, Square, Wrench } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, Download, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
+import { API_URL, downloadFile } from "./api";
 
 export type ConversationActivityItem = {
   id: string;
@@ -10,6 +11,7 @@ export type ConversationActivityItem = {
   summary?: string;
   kind: "retrieval" | "tool" | "compaction";
   status: "waiting" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
+  files?: { id: string; path: string; size_bytes: number; version: number }[];
 };
 
 const statusLabel = {
@@ -30,13 +32,15 @@ function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) 
 }
 
 // Only presentation state lives here. Tool execution and safe summaries belong to the server.
-export function ConversationActivity({ items, finished, children }: {
+export function ConversationActivity({ items, finished, workspaceId, children }: {
   items: ConversationActivityItem[];
   finished: boolean;
+  workspaceId?: string;
   children?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(items.length > 1 && !finished);
   const [userExpanded, setUserExpanded] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
   useEffect(() => {
     if (!userExpanded) setExpanded(items.length > 1 && !finished);
   }, [finished, userExpanded, items.length]);
@@ -63,6 +67,19 @@ export function ConversationActivity({ items, finished, children }: {
         : <Wrench size={14} aria-hidden="true" />}
       <span>{headline}</span>
     </button>
+    {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
+      {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
+        href={`${API_URL}/workspaces/${workspaceId}/files/${file.id}/download`} download
+        onClick={event => {
+          event.preventDefault();
+          setDownloadError("");
+          void downloadFile(`/workspaces/${workspaceId}/files/${file.id}/download`, file.path.split("/").at(-1) || "文件")
+            .catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败，请重试"));
+        }}>
+        <Download size={15} aria-hidden="true" /><span>下载 {file.path.split("/").at(-1) || file.path}</span>
+      </a>)}
+      {downloadError && <span className="activity-file-download-error" role="status">{downloadError}</span>}
+    </div> : null}
     {expanded && <><ol className="activity-steps" aria-label="执行活动">
       {items.map(item => <Motion.li key={item.id} className={`activity-step activity-${item.status}`}
         initial={false} animate={{ opacity: 1 }} transition={{ duration: 0.14 }}>

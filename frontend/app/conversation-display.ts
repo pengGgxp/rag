@@ -6,11 +6,13 @@ export type DisplayBlock = { id: string; type: "text"; text: string }
 export type ToolEvent = {
   call_id: string; name: string; label: string; kind: string; status: string;
   summary?: string; result_count?: number;
+  files?: { id: string; path: string; size_bytes: number; version: number }[];
 };
 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
   return {
     id: item.call_id, label: item.label, summary: item.summary,
+    files: item.files,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "cancelled"

@@ -995,7 +995,7 @@ export function ChatWorkspace({
                         const firstWebCall = message.tool_events?.find(item => item.name === "web_search" || item.name === "web_fetch");
                         const sources = message.web_sources?.filter(source => source.call_ids?.length
                           ? source.call_ids.includes(block.call_id) : block.call_id === firstWebCall?.call_id) ?? [];
-                        return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]}
+                        return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]} workspaceId={session?.workspace_id}
                           finished={!["waiting", "running"].includes(activity.status)}>
                           {!!sources.length && <div className="source-list activity-sources" aria-label="网页来源">{sources.map(source => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
                             <Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />

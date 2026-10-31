@@ -784,7 +784,7 @@ def chat_router(get_db, retrieve):
                         if name == "compaction":
                             data = {**data, "kind": "compaction", "name": "compact_context"}
                         summary = {
-                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary",
+                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary", "files",
                                                        "skill_id", "skill_name", "skill_version")
                             if key in data
                         }
