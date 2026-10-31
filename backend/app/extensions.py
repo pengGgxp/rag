@@ -16,6 +16,7 @@ from .personal_skills import router as skills_router, owned, package_review
 from .personal_mcp import router as mcp_router
 from .site_skills import SkillRuntime, LOAD_SKILL, READ_SKILL_RESOURCE
 from .skill_files import text_content
+from .workspace_files import tool_definitions, execute_tool
 
 router = APIRouter()
 router.include_router(skills_router)
@@ -78,7 +79,7 @@ class ExtensionRuntime(SkillRuntime):
                     self.mcp_tokens[alias] = row.authorization_version
         self.skills = [{key: value for key, value in row.items()
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
-        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
+        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else []), *tool_definitions()]
             if self.skills else []) + [{"type": "function", "function": {"name": alias,
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
@@ -100,6 +101,11 @@ class ExtensionRuntime(SkillRuntime):
                     return {"error": "该方法不存在或已停用"}
             return self._personal_read(name, arguments)
         if name not in self.bindings:
+            if name in {item["function"]["name"] for item in tool_definitions()}:
+                with self.factory() as db:
+                    self.access.revalidate(db)
+                    return execute_tool(name, arguments, db, self.access, self.access.workspace_id,
+                        conversation_id=self.message_id, request_id=self.request_id)
             return super().execute(name, arguments, check_active)
         item = self.bindings[name]
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)

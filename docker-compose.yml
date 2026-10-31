@@ -89,6 +89,7 @@ services:
       ZHIFUX_PAY_TYPE: ${ZHIFUX_PAY_TYPE:-}
       RECHARGE_PACKAGES_JSON: ${RECHARGE_PACKAGES_JSON:-[]}
       USAGE_AUTHORIZATION_HOLD_CREDITS: ${USAGE_AUTHORIZATION_HOLD_CREDITS:-1}
+      WORKSPACE_EXECUTOR_URL: http://workspace-executor:8090
     ports:
       - "8000:8000"
     healthcheck:
@@ -103,6 +104,15 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+
+  workspace-executor:
+    build:
+      context: ./backend
+      dockerfile: executor.Dockerfile
+    command: uvicorn app.executor_service:app --host 0.0.0.0 --port 8090
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports: []
 
   worker:
     build:
