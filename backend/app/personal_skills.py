@@ -42,9 +42,24 @@ def audit(db, access, request, action, row):
 
 def package_review(files):
     result = review(files)
-    return {**result, "can_enable": True, "has_limitations": bool(result["issues"]),
-        "issues": [issue.replace("暂不支持此资源，请移除并调整相关指令后再启用", "当前不会执行或供模型读取")
-            .replace("请修改后再启用", "请检查该链接") for issue in result["issues"]]}
+    resource_warning = "：暂不支持此资源，请移除并调整相关指令后再启用"
+    issues = [issue.replace("请修改后再启用", "请检查该链接")
+              for issue in result["issues"] if not issue.endswith(resource_warning)]
+    for entry in result["manifest"]:
+        if entry["readable"]:
+            continue
+        suffix = entry["path"].rsplit(".", 1)[-1].lower()
+        if suffix in {"ps1", "cmd", "bat", "exe"}:
+            notice = "暂不支持 Windows 脚本或程序，请改用 Python、Node.js 或 Shell。"
+            issues.append(f"{entry['path']}：{notice}")
+        elif entry["text"] and suffix in {"py", "js", "mjs", "cjs", "sh", "bash"}:
+            notice = "脚本可按任务需要运行；所需依赖、文件和权限必须可用。"
+        else:
+            notice = "此文件随包保留，可查看或导出。"
+        entry["personal_notice"] = notice
+    return {**result, "can_enable": True,
+        "has_limitations": bool(issues) or any(not entry["readable"] for entry in result["manifest"]),
+        "issues": list(dict.fromkeys(issues))}
 
 
 def read(row, detail=False):

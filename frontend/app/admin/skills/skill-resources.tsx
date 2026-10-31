@@ -16,6 +16,7 @@ export function SkillResources({ files, review, path, onSelect, onRemove, person
 }) {
   const [removing, setRemoving] = useState("");
   const selected = files.find(file => file.path === path) ?? files[0];
+  const notice = review?.manifest.find(item => item.path === selected?.path)?.personal_notice;
   const text = useMemo(() => selected ? decode(selected) : null, [selected]);
   if (!files.length) return <p className="admin-empty">没有补充资料。</p>;
   return <div className="skill-resource-layout">
@@ -43,7 +44,7 @@ export function SkillResources({ files, review, path, onSelect, onRemove, person
           requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".skill-file-list button")?.focus());
         }}>确认移除</button>
       </div>}
-      {personal && review?.manifest.find(item => item.path === selected.path)?.readable === false && <p className="extension-warning">此文件仅保留供查看或导出，不会执行或供模型读取。</p>}
+      {personal && notice && <p className="extension-warning">{notice}</p>}
       {text === null ? <p>{personal ? "此文件无法预览，可导出后查看。" : "此文件可以保存在草稿中，当前无法供模型读取。启用前请移除并调整相关指令。"}</p>
         : <pre tabIndex={0}>{text.slice(0, 50000)}{text.length > 50000 ? "\n\n……仅显示前 50000 字，可导出后查看完整文件。" : ""}</pre>}
     </section>}
