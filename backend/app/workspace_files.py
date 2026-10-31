@@ -40,6 +40,23 @@ class PatchWrite(BaseModel):
 
 
 def _save_bytes(workspace_id, access, db, path, data, content_type="application/octet-stream", expected_version=None):
+    # Roll back metadata together if object storage or version creation fails.
+    with db.begin_nested():
+        row = _stage_bytes(workspace_id, access, db, path, data, content_type, expected_version)
+        db.flush()
+    db.commit()
+    return read_file(row)
+
+
+def _current_file_version(db, row):
+    version = db.scalar(select(WorkspaceFileVersion).where(
+        WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == row.current_version))
+    if version is None:
+        raise HTTPException(409, "文件保存未完成，请重新生成该文件")
+    return version
+
+
+def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_version):
     path = valid_path(path)
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "文件不能超过 200 MiB")
@@ -76,8 +93,7 @@ def _save_bytes(workspace_id, access, db, path, data, content_type="application/
     db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
         object_key=key, content_type=row.content_type, size_bytes=len(data), content_hash=digest,
         created_by=access.user_id))
-    db.commit()
-    return read_file(row)
+    return row
 @router.get("")
 def listing(workspace_id: UUID, q: str = "", offset: int = 0, limit: int = 100, db=Depends(get_db), access: Access=Depends(get_access)):
     check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.expires_at > datetime.now(timezone.utc), WorkspaceFile.path.ilike(f"%{q}%")).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
@@ -91,7 +107,7 @@ def write_text(workspace_id: UUID, payload: TextWrite, db, access):
 @router.get("/{file_id}/download")
 def download(workspace_id: UUID,file_id: UUID,db=Depends(get_db),access: Access=Depends(get_access)):
     from fastapi.responses import StreamingResponse
-    row=owned(db,access,workspace_id,file_id); version=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version)); stream=download_fileobj(version.object_key); return StreamingResponse(stream,media_type=row.content_type,headers={"Content-Disposition":f'attachment; filename="{row.path.split("/")[-1]}"'})
+    row=owned(db,access,workspace_id,file_id); version=_current_file_version(db, row); stream=download_fileobj(version.object_key); return StreamingResponse(stream,media_type=row.content_type,headers={"Content-Disposition":f'attachment; filename="{row.path.split("/")[-1]}"'})
 def _apply_unified_patch(original: str, patch: str) -> str:
     lines = original.splitlines(keepends=True)
     patch_lines = patch.splitlines(keepends=True)
@@ -147,7 +163,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
     rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==valid_path(arguments["path"]),WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all() if name=="read_file" else []
     if name=="read_file":
         if not rows:return {"error":"文件不存在"}
-        row=rows[0]; ver=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version)); stream=download_fileobj(ver.object_key); content=stream.read(12000); return {"path":row.path,"version":row.current_version,"content":content.decode("utf-8",errors="replace")}
+        row=rows[0]; ver=_current_file_version(db, row); stream=download_fileobj(ver.object_key); content=stream.read(12000); return {"path":row.path,"version":row.current_version,"content":content.decode("utf-8",errors="replace")}
     if name=="write_file":
         access.editor(); payload=TextWrite(path=arguments["path"],content=arguments["content"],expected_version=arguments.get("expected_version")); return write_text(workspace_id,payload,db,access)
     if name=="apply_patch":
@@ -156,8 +172,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             WorkspaceFile.path == path, WorkspaceFile.deleted_at.is_(None)))
         if row is None: return {"error": "文件不存在"}
         if row.current_version != arguments["expected_version"]: raise HTTPException(409, "文件已被修改，请重新读取")
-        version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
-            WorkspaceFileVersion.version == row.current_version))
+        version = _current_file_version(db, row)
         content = download_fileobj(version.object_key).read(MAX_BYTES + 1)
         try: updated = _apply_unified_patch(content.decode("utf-8"), arguments["patch"])
         except UnicodeDecodeError: return {"error": "只能对文本文件应用补丁"}
@@ -173,7 +188,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         files={}
         versions={}
         for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.deleted_at.is_(None),WorkspaceFile.expires_at > datetime.now(timezone.utc))).all():
-            version=db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id==row.id,WorkspaceFileVersion.version==row.current_version))
+            version=_current_file_version(db, row)
             stream=download_fileobj(version.object_key); files[row.path]=base64.b64encode(stream.read(MAX_BYTES+1)).decode()
             versions[row.path] = row.current_version
         if check_active:
@@ -192,6 +207,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         job.status=result.get("status", "failed"); job.exit_code=result.get("exit_code"); job.stdout_summary=str(result.get("stdout", ""))[-MAX_OUTPUT:]; job.stderr_summary=str(result.get("stderr", ""))[-MAX_OUTPUT:]; job.finished_at=now(); db.commit()
         changed_files = []
         generated_files = []
+        save_failed = False
         for path, encoded in result.pop("files", {}).items():
             try:
                 data=base64.b64decode(encoded); current=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
@@ -203,7 +219,13 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
                 generated_files.append(saved)
                 changed_files.append(path)
             except Exception:
+                save_failed = True
                 result.setdefault("warnings", []).append(f"无法保存文件：{path}")
+        if save_failed:
+            result["status"] = "failed"
+            result["error"] = "脚本已执行，但部分输出未能保存，请勿自动重复运行"
+            job.status = "failed"
+            job.stderr_summary = result["error"]
         job.changed_files = changed_files; db.commit()
         result["generated_files"] = generated_files
         return result

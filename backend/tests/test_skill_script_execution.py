@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from app import extensions, executor_service, workspace_files
 from app.config import get_settings
 from app.extensions import ExtensionRuntime
-from app.models import AgentSkill, AgentSkillFile, WorkspaceExecutionJob
+from app.models import AgentSkill, AgentSkillFile, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion
 from test_extensions import access_for
 from test_personal_extensions import skill
 from test_shared_providers import setup_site
@@ -82,6 +82,33 @@ def test_run_command_forwards_packages_and_saves_only_outputs(accounts, monkeypa
     assert list(stored.values()) == [b"result"]
     job = db.query(WorkspaceExecutionJob).one()
     assert job.changed_files == ["report.txt"]
+
+
+def test_failed_output_save_rolls_back_metadata_and_allows_next_execution(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    access = access_for(admin, db)
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None, json=lambda: {"status": "completed", "exit_code": 0,
+            "files": {"report.txt": base64.b64encode(b"result").decode()}}))
+    def unavailable(*args):
+        raise HTTPException(503, "storage unavailable")
+    monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    result = workspace_files.execute_tool("run_command", {"command": "echo result"}, db, access, access.workspace_id)
+    assert result["status"] == "failed" and not result["generated_files"]
+    assert db.query(WorkspaceFile).count() == db.query(WorkspaceFileVersion).count() == 0
+    assert db.query(WorkspaceExecutionJob).one().status == "failed"
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
+    result = workspace_files.execute_tool("run_command", {"command": "echo result"}, db, access, access.workspace_id)
+    assert result["status"] == "completed" and len(result["generated_files"]) == 1
+    row = db.query(WorkspaceFile).one()
+    monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    with pytest.raises(HTTPException):
+        workspace_files._save_bytes(access.workspace_id, access, db, row.path, b"changed", expected_version=1)
+    db.commit()
+    db.refresh(row)
+    assert row.current_version == 1 and row.size_bytes == len(b"result")
+    assert db.query(WorkspaceFileVersion).count() == 1
 
 
 @pytest.mark.parametrize("path", ["../x", "/x", "a/../../x", "a\\x", "a:b", "a//x"])
