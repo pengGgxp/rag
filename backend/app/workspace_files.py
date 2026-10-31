@@ -14,6 +14,18 @@ from .config import get_settings
 router = APIRouter(prefix="/workspaces/{workspace_id}/files", tags=["workspace-files"])
 MAX_BYTES = 200 * 1024 * 1024
 MAX_OUTPUT = 12000
+FILE_TOOL_ERRORS = {
+    "file_tool_unavailable": "当前无法生成或修改文件，请重新开始对话后再试",
+    "file_arguments": "文件内容或路径不符合要求，正在等待修正",
+    "skill_load_required": "需要先读取所选方法，再运行脚本",
+    "skill_unavailable": "所选方法已停用或不可用，请重新选择后再试",
+    "file_missing": "文件不存在或已过期，请重新生成",
+    "file_conflict": "文件已变化，请重新读取后再修改",
+    "file_capacity": "文件过大或临时空间已满，请缩小输出后重试",
+    "file_storage": "文件暂时无法保存或读取，请稍后重试；持续失败请联系管理员",
+    "script_failed": "脚本未能完成，请根据错误调整后再试",
+    "script_output_save": "脚本已运行，但部分文件未保存，请先查看已有输出，勿重复运行",
+}
 def valid_path(path: str) -> str:
     if not path or len(path) > 512 or path.startswith(("/", "\\")) or "\\" in path:
         raise HTTPException(422, "文件路径无效")
@@ -205,6 +217,11 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             job.status="failed"; job.stderr_summary="隔离执行环境暂时不可用"; job.finished_at=now(); db.commit()
             return {"error":"执行结果未确认，请先检查已有输出，不要自动重复运行", "uncertain": True}
         job.status=result.get("status", "failed"); job.exit_code=result.get("exit_code"); job.stdout_summary=str(result.get("stdout", ""))[-MAX_OUTPUT:]; job.stderr_summary=str(result.get("stderr", ""))[-MAX_OUTPUT:]; job.finished_at=now(); db.commit()
+        if job.status != "completed" or job.exit_code != 0:
+            job.status = "failed"
+            result["status"] = "failed"
+            result["error"] = "脚本未能完成，请检查本次命令的执行结果"
+            result["error_code"] = "script_failed"
         changed_files = []
         generated_files = []
         save_failed = False
@@ -224,6 +241,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         if save_failed:
             result["status"] = "failed"
             result["error"] = "脚本已执行，但部分输出未能保存，请勿自动重复运行"
+            result["error_code"] = "script_output_save"
             job.status = "failed"
             job.stderr_summary = result["error"]
         job.changed_files = changed_files; db.commit()

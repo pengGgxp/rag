@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from app import extensions, executor_service, workspace_files
 from app.config import get_settings
 from app.extensions import ExtensionRuntime
-from app.models import AgentSkill, AgentSkillFile, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion
+from app.models import AgentSkill, AgentSkillFile, Membership, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion
 from test_extensions import access_for
 from test_personal_extensions import skill
 from test_shared_providers import setup_site
@@ -62,6 +62,61 @@ def test_missing_executor_does_not_advertise_execution(accounts, monkeypatch):
     assert "run_command" not in {item["function"]["name"] for item in runtime.tools}
     assert not runtime.execute("load_skill", {"skill_id": row["id"]})["execute_scripts"]
     assert runtime.execute("run_command", {"command": "echo no"}).get("error")
+
+
+def test_output_tools_work_without_skill_or_executor_and_recheck_role(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "")
+    stored = {}
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
+    monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: io.BytesIO(stored[key]))
+    access = access_for(admin, db)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
+    assert "write_file" in {item["function"]["name"] for item in runtime.tools}
+    assert runtime.execute("list_files", {})["items"] == []
+    result = runtime.execute("write_file", {"path": "report.txt", "content": "REAL OUTPUT"})
+    assert result["version"] == 1 and list(stored.values()) == [b"REAL OUTPUT"]
+    assert runtime.execute("read_file", {"path": "report.txt"})["content"] == "REAL OUTPUT"
+    assert runtime.execute("run_command", {"command": "echo no"})["error_code"] == "file_tool_unavailable"
+    member = db.get(Membership, (access.workspace_id, access.user_id))
+    member.role = "viewer"
+    db.commit()
+    with pytest.raises(HTTPException) as error:
+        runtime.execute("write_file", {"path": "second.txt", "content": "forbidden"})
+    assert error.value.status_code == 403 and len(stored) == 1
+
+
+def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    selected = scripted(admin)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]])
+    assert runtime.execute("list_files", {})["items"] == []
+    assert runtime.execute("run_command", {"command": "echo no"})["error_code"] == "skill_load_required"
+    def unavailable(*args):
+        raise HTTPException(503, "SECRET SDK DIAGNOSTIC")
+    monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    result = runtime.execute("write_file", {"path": "report.txt", "content": "hello"})
+    assert result["error_code"] == "file_storage" and "SECRET" not in result["error"]
+    assert db.query(WorkspaceFile).count() == 0
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
+    assert runtime.execute("write_file", {"path": "report.txt", "content": "hello"})["version"] == 1
+    assert runtime.execute("write_file", {"path": "report.txt", "content": "changed", "expected_version": 9})["error_code"] == "file_conflict"
+    assert runtime.execute("write_file", {"path": "../forbidden", "content": "bad"})["error_code"] == "file_arguments"
+    assert runtime.execute("write_file", {"path": "report.txt", "content": "bad", "expected_version": 0})["error_code"] == "file_arguments"
+
+
+def test_script_nonzero_exit_is_failure_and_keeps_completed_outputs(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    access = access_for(admin, db)
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
+    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None, json=lambda: {"status": "failed", "exit_code": 1,
+            "files": {"partial.txt": base64.b64encode(b"partial").decode()}}))
+    result = workspace_files.execute_tool("run_command", {"command": "exit 1"}, db, access, access.workspace_id)
+    assert result["error_code"] == "script_failed" and len(result["generated_files"]) == 1
+    assert db.query(WorkspaceExecutionJob).one().status == "failed"
 
 
 def test_run_command_forwards_packages_and_saves_only_outputs(accounts, monkeypatch):

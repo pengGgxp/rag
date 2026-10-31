@@ -265,6 +265,38 @@ def test_unknown_tool_returns_error_to_model(runtime):
     assert run.tool_results[0]["status"] == "error"
 
 
+@pytest.mark.parametrize("name,result,expected", [
+    ("write_file", {"error": "PRIVATE", "error_code": "file_storage"}, "稍后重试"),
+    ("write_file", {"error": "PRIVATE", "error_code": "file_conflict"}, "重新读取"),
+    ("run_command", {"error": "PRIVATE", "error_code": "skill_load_required"}, "读取所选方法"),
+    ("run_command", {"error": "PRIVATE", "uncertain": True}, "勿重复运行"),
+    ("mcp_remote", {"error": "PRIVATE", "error_code": "file_storage"}, "重新选择扩展"),
+])
+def test_file_failure_stream_uses_safe_actionable_summary(runtime, name, result, expected):
+    class Extensions:
+        tools = []
+        skills = []
+
+        def label(self, *args):
+            return "生成文件"
+
+        def execute(self, *args, **kwargs):
+            return result
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            return (ToolResponse(content=None, tool_calls=[ToolCall(id="file", name=name, arguments={})])
+                if self.count == 1 else ToolResponse(content="Unable to complete.", tool_calls=[]))
+
+    events = list(stream_retrieval_agent(**runtime.arguments, provider=Provider(), extensions=Extensions()))
+    event = next(value for kind, value in events if kind == "tool_result")
+    assert expected in event["summary"] and "PRIVATE" not in event["summary"]
+    assert "检查连接或授权" not in event["summary"]
+
+
 def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):
     class Provider:
         count = 0

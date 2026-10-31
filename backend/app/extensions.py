@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 from jsonschema import Draft202012Validator, ValidationError
+from pydantic import ValidationError as PayloadValidationError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 from sqlalchemy import select
@@ -16,7 +17,7 @@ from .personal_skills import router as skills_router, owned, package_review
 from .personal_mcp import router as mcp_router
 from .site_skills import SkillRuntime, LOAD_SKILL, READ_SKILL_RESOURCE
 from .skill_files import text_content
-from .workspace_files import tool_definitions, execute_tool
+from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
 from .config import get_settings
 
 SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
@@ -87,10 +88,12 @@ class ExtensionRuntime(SkillRuntime):
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
         self.execution_available = bool(get_settings().workspace_executor_url) and access.role in ("admin", "editor")
         has_script_skill = any(row.get("scripts") for row in self.snapshots.values())
-        workspace_tools = tool_definitions() if has_script_skill and self.execution_available else []
+        workspace_tools = [item for item in tool_definitions()
+            if access.role in ("admin", "editor") and (item["function"]["name"] != "run_command"
+                or has_script_skill and self.execution_available)]
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
-        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else []), *workspace_tools]
-            if self.skills else []) + [{"type": "function", "function": {"name": alias,
+        self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
+            if self.skills else []) + workspace_tools + [{"type": "function", "function": {"name": alias,
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
         self.versions = sorted([(row["id"], row["version"]) for row in self.skills] + list(self.mcp_tokens.items()))
@@ -116,27 +119,38 @@ class ExtensionRuntime(SkillRuntime):
         if name not in self.bindings:
             if name in {item["function"]["name"] for item in tool_definitions()}:
                 if name not in self.workspace_tool_names:
-                    return {"error": "当前请求没有可用的脚本执行工具"}
+                    return {"error": "当前请求没有提供该文件工具", "error_code": "file_tool_unavailable"}
                 definition = next(item["function"] for item in self.tools if item["function"]["name"] == name)
                 try:
                     Draft202012Validator(definition["parameters"]).validate(arguments)
                 except ValidationError:
-                    return {"error": "工具参数不符合定义，请修正后重试"}
+                    return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
                 loaded = self.loaded & self.personal_ids
-                if not any(self.snapshots[identifier].get("scripts") for identifier in loaded):
-                    return {"error": "请先加载本次选择的脚本 Skill"}
+                if name == "run_command" and not any(self.snapshots[identifier].get("scripts") for identifier in loaded):
+                    return {"error": "请先使用 load_skill 加载本次选择的脚本 Skill，再运行命令",
+                        "error_code": "skill_load_required"}
                 with self.factory() as db:
-                    self.access.revalidate(db)
-                    for identifier in loaded:
+                    access = self.access.revalidate(db)
+                    for identifier in loaded if name == "run_command" else []:
                         row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
                         if row is None or not row.enabled or row.owner_id != self.access.user_id or row.workspace_id != self.access.workspace_id:
-                            return {"error": "已加载的 Skill 已停用或无权使用，请重新开始请求"}
+                            return {"error": "已加载的 Skill 已停用或无权使用，请重新开始请求",
+                                "error_code": "skill_unavailable"}
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
-                    return execute_tool(name, arguments, db, self.access, self.access.workspace_id,
-                        conversation_id=message.conversation_id if message else None, request_id=self.request_id,
-                        skill_packages={identifier: self.snapshots[identifier]["package_files"] for identifier in loaded},
-                        check_active=check_active)
+                    try:
+                        return execute_tool(name, arguments, db, access, access.workspace_id,
+                            conversation_id=message.conversation_id if message else None, request_id=self.request_id,
+                            skill_packages={identifier: self.snapshots[identifier]["package_files"] for identifier in loaded}
+                                if name == "run_command" else {}, check_active=check_active)
+                    except PayloadValidationError:
+                        return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}
+                    except HTTPException as error:
+                        if error.status_code in (401, 403):
+                            raise
+                        code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",
+                            422: "file_arguments"}.get(error.status_code, "file_storage")
+                        return {"error": FILE_TOOL_ERRORS[code], "error_code": code}
             return super().execute(name, arguments, check_active)
         item = self.bindings[name]
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
