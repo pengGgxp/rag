@@ -6,13 +6,27 @@ import { ApiError, request } from "../../api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
 import "../../billing.css";
+import * as Tabs from "../../../components/ui/tabs";
+import { QuotaSettings } from "./quota-settings";
+
+export default function StoragePage() {
+  const [tab, setTab] = useState("quotas");
+  const [state, setState] = useState({ dirty: false, busy: false });
+  const [pending, setPending] = useState("");
+  return <><AdminHeading title="文件存储" />
+    {pending && <div className="admin-inline-confirm" role="alert"><span>有尚未保存的修改，要放弃吗？</span><button className="secondary" onClick={() => setPending("")}>继续编辑</button><button className="danger" onClick={() => { setState({dirty:false,busy:false}); setTab(pending); setPending(""); }}>放弃修改</button></div>}
+    <Tabs.Root value={tab} onValueChange={value => { if (state.busy) return; if (state.dirty) setPending(value); else setTab(value); }}>
+    <Tabs.List className="model-detail-tabs quota-tabs" aria-label="存储设置"><Tabs.Trigger value="connection"><PlugZap size={18} />存储连接</Tabs.Trigger><Tabs.Trigger value="quotas"><HardDrive size={18} />额度与套餐</Tabs.Trigger></Tabs.List>
+    <Tabs.Content value="connection"><StorageConnection onState={setState} /></Tabs.Content><Tabs.Content value="quotas"><QuotaSettings onState={setState} /></Tabs.Content>
+  </Tabs.Root></>;
+}
 
 type Storage = {
   version: number; bucket: string; region: string; has_secret_id: boolean; has_secret_key: boolean;
   secret_id_masked: string; active: boolean; tested: boolean; test_result: string | null;
 };
 const initial = { bucket: "zk-1309923787", region: "ap-guangzhou", secret_id: "", secret_key: "", clear_credentials: false };
-export default function StoragePage() {
+function StorageConnection({ onState }: { onState: (state: { dirty: boolean; busy: boolean }) => void }) {
   const resource = useAdminResource<Storage>("/site/admin/storage");
   const [config, setConfig] = useState<Storage | null>(null);
   const [form, setForm] = useState(initial);
@@ -23,6 +37,7 @@ export default function StoragePage() {
   const [conflict, setConflict] = useState(false);
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
   useAdminChanges(dirty, busy);
+  useEffect(() => { onState({ dirty, busy }); }, [dirty, busy, onState]);
   function accept(value: Storage) {
     setConfig(value);
     const next = { ...initial, bucket: value.bucket, region: value.region };
@@ -44,7 +59,7 @@ export default function StoragePage() {
     } finally { setBusy(false); }
   }
   return <>
-    <AdminHeading title="文件存储"><span className="model-default"><HardDrive size={15} />腾讯云 COS</span></AdminHeading>
+    <span className="model-default"><HardDrive size={15} />腾讯云 COS</span>
     <AdminLoad loading={resource.loading} error={resource.error} retry={resource.reload}>
       {config && <>
         {notice && <p className="billing-notice" role="status"><Check size={16} />{notice}</p>}

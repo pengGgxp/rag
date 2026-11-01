@@ -80,6 +80,27 @@ def test_failed_debit_rolls_back_entitlement(accounts):
     assert not db.scalar(select(StorageEntitlement).where(StorageEntitlement.kind == "purchase"))
 
 
+def test_only_workspace_admin_can_purchase_and_site_admin_can_grant(accounts):
+    from test_auth import share, switch
+    admin, member, _, db, a, b = setup(accounts)
+    body = {"storage_bytes": 100, "download_bytes": 50, "days": 30,
+            "reason": "Verified adjustment", "request_id": str(uuid4())}
+    path = f"/site/admin/workspaces/{a['workspace_id']}/storage/grants"
+    assert member.post(path, json=body).status_code == 403
+    first = admin.post(path, json=body)
+    assert first.status_code == 201, first.text
+    assert admin.post(path, json=body).json()["id"] == first.json()["id"]
+    assert admin.post(path, json={**body, "storage_bytes": 101}).status_code == 409
+    assert admin.get("/storage/allowances").json()["limit_bytes"] == 512*1024**2+100
+    for role in ("viewer", "editor"):
+        share(admin, b["user"]["email"], role)
+        switch(member, a["workspace_id"])
+        assert member.get("/storage/allowances").status_code == 200
+        result = member.post("/storage/purchases", json={"package_id":"storage-5", "version":1,
+                                                        "request_id":str(uuid4())})
+        assert result.status_code == 403
+
+
 def test_transfer_reserve_checkpoint_cancel_and_crash_recovery(accounts):
     admin, _, _, db, a, b = setup(accounts)
     configure(admin, free_download_bytes=20)

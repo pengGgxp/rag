@@ -5,6 +5,7 @@ import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useAdminChanges } from "../../admin-changes";
 import { WorkspaceCredits } from "../../workspace-credits";
+import { StoragePanel } from "../../../storage-panel";
 import type { AdminWorkspace } from "../page";
 import {
   AdminHeading,
@@ -15,7 +16,8 @@ import {
 export default function WorkspaceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [notice, setNotice] = useState("");
-  useAdminChanges(false, false);
+  const [storageBusy, setStorageBusy] = useState(false);
+  useAdminChanges(false, storageBusy);
   const { data, loading, error, reload } = useAdminResource<AdminWorkspace>(
     `/site/admin/workspaces/${id}`,
   );
@@ -59,6 +61,10 @@ export default function WorkspaceDetailPage() {
                 </dd>
               </div>
             </dl>
+            <section className="admin-section">
+              <h2>存储与下载</h2>
+              <StoragePanel workspaceId={data.id} admin onBusyChange={setStorageBusy} />
+            </section>
             <section className="admin-section">
               <h2>积分摘要</h2>
               <WorkspaceCredits key={data.id} id={data.id} name={data.name} credits={data.credits}

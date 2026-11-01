@@ -25,14 +25,15 @@ function display(value: string) {
 }
 const yuan = (value: string) => `¥${display(value)}`;
 
-export function PricingCalculator({ policy, busy, apply, close, restoreFocusSelector }: {
+export function PricingCalculator({ policy, busy, apply, close, restoreFocusSelector, initialCost = "" }: {
   policy: Policy; busy: boolean; apply: (patch: Partial<Policy>) => void;
   close: () => void; restoreFocusSelector: string;
+  initialCost?: string;
 }) {
   const label = policyLabels[policy.capability] ?? policy.capability;
-  const unit = policy.unit === "pages" ? "页" : policy.unit === "calls" ? "次" : "Token";
+  const unit = policy.unit === "packages" ? "套餐" : policy.unit === "pages" ? "页" : policy.unit === "calls" ? "次" : "Token";
   const context = useAdminResource<Context>(root);
-  const [cost, setCost] = useState("");
+  const [cost, setCost] = useState(initialCost ? Number(initialCost).toFixed(8).replace(/\.?0+$/, "") || "0" : "");
   const [profit, setProfit] = useState("");
   const [overhead, setOverhead] = useState("0");
   const [fee, setFee] = useState("0.1");
@@ -41,7 +42,8 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<{ key: string; quote?: Quote; error?: string }>({ key: "" });
   const validUnit = /^\d+$/.test(units) && Number(units) >= 1 && Number(units) <= 2147483647
-    && (policy.unit !== "calls" || [1, 1000].includes(Number(units)));
+    && (policy.unit !== "calls" || [1, 1000].includes(Number(units)))
+    && (policy.unit !== "packages" || Number(units) === 1);
   const valid = [cost, profit, overhead].every(value => amountPattern.test(value))
     && feePattern.test(fee) && validUnit && multiplierPattern.test(multiplier);
   const payload = JSON.stringify({ capability: policy.capability, unit_size: Number(units),
@@ -67,12 +69,12 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
     }}>
       <div className="calculator-object"><strong>{label}</strong><span>每 {validUnit ? Number(units).toLocaleString() : "—"} {unit}</span></div>
       <div className="calculator-fields">
-        <label>计价用量<span className="policy-input">{policy.unit === "calls" ? <select aria-label="计价用量" value={units} onChange={e => setUnits(e.target.value)} disabled={busy}><option value="1">1</option><option value="1000">1,000</option></select> : <input aria-label="计价用量" inputMode="numeric" value={units} onChange={e => setUnits(e.target.value)} disabled={busy} />}<span>{unit}</span></span></label>
+        <label>计价用量<span className="policy-input">{policy.unit === "calls" ? <select aria-label="计价用量" value={units} onChange={e => setUnits(e.target.value)} disabled={busy}><option value="1">1</option><option value="1000">1,000</option></select> : <input aria-label="计价用量" inputMode="numeric" value={units} onChange={e => setUnits(e.target.value)} disabled={busy || policy.unit === "packages"} />}<span>{unit}</span></span></label>
         <label>人民币成本<span className="policy-input"><input aria-label="人民币成本" autoFocus inputMode="decimal" placeholder="0.00" value={cost} onChange={e => setCost(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>目标利润<span className="policy-input"><input aria-label="目标利润" inputMode="decimal" placeholder="0.00" value={profit} onChange={e => setProfit(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>其他费用分摊<span className="policy-input"><input aria-label="其他费用分摊" inputMode="decimal" value={overhead} onChange={e => setOverhead(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>支付费率<span className="policy-input"><input aria-label="支付费率" inputMode="decimal" value={fee} onChange={e => setFee(e.target.value)} disabled={busy} /><span>%</span></span></label>
-        <label>工作区倍率试算<span className="policy-input"><input aria-label="工作区倍率试算" inputMode="decimal" value={multiplier} onChange={e => setMultiplier(e.target.value)} disabled={busy} /><span>×</span></span></label>
+        {policy.unit !== "packages" && <label>工作区倍率试算<span className="policy-input"><input aria-label="工作区倍率试算" inputMode="decimal" value={multiplier} onChange={e => setMultiplier(e.target.value)} disabled={busy} /><span>×</span></span></label>}
       </div>
       {!valid && cost !== "" && profit !== "" && <p className="calculator-warning" role="alert"><CircleAlert size={16} />金额须非负且最多 8 位小数；费率为 0–99.9999%，用量为正整数，倍率为 0.01–100、最多两位小数。</p>}
       <div className="calculator-reference">

@@ -1,0 +1,43 @@
+.storage-allowances { display: grid; gap: 20px; min-width: 0; max-width: 960px; }
+.storage-toolbar, .storage-dialog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.storage-toolbar { justify-content: space-between; }
+.storage-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border-block: 1px solid var(--line); padding: 20px 0; gap: 20px; }
+.storage-summary dt, .storage-note, .storage-package-row span, .storage-confirm dt { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.storage-summary dd { margin: 8px 0 0; font-size: 22px; overflow-wrap: anywhere; }
+.storage-summary small { font-size: 14px; color: var(--muted); }
+.storage-note { margin: 0; }
+.storage-allowances h2 { font-size: 16px; margin: 0 0 12px; }
+.storage-package-list { border-top: 1px solid var(--line); }
+.storage-package-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.storage-package-row > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.storage-package-row .storage-package-action { display: flex; gap: 12px; align-items: center; flex-shrink: 0; }
+.storage-package-row strong { font-size: 14px; }
+.storage-breakdown summary { min-height: 44px; padding: 12px 0; cursor: pointer; font-size: 14px; }
+.storage-breakdown dl > div, .storage-confirm > div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; }
+.storage-breakdown dd, .storage-confirm dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.storage-confirm { margin: 0 0 16px; font-size: 14px; }
+.storage-dialog-actions { margin-top: 20px; flex-wrap: wrap; }
+.storage-dialog-body { padding: 24px; }
+.modal:has(.storage-dialog-body) .modal-heading .icon-button { min-width: 44px; min-height: 44px; }
+.storage-grant-form fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 16px; }
+.storage-grant-form label { display: grid; gap: 8px; font-size: 14px; }
+.storage-allowances button, .storage-dialog-actions button, .storage-grant-form input { min-height: 44px; }
+.quota-package { border-top: 1px solid var(--line); padding-block: 20px; }
+.quota-package header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.quota-package h3 { font-size: 15px; margin: 0; }
+.quota-package > summary { display: list-item; min-height: 44px; padding: 8px 0; cursor: pointer; font-size: 14px; }
+.quota-package > summary span { float: right; color: var(--muted); font-size: 13px; margin-left: 12px; }
+.quota-package[open] > summary { margin-bottom: 16px; }
+.quota-tabs { margin-bottom: 24px; }
+.quota-tabs button, .quota-package button, .quota-package input { min-height: 44px; }
+@media(max-width:700px) {
+  .admin-main .storage-workspace-table { min-width: 0; width: 100%; table-layout: fixed; }
+  .admin-main .storage-workspace-table th, .admin-main .storage-workspace-table td { min-width: 0; padding: 12px 8px; }
+  .storage-dialog-body { padding: 20px 16px; }
+  .storage-package-row { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+  .storage-package-row .storage-package-action { width: 100%; justify-content: space-between; }
+  .storage-summary { gap: 12px; }
+  .storage-summary dd { font-size: 18px; }
+  .storage-confirm > div { flex-wrap: wrap; gap: 4px; }
+  .storage-confirm dd { text-align: left; }
+}

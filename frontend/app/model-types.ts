@@ -70,6 +70,7 @@ export function availabilityLabel(reason: string | null) {
 }
 
 export const policyLabels: Record<string, string> = {
+  storage_package: "存储与下载套餐",
   web_search: "联网搜索",
   web_fetch: "网页读取",
   llm_input_tokens: "模型输入 Token",

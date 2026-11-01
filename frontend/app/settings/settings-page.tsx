@@ -20,6 +20,7 @@ import {
   useAuth,
 } from "../auth";
 import { BillingPanel } from "../billing-panel";
+import { StoragePanel } from "../storage-panel";
 import { sectionFromPath } from "./settings-routes";
 import { useSettingsForm } from "./standalone-settings";
 type Member = { id: string; name: string; email: string; role: Role };
@@ -298,6 +299,8 @@ function AccountPage({
                 <div><dt>工作区名称</dt><dd>{session.workspaces.find(item => item.id === session.workspace_id)?.name}</dd></div>
                 <div><dt>我的角色</dt><dd>{role ? ROLE_LABELS[role] : "—"}</dd></div>
               </dl>
+            ) : tab === "storage" ? (
+              <StoragePanel onBusyChange={setBusy} />
             ) : tab === "billing" ? (
               <BillingPanel
                 workspaceName={

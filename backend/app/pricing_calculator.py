@@ -17,7 +17,7 @@ Money = Annotated[str, Field(pattern=r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,8})?$"
 
 class QuoteInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    capability: Literal["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens", "ocr_pages", "embedding_tokens", "web_search", "web_fetch"]
+    capability: Literal["llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens", "ocr_pages", "embedding_tokens", "web_search", "web_fetch", "storage_package"]
     unit_size: int = Field(ge=1, le=2_147_483_647)
     cost_yuan: Money
     profit_yuan: Money
@@ -28,6 +28,8 @@ class QuoteInput(BaseModel):
 
     @model_validator(mode="after")
     def call_units(self):
+        if self.capability == "storage_package" and (self.unit_size != 1 or self.multiplier != "1.00"):
+            raise ValueError("存储套餐按每份计价，不使用工作区倍率")
         if self.capability in ("web_search", "web_fetch") and self.unit_size not in (1, 1000):
             raise ValueError("联网工具按每次或每千次计价")
         return self

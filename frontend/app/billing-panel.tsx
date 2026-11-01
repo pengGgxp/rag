@@ -64,6 +64,7 @@ export function creditKind(kind: string) {
     chat_reservation: "问答消耗", chat_release: "失败返还",
     usage_settlement: "能力使用",
     manual_credit: "人工入账", manual_debit: "人工扣减",
+    storage_package_purchase: "存储与下载套餐",
   } as Record<string, string>)[kind] ?? "积分变动";
 }
 const usageLabel: Record<string, string> = {

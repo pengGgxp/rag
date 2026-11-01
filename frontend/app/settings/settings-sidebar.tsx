@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { Building2, CreditCard, ScrollText, ShieldCheck, UserRound, UsersRound, Cpu } from "lucide-react";
+import { Building2, CreditCard, ScrollText, ShieldCheck, UserRound, UsersRound, Cpu, HardDrive } from "lucide-react";
 import type { Role } from "../auth";
 import { visibleSections, type SettingsSection } from "./settings-routes";
 
 const icons = { account: UserRound, security: ShieldCheck, workspace: Building2,
-  members: UsersRound, billing: CreditCard, audit: ScrollText, models: Cpu };
+  members: UsersRound, billing: CreditCard, audit: ScrollText, models: Cpu, storage: HardDrive };
 
 export function SettingsSidebar({ workspaceName, role, activeSection, hrefFor, navigate }: {
   workspaceName: string; role?: Role; activeSection?: SettingsSection;

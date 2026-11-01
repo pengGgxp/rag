@@ -97,9 +97,10 @@ export function Dialog({
             if (!restoreFocusSelector) return;
             event.preventDefault();
             requestAnimationFrame(() => {
-              if (document.querySelector('[role="dialog"][data-state="open"]')) return;
               const target = Array.from(document.querySelectorAll<HTMLElement>(restoreFocusSelector))
                 .find(element => element.getClientRects().length > 0);
+              const dialogs = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]'));
+              if (dialogs.length && (!target || !dialogs.some(dialog => dialog.contains(target)))) return;
               (target ?? document.querySelector<HTMLElement>("[data-workspace-menu]"))?.focus();
             });
           }}
