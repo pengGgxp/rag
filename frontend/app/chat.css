@@ -217,7 +217,6 @@
 }
 .chat-message {
   padding: 24px 0 28px;
-  will-change: opacity, transform;
 }
 .chat-message.user {
   padding-bottom: 10px;

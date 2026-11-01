@@ -961,13 +961,10 @@ export function ChatWorkspace({
           ) : (
             <div className="chat-transcript">
               {conversation.messages.map((message, index) => (
-                <Motion.article
+                <article
                   className={`chat-message ${message.role}`}
                   key={message.id}
                   aria-label={message.role === "user" ? "你的问题" : "知库回答"}
-                  initial={{ opacity: 0, y: message.role === "user" ? 8 : 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
                 >
                   <span className="message-label">
                     {message.role === "user" ? (
@@ -1138,7 +1135,7 @@ export function ChatWorkspace({
                       )}
                     </>
                   )}
-                </Motion.article>
+                </article>
               ))}
             </div>
           )}
