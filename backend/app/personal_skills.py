@@ -142,6 +142,9 @@ def apply(row, payload):
 
 @router.post("", status_code=201)
 def create(payload: PersonalWrite, request: Request, db=Depends(get_db), access=Depends(get_access)):
+    from .storage_billing import check_capacity
+    files = decode_files(payload.files, payload.markdown)
+    check_capacity(db, access.workspace_id, sum(len(data) for data in files.values()))
     row = AgentSkill(owner_id=access.user_id, workspace_id=access.workspace_id, files=[], version=1)
     apply(row, payload)
     db.add(row)
@@ -158,9 +161,14 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 
 @router.put("/{identifier}")
 def update(identifier: UUID, payload: PersonalUpdate, request: Request, db=Depends(get_db), access=Depends(get_access)):
+    from .storage_billing import check_capacity, lock_workspace
+    lock_workspace(db, access.workspace_id)
     row = owned(db, AgentSkill, identifier, access, True)
     if row.version != payload.version:
         raise HTTPException(409, "Skill 已更新，请重新加载后再保存")
+    files = decode_files(payload.files, payload.markdown)
+    check_capacity(db, access.workspace_id, sum(len(data) for data in files.values()),
+        skill_replaced_bytes=len(row.markdown.encode("utf-8"))+sum(len(f.content) for f in row.files))
     apply(row, payload)
     row.version += 1
     audit(db, access, request, "agent_skill.updated", row)
@@ -178,10 +186,14 @@ def delete(identifier: UUID, payload: Version, request: Request, db=Depends(get_
     db.commit()
 
 
-@router.get("/{identifier}/export")
-def export(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+@router.api_route("/{identifier}/export", methods=["GET", "HEAD"])
+def export(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, AgentSkill, identifier, access)
-    return Response(skill_files.export_zip("skill", skill_files.bundle_files(row)), media_type="application/zip")
+    from io import BytesIO
+    from .storage_downloads import download_response
+    data = skill_files.export_zip("skill", skill_files.bundle_files(row))
+    return download_response(db, access, request, object_key="", size=len(data), filename=f"{row.name}.zip",
+        content_type="application/zip", resource=f"skill:{row.id}:{row.version}", source_factory=lambda _: BytesIO(data))
 
 
 @router.get("/{identifier}/files")

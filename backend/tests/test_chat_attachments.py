@@ -33,6 +33,8 @@ def objects(monkeypatch):
     values = {}
     monkeypatch.setattr(attachments, "upload_fileobj", lambda source, key, mime: values.update({key: source.read()}))
     monkeypatch.setattr(attachments, "download_fileobj", lambda key: io.BytesIO(values[key]))
+    from app import storage_downloads
+    monkeypatch.setattr(storage_downloads, "download_range_fileobj", lambda key, start, end: io.BytesIO(values[key][start:end+1]))
     return values
 
 

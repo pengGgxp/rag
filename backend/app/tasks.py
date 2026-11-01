@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import io
 
 from .config import get_settings
+from .auth import aware
 from .db import SessionLocal
 from .docmind import (
     AliyunDocMind, DocMindError, PARSER_NAME, ParsingCancelled,
@@ -363,6 +364,9 @@ def maintain_uploads() -> None:
     cleanup_orphans()
     cleanup_workspace_files()
     with SessionLocal() as db:
+        from .storage_billing import maintenance
+        maintenance(db)
+    with SessionLocal() as db:
         storage = ocr_storage(db)
         if storage:
             from .chat_attachments import cleanup
@@ -386,10 +390,17 @@ def cleanup_workspace_files() -> None:
     from .storage import delete_object
     with SessionLocal() as db:
         expired = db.scalars(select(WorkspaceFile).where(
-            WorkspaceFile.deleted_at.is_(None),
-            WorkspaceFile.expires_at <= datetime.now(timezone.utc))).all()
+            (WorkspaceFile.deleted_at.is_not(None)) |
+            (WorkspaceFile.expires_at <= datetime.now(timezone.utc)))).all()
         for row in expired:
+            from .storage_billing import lock_workspace
+            lock_workspace(db, row.workspace_id)
+            db.refresh(row)
+            if row.deleted_at is None and aware(row.expires_at) > datetime.now(timezone.utc):
+                continue
             for version in row.versions:
+                if version.deleted_at is not None:
+                    continue
                 try:
                     delete_object(version.object_key)
                 except Exception:

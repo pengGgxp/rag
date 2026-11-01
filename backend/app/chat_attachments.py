@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from urllib.parse import quote
 import zipfile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
@@ -171,7 +171,9 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
     if (not filename or len(filename) > 255 or "/" in filename or "\\" in filename
             or any(ord(c) < 32 for c in filename) or suffix not in DOCUMENT_SUFFIXES | IMAGE_TYPES.keys()):
         raise HTTPException(415, "请选择 PNG、JPEG、WebP、PDF、TXT、Markdown、CSV、Word 或 Excel 文件")
-    # Serialize staging quotas for one user without locking the workspace balance.
+    from .storage_billing import lock_workspace
+    lock_workspace(db, access.workspace_id)
+    # Serialize staging quotas for one user.
     from .models import User
     db.get(User, access.user_id, with_for_update=True)
     if db.scalar(select(func.count()).select_from(ChatAttachment).where(
@@ -192,6 +194,8 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
         if not width or not height or width * height > 40_000_000:
             raise HTTPException(413, "图片尺寸过大，请缩小后重试")
     text = None if image else extract_document(data, filename)
+    from .storage_billing import check_capacity
+    check_capacity(db, access.workspace_id, len(data))
     identifier = uuid4()
     key = f"_chat/{access.workspace_id}/{identifier}{suffix}"
     document_types = {".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
@@ -207,20 +211,12 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
     return attachment_read(row)
 
 
-@router.get("/{identifier}/content")
-def content(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+@router.api_route("/{identifier}/content", methods=["GET", "HEAD"])
+def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
-    source = download_fileobj(row.object_key)
-    def chunks():
-        try:
-            while block := source.read(128 * 1024):
-                yield block
-        finally:
-            source.close()
-    disposition = "inline" if row.kind == "image" else "attachment"
-    return StreamingResponse(chunks(), media_type=row.content_type, headers={
-        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(row.filename)}"})
+    from .storage_downloads import download_response
+    return download_response(db, access, request, object_key=row.object_key, size=row.size_bytes,
+        filename=row.filename, content_type=row.content_type, resource=f"attachment:{row.id}", inline=row.kind == "image")
 
 
 @router.delete("/{identifier}", status_code=204)

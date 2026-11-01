@@ -22,6 +22,8 @@ def check_format(stream, filename):
 
 
 def admit(db, access, knowledge_base_id, filename, content_type, size, digest, key, version_of=None, request=None):
+    from .storage_billing import check_capacity
+    check_capacity(db, access.workspace_id, size, exclude_key=key)
     library = access.library(db, knowledge_base_id, write=True)
     # Serialize hash admission and version allocation for the same library.
     db.get(KnowledgeBase, library.id, with_for_update=True, populate_existing=True)

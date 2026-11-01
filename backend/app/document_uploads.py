@@ -60,6 +60,8 @@ def cloud_parts(storage, row):
 @router.post("/knowledge-bases/{library_id}/uploads", status_code=201)
 def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), access=Depends(get_access)):
     access.library(db, library_id, write=True)
+    from .storage_billing import check_capacity
+    check_capacity(db, access.workspace_id, payload.size_bytes)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
         raise HTTPException(415, "不支持的文件名或文档格式")

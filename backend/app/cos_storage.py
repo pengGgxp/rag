@@ -53,6 +53,10 @@ class CosStorage:
     def head(self, key):
         return self._call("head_object", Key=key)
 
+    def download_range(self, key, start, end):
+        response = self._call("get_object", Key=key, Range=f"bytes={start}-{end}")
+        return response["Body"].get_raw_stream()
+
     def delete(self, key):
         self._call("delete_object", Key=key)
 

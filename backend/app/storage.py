@@ -44,6 +44,15 @@ def download_fileobj(object_key: str):
     return output
 
 
+def download_range_fileobj(object_key: str, start: int, end: int):
+    backend = cos_backend()
+    if backend:
+        return backend.download_range(object_key, start, end)
+    settings = get_settings()
+    return client().get_object(Bucket=settings.s3_bucket, Key=object_key,
+        Range=f"bytes={start}-{end}")["Body"]
+
+
 def delete_object(object_key: str) -> None:
     backend = cos_backend()
     if backend:

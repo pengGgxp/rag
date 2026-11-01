@@ -288,6 +288,9 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     stored = {}
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: __import__("io").BytesIO(stored[key]))
+    from app import storage_downloads
+    monkeypatch.setattr(storage_downloads, "download_range_fileobj",
+        lambda key, start, end: __import__("io").BytesIO(stored[key][start:end+1]))
     access = access_for(owner, db)
     saved = workspace_files._save_bytes(access.workspace_id, access, db, "reports/answer.md",
         b"Downloadable result", "text/markdown")

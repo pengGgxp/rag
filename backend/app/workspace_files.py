@@ -2,7 +2,7 @@ import base64, hashlib, json
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from .auth import Access, get_access, now, aware
@@ -72,13 +72,10 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
     path = valid_path(path)
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "文件不能超过 200 MiB")
+    from .storage_billing import check_capacity
+    config = check_capacity(db, access.workspace_id, len(data), output=True)
     row = db.scalar(select(WorkspaceFile).where(
         WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path))
-    settings = get_settings()
-    quota = settings.workspace_file_quota_mb * 1024 * 1024
-    current_total = sum(size for size, in db.execute(select(WorkspaceFile.size_bytes).where(
-        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
-        WorkspaceFile.expires_at > datetime.now(timezone.utc))).all())
     active = row is not None and row.deleted_at is None and aware(row.expires_at) > datetime.now(timezone.utc)
     if active:
         if expected_version is not None and expected_version != row.current_version:
@@ -93,13 +90,10 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
             db.add(row)
             db.flush()
     digest = hashlib.sha256(data).hexdigest()
-    previous_size = row.size_bytes if active else 0
-    if current_total - previous_size + len(data) > quota:
-        raise HTTPException(413, "工作区临时文件空间已满，请等待文件自动清理")
     row.content_type = content_type or row.content_type or "application/octet-stream"
     row.size_bytes, row.content_hash = len(data), digest
     row.current_version, row.updated_by, row.deleted_at = version, access.user_id, None
-    row.expires_at = datetime.now(timezone.utc) + timedelta(days=settings.workspace_file_retention_days)
+    row.expires_at = datetime.now(timezone.utc) + timedelta(days=config.retention_days)
     key = f"workspaces/{access.workspace_id}/files/{row.id}/{version}/{path}"
     upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
     db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
@@ -116,10 +110,13 @@ def write_text(workspace_id: UUID, payload: TextWrite, db, access):
     check_workspace(access, workspace_id); access.editor()
     return _save_bytes(workspace_id, access, db, payload.path, payload.content.encode("utf-8"),
         payload.content_type, payload.expected_version)
-@router.get("/{file_id}/download")
-def download(workspace_id: UUID,file_id: UUID,db=Depends(get_db),access: Access=Depends(get_access)):
-    from fastapi.responses import StreamingResponse
-    row=owned(db,access,workspace_id,file_id); version=_current_file_version(db, row); stream=download_fileobj(version.object_key); return StreamingResponse(stream,media_type=row.content_type,headers={"Content-Disposition":f'attachment; filename="{row.path.split("/")[-1]}"'})
+@router.api_route("/{file_id}/download", methods=["GET", "HEAD"])
+def download(workspace_id: UUID,file_id: UUID,request: Request,db=Depends(get_db),access: Access=Depends(get_access)):
+    from .storage_downloads import download_response
+    row = owned(db,access,workspace_id,file_id)
+    version = _current_file_version(db, row)
+    return download_response(db, access, request, object_key=version.object_key, size=version.size_bytes,
+        filename=row.path.split("/")[-1], content_type=row.content_type, resource=f"output:{row.id}:{version.version}")
 def _apply_unified_patch(original: str, patch: str) -> str:
     lines = original.splitlines(keepends=True)
     patch_lines = patch.splitlines(keepends=True)
