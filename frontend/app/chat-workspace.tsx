@@ -13,7 +13,6 @@ import {
   Download,
   FileText,
   Globe,
-  Layers3,
   Loader2,
   MessageSquare,
   Pencil,
@@ -1036,7 +1035,7 @@ export function ChatWorkspace({
               transition={{ duration: 0.34 }}
             >
               <span className="answer-emblem">
-                <Layers3 size={32} strokeWidth={1.4} />
+                <img src="/icon.svg" width={32} height={32} alt="" />
               </span>
               <h2>今天想了解什么？</h2>
             </Motion.div>
@@ -1053,7 +1052,7 @@ export function ChatWorkspace({
                       "你"
                     ) : (
                       <>
-                        <Layers3 size={16} />
+                        <img src="/icon.svg" width={16} height={16} alt="" />
                         知库
                       </>
                     )}
