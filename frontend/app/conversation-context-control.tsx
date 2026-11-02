@@ -34,8 +34,8 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
   const [confirm, setConfirm] = useState(false);
   const ready = !loading && modelSelected && !loadError && state.capacity !== null && state.outputReserve !== null;
   const usableInput = ready ? Math.max(0, state.capacity! - state.outputReserve!) : null;
-  const percent = usableInput && usableInput > 0 && state.estimatedInputTokens !== null
-    ? Math.min(100, Math.ceil(state.estimatedInputTokens / usableInput * 100)) : null;
+  const percent = ready && state.capacity! > 0 && state.estimatedInputTokens !== null
+    ? Math.min(100, Math.ceil(state.estimatedInputTokens / state.capacity! * 100)) : null;
   useEffect(() => {
     if (compactRequest) { setOpen(true); setConfirm(true); }
   }, [compactRequest]);
@@ -67,7 +67,7 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
             <progress className={over ? "context-progress near-limit" : "context-progress"}
               aria-label="上下文已用比例" max={100} value={percent} />
           </>}
-          <p className="context-note">共 {formatK(usableInput!)} · 已用 {state.estimatedInputTokens === null ? "—" : formatK(state.estimatedInputTokens)}</p>
+          <p className="context-note">共 {formatK(state.capacity!)} · 已用 {state.estimatedInputTokens === null ? "—" : formatK(state.estimatedInputTokens)}</p>
         </> : <p className="context-status context-warning"><CircleAlert size={15} />暂时无法查看用量，请稍后重试。</p>}
         {state.status === "completed" && <p className="context-status"><Check size={14} />上下文已整理</p>}
         {state.status === "failed" && <p className="context-status context-warning" role="alert"><CircleAlert size={14} />{state.error || "整理失败，原始上下文已保留"}</p>}

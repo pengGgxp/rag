@@ -6,10 +6,10 @@ async page => {
     let data = [];
     if (path === '/auth/me') data = {user:{id:'u',name:'Test',email:'test@example.test'},workspace_id:'w',csrf_token:'test',workspaces:[{id:'w',name:'Team',role:'admin'}]};
     else if (path === '/auth/options') data = {first_run:false,setup_available:false};
-    else if (path === '/models/available') data = {default_provider_id:'m',providers:[{id:'m',name:'Test',model:'test',available:true,supports_tools:false,context_capacity:64000,max_output_tokens:4096}]};
+    else if (path === '/models/available') data = {default_provider_id:'m',providers:[{id:'m',name:'Test',model:'test',available:true,supports_tools:false,context_capacity:272000,max_output_tokens:128000}]};
     else if (path === '/site/announcement') data = {announcement:null};
     else if (path === '/search/availability') data = {available:false};
-    else if (path.endsWith('/context')) data = {status:'idle',capacity:64000,output_reserve:4096,estimated_input_tokens:32000,eligible:true};
+    else if (path.endsWith('/context')) data = {status:'idle',capacity:272000,output_reserve:128000,estimated_input_tokens:53400,eligible:true};
     else if (path.endsWith('/compact')) {
       compactions++;
       return route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"status":"completed"}\n\n'});
@@ -22,11 +22,11 @@ async page => {
     await page.setViewportSize({width,height:900});
     await page.goto('http://localhost:3110/?conversation='+id);
     const context = page.getByRole('button',{name:'上下文',exact:true});
-    await context.getByText('已用 54%').waitFor();
+    await context.getByText('已用 20%').waitFor();
     await context.click();
     const panel = page.getByRole('dialog',{name:'上下文',exact:true});
     await panel.waitFor();
-    await panel.getByText('共 59.9k · 已用 32k', {exact:true}).waitFor();
+    await panel.getByText('共 272k · 已用 53.4k', {exact:true}).waitFor();
     if (/Token|输出预留|安全余量|75%/.test(await panel.innerText())) throw Error('Technical budget copy remains');
     await page.getByRole('button',{name:'关闭上下文'}).click();
     const input = page.getByRole('textbox',{name:'向知识库提问'});
@@ -40,7 +40,7 @@ async page => {
     if (compactions) throw Error('Cancellation submitted a request');
     if (await page.evaluate(()=>document.documentElement.scrollHeight>innerHeight+1)) throw Error('Outer scroll overflow');
     await page.screenshot({path:'output/playwright/context-simple-'+width+'.png'});
-    results.push({width,percent:54,draftPreserved:true});
+    results.push({width,percent:20,draftPreserved:true});
   }
   const input = page.getByRole('textbox',{name:'向知识库提问'});
   await input.fill('/压缩'); await input.press('End');
