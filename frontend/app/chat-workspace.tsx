@@ -1,7 +1,8 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
-import { Fragment, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import remarkGfm from "remark-gfm";
+import { Fragment, FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -198,19 +199,23 @@ function AnswerMarkdown({
   onCitation: (item: Citation) => void;
   text?: string;
 }) {
+  const footnotePrefix = `footnote-${useId()}-`;
   return (
     <div className="answer-text">
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[citationMarkers([...message.citations, ...(message.web_sources ?? [])])]}
+        remarkRehypeOptions={{ clobberPrefix: footnotePrefix, footnoteLabel: "注释", footnoteBackLabel: "返回正文" }}
+        remarkPlugins={[remarkGfm, citationMarkers([...message.citations, ...(message.web_sources ?? [])])]}
         components={{
+          table: ({ children }) => <div className="answer-table-scroll" role="region" aria-label="回答表格" tabIndex={0}><table>{children}</table></div>,
           img: ({ alt }) => <span>{alt}</span>,
-          a: ({ href, children }) => {
+          a: ({ href, children, node: _node, ...props }) => {
             const web = message.web_sources?.find(item => href === `#source-${item.source_id}`);
             if (web) return <a className="inline-citation" href={web.url} target="_blank" rel="noopener noreferrer" title={`查看网页：${web.title}`}>{children}</a>;
             const citation = message.citations.find(
               (item) => href === `#source-${item.chunk_id}`,
             );
+            if (!citation && href?.startsWith("#")) return <a {...props} href={href}>{children}</a>;
             return citation ? (
               <button
                 className="inline-citation"

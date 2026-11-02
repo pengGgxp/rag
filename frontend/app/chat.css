@@ -235,6 +235,49 @@
 .chat-message .answer-text:empty {
   margin-top: 0;
 }
+.answer-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-block: 14px;
+}
+.answer-table-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.answer-text .answer-table-scroll table {
+  table-layout: auto;
+  min-width: 100%;
+  width: max-content;
+  max-width: none;
+}
+.answer-text .answer-table-scroll th,
+.answer-text .answer-table-scroll td {
+  width: auto;
+  height: auto;
+  min-width: 100px;
+  max-width: 360px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  font-size: inherit;
+  vertical-align: top;
+}
+.answer-text .answer-table-scroll th {
+  font-weight: 600;
+  color: var(--ink);
+}
+.answer-text .contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+.answer-text .task-list-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0 7px 0 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
 .chat-message .thinking {
   padding: 14px 0 0;
   color: #8090a7;
