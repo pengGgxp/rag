@@ -7,8 +7,8 @@ import { Suspense, type ReactNode } from "react";
 import { SettingsNavigation } from "./settings/settings-navigation";
 
 export const metadata: Metadata = {
-  title: "知库 · 知识工作空间",
-  description: "知识库、文档与可追溯的知识问答。",
+  title: "知库 · 把资料变成有据可查的工作成果",
+  description: "把你的资料，变成有据可查的工作成果。",
   referrer: "no-referrer",
 };
 

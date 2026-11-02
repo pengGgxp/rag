@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BookOpen, Files, Layers3, MessageSquare, Puzzle } from "lucide-react";
+import { BookOpen, Files, MessageSquare, Puzzle } from "lucide-react";
 import { AccountButton } from "./auth";
 import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
@@ -24,7 +24,7 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
   const mode = screen === "knowledge" ? "catalog" : screen;
   return <>
     <Link className="brand" href="/" onClick={onNavigate}>
-      <span className="brand-mark"><Layers3 size={23} /></span><span>知库</span>
+      <span className="brand-mark"><img src="/icon.svg" alt="" /></span><span>知库</span>
     </Link>
     <nav className="primary-navigation" aria-label="产品导航">
       {destinations.map(({ mode: itemMode, href, label, icon: Icon }) => (

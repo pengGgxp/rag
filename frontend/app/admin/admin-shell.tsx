@@ -10,7 +10,6 @@ import {
   HardDrive,
   Globe,
   LayoutDashboard,
-  Layers3,
   ScrollText,
   Settings2,
   ShieldCheck,
@@ -76,7 +75,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       <aside className="admin-sidebar" aria-label="站点管理">
         <Link className="admin-brand" href="/admin">
           <span className="brand-mark">
-            <Layers3 size={21} />
+            <img src="/icon.svg" alt="" />
           </span>
           <strong>知库</strong>
           <span>站点管理</span>

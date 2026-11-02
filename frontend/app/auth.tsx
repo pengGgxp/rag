@@ -286,7 +286,7 @@ export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetr
         <aside className="auth-bootstrap-sidebar" aria-hidden="true">
           <div className="auth-bootstrap-brand">
             <span className="brand-mark">
-              <Layers3 size={20} />
+              <img src="/icon.svg" alt="" />
             </span>
             <span>知库</span>
           </div>
@@ -326,7 +326,7 @@ export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetr
       <section className="auth-bootstrap-panel">
         <div className="auth-bootstrap-brand">
           <span className="brand-mark">
-            <Layers3 size={22} />
+            <img src="/icon.svg" alt="" />
           </span>
           <span>知库</span>
         </div>

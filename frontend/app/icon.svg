@@ -1,4 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="12" fill="#176b4d"/>
-  <path d="M18 18h28v8H26v7h16v8H26v5h20v8H18z" fill="#f4f7f2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>知库</title>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#2563EB"/>
+  <path d="M15 17L29 22V48L15 43V17Z" fill="white"/>
+  <path d="M35 22L49 17V33L35 38V22Z" fill="white"/>
+  <path d="M35 43L49 38V44L35 49V43Z" fill="#A5F3FC"/>
 </svg>
