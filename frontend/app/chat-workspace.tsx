@@ -304,6 +304,7 @@ export function ChatWorkspace({
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
   const [contextAttempt, setContextAttempt] = useState(0);
+  const [compactRequest, setCompactRequest] = useState(0);
   const [latest, setLatest] = useState(false);
   const setSidebar = useUiStore((state) => state.setSidebarOpen);
   const [notice, setNotice] = useState<{
@@ -1295,6 +1296,8 @@ export function ChatWorkspace({
                 requestAnimationFrame(() => { composerInput.current?.focus(); composerInput.current?.setSelectionRange(nextCaret, nextCaret); });
               }} />
             <ExtensionSlashMenu key={`extensions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
+              compactDisabled={contextLoading || modelLoading || !!contextError || !!modelError || !!conversationError || thinkingStale || !conversation || !selectedModel?.available || !contextInfo.eligible || contextInfo.status === "running"}
+              onCompact={() => setCompactRequest(value => value + 1)}
               draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy || mentionState.open}
               supportsTools={selectedModel?.supports_tools !== false} selection={conversation
                 ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
@@ -1316,7 +1319,7 @@ export function ChatWorkspace({
               aria-autocomplete={activeComposerMenu.open ? "list" : undefined}
               aria-controls={activeComposerMenu.open ? (mentionState.open ? "composer-document-options" : "composer-extension-options") : undefined}
               aria-activedescendant={activeComposerMenu.option}
-              placeholder="输入消息，@ 引用文档，/ 选择扩展"
+              placeholder="输入消息，@ 引用文档，/ 命令与扩展"
               rows={2}
               value={question}
               disabled={running || loading || extensionBusy}
@@ -1357,6 +1360,7 @@ export function ChatWorkspace({
                   disabled={running || loading || selectedModel?.supports_tools === false || (!webAvailable && !webFailed)} onClick={() => webFailed ? setWebAttempt(value => value + 1) : setWebEnabled(value => !value)}><Globe size={17} /></button>
               </Tooltip>
               <ConversationContextControl state={contextInfo} loading={contextLoading || modelLoading || loading}
+                compactRequest={compactRequest}
                 modelSelected={!!selectedModel} loadError={modelError || contextError || conversationError}
                 disabled={running || loading || modelLoading || thinkingStale || !conversation || !selectedModel?.available}
                 onRetry={() => {

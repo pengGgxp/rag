@@ -46,7 +46,7 @@ def estimate_input(messages, tools=()):
 def input_budget(config):
     if not config.context_capacity or not config.max_output_tokens:
         return None
-    return max(0, config.context_capacity - config.max_output_tokens - math.ceil(config.context_capacity * 0.05))
+    return max(0, config.context_capacity - config.max_output_tokens)
 
 
 def source_digest(rows):

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, CircleAlert, CircleGauge, Loader2, Minimize2, RefreshCw, X } from "lucide-react";
 import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
@@ -14,10 +14,9 @@ export type ConversationContextState = {
   error?: string;
 };
 
-const number = (value: number) => value.toLocaleString("zh-CN");
-
 export function ConversationContextControl({ state, disabled, onCompact, loading = false, onRetry,
-  modelSelected = true, loadError = "" }: {
+  modelSelected = true, loadError = "", compactRequest = 0 }: {
+  compactRequest?: number;
   state: ConversationContextState;
   disabled: boolean;
   onCompact: () => void;
@@ -30,20 +29,23 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const ready = !loading && modelSelected && !loadError && state.capacity !== null && state.outputReserve !== null;
-  const usable = ready ? Math.max(0, state.capacity! - state.outputReserve! - Math.ceil(state.capacity! * 0.05)) : null;
-  const percent = usable && usable > 0 && state.estimatedInputTokens !== null
-    ? Math.ceil(state.estimatedInputTokens / usable * 100) : null;
+  const usableInput = ready ? Math.max(0, state.capacity! - state.outputReserve!) : null;
+  const percent = usableInput && usableInput > 0 && state.estimatedInputTokens !== null
+    ? Math.min(100, Math.ceil(state.estimatedInputTokens / usableInput * 100)) : null;
+  useEffect(() => {
+    if (compactRequest) { setOpen(true); setConfirm(true); }
+  }, [compactRequest]);
   const busy = state.status === "running";
   const over = percent !== null && percent >= 75;
   const close = () => { setOpen(false); setConfirm(false); };
   return <>
     <Tooltip content={busy ? "正在整理上下文" : loading ? "正在读取上下文状态" : loadError ? "上下文状态读取失败"
-      : !modelSelected ? "请先选择模型" : !ready ? "上下文保护未就绪"
-      : percent === null ? "上下文保护已就绪" : `上下文估算 · ${percent}% 可用输入`}>
+      : !modelSelected ? "请先选择模型" : !ready ? "上下文用量暂不可用"
+      : percent === null ? "上下文" : `上下文已用 ${percent}%`}>
       <button ref={trigger} type="button" className={`context-trigger ${over ? "context-near-limit" : ""}`}
         aria-label="上下文" aria-haspopup="dialog" aria-expanded={open} onClick={() => { setOpen(value => !value); setConfirm(false); }}>
         {busy || loading ? <Loader2 size={17} className="spin" aria-hidden="true" /> : <CircleGauge size={17} aria-hidden="true" />}
-        {percent !== null && <span>{percent}%</span>}
+        {percent !== null && <span>已用 {percent}%</span>}
       </button>
     </Tooltip>
     {open && <Dialog title="上下文" anchor={trigger.current} onClose={close}>
@@ -55,33 +57,26 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
         {loading ? <p className="context-status" role="status">正在读取上下文状态…</p>
         : loadError ? <p className="context-status context-warning" role="alert"><CircleAlert size={15} />{loadError}</p>
         : !modelSelected ? <p className="context-status">请先选择模型，再查看上下文状态。</p>
-        : ready && usable ? <>
-          {state.estimatedInputTokens === null ? <p className="context-status">上下文保护已就绪，发送问题后显示输入估算。</p> : <>
-            <div className="context-budget"><strong>{number(state.estimatedInputTokens)}</strong><span> / {number(usable)} Token</span><small>估算输入</small></div>
+        : ready ? <>
+          {percent === null ? <p className="context-status">发送消息后查看用量</p> : <>
+            <div className="context-budget"><strong>已用 {percent}%</strong></div>
             <progress className={over ? "context-progress near-limit" : "context-progress"}
-              aria-label="估算输入占可用预算比例" max={usable} value={Math.min(state.estimatedInputTokens, usable)} />
+              aria-label="上下文已用比例" max={100} value={percent} />
           </>}
-          <dl className="context-breakdown">
-            <div><dt>模型容量</dt><dd>{number(state.capacity!)} Token</dd></div>
-            <div><dt>输出预留</dt><dd>{number(state.outputReserve!)} Token</dd></div>
-            <div><dt>安全余量</dt><dd>{number(Math.ceil(state.capacity! * 0.05))} Token</dd></div>
-          </dl>
-          <p className="context-note">达到可用输入预算的 75% 时自动整理。保留近期原文，完整记录仍可查看。</p>
-        </> : <p className="context-status context-warning"><CircleAlert size={15} />上下文保护未就绪，请联系管理员配置模型容量。</p>}
+        </> : <p className="context-status context-warning"><CircleAlert size={15} />暂时无法查看用量，请稍后重试。</p>}
         {state.status === "completed" && <p className="context-status"><Check size={14} />上下文已整理</p>}
         {state.status === "failed" && <p className="context-status context-warning" role="alert"><CircleAlert size={14} />{state.error || "整理失败，原始上下文已保留"}</p>}
         {(loadError || state.status === "failed") && onRetry && <button type="button" className="text-button" onClick={onRetry}><RefreshCw size={14} />重新加载</button>}
         <div className="context-panel-footer">
-          <p className="context-note">整理使用当前模型，按实际 Token 计费，无额外次数费。</p>
           {confirm && !busy ? <div className="context-confirm">
-            <p>立即整理并计入本工作区用量？</p>
+            <p>压缩较早的对话以腾出空间，完整记录仍保留。此次操作按当前模型用量计费。</p>
             <div><button type="button" className="text-button" onClick={() => setConfirm(false)}>取消</button>
               <button type="button" className="primary" disabled={disabled || !state.eligible || !ready}
-                onClick={() => { setConfirm(false); onCompact(); }}>确认整理</button></div>
+                onClick={() => { setConfirm(false); setOpen(false); onCompact(); }}>确认压缩</button></div>
           </div> : <button type="button" className="context-compact" disabled={disabled || busy || !state.eligible || !ready}
             onClick={() => setConfirm(true)}>
             {busy ? <Loader2 size={15} className="spin" /> : <Minimize2 size={15} />}
-            {busy ? "正在整理…" : "立即整理"}
+            {busy ? "正在压缩…" : "压缩上下文"}
           </button>}
           {ready && !state.eligible && !busy && <span className="context-note">暂无需要整理的历史内容</span>}
         </div>
