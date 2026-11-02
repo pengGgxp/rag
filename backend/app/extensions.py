@@ -46,7 +46,7 @@ def validate_selection(db, access, skill_ids, server_ids):
 
 
 class ExtensionRuntime(SkillRuntime):
-    def __init__(self, factory, access, skill_ids=(), server_ids=(), message_id=None, request_id=None):
+    def __init__(self, factory, access, skill_ids=(), server_ids=(), message_id=None, request_id=None, question_workbench=False):
         super().__init__(factory, access)
         self.message_id, self.request_id = message_id, request_id
         self.personal_ids, self.bindings, self.calls = set(), {}, 0
@@ -97,8 +97,23 @@ class ExtensionRuntime(SkillRuntime):
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
         self.versions = sorted([(row["id"], row["version"]) for row in self.skills] + list(self.mcp_tokens.items()))
+        from .question_workbench import Runtime, TOOLS
+        self.question_workbench = Runtime(factory, access, question_workbench, request_id, message_id)
+        if self.question_workbench.version:
+            if not any(item["function"]["name"] == "load_skill" for item in self.tools):
+                self.tools.append(LOAD_SKILL)
+            self.tools.extend(TOOLS)
+            self.skills.append({"id": "question-workbench", "name": "教师出题", "description": "依据授权资料出题、保存到题目工作台并组卷导出", "version": 1, "source": "application"})
+            self.versions.extend([(item["function"]["name"], self.question_workbench.version) for item in TOOLS])
+            self.versions.append(("question-workbench", self.question_workbench.version))
+            self.versions.sort()
 
     def label(self, name, arguments=None):
+        from .question_workbench import LABELS
+        if name in LABELS:
+            return LABELS[name]
+        if name == "load_skill" and isinstance(arguments, dict) and arguments.get("skill_id") == "question-workbench":
+            return "使用「教师出题」"
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
             return {"list_files": "查看工作区输出", "read_file": "读取文件", "write_file": "生成文件",
@@ -108,6 +123,18 @@ class ExtensionRuntime(SkillRuntime):
     def execute(self, name, arguments, check_active=None):
         if check_active:
             check_active()
+        from .question_workbench import LABELS, METHOD
+        if name in LABELS or name == "load_skill" and isinstance(arguments, dict) and arguments.get("skill_id") == "question-workbench":
+            try:
+                with self.factory() as db:
+                    self.question_workbench.check(db)
+                if name == "load_skill":
+                    self.loaded.add("question-workbench")
+                    return {"name": "教师出题", "instructions": METHOD, "version": 1}
+                result = self.question_workbench.execute(name, arguments, check_active)
+                return {**result, "_extension": {"tool": name, "version": self.question_workbench.version}}
+            except HTTPException as error:
+                return {"error": str(error.detail) if error.status_code in (403, 404) else "题目工作台操作未完成"}
         if name in ("load_skill", "read_skill_resource") and isinstance(arguments, dict) and str(arguments.get("skill_id")) in self.personal_ids:
             identifier = str(arguments["skill_id"])
             with self.factory() as db:

@@ -49,6 +49,7 @@ class ExtensionSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     skill_ids: list[UUID] = Field(default_factory=list)
     mcp_server_ids: list[UUID] = Field(default_factory=list)
+    question_workbench: bool = False
 
 
 class ConversationCreate(ExtensionSelection):
@@ -121,6 +122,7 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
         "active_request_id": str(conversation.active_request_id) if conversation.active_request_id else None,
         "skill_ids": conversation.skill_ids if conversation.extensions_initialized else [],
         "mcp_server_ids": conversation.mcp_server_ids if conversation.extensions_initialized else [],
+        "question_workbench": conversation.question_workbench,
         "created_at": conversation.created_at.isoformat(),
         "updated_at": conversation.updated_at.isoformat(),
     }
@@ -215,6 +217,11 @@ def chat_router(get_db, retrieve):
             skill_ids, server_ids = extension_defaults(db, access)
             payload.skill_ids, payload.mcp_server_ids = list(map(UUID, skill_ids)), list(map(UUID, server_ids))
         validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
+        if payload.question_workbench:
+            from .question_workbench import status as workbench_status
+            workbench = workbench_status(db, access)
+            if not (workbench["available"] and workbench["enabled"]):
+                raise HTTPException(403, "请先授权题目工作台")
         for id in ids:
             library = access.library(db, id)
             if library.status == KnowledgeBaseStatus.ARCHIVED:
@@ -222,6 +229,7 @@ def chat_router(get_db, retrieve):
         conversation = Conversation(
             title=payload.title, owner_id=access.user_id, workspace_id=access.workspace_id, extensions_initialized=True,
             skill_ids=list(dict.fromkeys(map(str, payload.skill_ids))),
+            question_workbench=payload.question_workbench,
             mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))), libraries=[
             ConversationLibrary(knowledge_base_id=id) for id in ids
         ])
@@ -262,6 +270,12 @@ def chat_router(get_db, retrieve):
         validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
         conversation.skill_ids = list(dict.fromkeys(map(str, payload.skill_ids)))
         conversation.mcp_server_ids = list(dict.fromkeys(map(str, payload.mcp_server_ids)))
+        if payload.question_workbench:
+            from .question_workbench import status as workbench_status
+            workbench = workbench_status(db, access)
+            if not (workbench["available"] and workbench["enabled"]):
+                raise HTTPException(403, "请先授权题目工作台")
+        conversation.question_workbench = payload.question_workbench
         conversation.extensions_initialized = True
         db.commit()
         return conversation_read(conversation)
@@ -386,7 +400,7 @@ def chat_router(get_db, retrieve):
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         runtime = ExtensionRuntime(factory, access,
             conversation.skill_ids if conversation.extensions_initialized else [],
-            conversation.mcp_server_ids if conversation.extensions_initialized else [])
+            conversation.mcp_server_ids if conversation.extensions_initialized else [], question_workbench=conversation.question_workbench)
         if not config.thinking.supports_tools:
             runtime.skills, runtime.tools = [], []
         manager = ContextManager(factory, access, conversation_id, config, None, None, None,
@@ -431,7 +445,7 @@ def chat_router(get_db, retrieve):
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         runtime = ExtensionRuntime(factory, access,
             conversation.skill_ids if conversation.extensions_initialized else [],
-            conversation.mcp_server_ids if conversation.extensions_initialized else [])
+            conversation.mcp_server_ids if conversation.extensions_initialized else [], question_workbench=conversation.question_workbench)
         manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True,
             skill_versions=runtime.versions if config.thinking.supports_tools else [])
         history = manager.history(db, conversation, rows)
@@ -728,6 +742,7 @@ def chat_router(get_db, retrieve):
                 conversation.skill_ids if conversation.extensions_initialized else [],
                 conversation.mcp_server_ids if conversation.extensions_initialized else [],
                 message_id, request_id,
+                conversation.question_workbench,
             )
             if not provider_config.thinking.supports_tools:
                 extension_runtime.skills, extension_runtime.tools = [], []

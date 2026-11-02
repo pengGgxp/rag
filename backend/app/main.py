@@ -1056,6 +1056,8 @@ def answer_knowledge_base(
 
 
 app.include_router(auth_router)
+from .question_workbench import router as question_workbench_router
+app.include_router(question_workbench_router)
 app.include_router(email_auth_router)
 app.include_router(wechat_auth_router)
 app.include_router(site_auth_router)

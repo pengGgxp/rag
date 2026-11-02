@@ -585,6 +585,7 @@ class Conversation(Base):
     skill_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     mcp_server_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     extensions_initialized: Mapped[bool] = mapped_column(default=True)
+    question_workbench: Mapped[bool] = mapped_column(default=False, server_default="false")
     next_sequence: Mapped[int] = mapped_column(Integer, default=0)
     active_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -592,6 +593,14 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)
     libraries: Mapped[list["ConversationLibrary"]] = relationship(cascade="all, delete-orphan")
     messages: Mapped[list["ChatMessage"]] = relationship(cascade="all, delete-orphan", order_by="ChatMessage.sequence")
+
+
+class QuestionWorkbenchGrant(Base):
+    __tablename__ = "question_workbench_grants"
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    version: Mapped[int] = mapped_column(default=1)
 
 
 class ConversationLibrary(Base):

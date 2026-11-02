@@ -64,9 +64,10 @@ class BrowserRequestGuard:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        # Only the signed provider callback is exempt from browser-only headers.
+        # Signed callbacks and the narrowly authenticated workbench service bridge are not browser requests.
         payment_callback = scope.get("path") == "/payments/zhifux/notify" and scope.get("method") == "POST"
-        if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS") and not payment_callback:
+        workbench_service = scope.get("path") in ("/question-workbench/exchange", "/question-workbench/introspect") and scope.get("method") == "POST"
+        if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS") and not payment_callback and not workbench_service:
             headers = dict(scope["headers"])
             settings = get_settings()
             origin = headers.get(b"origin", b"").decode()

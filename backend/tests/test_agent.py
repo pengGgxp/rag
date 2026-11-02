@@ -55,6 +55,8 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
         yield DB()
 
     chunk_id = uuid4()
+    document_id = uuid4()
+    version_group_id = uuid4()
     trace = SimpleNamespace(
         id=uuid4(),
         results=[SimpleNamespace(
@@ -66,13 +68,14 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
     result = SimpleNamespace(
         chunk=SimpleNamespace(
             id=chunk_id,
+            document_id=document_id,
             text="needle evidence",
             char_start=0,
             char_end=14,
             heading_path=None,
             page_number=2,
             source_locations=[],
-            version_group_id=None,
+            version_group_id=version_group_id,
             version_number=1,
         ),
         filename="guide.md",
@@ -96,6 +99,8 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
     assert calls == [(allowed, "needle")]
     assert len(run.citations) == 1
     assert run.citations[0]["page_number"] == 2
+    assert run.citations[0]["document_id"] == str(version_group_id)
+    assert run.citations[0]["version_id"] == str(document_id)
     assert "error" in run.tool_results[0]
     assert run.tool_results[1]["result_count"] == 1
     assert run.answer == "done"
@@ -216,7 +221,7 @@ def test_history_query_and_tool_candidates_are_not_truncated(runtime):
     for i in range(30):
         chunks.append(SimpleNamespace(
             chunk=SimpleNamespace(
-                id=uuid4(), text=f"candidate {i}", char_start=i, char_end=i + 1,
+                id=uuid4(), document_id=uuid4(), text=f"candidate {i}", char_start=i, char_end=i + 1,
                 heading_path=None, page_number=2, source_locations=[],
                 version_group_id=uuid4(), version_number=3,
             ),

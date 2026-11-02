@@ -440,6 +440,8 @@ def stream_retrieval_agent(
                         ranking = rankings[str(result.chunk.id)]
                         found.append((result.score, {
                             "chunk_id": str(result.chunk.id),
+                            "document_id": str(result.chunk.version_group_id or result.chunk.document_id),
+                            "version_id": str(result.chunk.document_id),
                             "filename": result.filename,
                             "text": result.chunk.text,
                             "char_start": result.chunk.char_start,

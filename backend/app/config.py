@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     mcp_credential_key: SecretStr | None = None
     mcp_allowed_private_hosts: str = ""
     mcp_timeout_seconds: float = Field(default=60, gt=0)
+    question_workbench_url: str | None = None
+    question_workbench_api_url: str | None = None
+    question_workbench_secret: SecretStr | None = None
     pdf_parser: Literal["local", "aliyun"] = "local"
     aliyun_access_key_id: SecretStr | None = None
     aliyun_access_key_secret: SecretStr | None = None
