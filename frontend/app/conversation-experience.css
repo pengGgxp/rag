@@ -5,6 +5,8 @@
   font-size: var(--form-font-size);
 }
 .conversation-thinking { margin: 12px 0; color: var(--muted); font-size: var(--form-font-size); min-width: 0; }
+.conversation-compaction { display: flex; align-items: center; justify-content: center; gap: 8px; margin-block: 20px; color: var(--muted); font-size: var(--form-label-size); }
+.conversation-compaction::before, .conversation-compaction::after { content: ""; height: 1px; background: var(--line); flex: 1; }
 .thinking-toggle { font: inherit; color: var(--muted); }
 .thinking-content { border-left: 1px solid var(--line); margin: 4px 0 12px 7px; padding: 2px 0 2px 20px; line-height: 1.8; overflow-wrap: anywhere; }
 .thinking-content p { white-space: pre-wrap; margin: 0; font-size: var(--form-font-size); }

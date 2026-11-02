@@ -12,7 +12,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, object_session, sessionmaker
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -41,7 +41,7 @@ from .models import ModelUsageRequest
 from .thinking import encrypt_continuation, encrypt_display_thinking, decrypt_display_thinking
 from .conversation_stream import events as stream_events
 from .conversation_context import ContextManager, build_messages, HISTORY_TOOL
-from .models import ContextOperation, SiteModelProvider, ThinkingTest
+from .models import ContextCheckpoint, ContextOperation, SiteModelProvider, ThinkingTest
 from .chat_attachments import attachment_read, select_attachments, user_content
 
 
@@ -126,6 +126,14 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
     }
     if detail:
         data["messages"] = [message_read(message) for message in conversation.messages]
+        db = object_session(conversation)
+        data["compactions"] = [{"id": str(checkpoint.id),
+            "after_sequence": checkpoint.through_sequence,
+            "created_at": checkpoint.created_at.isoformat()}
+            for checkpoint in db.scalars(select(ContextCheckpoint).where(
+                ContextCheckpoint.conversation_id == conversation.id,
+                ContextCheckpoint.through_sequence >= 0)
+                .order_by(ContextCheckpoint.created_at, ContextCheckpoint.id))]
     return data
 
 
@@ -421,7 +429,11 @@ def chat_router(get_db, retrieve):
         rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
             ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-        manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True)
+        runtime = ExtensionRuntime(factory, access,
+            conversation.skill_ids if conversation.extensions_initialized else [],
+            conversation.mcp_server_ids if conversation.extensions_initialized else [])
+        manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True,
+            skill_versions=runtime.versions if config.thinking.supports_tools else [])
         history = manager.history(db, conversation, rows)
         from .chat_attachments import validate_messages
         validate_messages(history, config)

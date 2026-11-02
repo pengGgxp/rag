@@ -25,7 +25,8 @@ export function ConversationThinking({ block, conversationId, messageId, message
     void request<{ blocks: { id: string; text: string }[] }>(
       `/conversations/${conversationId}/messages/${messageId}/thinking`, { signal: controller.signal },
     ).then(value => {
-      if (active) setSavedText(value.blocks.find(item => item.id === block.id)?.text ?? "");
+      if (!active) return;
+      setSavedText(value.blocks.find(item => item.id === block.id)?.text ?? "");
     }).catch(() => { if (active) setError("暂时无法读取，请重试"); });
     return () => { active = false; controller.abort(); };
   }, [expanded, text, conversationId, messageId, block.id, attempt]);

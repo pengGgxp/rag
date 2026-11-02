@@ -165,7 +165,10 @@ def test_json_fallback_is_one_delta_with_diagnostic():
 
 @pytest.mark.parametrize("disconnect", [False, True])
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses"])
-def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatch, disconnect, protocol):
+@pytest.mark.parametrize("after_compaction", [False, True])
+def test_api_sse_reaches_client_before_actual_upstream_closes(
+    client, monkeypatch, disconnect, protocol, after_compaction,
+):
     import uvicorn
     http, db, _ = client
     conversation = create(http, [])
@@ -174,6 +177,11 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatc
     selected = db.get(SiteModelProvider, UUID(identifier))
     db.get(ModelConnection, selected.connection_id).api_protocol = protocol
     db.commit()
+    if after_compaction:
+        http, db, conversation_id, identifier = context_fixture(client, length=60)
+        conversation = {"id": conversation_id}
+        summary_provider(monkeypatch)
+        assert compact(http, conversation_id, identifier)[-1][1]["status"] == "completed"
     if protocol == "responses":
         from app import mcp_client
         monkeypatch.setattr(mcp_client, "encrypt_headers", lambda value: json.dumps(value))
@@ -236,7 +244,8 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(client, monkeypatc
                 while time.monotonic() < deadline:
                     with factory() as session:
                         saved = session.scalar(select(ChatMessage).where(
-                            ChatMessage.conversation_id == UUID(conversation["id"]), ChatMessage.role == "assistant"))
+                            ChatMessage.conversation_id == UUID(conversation["id"]), ChatMessage.role == "assistant")
+                            .order_by(ChatMessage.sequence.desc()))
                         if saved.status != "streaming":
                             break
                     time.sleep(.02)
@@ -347,6 +356,46 @@ def test_manual_compaction_preserves_recent_turns_and_repeat_is_free(client, mon
     detail = http.get(f"/conversations/{conversation}").json()
     assert len(detail["messages"]) == 8 and "record-0" in detail["messages"][0]["content"]
     assert not detail["active_request_id"]
+    assert len(detail["compactions"]) == 1
+    assert detail["compactions"][0]["after_sequence"] == 3
+    assert "summary" not in detail["compactions"][0]
+
+
+def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinking(client, monkeypatch):
+    from app import auth, mcp_client
+    from app.models import AgentSkill, LoginSession
+    from app.thinking import encrypt_display_thinking
+    from cryptography.fernet import Fernet
+    from pydantic import SecretStr
+    from types import SimpleNamespace
+    key = SecretStr(Fernet.generate_key().decode())
+    monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=key))
+    http, db, conversation, provider = context_fixture(client, length=60)
+    session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
+    skill = AgentSkill(owner_id=session.user_id, workspace_id=session.workspace_id,
+        name="Test method", description="Check facts", markdown="Read and verify.", enabled=True)
+    db.add(skill); db.flush()
+    row = db.get(Conversation, UUID(conversation))
+    row.skill_ids = [str(skill.id)]
+    answer = db.scalar(select(ChatMessage).where(ChatMessage.conversation_id == row.id, ChatMessage.sequence == 1))
+    answer.display_blocks = [{"id": "thinking-1", "type": "thinking", "round": 1, "status": "completed"}]
+    answer.encrypted_display_thinking = encrypt_display_thinking([
+        {"id": "thinking-1", "round": 1, "text": "original visible thinking"}])
+    db.commit()
+    calls = summary_provider(monkeypatch)
+    context_url = f"/conversations/{conversation}/context?provider_id={provider}"
+    thinking_url = f"/conversations/{conversation}/messages/{answer.id}/thinking"
+    original = http.get(thinking_url).json()
+    before = http.get(context_url).json()
+    events = compact(http, conversation, provider)
+    assert events[-1][1]["status"] == "completed"
+    after = http.get(context_url).json()
+    assert after["status"] == "completed"
+    assert after["estimated_input_tokens"] < before["estimated_input_tokens"]
+    assert http.get(thinking_url).json() == original
+    assert "original visible thinking" not in http.get(f"/conversations/{conversation}").text
+    assert compact(http, conversation, provider)[-1][1]["no_op"]
+    assert len(calls) == 1
 
 
 def test_failed_compaction_preserves_original_and_releases_hold(client, monkeypatch):
@@ -487,7 +536,8 @@ def test_automatic_compaction_keeps_two_recent_complete_turns_and_current_input(
     assert len(captured) == 1 and compacted[0] == messages[0]
     assert compacted[1]["role"] == "user" and compacted[1]["content"].startswith(SUMMARY_PREFIX)
     assert [item["content"] for item in compacted[-5:]] == [item["content"] for item in messages[-5:]]
-    assert events[-1][1]["status"] == "completed"
+    assert next(data for name, data in events if name == "compaction" and data["status"] == "completed")
+    assert events[-1][0] == "context" and events[-1][1]["status"] == "completed"
 
 
 def test_same_task_compaction_only_replaces_complete_old_tool_groups(client):

@@ -15,6 +15,7 @@ import {
   FileText,
   Globe,
   Loader2,
+  Minimize2,
   MessageSquare,
   Pencil,
   Plus,
@@ -128,6 +129,7 @@ type Conversation = {
   active_request_id: string | null;
   updated_at: string;
   messages: Message[];
+  compactions?: { id: string; after_sequence: number; created_at: string }[];
   skill_ids: string[];
   mcp_server_ids: string[];
 };
@@ -139,6 +141,14 @@ type Generation = {
 };
 
 function upsert(messages: Message[], message: Message) {
+  const previous = messages.find(item => item.id === message.id && item.request_id === message.request_id);
+  if (previous?.display_blocks && message.display_blocks) {
+    message = { ...message, display_blocks: message.display_blocks.map(block => {
+      const live = previous.display_blocks?.find(item => item.id === block.id);
+      return block.type === "thinking" && live?.type === "thinking" && live.text !== undefined
+        ? { ...block, text: live.text } : block;
+    }) };
+  }
   return [...messages.filter((item) => item.id !== message.id), message].sort(
     (a, b) => a.sequence - b.sequence,
   );
@@ -540,7 +550,10 @@ export function ChatWorkspace({
   async function reloadCurrent(id: string, currentEpoch: number) {
     try {
       const saved = await request<Conversation>(`/conversations/${id}`);
-      if (epoch.current === currentEpoch) setConversation(saved);
+      if (epoch.current === currentEpoch) setConversation(current => ({ ...saved,
+        messages: saved.messages.reduce((messages, message) => upsert(messages, message),
+          current?.id === id ? current.messages.filter(item => saved.messages.some(row => row.id === item.id)) : []),
+      }));
       return saved;
     } catch (error) {
       if (epoch.current === currentEpoch) report(error);
@@ -690,6 +703,7 @@ export function ChatWorkspace({
           if (name === "tool_result") setPhase("正在分析工具结果…");
           if (name === "thinking_delta") setPhase("正在思考…");
           if (name === "thinking_status" || name === "delta") setPhase("正在生成回答…");
+          if (name === "context") setContextInfo(contextState(data as ContextResponse));
           if (name === "compaction") {
             const status = (data as ToolEvent).status;
             setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
@@ -790,6 +804,10 @@ export function ChatWorkspace({
         ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
       }, active.controller.signal, (name, data) => {
         if (epoch.current !== currentEpoch || active.controller.signal.aborted) return;
+        if (name === "compaction") {
+          const status = (data as ToolEvent).status;
+          setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
+        }
         if (name === "context") setContextInfo(contextState(data as ContextResponse));
         if (name === "done") {
           const result = data as { status: string; error?: string };
@@ -1048,9 +1066,9 @@ export function ChatWorkspace({
           ) : (
             <div className="chat-transcript">
               {conversation.messages.map((message, index) => (
+                <Fragment key={message.id}>
                 <article
                   className={`chat-message ${message.role}`}
-                  key={message.id}
                   aria-label={message.role === "user" ? "你的问题" : "知库回答"}
                 >
                   <span className="message-label">
@@ -1225,6 +1243,12 @@ export function ChatWorkspace({
                     </>
                   )}
                 </article>
+                {conversation.compactions?.filter(item => item.after_sequence === message.sequence).map(item => (
+                  <div key={item.id} className="conversation-compaction" role="note">
+                    <Minimize2 size={14} aria-hidden="true" /><span>上下文已压缩</span>
+                  </div>
+                ))}
+                </Fragment>
               ))}
             </div>
           )}

@@ -213,8 +213,10 @@ class ContextManager:
                     model=self.config.model, estimated_before=before, estimated_after=after))
                 db.commit()
             self.did_compact = True
-            emit(("compaction", {"call_id": call_id, "status": "completed", "label": "早期上下文已整理",
+            self.covered = max(self.covered, through)
+            emit(("compaction", {"call_id": call_id, "status": "completed", "label": "上下文已压缩",
                 "estimated_before": before, "estimated_after": after}))
+            emit(("context", self.state(compacted, tools)))
             if after > budget:
                 raise LLMConfigurationError("整理后近期上下文仍超出模型容量，请缩短输入或新建会话")
             return compacted
