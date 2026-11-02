@@ -1,7 +1,7 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -41,6 +41,7 @@ import { RequestModelPicker } from "./request-model-picker";
 import { ExtensionPicker } from "./extensions/extension-picker";
 import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension-slash-menu";
 import type { ExtensionSelection } from "./extensions/extension-data";
+import { DocumentMentionMenu, type MentionDocument, type MentionMenuHandle } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
@@ -80,6 +81,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   attachments?: ChatAttachment[];
+  document_mentions?: MentionDocument[];
   status: string;
   request_id?: string | null;
   citations: Citation[];
@@ -140,6 +142,53 @@ function upsert(messages: Message[], message: Message) {
   return [...messages.filter((item) => item.id !== message.id), message].sort(
     (a, b) => a.sequence - b.sequence,
   );
+}
+type DraftMention = MentionDocument & { start: number; end: number };
+function mentionRanges(text: string, mentions: (MentionDocument & { start?: number; end?: number })[]) {
+  if (mentions.length && mentions.every(item => item.start !== undefined && item.end !== undefined)) {
+    const parts: { text: string; mention?: MentionDocument }[] = [];
+    let cursor = 0;
+    for (const mention of [...mentions].sort((a, b) => a.start! - b.start!)) {
+      if (mention.start! > cursor) parts.push({ text: text.slice(cursor, mention.start) });
+      parts.push({ text: text.slice(mention.start, mention.end), mention });
+      cursor = mention.end!;
+    }
+    parts.push({ text: text.slice(cursor) });
+    return parts;
+  }
+  const remaining = [...mentions];
+  const parts: { text: string; mention?: MentionDocument }[] = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let found: { index: number; mention: MentionDocument } | undefined;
+    for (const mention of remaining) {
+      const index = text.indexOf(`@${mention.filename}`, cursor);
+      if (index >= 0 && (!found || index < found.index)) found = { index, mention };
+    }
+    if (!found) break;
+    if (found.index > cursor) parts.push({ text: text.slice(cursor, found.index) });
+    const marker = `@${found.mention.filename}`;
+    parts.push({ text: marker, mention: found.mention });
+    cursor = found.index + marker.length;
+    remaining.splice(remaining.indexOf(found.mention), 1);
+  }
+  if (cursor < text.length || !parts.length) parts.push({ text: text.slice(cursor) });
+  return parts;
+}
+function pruneMentions(previous: string, text: string, caret: number, mentions: DraftMention[]) {
+  if (previous === text) return mentions;
+  let start = 0;
+  while (start < Math.min(previous.length, text.length, caret) && previous[start] === text[start]) start++;
+  let suffix = 0;
+  while (suffix < Math.min(previous.length - start, text.length - start)
+    && previous[previous.length - suffix - 1] === text[text.length - suffix - 1]) suffix++;
+  const oldEnd = previous.length - suffix;
+  const shift = text.length - previous.length;
+  return mentions.flatMap(mention => {
+    if (mention.end <= start) return [mention];
+    if (mention.start >= oldEnd) return [{ ...mention, start: mention.start + shift, end: mention.end + shift }];
+    return [];
+  }).filter(mention => text.slice(mention.start, mention.end) === `@${mention.filename}`);
 }
 function AnswerMarkdown({
   message,
@@ -204,12 +253,17 @@ export function ChatWorkspace({
     initialLibraryId ? [initialLibraryId] : [],
   );
   const [question, setQuestion] = useState("");
+  const [documentMentions, setDocumentMentions] = useState<DraftMention[]>([]);
   const [caret, setCaret] = useState(0);
   const [extensionBusy, setExtensionBusy] = useState(false);
   const [slashState, setSlashState] = useState<{ open: boolean; option?: string }>({ open: false });
+  const [mentionState, setMentionState] = useState<{ open: boolean; option?: string }>({ open: false });
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const slashMenu = useRef<SlashMenuHandle>(null);
+  const mentionMenu = useRef<MentionMenuHandle>(null);
   const updateSlashState = useCallback((open: boolean, option?: string) => setSlashState(current =>
+    current.open === open && current.option === option ? current : { open, option }), []);
+  const updateMentionState = useCallback((open: boolean, option?: string) => setMentionState(current =>
     current.open === open && current.option === option ? current : { open, option }), []);
   const attachments = useChatAttachments();
   const [dragging, setDragging] = useState(false);
@@ -270,6 +324,24 @@ export function ChatWorkspace({
   viewRef.current = conversation;
   const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
   const thinking = selectedModel?.thinking;
+  const mentionLibraries = useMemo(() => conversation ? conversation.knowledge_bases
+    : libraries.filter(item => scope.includes(item.id)).map(({ id, name }) => ({ id, name })),
+  [conversation?.id, conversation?.knowledge_bases, libraries, scope]);
+  const activeComposerMenu = mentionState.open ? mentionState : slashState;
+  useEffect(() => {
+    const input = composerInput.current;
+    const overlay = input?.parentElement?.querySelector<HTMLElement>(".composer-mention-overlay");
+    if (!input || !overlay) return;
+    const sync = () => {
+      overlay.style.width = `${input.clientWidth}px`;
+      overlay.style.height = `${input.clientHeight}px`;
+      overlay.scrollTop = input.scrollTop;
+    };
+    const observer = new ResizeObserver(sync);
+    observer.observe(input);
+    sync();
+    return () => observer.disconnect();
+  }, [documentMentions.length]);
   useEffect(() => {
     const controller = new AbortController();
     setContextError("");
@@ -362,6 +434,7 @@ export function ChatWorkspace({
     sending.current = false;
     setAsking(false);
     setQuestion("");
+    setDocumentMentions([]);
     attachments.reset();
     setPreview(null);
     setTrace(null);
@@ -451,6 +524,7 @@ export function ChatWorkspace({
       setScope(conversation.knowledge_bases.map((item) => item.id));
     setLoading(false);
     setQuestion("");
+    setDocumentMentions([]);
     setAsking(false);
     setSidebar(false);
     setPreview(null);
@@ -513,6 +587,11 @@ export function ChatWorkspace({
     setPhase("正在分析问题…");
     const currentEpoch = epoch.current;
     const query = question.trim();
+    const leading = question.length - question.trimStart().length;
+    const turnDraftMentions = documentMentions.map(item => ({ ...item,
+      start: item.start - leading, end: item.end - leading }));
+    const turnMentions = [...turnDraftMentions].sort((a, b) => a.start - b.start)
+      .map(({ id, filename, knowledge_base_id }) => ({ id, filename, knowledge_base_id }));
     const controller = new AbortController();
     let current = conversation;
     let active: Generation | null = null;
@@ -547,6 +626,7 @@ export function ChatWorkspace({
         role: "user",
         content: query,
         attachments: attachments.ready,
+        document_mentions: turnMentions,
         status: "completed",
         citations: [],
         traces: [],
@@ -576,6 +656,7 @@ export function ChatWorkspace({
           provider_id: modelId,
           web_search: webEnabled && webAvailable,
           thinking_config_version: thinkingVersion,
+          document_ids: turnMentions.map(item => item.id),
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
           ...(retryId ? { retry_message_id: retryId } : {
             ...(query ? { query } : {}), attachment_ids: attachments.ready.map(item => item.id),
@@ -611,6 +692,7 @@ export function ChatWorkspace({
           }
           if (name === "message" || name === "done") {
             received = true;
+            setDocumentMentions([]);
             if (!retryId) attachments.reset(false);
           }
           setConversation((item) => {
@@ -665,7 +747,7 @@ export function ChatWorkspace({
           setModelAttempt(value => value + 1);
         }
         report(error);
-        if (!received && !retryId) setQuestion(query);
+        if (!received && !retryId) { setQuestion(query); setDocumentMentions(turnDraftMentions); }
         if (active) await stopGeneration();
       }
     } finally {
@@ -981,7 +1063,9 @@ export function ChatWorkspace({
                   </span>
                   {message.role === "user" ? (
                     <><MessageAttachments items={message.attachments} />
-                      {message.content && <p className="chat-question">{message.content}</p>}</>
+                      {message.content && <p className="chat-question">{mentionRanges(message.content, message.document_mentions ?? []).map((part, partIndex) => part.mention
+                        ? <span key={`${part.mention.id}-${partIndex}`} className="chat-document-mention" title={part.mention.filename}>{part.text}</span>
+                        : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
                   ) : (
                     <>
                       {message.display_blocks?.length ? message.display_blocks.map(block => {
@@ -1191,27 +1275,52 @@ export function ChatWorkspace({
               onRemove={attachments.remove} onRetry={item => void attachments.retry(item)} />
             {attachments.hasImages && !selectedModel?.supports_images &&
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
-            <ExtensionSlashMenu key={`${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
-              draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy}
+            <DocumentMentionMenu key={`mentions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
+              draft={question} caret={caret} disabled={running || loading || extensionBusy}
+              supportsTools={selectedModel?.supports_tools !== false} libraries={mentionLibraries}
+              selected={documentMentions} input={composerInput} onActive={updateMentionState}
+              onChoose={(item, start, end) => {
+                const token = `@${item.filename}`;
+                const tail = question.slice(end);
+                const inserted = `${token} `;
+                const value = question.slice(0, start) + inserted + tail;
+                const nextCaret = start + inserted.length;
+                setQuestion(value); setCaret(nextCaret);
+                setDocumentMentions(current => [...pruneMentions(question, value, nextCaret, current),
+                  { ...item, start, end: start + token.length }]);
+                requestAnimationFrame(() => { composerInput.current?.focus(); composerInput.current?.setSelectionRange(nextCaret, nextCaret); });
+              }} />
+            <ExtensionSlashMenu key={`extensions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
+              draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy || mentionState.open}
               supportsTools={selectedModel?.supports_tools !== false} selection={conversation
                 ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
               onActive={updateSlashState} onChange={changeExtensions} onInsert={(value, position) => {
+                setDocumentMentions(items => pruneMentions(question, value, position, items));
                 setQuestion(value); setCaret(position);
                 requestAnimationFrame(() => { composerInput.current?.focus(); composerInput.current?.setSelectionRange(position, position); });
               }} />
+            <div className={`composer-input-shell${documentMentions.length ? " has-document-mentions" : ""}`}>
+              {!!documentMentions.length && <div className="composer-mention-overlay" aria-hidden="true">
+                {mentionRanges(question, documentMentions).map((part, partIndex) => part.mention
+                  ? <span key={`${part.mention.id}-${partIndex}`} className="composer-mention-link">{part.text}</span>
+                  : <Fragment key={partIndex}>{part.text}</Fragment>)}
+                {"\u200b"}
+              </div>}
             <textarea
               ref={composerInput}
               aria-label="向知识库提问"
-              aria-autocomplete="list" aria-controls={slashState.open ? "composer-extension-options" : undefined}
-              aria-activedescendant={slashState.option}
+              aria-autocomplete={activeComposerMenu.open ? "list" : undefined}
+              aria-controls={activeComposerMenu.open ? (mentionState.open ? "composer-document-options" : "composer-extension-options") : undefined}
+              aria-activedescendant={activeComposerMenu.option}
               placeholder={
                 selectedNames.length ? "向知识库提问…" : "发送消息…"
               }
               rows={2}
               value={question}
               disabled={running || loading || extensionBusy}
-              onChange={(event) => { setQuestion(event.target.value); setCaret(event.target.selectionStart); }}
+              onChange={(event) => { const value = event.target.value; const position = event.target.selectionStart; setQuestion(value); setCaret(position); setDocumentMentions(items => pruneMentions(question, value, position, items)); }}
               onSelect={event => setCaret(event.currentTarget.selectionStart)}
+              onScroll={event => { const overlay = event.currentTarget.parentElement?.querySelector<HTMLElement>(".composer-mention-overlay"); if (overlay) overlay.scrollTop = event.currentTarget.scrollTop; }}
               onPaste={event => {
                 const files = Array.from(event.clipboardData?.files ?? []);
                 if (!files.length) return;
@@ -1220,7 +1329,7 @@ export function ChatWorkspace({
                 if (error) report(new Error(error));
               }}
               onKeyDown={(event) => {
-                if (slashMenu.current?.keyDown(event)) return;
+                if (mentionMenu.current?.keyDown(event) || slashMenu.current?.keyDown(event)) return;
                 if (
                   event.key === "Enter" &&
                   !event.shiftKey &&
@@ -1231,6 +1340,7 @@ export function ChatWorkspace({
                 }
               }}
             />
+            </div>
             <div className="composer-footer">
               <AttachmentButton disabled={running || loading || modelLoading || !selectedModel?.available}
                 add={files => { const error = attachments.add(files, !!selectedModel?.supports_images); if (error) report(new Error(error)); }} />

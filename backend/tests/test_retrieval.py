@@ -126,6 +126,38 @@ def test_retrieval_isolates_library_and_excludes_unavailable_documents(retrieval
     assert payload["results"][0]["chunk"]["char_end"] == len(first.chunks[0].text)
 
 
+def test_retrieval_can_search_a_user_mentioned_document(retrieval_client):
+    client, session = retrieval_client
+    library = add_library(session)
+    selected = add_document(session, library, "needle selected evidence")
+    other = add_document(session, library, "needle other evidence")
+
+    response = client.post(
+        f"/knowledge-bases/{library.id}/retrieval",
+        json={"query": "needle", "document_ids": [str(selected.id)]},
+    )
+
+    assert response.status_code == 200
+    assert [row["chunk"]["document_id"] for row in response.json()["results"]] == [str(selected.id)]
+    assert all(row["chunk"]["document_id"] != str(other.id) for row in response.json()["results"])
+
+
+def test_document_filter_cannot_escape_library_or_active_version(retrieval_client):
+    client, session = retrieval_client
+    library = add_library(session)
+    other_library = add_library(session)
+    active = add_document(session, library, "needle active")
+    inactive = add_document(session, library, "needle inactive")
+    inactive.is_active = False
+    outside = add_document(session, other_library, "needle outside")
+    deleted = add_document(session, library, "needle deleted", status=DocumentStatus.DELETED)
+    session.commit()
+    response = client.post(f"/knowledge-bases/{library.id}/retrieval", json={"query": "needle",
+        "document_ids": [str(row.id) for row in (active, inactive, outside, deleted)]})
+    assert response.status_code == 200
+    assert [row["chunk"]["document_id"] for row in response.json()["results"]] == [str(active.id)]
+
+
 def test_document_versions_preserve_history_and_only_active_version_is_retrieved(retrieval_client):
     client, session = retrieval_client
     library = add_library(session)

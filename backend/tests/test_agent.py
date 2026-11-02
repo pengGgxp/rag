@@ -142,6 +142,51 @@ def search(identifier, query="needle", **kwargs):
     )
 
 
+def test_mention_is_optional_and_only_applies_when_model_selects_document(runtime):
+    document_id = uuid4()
+    runtime.arguments["document_mentions"] = [{"id": str(document_id), "filename": "guide.pdf",
+        "knowledge_base_id": str(runtime.allowed)}]
+    calls = []
+
+    def retrieve(identifier, query, db, access, *, result_limit, document_ids=None):
+        calls.append(document_ids)
+        return SimpleNamespace(trace=SimpleNamespace(id=uuid4(), results=[]), results=[])
+
+    runtime.arguments["retrieve"] = retrieve
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            assert str(document_id) in messages[0]["content"]
+            if self.count == 1:
+                return ToolResponse(content=None, tool_calls=[search(runtime.allowed)])
+            if self.count == 2:
+                return ToolResponse(content=None, tool_calls=[search(runtime.allowed,
+                    document_ids=[str(document_id)])])
+            return ToolResponse(content="done", tool_calls=[])
+
+    run_retrieval_agent(**runtime.arguments, provider=Provider())
+    assert calls == [None, [document_id]]
+
+
+@pytest.mark.parametrize("document_ids", [[], ["invalid"], [str(uuid4())], "invalid"])
+def test_unmentioned_or_invalid_documents_cannot_be_used_as_tool_scope(runtime, document_ids):
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            if self.count == 1:
+                return ToolResponse(content=None, tool_calls=[search(runtime.allowed, document_ids=document_ids)])
+            assert "error" in json.loads(messages[-1]["content"])
+            return ToolResponse(content="done", tool_calls=[])
+
+    run_retrieval_agent(**runtime.arguments, provider=Provider())
+    assert runtime.calls == []
+
+
 def test_model_can_continue_past_old_and_framework_round_limits(runtime):
     class Provider:
         count = 0

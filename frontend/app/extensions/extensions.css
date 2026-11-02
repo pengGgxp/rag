@@ -44,16 +44,25 @@
 .extension-picker-body a { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; color: var(--accent); }
 .extension-picker-body p { font-size: 13px; line-height: 1.6; color: var(--muted); }
 .composer:has(.extension-slash-menu) { position: relative; }
-.extension-slash-menu { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; right: 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-popover, 0 8px 24px rgb(0 0 0 / 10%)); max-height: min(360px, 45dvh); overflow-y: auto; color: var(--ink); }
-.extension-slash-heading { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; font-size: 12px; color: var(--muted); }
-.extension-slash-menu p { padding: 8px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
-.extension-slash-options > button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 10px 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; color: var(--ink); }
+.extension-slash-menu { position: absolute; z-index: 35; bottom: calc(100% + 8px); left: 0; width: min(430px, calc(100vw - 48px)); padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 12px 32px rgb(23 32 51 / 14%); max-height: min(380px, 48dvh); overflow-y: auto; color: var(--ink); }
+.extension-slash-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.extension-slash-heading kbd { min-width: 22px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; text-align: center; font: inherit; }
+.extension-slash-menu p { display: flex; align-items: center; gap: 8px; padding: 10px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.extension-slash-options > button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; text-align: left; color: var(--ink); }
 .extension-slash-options > button[aria-selected="true"] { background: var(--surface-muted); }
+.extension-slash-options > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .extension-slash-options > button > svg { flex-shrink: 0; color: var(--muted); }
 .extension-slash-copy { display: grid; gap: 4px; flex: 1; min-width: 0; }
 .extension-slash-copy strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .extension-slash-copy small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .extension-slash-source { flex-shrink: 0; font-size: 11px; color: var(--muted); }
+.composer-input-shell { position: relative; min-height: 46px; max-height: 180px; overflow: hidden; }
+.composer-input-shell > textarea { position: relative; z-index: 1; display: block; overflow-wrap: anywhere; word-break: break-word; }
+.composer-mention-overlay { position: absolute; inset: 0; z-index: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; line-height: 1.8; color: var(--ink); pointer-events: none; }
+.composer-input-shell.has-document-mentions > textarea { color: transparent; -webkit-text-fill-color: transparent; caret-color: var(--ink); }
+.composer-mention-link, .chat-document-mention { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 2px; }
+.chat-document-mention { overflow-wrap: anywhere; }
+@media (max-width: 700px) { .extension-slash-menu { width: min(430px, calc(100vw - 40px)); } }
 @media (max-width: 700px) {
   .extension-page { padding-top: 16px; }
   .extension-toolbar { flex-wrap: wrap; gap: 12px; }

@@ -23,6 +23,8 @@ from .models import (
     ChatMessage,
     Conversation,
     ConversationLibrary,
+    Document,
+    DocumentStatus,
     KnowledgeBase,
     KnowledgeBaseStatus,
 )
@@ -72,6 +74,7 @@ class TurnRequest(ContextRequest):
     web_search: bool = True
     query: str | None = Field(default=None, min_length=1)
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
+    document_ids: list[UUID] = Field(default_factory=list, max_length=8)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -89,6 +92,7 @@ def message_read(message: ChatMessage) -> dict:
     return {
         "id": str(message.id), "sequence": message.sequence, "role": message.role,
         "content": message.content, "status": message.status,
+        "document_mentions": message.document_mentions or [],
         "attachments": [attachment_read(row) for row in message.attachments],
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
@@ -462,6 +466,7 @@ def chat_router(get_db, retrieve):
                 yield event_text(event("done", message_read(existing)))
             return StreamingResponse(duplicate(), media_type="text/event-stream")
         retry = None
+        document_mentions = []
         if payload.retry_message_id:
             retry = db.get(ChatMessage, payload.retry_message_id)
             latest = db.scalar(select(ChatMessage).where(
@@ -470,6 +475,29 @@ def chat_router(get_db, retrieve):
             if (retry is None or retry.conversation_id != conversation.id or latest is None or latest.id != retry.id
                     or retry.role != "assistant" or retry.status not in ("failed", "cancelled", "interrupted")):
                 raise HTTPException(409, "只能重试最后一条未完成的回答")
+            previous_user = db.scalar(select(ChatMessage).where(
+                ChatMessage.conversation_id == conversation.id,
+                ChatMessage.sequence == retry.sequence - 1,
+                ChatMessage.role == "user",
+            ))
+            document_mentions = list(previous_user.document_mentions or []) if previous_user else []
+        mention_ids = ([UUID(item["id"]) for item in document_mentions] if retry
+            else list(dict.fromkeys(payload.document_ids)))
+        if mention_ids:
+            rows = db.scalars(select(Document).where(Document.id.in_(mention_ids))).all()
+            allowed_libraries = {item.knowledge_base_id for item in conversation.libraries}
+            if len(rows) != len(mention_ids) or any(
+                row.knowledge_base_id not in allowed_libraries
+                or row.status != DocumentStatus.READY or not row.is_active
+                for row in rows
+            ):
+                raise HTTPException(409, "提及的文档已不可用，请重新选择")
+            if not retry:
+                rows_by_id = {row.id: row for row in rows}
+                document_mentions = [{
+                    "id": str(identifier), "filename": rows_by_id[identifier].filename,
+                    "knowledge_base_id": str(rows_by_id[identifier].knowledge_base_id),
+                } for identifier in mention_ids]
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
@@ -534,6 +562,7 @@ def chat_router(get_db, retrieve):
             user_message = ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
                 role="user", content=payload.query or "", attachments=attachments,
+                document_mentions=document_mentions,
             )
             db.add(user_message)
             message = ChatMessage(
@@ -725,6 +754,7 @@ def chat_router(get_db, retrieve):
                 extensions=extension_runtime,
                 meter=meter,
                 context_manager=manager,
+                document_mentions=user_message.document_mentions if user_message else [],
                 search=SearchRuntime(factory, access, request_id, search_config) if search_config else None,
             )
             bridge = stream_events(execution, stopped)

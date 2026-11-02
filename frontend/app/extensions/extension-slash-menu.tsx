@@ -82,7 +82,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
   }, [activeIndex, open]);
   if (!open) return null;
   return <div className="extension-slash-menu" ref={menu}>
-    <div className="extension-slash-heading">扩展{saving && <Loader2 size={15} className="spin" aria-label="正在选择" />}</div>
+    <div className="extension-slash-heading"><span>选择扩展</span><kbd>/</kbd>{saving && <Loader2 size={15} className="spin" aria-label="正在选择" />}</div>
     {!supportsTools ? <p role="status">当前模型无法使用扩展，请先更换模型。</p>
       : catalog.loading ? <p role="status">正在加载扩展…</p>
       : catalog.error ? <div role="alert"><p>{catalog.error}</p><button className="text-button" type="button" onClick={catalog.retry}><RefreshCw size={14} />重试</button></div>

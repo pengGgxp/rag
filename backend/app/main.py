@@ -689,12 +689,13 @@ def inspect_retrieval(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    return retrieve_knowledge_base(knowledge_base_id, payload.query, db, access)
+    return retrieve_knowledge_base(knowledge_base_id, payload.query, db, access,
+        document_ids=payload.document_ids)
 
 
 def retrieve_knowledge_base(
     knowledge_base_id: UUID, query: str, db: Session, access: Access,
-    *, result_limit: int = 20,
+    *, result_limit: int = 20, document_ids: list[UUID] | None = None,
 ) -> RetrievalRead:
     access.library(db, knowledge_base_id)
     knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
@@ -711,6 +712,8 @@ def retrieve_knowledge_base(
             Document.status == DocumentStatus.READY,
             Document.is_active.is_(True),
         )
+        if document_ids is not None:
+            lexical_scope += (Document.id.in_(document_ids),)
         corpus_rows = db.execute(
             select(Chunk.text, Chunk.token_count)
             .join(Document, Document.id == Chunk.document_id)
@@ -787,6 +790,7 @@ def retrieve_knowledge_base(
                     Document.status == DocumentStatus.READY,
                     Document.is_active.is_(True),
                     Chunk.embedding.is_not(None),
+                    *([Document.id.in_(document_ids)] if document_ids is not None else []),
                 )
                 .order_by(Chunk.embedding.cosine_distance(query_vector))
                 .limit(result_limit)

@@ -124,6 +124,42 @@ def test_multi_library_scope_and_deleted_filtering(client):
     assert "needle outside" not in exported.text
 
 
+def test_document_mentions_persist_by_id_without_forcing_retrieval_scope(client):
+    http, db, captured = client
+    library = add_library(db)
+    selected = add_document(db, library, "needle selected")
+    other = add_document(db, library, "needle other")
+    conversation = create(http, [library])
+    events, _ = turn(http, conversation["id"], "总结 @资料.pdf", document_ids=[str(selected.id)])
+    assert events[-1][1]["status"] == "completed"
+    # The test provider chooses an unrestricted search, even with a mention present.
+    assert {row["chunk_id"] for row in events[-1][1]["citations"]} == {
+        str(selected.chunks[0].id), str(other.chunks[0].id)}
+    assert str(selected.id) in captured[0][0]["content"]
+    saved = http.get(f"/conversations/{conversation['id']}").json()["messages"][0]
+    assert saved["document_mentions"] == [{"id": str(selected.id), "filename": selected.filename,
+        "knowledge_base_id": str(library.id)}]
+
+
+@pytest.mark.parametrize("state", ["outside", "deleted", "inactive", "missing"])
+def test_unavailable_mentions_are_rejected_before_message_or_billing_creation(client, state):
+    http, db, _ = client
+    library = add_library(db)
+    document = add_document(db, add_library(db) if state == "outside" else library, "needle")
+    if state == "deleted":
+        document.status = DocumentStatus.DELETED
+    if state == "inactive":
+        document.is_active = False
+    db.commit()
+    conversation = create(http, [library])
+    response = http.post(f"/conversations/{conversation['id']}/messages", json={
+        "provider_id": model_id(http), "request_id": str(uuid4()), "query": "needle",
+        "document_ids": [str(uuid4() if state == "missing" else document.id)],
+    })
+    assert response.status_code == 409
+    assert http.get(f"/conversations/{conversation['id']}").json()["messages"] == []
+
+
 def test_empty_retrieval_keeps_agent_clarification_instead_of_fixed_refusal(client):
     http, db, captured = client
     library = add_library(db)
@@ -179,7 +215,7 @@ def test_followup_does_not_reuse_deleted_document_as_evidence(client):
 def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, monkeypatch):
     http, db, _ = client
     library = add_library(db)
-    add_document(db, library, "needle")
+    document = add_document(db, library, "needle")
     conversation = create(http, [library])
 
     class Failing:
@@ -191,7 +227,7 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
 
     original = chat.OpenAICompatibleChatProvider
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Failing())
-    events, payload = turn(http, conversation["id"])
+    events, payload = turn(http, conversation["id"], document_ids=[str(document.id)])
     failed = events[-1][1]
     assert failed["status"] == "failed"
     assert failed["content"] == ""
@@ -204,7 +240,9 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
     completed, _ = turn(http, conversation["id"], None, retry_message_id=failed["id"])
     assert completed[-1][1]["id"] == failed["id"]
     assert completed[-1][1]["status"] == "completed"
-    assert len(http.get(f"/conversations/{conversation['id']}").json()["messages"]) == 2
+    messages = http.get(f"/conversations/{conversation['id']}").json()["messages"]
+    assert len(messages) == 2
+    assert messages[0]["document_mentions"][0]["id"] == str(document.id)
     invalid = http.post(f"/conversations/{conversation['id']}/messages", json={
         "request_id": str(uuid4()), "provider_id": model_id(http), "retry_message_id": failed["id"],
     })
