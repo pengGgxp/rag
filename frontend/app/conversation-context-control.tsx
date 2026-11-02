@@ -14,6 +14,10 @@ export type ConversationContextState = {
   error?: string;
 };
 
+const formatK = (value: number) => `${(value / 1000).toLocaleString("zh-CN", {
+  maximumFractionDigits: value < 1000 ? 3 : 1,
+})}k`;
+
 export function ConversationContextControl({ state, disabled, onCompact, loading = false, onRetry,
   modelSelected = true, loadError = "", compactRequest = 0 }: {
   compactRequest?: number;
@@ -63,6 +67,7 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
             <progress className={over ? "context-progress near-limit" : "context-progress"}
               aria-label="上下文已用比例" max={100} value={percent} />
           </>}
+          <p className="context-note">共 {formatK(usableInput!)} · 已用 {state.estimatedInputTokens === null ? "—" : formatK(state.estimatedInputTokens)}</p>
         </> : <p className="context-status context-warning"><CircleAlert size={15} />暂时无法查看用量，请稍后重试。</p>}
         {state.status === "completed" && <p className="context-status"><Check size={14} />上下文已整理</p>}
         {state.status === "failed" && <p className="context-status context-warning" role="alert"><CircleAlert size={14} />{state.error || "整理失败，原始上下文已保留"}</p>}

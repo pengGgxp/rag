@@ -26,6 +26,7 @@ async page => {
     await context.click();
     const panel = page.getByRole('dialog',{name:'上下文',exact:true});
     await panel.waitFor();
+    await panel.getByText('共 59.9k · 已用 32k', {exact:true}).waitFor();
     if (/Token|输出预留|安全余量|75%/.test(await panel.innerText())) throw Error('Technical budget copy remains');
     await page.getByRole('button',{name:'关闭上下文'}).click();
     const input = page.getByRole('textbox',{name:'向知识库提问'});
