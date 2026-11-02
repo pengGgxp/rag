@@ -1312,9 +1312,7 @@ export function ChatWorkspace({
               aria-autocomplete={activeComposerMenu.open ? "list" : undefined}
               aria-controls={activeComposerMenu.open ? (mentionState.open ? "composer-document-options" : "composer-extension-options") : undefined}
               aria-activedescendant={activeComposerMenu.option}
-              placeholder={
-                selectedNames.length ? "向知识库提问…" : "发送消息…"
-              }
+              placeholder="输入消息，@ 引用文档，/ 选择扩展"
               rows={2}
               value={question}
               disabled={running || loading || extensionBusy}
