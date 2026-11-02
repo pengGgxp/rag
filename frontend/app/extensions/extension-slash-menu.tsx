@@ -26,11 +26,12 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
   const query = match?.[1].toLocaleLowerCase() ?? "";
   const open = !!match && !disabled && !dismissed;
   const catalog = useExtensionCatalog(open);
+  const extensionsReady = supportsTools && !catalog.loading && !catalog.error;
   const options: Option[] = [
     { id: "compact", kind: "command" as const, name: "compact", description: compactDisabled ? "暂无可压缩的历史内容" : "压缩上下文" },
-    ...catalog.skills.filter(item => supportsTools && item.enabled).map(item => ({ ...item, kind: "skill" as const })),
-    ...catalog.platform.filter(() => supportsTools).map(item => ({ ...item, kind: "platform" as const })),
-    ...catalog.servers.filter(item => supportsTools && item.enabled && item.last_checked_at && item.allowed_tools.length)
+    ...catalog.skills.filter(item => extensionsReady && item.enabled).map(item => ({ ...item, kind: "skill" as const })),
+    ...catalog.platform.filter(() => extensionsReady).map(item => ({ ...item, kind: "platform" as const })),
+    ...catalog.servers.filter(item => extensionsReady && item.enabled && item.last_checked_at && item.allowed_tools.length)
       .map(item => ({ id: item.id, kind: "mcp" as const, name: item.name, description: `${item.allowed_tools.length} 项已授权工具` })),
   ].filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(query)).slice(0, 30);
   const activeIndex = Math.min(index, Math.max(0, options.length - 1));
@@ -57,6 +58,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
       onInsert(draft.slice(0, start) + draft.slice(caret), start);
       setDismissed(true); onCompact(); return;
     }
+    if (!extensionsReady) return;
     setSaving(true); setError("");
     try {
       if (item.kind === "skill" && !effective.skill_ids.includes(item.id))
