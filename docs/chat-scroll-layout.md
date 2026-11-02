@@ -11,3 +11,9 @@
 为 `.chat-messages` 设置相对定位，将绝对定位的读屏文字限制在聊天滚动区内。验证 1440、700、390px，覆盖短记录、长记录、工具活动、脚注、引用展开收起、回到最新及空会话；页面高度不能超过视口，聊天内容仍可内部滚动，读屏状态节点仍保留。
 
 本地前端构建及类型检查通过。使用 `scripts/check-chat-scroll.js` 经 Playwright CLI 的 `run-code --filename` 运行，配合 localhost:3110 前端和模拟接口，不调用真实模型。18 组尺寸、记录数量和滚动位置检查中，文档高度均为 900px；长记录保持内部滚动。截图在 `output/playwright/chat-scroll-fixed-*.png`，已人工检查手机截图。
+
+## 线上验证
+
+2026-11-02 已备份并单独更新 Web，发布镜像为 `sha256:83494ed2c6abc0aba3391328933dbe3e682e1ec493e8ba7667bba75978ee3755`。核对公开 CSS 已包含定位修复，首页及 API 健康检查正常；API、Worker、执行器与数据服务实例未变化，环境及 Compose 配置摘要一致。
+
+使用线上页面资源和浏览器内模拟接口重复上述 18 组检查，页面高度均为 900px，引用折叠及回到最新通过。截图位于 `output/playwright/chat-scroll-production-*.png`。该验证不访问真实私人会话，不调用模型，也不代表完成真实账号业务验收。
