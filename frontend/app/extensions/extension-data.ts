@@ -11,4 +11,5 @@ export type MCPConnection = {
   version: number; authorization_version: number; last_checked_at: string | null;
   tools: { name: string; description?: string; inputSchema: object }[]; allowed_tools: string[];
 };
-export type ExtensionSelection = { skill_ids: string[]; mcp_server_ids: string[] };
+export type ExtensionSelection = { skill_ids: string[]; mcp_server_ids: string[]; question_workbench?: boolean };
+export type WorkbenchStatus = { available: boolean; enabled: boolean; version: number; url: string | null };

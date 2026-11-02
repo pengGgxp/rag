@@ -3,6 +3,7 @@
 !.env.example
 node_modules/
 .next/
+.next-qw/
 .venv/
 **/.venv/
 __pycache__/

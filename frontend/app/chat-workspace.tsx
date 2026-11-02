@@ -132,6 +132,7 @@ type Conversation = {
   compactions?: { id: string; after_sequence: number; created_at: string }[];
   skill_ids: string[];
   mcp_server_ids: string[];
+  question_workbench: boolean;
 };
 type Generation = {
   controller: AbortController;
@@ -586,7 +587,7 @@ export function ChatWorkspace({
       const updated = await request<Conversation>(`/conversations/${id}/extensions`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value),
       });
-      setConversation(current => current?.id === id ? { ...current, skill_ids: updated.skill_ids, mcp_server_ids: updated.mcp_server_ids } : current);
+      setConversation(current => current?.id === id ? { ...current, skill_ids: updated.skill_ids, mcp_server_ids: updated.mcp_server_ids, question_workbench: updated.question_workbench } : current);
     } finally { setExtensionBusy(false); }
   }
 
@@ -1324,7 +1325,7 @@ export function ChatWorkspace({
               onCompact={() => setCompactRequest(value => value + 1)}
               draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy || mentionState.open}
               supportsTools={selectedModel?.supports_tools !== false} selection={conversation
-                ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
+                ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids, question_workbench: conversation.question_workbench } : draftExtensions}
               onActive={updateSlashState} onChange={changeExtensions} onInsert={(value, position) => {
                 setDocumentMentions(items => pruneMentions(question, value, position, items));
                 setQuestion(value); setCaret(position);
@@ -1377,7 +1378,7 @@ export function ChatWorkspace({
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}
                 onModelChange={id => { setModelId(id); setThinkingStale(false); }} onThinkingChange={setThinkingId} />
               <ExtensionPicker disabled={running || loading || extensionBusy} supportsTools={selectedModel?.supports_tools !== false}
-                selection={conversation ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids } : draftExtensions}
+                selection={conversation ? { skill_ids: conversation.skill_ids, mcp_server_ids: conversation.mcp_server_ids, question_workbench: conversation.question_workbench } : draftExtensions}
                 onChange={changeExtensions} />
               <Tooltip content={webFailed ? "联网状态加载失败，点击重试" : webAvailable ? `${webEnabled ? "自动联网" : "联网已关闭"} · 按有效调用计费` : "联网搜索暂不可用"}>
                 <button type="button" className="icon-button web-search-toggle" aria-label={webFailed ? "重试联网状态" : "自动联网"} aria-pressed={webEnabled && webAvailable}
