@@ -194,6 +194,8 @@
   color: #758094;
 }
 .chat-messages {
+  /* Keep absolute screen-reader content inside this scroll container. */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
