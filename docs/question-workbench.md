@@ -15,6 +15,13 @@ revocation; visible ordered activities; refresh and slash/picker selection; isol
 tests, PostgreSQL migrations, responsive screenshots and real-model verification.
 Keep the task open until unverified evidence is explicitly resolved. Local only.
 
+Deployment authorized on 2026-11-03 at `https://q.zk.str1ct.top`, superseding the
+local-only delivery boundary. Inspect active container Compose labels, back up the
+live database/source/configuration/images, deploy the standalone workbench and
+update only RAG API/Web plus the connector migration. The bridge override uses a
+dedicated connection secret. Preserve prices, balances, existing grants and RAG
+data services; record actual online acceptance before declaring completion.
+
 UI follow-up (2026-11-03): remove browser-default link underlines inside the
 conversation extension picker. Keep link color, keyboard focus and selection
 behavior. Verify the computed link style in the running local chat; do not change

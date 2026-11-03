@@ -1,0 +1,8 @@
+# Append to the active release's existing Compose files.
+# Pass a separate protected environment file with --env-file; keep existing values.
+services:
+  api:
+    environment:
+      QUESTION_WORKBENCH_URL: https://q.zk.str1ct.top
+      QUESTION_WORKBENCH_API_URL: http://question-workbench-api:8100
+      QUESTION_WORKBENCH_SECRET: ${QW_CONNECTION_SECRET:?set the workbench connection secret}
