@@ -4,6 +4,7 @@ from app.credit_amounts import amount
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import func, select
 
 from app import payments
@@ -26,6 +27,21 @@ def administrator(accounts):
 def body(**changes):
     return {"capability": "llm_input_tokens", "unit_size": 1_000_000, "cost_yuan": "2",
         "profit_yuan": "3", "overhead_yuan": "0", "payment_fee_percent": "0.1", "multiplier": "1.00", **changes}
+
+
+def test_reference_includes_ezfp_and_survives_unavailable_fm(accounts, gateway):
+    owner, _ = administrator(accounts)
+    settings, _ = gateway
+    settings.ezfp_enabled = True
+    settings.ezfp_pid = "100100"
+    settings.ezfp_private_key = SecretStr("configured")
+    settings.ezfp_public_key = SecretStr("configured")
+    settings.ezfp_recharge_packages_json = json.dumps([
+        {"id": "ezfp-reference", "name": "EZFP", "amount_fen": 100, "credits": 1000},
+    ])
+    assert owner.get(ROOT).json()["reference_package"]["id"] == "ezfp-reference"
+    settings.recharge_packages_json = "invalid"
+    assert owner.get(ROOT).json()["reference_package"]["id"] == "ezfp-reference"
 
 
 def test_permissions_use_live_site_role(accounts, gateway):

@@ -1,10 +1,13 @@
 """Administrator-managed payment adapter configuration."""
 import re
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from . import payments
 from .db import get_db
@@ -18,11 +21,14 @@ router = APIRouter(prefix="/site/admin/payments", tags=["site-admin-payments"])
 class PaymentSettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     version: int = Field(ge=0)
+    provider_key: str = Field(default=payments.PROVIDER_KEY, pattern=r"^(zhifux|ezfp)$")
     enabled: bool
     api_base_url: str = Field(max_length=500)
     merchant_num: str = Field(max_length=100)
     pay_type: str = Field(max_length=100)
     secret: SecretStr | None = Field(default=None, max_length=500)
+    private_key: SecretStr | None = Field(default=None, max_length=12000)
+    public_key: SecretStr | None = Field(default=None, max_length=12000)
     clear_secret: bool = False
     packages: list[payments.RechargePackage] = Field(max_length=20)
 
@@ -36,19 +42,44 @@ class PaymentSettingsInput(BaseModel):
         if self.enabled:
             if not self.packages:
                 raise ValueError("启用充值前至少需要配置一个充值档位")
-            if not payments.https_url(self.api_base_url) or "?" in self.api_base_url:
+            if self.provider_key == payments.EZFP_PROVIDER_KEY:
+                if self.api_base_url != payments.EZFP_ENDPOINT:
+                    raise ValueError("易支付接口地址必须使用官方接口地址")
+                if bool(self.private_key and self.private_key.get_secret_value()) != bool(self.public_key and self.public_key.get_secret_value()):
+                    raise ValueError("商户私钥与平台公钥需要同时配置")
+            elif not payments.https_url(self.api_base_url) or "?" in self.api_base_url:
                 raise ValueError("支付网关必须是有效的 HTTPS 地址，且不能包含查询参数")
             if not re.fullmatch(r"[a-zA-Z0-9]{1,100}", self.merchant_num):
                 raise ValueError("商户号格式不正确")
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", self.pay_type):
                 raise ValueError("支付产品编码格式不正确")
             if self.clear_secret and not (self.secret and self.secret.get_secret_value()):
-                raise ValueError("启用支付时不能清除唯一的商户密钥")
+                if self.provider_key != payments.EZFP_PROVIDER_KEY or not (self.private_key and self.private_key.get_secret_value() and self.public_key and self.public_key.get_secret_value()):
+                    raise ValueError("启用支付时不能清除唯一的商户密钥")
+        if self.provider_key == payments.EZFP_PROVIDER_KEY:
+            try:
+                private_raw = self.private_key.get_secret_value().encode() if self.private_key else b""
+                public_raw = self.public_key.get_secret_value().encode() if self.public_key else b""
+                if private_raw or public_raw:
+                    private = serialization.load_pem_private_key(private_raw, password=None)
+                    public = serialization.load_pem_public_key(public_raw)
+                    if not isinstance(private, rsa.RSAPrivateKey) or not isinstance(public, rsa.RSAPublicKey):
+                        raise ValueError("RSA keys required")
+                    if private.key_size < 2048 or public.key_size < 2048:
+                        raise ValueError("RSA keys must be at least 2048 bits")
+            except (ValueError, TypeError, AttributeError):
+                raise ValueError("请填写有效的商户 RSA 私钥与平台 RSA 公钥（至少 2048 位）")
         return self
 
 
 def current_row(db):
-    return db.scalar(select(SitePaymentConfig).order_by(SitePaymentConfig.version.desc()).limit(1))
+    return db.scalar(select(SitePaymentConfig).where(SitePaymentConfig.provider_key == payments.PROVIDER_KEY)
+                     .order_by(SitePaymentConfig.version.desc()).limit(1))
+
+
+def current_provider_row(db, provider_key):
+    return db.scalar(select(SitePaymentConfig).where(SitePaymentConfig.provider_key == provider_key)
+                     .order_by(SitePaymentConfig.version.desc()).limit(1))
 
 
 @router.get("")
@@ -56,12 +87,20 @@ def read_settings(db: Session = Depends(get_db), actor=Depends(site_admin)):
     return payments.payment_admin_view(db)
 
 
+@router.get("/{provider_key}")
+def read_provider_settings(provider_key: str, db: Session = Depends(get_db), actor=Depends(site_admin)):
+    if provider_key not in payments.PAYMENT_PROVIDERS:
+        raise HTTPException(404, "支付渠道不存在")
+    return payments.payment_admin_view(db, provider_key)
+
+
 @router.put("")
 def save_settings(payload: PaymentSettingsInput, request: Request,
                   db: Session = Depends(get_db), actor=Depends(site_admin)):
     if db.bind.dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(3020049)"))
-    current = current_row(db)
+    provider_key = payload.provider_key
+    current = current_provider_row(db, provider_key)
     current_version = current.version if current else 0
     if payload.version != current_version:
         raise HTTPException(409, "支付设置已更新，请重新加载后再保存")
@@ -76,7 +115,7 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
             "packages": current.packages,
         }
         had_secret = bool(current.encrypted_secret)
-    else:
+    elif provider_key == payments.PROVIDER_KEY:
         try:
             legacy_packages = TypeAdapter(list[payments.RechargePackage]).validate_json(legacy.recharge_packages_json)
         except ValidationError:
@@ -89,6 +128,15 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
             "packages": [item.model_dump() for item in legacy_packages],
         }
         had_secret = bool(legacy.zhifux_secret and legacy.zhifux_secret.get_secret_value())
+    else:
+        previous = {"enabled": legacy.ezfp_enabled, "api_base_url": legacy.ezfp_api_base_url,
+            "merchant_num": legacy.ezfp_pid, "pay_type": legacy.ezfp_pay_type, "packages": []}
+        try:
+            previous["packages"] = TypeAdapter(list[payments.RechargePackage]).validate_json(legacy.ezfp_recharge_packages_json)
+            previous["packages"] = [item.model_dump() for item in previous["packages"]]
+        except ValidationError:
+            pass
+        had_secret = bool(legacy.ezfp_private_key and legacy.ezfp_public_key)
     updated = {
         "enabled": payload.enabled,
         "api_base_url": payload.api_base_url,
@@ -99,37 +147,52 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
     changed_fields = [field for field, value in updated.items() if previous[field] != value]
 
     old_secret = current.encrypted_secret if current else None
-    if current is None and legacy.zhifux_secret:
+    if current is None and provider_key == payments.PROVIDER_KEY and legacy.zhifux_secret:
         old_secret = protect(legacy.zhifux_secret.get_secret_value())
+    elif current is None and provider_key == payments.EZFP_PROVIDER_KEY and had_secret:
+        old_secret = protect(json.dumps({"private_key": legacy.ezfp_private_key.get_secret_value(),
+            "public_key": legacy.ezfp_public_key.get_secret_value()}))
     if payload.clear_secret:
         encrypted_secret = None
-    elif payload.secret and payload.secret.get_secret_value():
+    elif provider_key == payments.PROVIDER_KEY and payload.secret and payload.secret.get_secret_value():
         encrypted_secret = protect(payload.secret.get_secret_value())
+    elif provider_key == payments.EZFP_PROVIDER_KEY and payload.private_key and payload.private_key.get_secret_value():
+        encrypted_secret = protect(json.dumps({"private_key": payload.private_key.get_secret_value(),
+            "public_key": payload.public_key.get_secret_value()}))
     else:
         encrypted_secret = old_secret
 
     secret_present = bool(encrypted_secret)
-    if not payload.clear_secret and current is None and not (payload.secret and payload.secret.get_secret_value()):
-        secret_present = bool(legacy.zhifux_secret and legacy.zhifux_secret.get_secret_value())
+    if not payload.clear_secret and current is None and not (payload.secret and payload.secret.get_secret_value()) and not (payload.private_key and payload.private_key.get_secret_value()):
+        secret_present = had_secret
     if payload.enabled and not secret_present:
         raise HTTPException(422, "启用支付前请配置商户密钥")
     secret_changed = (
         (payload.clear_secret and had_secret)
         or bool(payload.secret and payload.secret.get_secret_value())
+        or bool(payload.private_key and payload.private_key.get_secret_value())
         or (current is None and had_secret and not payload.clear_secret)
     )
     if secret_changed:
         changed_fields.append("secret")
 
-    version = current_version + 1
+    version = (db.scalar(select(SitePaymentConfig.version).order_by(SitePaymentConfig.version.desc()).limit(1)) or 0) + 1
     row = SitePaymentConfig(
-        version=version, provider_key=payments.PROVIDER_KEY, enabled=payload.enabled,
+        version=version, provider_key=provider_key, enabled=payload.enabled,
         api_base_url=payload.api_base_url, merchant_num=payload.merchant_num,
         pay_type=payload.pay_type, encrypted_secret=encrypted_secret,
         packages=[item.model_dump() for item in payload.packages], created_by=actor.id,
     )
     db.add(row)
     record(db, actor, "payment.settings_updated", "payment_config", version,
-           request=request, details={"fields": changed_fields, "version": version})
+           request=request, details={"fields": changed_fields, "version": version, "provider_key": provider_key})
     db.commit()
-    return payments.payment_admin_view(db)
+    return payments.payment_admin_view(db, provider_key)
+
+
+@router.put("/{provider_key}")
+def save_provider_settings(provider_key: str, payload: PaymentSettingsInput, request: Request,
+                           db: Session = Depends(get_db), actor=Depends(site_admin)):
+    if provider_key not in payments.PAYMENT_PROVIDERS or payload.provider_key != provider_key:
+        raise HTTPException(404, "支付渠道不存在")
+    return save_settings(payload, request, db, actor)

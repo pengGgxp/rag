@@ -912,7 +912,20 @@
 .thinking-parameter-list dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .thinking-test-heading { display: flex; align-items: center; gap: 7px; font-weight: 500; }
 .thinking-test-result { border-top: 1px solid var(--line); padding-top: 12px; }
+.payment-provider-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 0 0 20px; }
+.payment-provider-tabs button { min-height: 40px; padding: 0 14px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
+.payment-provider-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.payment-provider-link { display: inline-flex; align-items: center; gap: 6px; margin: -4px 0 12px; color: var(--muted); font-size: var(--form-label-size); text-decoration: none; }
+.payment-provider-link:hover { color: var(--ink); text-decoration: underline; }
+.payment-key-input { width: 100%; min-width: 0; min-height: 132px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; }
+.payment-key-input:focus-visible { outline: 2px solid var(--brand-soft); outline-offset: 1px; border-color: var(--focus-ring); }
+.payment-provider-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; padding: 0; border: 0; }
+.payment-provider-options legend { width: 100%; margin-bottom: 2px; color: var(--muted); font-size: var(--form-label-size); }
+.payment-provider-options label { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--form-radius); cursor: pointer; }
+.payment-provider-options label[data-selected="true"] { border-color: var(--accent); }
+.payment-provider-options input { accent-color: var(--accent); }
 @media (max-width: 700px) {
   .thinking-diagnostic-actions button { min-height: var(--form-touch-height); }
   .thinking-parameter-list > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .payment-provider-tabs button, .payment-provider-options label { min-height: var(--form-touch-height); }
 }

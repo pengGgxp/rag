@@ -26,7 +26,8 @@ export type CreditUsage = {
 };
 type Package = { id: string; name: string; amount_fen: number; credits: number; quote: string };
 type CustomRecharge = { id: string; min_amount_fen: number; max_amount_fen: number; rate_credits: number; rate_amount_fen: number; quote: string };
-type Catalog = { enabled: boolean; packages: Package[]; custom?: CustomRecharge };
+type PaymentProvider = { provider_key: string; name: string; packages: Package[]; custom?: CustomRecharge };
+type Catalog = { enabled: boolean; providers?: PaymentProvider[]; packages: Package[]; custom?: CustomRecharge };
 type Order = {
   id: string;
   order_no: string;
@@ -86,12 +87,13 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
   const [orders, setOrders] = useState<OrderPage | null>(null);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState("");
+  const [providerKey, setProviderKey] = useState("");
   const [customAmount, setCustomAmount] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const attempt = useRef<{ packageId: string; amount: number; key: string; quote: string } | null>(null);
+  const attempt = useRef<{ providerKey: string; packageId: string; amount: number; key: string; quote: string } | null>(null);
   const previousStates = useRef(new Map<string, string>());
   const generation = useRef(0);
 
@@ -113,8 +115,12 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
       setUsage(balance);
       setCatalog(options);
       setOrders(history);
-      setSelected((value) => (value === options.custom?.id) || options.packages.some((item) => item.id === value)
-        ? value : options.packages[0]?.id ?? "");
+      const list = options.providers?.length ? options.providers : [{provider_key: "zhifux", name: "支付 FM", packages: options.packages, custom: options.custom}];
+      const activeProvider = list.find((item) => item.provider_key === providerKey) ?? list[0];
+      setProviderKey(activeProvider?.provider_key ?? "");
+      setSelected((value) => list.some((item) => item.provider_key === activeProvider?.provider_key &&
+        (item.custom?.id === value || item.packages.some((pkg) => pkg.id === value)))
+        ? value : activeProvider?.packages[0]?.id ?? activeProvider?.custom?.id ?? "");
       setError("");
       if (newlyPaid) setNotice("充值成功，积分已到账");
     } catch (e) {
@@ -122,7 +128,7 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     } finally {
       if (current === generation.current) setLoading(false);
     }
-  }, [page]);
+  }, [page, providerKey]);
 
   useEffect(() => {
     void load();
@@ -142,14 +148,16 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
   }, [load, hasPending]);
 
   const customFen = parseAmount(customAmount);
-  const custom = catalog?.custom;
+  const providers = catalog?.providers?.length ? catalog.providers : catalog ? [{provider_key: "zhifux", name: "支付 FM", packages: catalog.packages, custom: catalog.custom}] : [];
+  const selectedProvider = providers.find((item) => item.provider_key === providerKey) ?? providers[0];
+  const custom = selectedProvider?.custom;
   const isCustom = Boolean(custom && selected === custom.id);
   const customValid = custom && customFen !== null
     && customFen >= custom.min_amount_fen && customFen <= custom.max_amount_fen;
   const selectedPackage = isCustom
     ? customValid ? { id: custom.id, name: "自定义充值", amount_fen: customFen,
       credits: Number(BigInt(customFen) * BigInt(custom.rate_credits) / BigInt(custom.rate_amount_fen)), quote: custom.quote } : undefined
-    : catalog?.packages.find((item) => item.id === selected);
+    : selectedProvider?.packages.find((item) => item.id === selected);
 
   async function checkout() {
     const option = selectedPackage;
@@ -158,13 +166,13 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     onBusyChange(true);
     setError("");
     setNotice("");
-    if (attempt.current?.packageId !== selected || attempt.current.quote !== option.quote || attempt.current.amount !== option.amount_fen) {
-      attempt.current = { packageId: selected, amount: option.amount_fen, key: crypto.randomUUID(), quote: option.quote };
+    if (attempt.current?.providerKey !== selectedProvider?.provider_key || attempt.current?.packageId !== selected || attempt.current.quote !== option.quote || attempt.current.amount !== option.amount_fen) {
+      attempt.current = { providerKey: selectedProvider?.provider_key ?? "zhifux", packageId: selected, amount: option.amount_fen, key: crypto.randomUUID(), quote: option.quote };
     }
     try {
       const order = await request<Order>("/payments/orders", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ package_id: selected, idempotency_key: attempt.current.key, quote: option.quote,
+        body: JSON.stringify({ package_id: selected, provider_key: selectedProvider?.provider_key ?? "zhifux", idempotency_key: attempt.current.key, quote: option.quote,
           ...(isCustom ? { custom_amount_fen: option.amount_fen } : {}) }),
       });
       attempt.current = null;
@@ -213,9 +221,17 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
         <div className="settings-skeleton" role="status" aria-label="加载中"><span /><span /><span /></div>
       ) : catalog?.enabled ? (
         <form className="recharge-form" onSubmit={(event) => { event.preventDefault(); void checkout(); }}>
+          {providers.length > 1 && <fieldset className="payment-provider-options" disabled={busy}>
+            <legend>支付方式</legend>
+            {providers.map((provider) => <label key={provider.provider_key} data-selected={provider.provider_key === selectedProvider?.provider_key}>
+              <input type="radio" name="payment-provider" value={provider.provider_key} checked={provider.provider_key === selectedProvider?.provider_key}
+                onChange={() => { setProviderKey(provider.provider_key); setSelected(provider.packages[0]?.id ?? provider.custom?.id ?? ""); setCustomAmount(""); attempt.current = null; }} />
+              <span>{provider.name}</span>
+            </label>)}
+          </fieldset>}
           <fieldset className="recharge-options" disabled={busy}>
             <legend>积分充值</legend>
-            {catalog.packages.map((item) => (
+            {selectedProvider?.packages.map((item) => (
               <label className="recharge-option" key={item.id} data-selected={selected === item.id}>
                 <input type="radio" name="recharge-package" value={item.id}
                   checked={selected === item.id} onChange={() => setSelected(item.id)} />

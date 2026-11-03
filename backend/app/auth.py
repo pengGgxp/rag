@@ -65,7 +65,7 @@ class BrowserRequestGuard:
 
     async def __call__(self, scope, receive, send):
         # Signed callbacks and the narrowly authenticated workbench service bridge are not browser requests.
-        payment_callback = scope.get("path") == "/payments/zhifux/notify" and scope.get("method") == "POST"
+        payment_callback = scope.get("path") in ("/payments/zhifux/notify", "/payments/ezfp/notify") and scope.get("method") == "POST"
         workbench_service = scope.get("path") in ("/question-workbench/exchange", "/question-workbench/introspect") and scope.get("method") == "POST"
         if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS") and not payment_callback and not workbench_service:
             headers = dict(scope["headers"])

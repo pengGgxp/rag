@@ -1,4 +1,4 @@
-"""Server-owned recharge orders and the payment FM protocol."""
+"""Server-owned recharge orders and payment provider adapters."""
 
 import hashlib
 import json
@@ -11,8 +11,12 @@ from fractions import Fraction
 from typing import Protocol
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
+import base64
 
 import httpx
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
@@ -29,19 +33,46 @@ from .credits import recharge
 from .models import RechargeOrder, SitePaymentConfig, Workspace
 
 CALLBACK_PATH = "/payments/zhifux/notify"
+EZFP_CALLBACK_PATH = "/payments/ezfp/notify"
+EZFP_ENDPOINT = "https://www.ezfp.cn/api/pay/create"
 PAY_DURATION_MINUTES = 15
 PROVIDER_KEY = "zhifux"
+EZFP_PROVIDER_KEY = "ezfp"
+PAYMENT_PROVIDERS = {
+    PROVIDER_KEY: {"name": "支付 FM", "website_url": "https://wmp.zhifux.com/"},
+    EZFP_PROVIDER_KEY: {"name": "易支付", "website_url": "https://www.ezfp.cn/"},
+}
 
 
-def effective_settings(db, *, base=None, version=None):
+def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY):
     """Resolve a payment adapter configuration without exposing its secret."""
     settings = base or get_settings()
     row = db.get(SitePaymentConfig, version) if version is not None else db.scalar(
-        select(SitePaymentConfig).order_by(SitePaymentConfig.version.desc()).limit(1))
+        select(SitePaymentConfig).where(SitePaymentConfig.provider_key == provider_key)
+        .order_by(SitePaymentConfig.version.desc()).limit(1))
+    if row is not None and row.provider_key != provider_key:
+        raise HTTPException(503, "支付渠道配置版本不匹配")
+    if version is not None and row is None:
+        raise HTTPException(503, "支付渠道配置版本不存在")
     if row is None:
         return settings, None
     from .site_auth import reveal
     secret = reveal(row.encrypted_secret) if row.encrypted_secret else ""
+    if provider_key == EZFP_PROVIDER_KEY:
+        credentials = {}
+        try:
+            credentials = json.loads(secret) if secret else {}
+        except (TypeError, ValueError):
+            raise HTTPException(503, "易支付密钥配置无法读取")
+        return settings.model_copy(update={
+            "ezfp_enabled": row.enabled,
+            "ezfp_api_base_url": row.api_base_url,
+            "ezfp_pid": row.merchant_num,
+            "ezfp_pay_type": row.pay_type,
+            "ezfp_private_key": SecretStr(credentials["private_key"]) if credentials.get("private_key") else None,
+            "ezfp_public_key": SecretStr(credentials["public_key"]) if credentials.get("public_key") else None,
+            "ezfp_recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
+        }), row.version
     return settings.model_copy(update={
         "zhifux_enabled": row.enabled,
         "zhifux_api_base_url": row.api_base_url,
@@ -52,31 +83,49 @@ def effective_settings(db, *, base=None, version=None):
     }), row.version
 
 
-def payment_admin_view(db):
-    settings, version = effective_settings(db)
-    from .site_auth import cipher
+def payment_admin_view(db, provider_key=PROVIDER_KEY):
+    settings, version = effective_settings(db, provider_key=provider_key)
+    from .site_auth import cipher, reveal
     try:
         cipher()
         encryption_ready = True
     except HTTPException:
         encryption_ready = False
     row = db.get(SitePaymentConfig, version) if version is not None else None
+    if provider_key == EZFP_PROVIDER_KEY:
+        enabled, api_base_url = settings.ezfp_enabled, settings.ezfp_api_base_url
+        merchant_num, pay_type = settings.ezfp_pid, settings.ezfp_pay_type
+        packages_json = settings.ezfp_recharge_packages_json
+        if row:
+            credentials = json.loads(reveal(row.encrypted_secret)) if row.encrypted_secret else {}
+            has_secret = bool(credentials.get("private_key") and credentials.get("public_key"))
+        else:
+            has_secret = bool(settings.ezfp_private_key and settings.ezfp_public_key)
+        callback_path = EZFP_CALLBACK_PATH
+    else:
+        enabled, api_base_url = settings.zhifux_enabled, settings.zhifux_api_base_url
+        merchant_num, pay_type = settings.zhifux_merchant_num, settings.zhifux_pay_type
+        packages_json = settings.recharge_packages_json
+        has_secret = bool(row.encrypted_secret) if row else bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
+        callback_path = CALLBACK_PATH
     packages = []
     try:
-        packages = [item.model_dump() for item in TypeAdapter(list[RechargePackage]).validate_json(settings.recharge_packages_json)]
+        packages = [item.model_dump() for item in TypeAdapter(list[RechargePackage]).validate_json(packages_json)]
     except ValidationError:
         pass
     return {
         "version": version or 0,
         "source": "database" if row else "environment",
-        "enabled": settings.zhifux_enabled,
-        "provider_key": PROVIDER_KEY,
-        "api_base_url": settings.zhifux_api_base_url,
-        "merchant_num": settings.zhifux_merchant_num,
-        "pay_type": settings.zhifux_pay_type,
-        "has_secret": bool(row.encrypted_secret) if row else bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value()),
+        "enabled": enabled,
+        "provider_key": provider_key,
+        "provider_name": PAYMENT_PROVIDERS[provider_key]["name"],
+        "website_url": PAYMENT_PROVIDERS[provider_key]["website_url"],
+        "api_base_url": api_base_url,
+        "merchant_num": merchant_num,
+        "pay_type": pay_type,
+        "has_secret": has_secret,
         "packages": packages,
-        "callback_url": settings.api_public_url.rstrip("/") + CALLBACK_PATH,
+        "callback_url": settings.api_public_url.rstrip("/") + callback_path,
         "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
         "encryption_ready": encryption_ready,
     }
@@ -95,6 +144,7 @@ class CreateOrder(BaseModel):
     package_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
     quote: str = Field(pattern=r"^[a-f0-9]{64}$")
+    provider_key: str = Field(default=PROVIDER_KEY, pattern=r"^(zhifux|ezfp)$")
     custom_amount_fen: int | None = Field(default=None, strict=True, ge=100, le=1_000_000)
 
 
@@ -105,8 +155,8 @@ def package_quote(package: RechargePackage) -> str:
 CUSTOM_PACKAGE_ID = "custom_amount"
 
 
-def recharge_options(settings: Settings):
-    packages = configured_packages(settings)
+def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
+    packages = configured_packages(settings, provider_key)
     if not packages:
         return [], None
     # Added amounts never introduce a better exchange rate than existing offers.
@@ -134,8 +184,8 @@ def recharge_options(settings: Settings):
     return options, custom
 
 
-def resolve_package(settings: Settings, payload: CreateOrder):
-    packages, custom = recharge_options(settings)
+def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVIDER_KEY):
+    packages, custom = recharge_options(settings, provider_key)
     if custom and payload.package_id == custom["id"]:
         if payload.custom_amount_fen is None:
             raise HTTPException(422, "请输入充值金额")
@@ -168,22 +218,30 @@ def https_url(value: str) -> bool:
         return False
 
 
-def configured_packages(settings: Settings) -> list[RechargePackage]:
-    if not settings.zhifux_enabled:
+def configured_packages(settings: Settings, provider_key=PROVIDER_KEY) -> list[RechargePackage]:
+    if provider_key == EZFP_PROVIDER_KEY:
+        enabled, api_url, merchant, pay_type = settings.ezfp_enabled, settings.ezfp_api_base_url, settings.ezfp_pid, settings.ezfp_pay_type
+        raw_packages = settings.ezfp_recharge_packages_json
+        secret_ready = bool(settings.ezfp_private_key and settings.ezfp_public_key)
+    else:
+        enabled, api_url, merchant, pay_type = settings.zhifux_enabled, settings.zhifux_api_base_url, settings.zhifux_merchant_num, settings.zhifux_pay_type
+        raw_packages = settings.recharge_packages_json
+        secret_ready = bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
+    if not enabled:
         return []
     try:
-        packages = TypeAdapter(list[RechargePackage]).validate_json(settings.recharge_packages_json)
-        roots = [settings.zhifux_api_base_url, settings.api_public_url, settings.frontend_url]
+        packages = TypeAdapter(list[RechargePackage]).validate_json(raw_packages)
+        roots = [api_url, settings.api_public_url, settings.frontend_url]
         valid = (
             1 <= len(packages) <= 20
             and len({item.id for item in packages}) == len(packages)
             and all(https_url(root) and not urlsplit(root).query for root in roots)
-            and len(settings.api_public_url.rstrip("/") + CALLBACK_PATH) <= 200
+            and (provider_key != EZFP_PROVIDER_KEY or api_url == EZFP_ENDPOINT)
+            and len(settings.api_public_url.rstrip("/") + (EZFP_CALLBACK_PATH if provider_key == EZFP_PROVIDER_KEY else CALLBACK_PATH)) <= 200
             and len(settings.frontend_url.rstrip("/") + "/?account=1&billing=1") <= 200
-            and bool(re.fullmatch(r"[a-zA-Z0-9]{1,100}", settings.zhifux_merchant_num))
-            and bool(re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", settings.zhifux_pay_type))
-            and settings.zhifux_secret
-            and settings.zhifux_secret.get_secret_value()
+            and bool(re.fullmatch(r"[a-zA-Z0-9]{1,100}", merchant))
+            and bool(re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", pay_type))
+            and secret_ready
         )
         if valid:
             return packages
@@ -216,9 +274,10 @@ class PaymentAdapter(Protocol):
     provider_key: str
     callback_path: str
 
-    def create_checkout(self, settings: Settings, order: RechargeOrder) -> Checkout: ...
+    def create_checkout(self, settings: Settings, order: RechargeOrder, client_ip: str = "") -> Checkout: ...
     def settings_for_order(self, db: Session, order: RechargeOrder | None, fallback: Settings) -> Settings: ...
     def verify_notification(self, params: dict[str, str], settings: Settings) -> tuple[str, str, str]: ...
+    def notification_order_no(self, params: dict[str, str]) -> str: ...
 
 
 def start_checkout(settings: Settings, order: RechargeOrder) -> Checkout:
@@ -277,14 +336,18 @@ class PaymentFMAdapter:
     provider_key = PROVIDER_KEY
     callback_path = CALLBACK_PATH
 
-    def create_checkout(self, settings: Settings, order: RechargeOrder) -> Checkout:
+    def create_checkout(self, settings: Settings, order: RechargeOrder, client_ip: str = "") -> Checkout:
         return start_checkout(settings, order)
 
     def settings_for_order(self, db: Session, order: RechargeOrder | None, fallback: Settings) -> Settings:
         if order is None or order.payment_config_version is None:
             return fallback
-        settings, _ = effective_settings(db, base=fallback, version=order.payment_config_version)
+        settings, _ = effective_settings(db, base=fallback, version=order.payment_config_version,
+                                         provider_key=self.provider_key)
         return settings
+
+    def notification_order_no(self, params: dict[str, str]) -> str:
+        return params.get("orderNo", "")
 
     def verify_notification(self, params: dict[str, str], settings: Settings) -> tuple[str, str, str]:
         secret = settings.zhifux_secret
@@ -310,7 +373,92 @@ class PaymentFMAdapter:
         return merchant, amount, platform_id
 
 
-PAYMENT_ADAPTERS: dict[str, PaymentAdapter] = {PROVIDER_KEY: PaymentFMAdapter()}
+def _signed_fields(params: dict[str, str]) -> str:
+    fields = [(key, value) for key, value in params.items()
+              if key not in ("sign", "sign_type") and value is not None and value != ""]
+    fields.sort(key=lambda item: item[0].encode("ascii", errors="strict"))
+    return "&".join(f"{key}={value}" for key, value in fields)
+
+
+def _verify_rsa(params, settings):
+    signature = params.get("sign", "")
+    if params.get("sign_type", "RSA").upper() != "RSA" or not signature or len(signature) > 2048:
+        return False
+    try:
+        public_key = serialization.load_pem_public_key(settings.ezfp_public_key.get_secret_value().encode())
+        public_key.verify(base64.b64decode(signature, validate=True), _signed_fields(params).encode("utf-8"),
+                          padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except (ValueError, TypeError, InvalidSignature, UnicodeError, AttributeError):
+        return False
+
+
+class EzfpAdapter:
+    provider_key = EZFP_PROVIDER_KEY
+    callback_path = EZFP_CALLBACK_PATH
+    endpoint = EZFP_ENDPOINT
+
+    def create_checkout(self, settings: Settings, order: RechargeOrder, client_ip: str = "") -> Checkout:
+        if not settings.ezfp_private_key:
+            raise GatewayError(rejected=True)
+        params = {"pid": settings.ezfp_pid, "method": "jump", "type": order.pay_type,
+            "out_trade_no": order.id.hex, "notify_url": settings.api_public_url.rstrip("/") + self.callback_path,
+            "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
+            "name": f"知库积分充值 - {order.package_name}"[:100], "money": yuan(order.amount_fen),
+            "clientip": client_ip, "timestamp": str(int(now().timestamp())), "sign_type": "RSA"}
+        try:
+            private_key = serialization.load_pem_private_key(settings.ezfp_private_key.get_secret_value().encode(), password=None)
+            params["sign"] = base64.b64encode(private_key.sign(_signed_fields(params).encode("utf-8"),
+                padding.PKCS1v15(), hashes.SHA256())).decode("ascii")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise GatewayError(rejected=True) from exc
+        try:
+            with httpx.Client(timeout=20, follow_redirects=False) as client:
+                with client.stream("POST", self.endpoint, data=params,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}) as response:
+                    body = bytearray()
+                    for chunk in response.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > 65536:
+                            raise GatewayError()
+                    result = json.loads(body)
+                    if response.status_code != 200 or not isinstance(result, dict) or not _verify_rsa(result, settings):
+                        raise GatewayError()
+                    if str(result.get("code")) != "0":
+                        raise GatewayError(rejected=True)
+                    trade_no, pay_url = result.get("trade_no"), result.get("pay_info")
+                    if (not isinstance(trade_no, (str, int)) or isinstance(trade_no, bool)
+                        or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", str(trade_no))
+                        or result.get("pay_type") != "jump" or not isinstance(pay_url, str)
+                        or len(pay_url) > 4096 or not https_url(pay_url)):
+                        raise GatewayError()
+                    return Checkout(str(trade_no), pay_url)
+        except (httpx.HTTPError, ValueError, UnicodeError) as exc:
+            raise GatewayError() from exc
+
+    def settings_for_order(self, db: Session, order: RechargeOrder | None, fallback: Settings) -> Settings:
+        if order is None or order.payment_config_version is None:
+            return fallback
+        settings, _ = effective_settings(db, base=fallback, version=order.payment_config_version,
+                                         provider_key=self.provider_key)
+        return settings
+
+    def notification_order_no(self, params: dict[str, str]) -> str:
+        return params.get("out_trade_no", "")
+
+    def verify_notification(self, params, settings):
+        order_no = self.notification_order_no(params)
+        merchant, amount, platform_id = params.get("pid", ""), params.get("money", ""), params.get("trade_no", "")
+        if (params.get("trade_status") != "TRADE_SUCCESS" or merchant != settings.ezfp_pid
+            or not re.fullmatch(r"[a-f0-9]{32}", order_no)
+            or not re.fullmatch(r"[0-9]{1,8}(?:\.[0-9]{1,2})?", amount)
+            or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", platform_id)
+            or not _verify_rsa(params, settings)):
+            raise HTTPException(400, "fail")
+        return merchant, amount, platform_id
+
+
+PAYMENT_ADAPTERS: dict[str, PaymentAdapter] = {PROVIDER_KEY: PaymentFMAdapter(), EZFP_PROVIDER_KEY: EzfpAdapter()}
 
 
 def payment_adapter(provider_key: str) -> PaymentAdapter:
@@ -338,19 +486,27 @@ def order_read(order: RechargeOrder) -> dict:
     }
 
 
-def accept_payment(db: Session, params: dict[str, str], settings: Settings):
-    order_no = params.get("orderNo", "")
-    order = None
-    if re.fullmatch(r"[a-f0-9]{32}", order_no):
-        order = db.scalar(select(RechargeOrder).where(
-            RechargeOrder.id == UUID(hex=order_no),
-        ).with_for_update().execution_options(populate_existing=True))
-    adapter = payment_adapter(order.provider_key if order is not None else PROVIDER_KEY)
+def accept_payment(db: Session, params: dict[str, str], settings: Settings, provider_key: str | None = None):
+    candidates = []
+    for adapter in PAYMENT_ADAPTERS.values():
+        if provider_key is not None and adapter.provider_key != provider_key:
+            continue
+        order_no = adapter.notification_order_no(params)
+        if re.fullmatch(r"[a-f0-9]{32}", order_no):
+            row = db.scalar(select(RechargeOrder).where(
+                RechargeOrder.id == UUID(hex=order_no), RechargeOrder.provider_key == adapter.provider_key,
+            ).with_for_update().execution_options(populate_existing=True))
+            if row is not None:
+                candidates.append((adapter, row))
+    if len(candidates) != 1:
+        raise HTTPException(400, "fail")
+    adapter, order = candidates[0]
     settings = adapter.settings_for_order(db, order, settings)
     merchant, amount, platform_id = adapter.verify_notification(params, settings)
     if (
         order is None or order.merchant_num != merchant
         or Decimal(amount) * 100 != order.amount_fen
+        or (adapter.provider_key == EZFP_PROVIDER_KEY and params.get("type") != order.pay_type)
         or (order.platform_order_no is not None and order.platform_order_no != platform_id)
     ):
         raise HTTPException(400, "fail")
@@ -401,15 +557,24 @@ def build_router(get_db):
     @router.get("/catalog")
     def catalog(db: Session = Depends(get_db), access: Access = Depends(get_access)):
         try:
-            settings, _ = effective_settings(db)
-            packages, custom = recharge_options(settings)
+            channels = []
+            for provider_key in PAYMENT_PROVIDERS:
+                try:
+                    provider_settings, _ = effective_settings(db, provider_key=provider_key)
+                    packages, custom = recharge_options(provider_settings, provider_key)
+                    if packages:
+                        channels.append({"provider_key": provider_key, "name": PAYMENT_PROVIDERS[provider_key]["name"],
+                            "packages": [{**item.model_dump(), "quote": package_quote(item)} for item in packages],
+                            **({"custom": custom} if custom else {})})
+                except HTTPException:
+                    # An unavailable channel must not hide other independently configured providers.
+                    continue
         except HTTPException:
-            packages, custom = [], None
-        return {
-            "enabled": bool(packages),
-            "packages": [{**item.model_dump(), "quote": package_quote(item)} for item in packages],
-            **({"custom": custom} if custom else {}),
-        }
+            channels = []
+        if not channels:
+            return {"enabled": False, "packages": []}
+        return {"enabled": True, "providers": channels, "packages": channels[0]["packages"],
+                **({"custom": channels[0]["custom"]} if "custom" in channels[0] else {})}
 
     @router.post("/orders", status_code=201)
     def create_order(
@@ -427,21 +592,23 @@ def build_router(get_db):
         if order:
             requested_id = (f"{payload.package_id}:{payload.custom_amount_fen}"
                             if payload.custom_amount_fen is not None else payload.package_id)
-            if order.package_id != requested_id:
+            if order.package_id != requested_id or order.provider_key != payload.provider_key:
                 raise HTTPException(409, "此充值请求已使用其他档位，请重新选择")
             result = order_read(order)
             db.commit()
             return result
-        settings, config_version = effective_settings(db)
-        package = resolve_package(settings, payload)
-        adapter = payment_adapter(PROVIDER_KEY)
+        adapter = payment_adapter(payload.provider_key)
+        settings, config_version = effective_settings(db, provider_key=adapter.provider_key)
+        package = resolve_package(settings, payload, adapter.provider_key)
+        merchant = settings.ezfp_pid if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_merchant_num
+        pay_type = settings.ezfp_pay_type if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_pay_type
         order = RechargeOrder(
             id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
             idempotency_key=payload.idempotency_key,
             package_id=f"{package.id}:{package.amount_fen}" if payload.custom_amount_fen is not None else package.id,
             package_name=package.name,
             amount_fen=package.amount_fen, credits=package.credits,
-            merchant_num=settings.zhifux_merchant_num, pay_type=settings.zhifux_pay_type,
+            merchant_num=merchant, pay_type=pay_type,
             provider_key=adapter.provider_key, payment_config_version=config_version,
             status="creating", expires_at=now() + timedelta(minutes=PAY_DURATION_MINUTES),
         )
@@ -455,7 +622,8 @@ def build_router(get_db):
         db.commit()
         order_id = order.id
         try:
-            checkout = adapter.create_checkout(settings, order)
+            client_ip = request.client.host if request.client else ""
+            checkout = adapter.create_checkout(settings, order, client_ip)
             next_status = "pending"
         except GatewayError as exc:
             checkout = None
@@ -503,11 +671,10 @@ def build_router(get_db):
             raise HTTPException(404, "充值订单不存在")
         return order_read(row)
 
-    @router.api_route(payment_adapter(PROVIDER_KEY).callback_path.removeprefix("/payments"), methods=["GET", "POST"], response_class=PlainTextResponse)
-    async def notify(request: Request, db: Session = Depends(get_db)):
+    async def notify_callback(request: Request, db: Session, provider_key: str):
         try:
             params = await callback_params(request)
-            await run_in_threadpool(accept_payment, db, params, get_settings())
+            await run_in_threadpool(accept_payment, db, params, get_settings(), provider_key)
         except HTTPException as exc:
             db.rollback()
             return PlainTextResponse("fail", status_code=exc.status_code)
@@ -518,5 +685,13 @@ def build_router(get_db):
             db.rollback()
             return PlainTextResponse("fail", status_code=503)
         return PlainTextResponse("success")
+
+    @router.api_route("/zhifux/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
+    async def notify_zhifux(request: Request, db: Session = Depends(get_db)):
+        return await notify_callback(request, db, PROVIDER_KEY)
+
+    @router.api_route("/ezfp/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
+    async def notify_ezfp(request: Request, db: Session = Depends(get_db)):
+        return await notify_callback(request, db, EZFP_PROVIDER_KEY)
 
     return router

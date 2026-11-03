@@ -44,11 +44,13 @@ def decimal_text(value):
 
 
 def reference_package(db):
-    try:
-        settings, _ = payments.effective_settings(db)
-        packages = payments.configured_packages(settings)
-    except HTTPException:
-        packages = []
+    packages = []
+    for provider_key in payments.PAYMENT_PROVIDERS:
+        try:
+            settings, _ = payments.effective_settings(db, provider_key=provider_key)
+            packages.extend(payments.configured_packages(settings, provider_key))
+        except HTTPException:
+            continue
     if not packages:
         raise HTTPException(503, "请先配置可用的充值套餐，再按人民币成本计算价格")
     # The most credits per yuan yields the lowest revenue for each consumed credit.

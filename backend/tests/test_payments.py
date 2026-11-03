@@ -4,6 +4,9 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+import base64
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from pydantic import SecretStr
 from sqlalchemy import select
 
@@ -480,6 +483,115 @@ def test_real_adapter_sends_official_query_protocol_with_tls_and_no_secret_expos
 
 
 ORIGINAL_START_CHECKOUT = payments.start_checkout
+
+
+def sign_ezfp(values, private_key):
+    signature = private_key.sign(payments._signed_fields(values).encode("utf-8"),
+        padding.PKCS1v15(), hashes.SHA256())
+    return {**values, "sign_type": "RSA", "sign": base64.b64encode(signature).decode("ascii")}
+
+
+def test_ezfp_catalog_order_and_signed_callback_are_isolated_and_idempotent(accounts, gateway, monkeypatch):
+    (owner, _, anonymous), db = accounts
+    session = register(owner)
+    settings, _ = gateway
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem = private.public_key().public_bytes(serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    settings.ezfp_enabled = True
+    settings.ezfp_pid = "100100"
+    settings.ezfp_pay_type = "wxpay"
+    settings.ezfp_private_key = SecretStr(private.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode())
+    settings.ezfp_public_key = SecretStr(public_pem)
+    settings.ezfp_recharge_packages_json = json.dumps([
+        {"id": "ezfp-basic", "name": "易支付档", "amount_fen": 1000, "credits": 800},
+    ])
+    catalog = owner.get("/payments/catalog").json()
+    assert [provider["provider_key"] for provider in catalog["providers"]] == ["zhifux", "ezfp"]
+    ezfp = next(provider for provider in catalog["providers"] if provider["provider_key"] == "ezfp")
+    body = {"package_id": "ezfp-basic", "provider_key": "ezfp", "idempotency_key": uuid4().hex,
+        "quote": ezfp["packages"][0]["quote"]}
+    monkeypatch.setattr(payments.EzfpAdapter, "create_checkout", lambda self, config, order, client_ip="":
+        Checkout("API-123", "https://checkout.example/ezfp"))
+    created = owner.post("/payments/orders", json=body)
+    assert created.status_code == 201, created.text
+    order = created.json()
+    row = db.get(RechargeOrder, UUID(order["id"]))
+    assert row.provider_key == "ezfp" and row.merchant_num == "100100" and row.credits == 800
+    callback = sign_ezfp({"pid": "100100", "trade_no": "API-123", "out_trade_no": order["order_no"],
+        "type": "wxpay", "trade_status": "TRADE_SUCCESS", "money": "10.00", "timestamp": "1790000000",
+        "addtime": "2026-11-03 12:00:00", "endtime": "2026-11-03 12:01:00", "name": "易支付档",
+        "buyer": "buyer-1", "extra_provider_field": "signed-value"}, private)
+    assert payments._verify_rsa(callback, settings)
+    assert payments.EzfpAdapter().verify_notification(callback, settings) == ("100100", "10.00", "API-123")
+    assert anonymous.get(payments.CALLBACK_PATH, params=callback).text == "fail"
+    for changes in ({"type": "alipay"}, {"money": "10.01"}, {"trade_status": "TRADE_CLOSED"}, {"pid": "100101"}):
+        invalid = sign_ezfp({**{key: value for key, value in callback.items() if key not in ("sign", "sign_type")}, **changes}, private)
+        assert anonymous.get(payments.EZFP_CALLBACK_PATH, params=invalid).text == "fail"
+    assert owner.get("/usage").json()["balance"] == 1000
+    payments.accept_payment(db, callback, settings)
+    anonymous.headers.clear()
+    callback_result = anonymous.get(payments.EZFP_CALLBACK_PATH, params=callback)
+    assert callback_result.text == "success", callback_result.status_code
+    assert anonymous.get(payments.EZFP_CALLBACK_PATH, params=callback).text == "success"
+    assert owner.get("/usage").json()["balance"] == 1800
+    assert owner.get(payments.CALLBACK_PATH, params=notification(order, settings)).text == "fail"
+
+
+def test_ezfp_invalid_channel_does_not_hide_payment_fm(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, _ = gateway
+    settings.zhifux_enabled = True
+    settings.zhifux_merchant_num = "merchant1"
+    settings.zhifux_pay_type = "wxpay"
+    settings.zhifux_secret = SecretStr("fm-secret")
+    settings.recharge_packages_json = json.dumps([
+        {"id": "fm-basic", "name": "FM 档", "amount_fen": 1000, "credits": 800},
+    ])
+    settings.ezfp_enabled = True
+    settings.ezfp_pid = "invalid merchant!"
+    settings.ezfp_private_key = None
+    settings.ezfp_public_key = None
+
+    catalog = owner.get("/payments/catalog")
+    assert catalog.status_code == 200
+    assert [provider["provider_key"] for provider in catalog.json()["providers"]] == ["zhifux"]
+
+
+def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response(monkeypatch):
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    platform_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem = platform_private.public_key().public_bytes(serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    private_pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()).decode()
+    settings = Settings(_env_file=None).model_copy(update={"ezfp_pid": "100100", "ezfp_private_key": SecretStr(private_pem),
+        "ezfp_public_key": SecretStr(public_pem), "api_public_url": "https://api.example", "frontend_url": "https://app.example"})
+    order = RechargeOrder(id=UUID("11111111-1111-4111-8111-111111111111"), amount_fen=1000,
+        package_name="标准", pay_type="wxpay", merchant_num="100100")
+    original_client = httpx.Client
+    observed = []
+
+    def handle(request):
+        observed.append(request)
+        assert request.method == "POST" and request.url == "https://www.ezfp.cn/api/pay/create"
+        sent = dict(__import__("urllib.parse", fromlist=["parse_qsl"]).parse_qsl(request.content.decode()))
+        assert sent["pid"] == "100100" and sent["money"] == "10.00" and sent["method"] == "jump"
+        unsigned = {key: value for key, value in sent.items() if key not in ("sign", "sign_type")}
+        public = private.public_key()
+        public.verify(base64.b64decode(sent["sign"]), payments._signed_fields(unsigned).encode(),
+            padding.PKCS1v15(), hashes.SHA256())
+        response = sign_ezfp({"code": "0", "trade_no": "PLAT-1", "pay_type": "jump",
+            "pay_info": "https://checkout.example/pay", "timestamp": sent["timestamp"]}, platform_private)
+        return httpx.Response(200, json=response)
+
+    monkeypatch.setattr(payments.httpx, "Client", lambda **kwargs: original_client(**kwargs,
+        transport=httpx.MockTransport(handle)))
+    assert payments.EzfpAdapter().create_checkout(settings, order, "192.0.2.1") == Checkout(
+        "PLAT-1", "https://checkout.example/pay")
+    assert observed
 
 
 @pytest.mark.parametrize("status,payload,rejected", [
