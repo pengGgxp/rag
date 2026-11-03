@@ -503,6 +503,7 @@ class Document(Base):
     parsed_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     parser_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     parsing_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_origin: Mapped[str] = mapped_column(String(30), default="uploaded", server_default="uploaded")
     status: Mapped[DocumentStatus] = mapped_column(
         SqlEnum(DocumentStatus), default=DocumentStatus.QUEUED
     )
@@ -518,6 +519,25 @@ class Document(Base):
     chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
+
+
+class ConversationDocumentSave(Base):
+    __tablename__ = "conversation_document_saves"
+    __table_args__ = (UniqueConstraint("user_id", "request_id", "knowledge_base_id", "content_hash", name="uq_conversation_document_save"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id"))
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
+    document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("ingestion_jobs.id"))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    source_citations: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    dispatch_pending: Mapped[bool] = mapped_column(default=True, server_default="true", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Chunk(Base):

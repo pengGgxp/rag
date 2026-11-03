@@ -51,9 +51,10 @@ class ExtensionRuntime(SkillRuntime):
         self.message_id, self.request_id = message_id, request_id
         self.personal_ids, self.bindings, self.calls = set(), {}, 0
         self.uncertain_calls = set()
+        self.verified_citations = []
         self.mcp_tokens = {}
         with factory() as db:
-            access.revalidate(db)
+            access = self.access = access.revalidate(db)
             for row in db.scalars(select(AgentSkill).options(joinedload(AgentSkill.files)).where(
                     AgentSkill.owner_id == access.user_id, AgentSkill.workspace_id == access.workspace_id,
                     AgentSkill.id.in_([UUID(str(item)) for item in skill_ids]), AgentSkill.enabled.is_(True))).unique():
@@ -97,6 +98,11 @@ class ExtensionRuntime(SkillRuntime):
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
         self.versions = sorted([(row["id"], row["version"]) for row in self.skills] + list(self.mcp_tokens.items()))
+        from .conversation_documents import TOOLS as DOCUMENT_TOOLS
+        if access.role in ("admin", "editor"):
+            self.tools.extend(DOCUMENT_TOOLS)
+            self.versions.append(("conversation-documents", 1))
+            self.versions.sort()
         from .question_workbench import Runtime, TOOLS
         self.question_workbench = Runtime(factory, access, question_workbench, request_id, message_id)
         if self.question_workbench.version:
@@ -109,6 +115,9 @@ class ExtensionRuntime(SkillRuntime):
             self.versions.sort()
 
     def label(self, name, arguments=None):
+        from .conversation_documents import LABELS as DOCUMENT_LABELS
+        if name in DOCUMENT_LABELS:
+            return DOCUMENT_LABELS[name]
         from .question_workbench import LABELS
         if name in LABELS:
             return LABELS[name]
@@ -123,6 +132,16 @@ class ExtensionRuntime(SkillRuntime):
     def execute(self, name, arguments, check_active=None):
         if check_active:
             check_active()
+        from .conversation_documents import LABELS as DOCUMENT_LABELS, execute as document_tool
+        if name in DOCUMENT_LABELS:
+            try:
+                return document_tool(self, name, arguments)
+            except PayloadValidationError:
+                return {"error": "保存参数不完整，请确认标题、内容和目标知识库", "error_code": "document_arguments"}
+            except HTTPException as error:
+                return {"error": str(error.detail), "error_code": "document_save"}
+            except Exception:
+                return {"error": "保存结果尚未确认，请查询已有任务后再试", "uncertain": True, "error_code": "document_save"}
         from .question_workbench import LABELS, METHOD
         if name in LABELS or name == "load_skill" and isinstance(arguments, dict) and arguments.get("skill_id") == "question-workbench":
             try:

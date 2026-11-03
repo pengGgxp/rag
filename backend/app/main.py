@@ -1,4 +1,3 @@
-import hashlib
 import math
 import re
 import secrets
@@ -59,7 +58,7 @@ from .schemas import (
     RetrievalRequest,
 )
 from .storage import upload_fileobj
-from .document_ingestion import admit, check_format
+from .document_ingestion import MAX_DOCUMENT_BYTES, inspect_file as inspect_upload, stage_upload, commit_upload, dispatch_ingestion
 from .storage_settings import router as storage_settings_router
 from .document_uploads import router as document_uploads_router
 from .tasks import embed_document, process_document
@@ -86,25 +85,6 @@ from .search_settings import router as search_settings_router
 from .workspace_files import router as workspace_files_router
 from .storage_billing import router as storage_billing_router
 
-MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
-
-
-def inspect_upload(fileobj) -> tuple[int, str]:
-    """Hash the spooled upload without allocating another full-file buffer."""
-    size = 0
-    digest = hashlib.sha256()
-    fileobj.seek(0)
-    while block := fileobj.read(1024 * 1024):
-        size += len(block)
-        if size > MAX_DOCUMENT_BYTES:
-            raise HTTPException(status_code=413, detail="File exceeds 200 MB limit")
-        digest.update(block)
-    if not size:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    fileobj.seek(0)
-    return size, digest.hexdigest()
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -127,18 +107,30 @@ async def lifespan(_: FastAPI):
                 await asyncio.to_thread(maintain_uploads.delay)
             except Exception:
                 logging.getLogger(__name__).warning("Retention maintenance unavailable; retrying next hour")
+    async def recover_document_saves():
+        from .conversation_documents import recover_pending
+        while True:
+            try:
+                await asyncio.to_thread(recover_pending, SessionLocal)
+            except Exception:
+                logging.getLogger(__name__).warning("Document submission recovery deferred")
+            await asyncio.sleep(30)
     try:
         from .tasks import maintain_uploads
         maintain_uploads.delay()
     except Exception:
         logging.getLogger(__name__).warning("Upload recovery deferred until the next maintenance run")
     retention = asyncio.create_task(audit_retention())
+    document_recovery = asyncio.create_task(recover_document_saves())
     try:
         yield
     finally:
         retention.cancel()
+        document_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await retention
+        with suppress(asyncio.CancelledError):
+            await document_recovery
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
@@ -349,19 +341,11 @@ def upload_document(
     if file.content_type not in allowed and suffix not in allowed_suffixes:
         raise HTTPException(status_code=415, detail="Unsupported document type")
 
-    size_bytes, digest = inspect_upload(file.file)
-    check_format(file.file, file.filename or "")
-    object_key = f"{knowledge_base_id}/{uuid4()}{suffix}"
-    document, job = admit(db, access, knowledge_base_id, file.filename or "untitled",
-        file.content_type, size_bytes, digest, object_key, version_of, request)
-    upload_fileobj(
-        fileobj=file.file,
-        object_key=object_key,
-        content_type=file.content_type,
-    )
-    db.commit()
+    document, job = stage_upload(db, access, knowledge_base_id, file.filename or "untitled",
+        file.content_type, file.file, version_of, request, upload=upload_fileobj)
+    commit_upload(db, document)
     db.refresh(document)
-    process_document.delay(str(job.id))
+    dispatch_ingestion(job.id, dispatch=process_document.delay)
     return DocumentRead.model_validate(document).model_copy(
         update={"job": JobRead.model_validate(job)}
     )
@@ -866,6 +850,7 @@ def retrieve_knowledge_base(
             chunk=ChunkRead.model_validate(entry["chunk"]).model_copy(update={
                 "version_group_id": entry["chunk"].document.version_group_id,
                 "version_number": entry["chunk"].document.version_number,
+                "content_origin": entry["chunk"].document.content_origin,
             }),
             score=float(entry["score"]),
             filename=entry["filename"],
@@ -924,6 +909,7 @@ def answer_knowledge_base(
             CitationRead(
                 chunk_id=result.chunk.id,
                 filename=result.filename,
+                content_origin=result.chunk.content_origin,
                 text=result.chunk.text,
                 char_start=result.chunk.char_start,
                 char_end=result.chunk.char_end,
@@ -949,7 +935,7 @@ def answer_knowledge_base(
 
     context = "\n\n".join(
         (
-            f"[Source {index} | chunk_id={citation.chunk_id} | file={citation.filename}]\n"
+            f"[Source {index} | chunk_id={citation.chunk_id} | file={citation.filename} | content_origin={citation.content_origin}]\n"
             f"{citation.text}"
         )
         for index, citation in enumerate(citations, start=1)
@@ -1056,6 +1042,8 @@ def answer_knowledge_base(
 
 
 app.include_router(auth_router)
+from .conversation_documents import router as conversation_documents_router
+app.include_router(conversation_documents_router)
 from .question_workbench import router as question_workbench_router
 app.include_router(question_workbench_router)
 app.include_router(email_auth_router)

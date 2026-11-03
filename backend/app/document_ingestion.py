@@ -1,5 +1,8 @@
 """One transactional document/version admission path for proxy and direct uploads."""
 from uuid import uuid4
+import hashlib
+import logging
+from pathlib import Path
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -9,6 +12,57 @@ from .models import Document, DocumentStatus, IngestionJob, KnowledgeBase, Knowl
 
 MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
 SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".csv", ".xlsx"}
+
+
+def inspect_file(stream):
+    size, digest = 0, hashlib.sha256()
+    stream.seek(0)
+    while block := stream.read(1024 * 1024):
+        size += len(block)
+        if size > MAX_DOCUMENT_BYTES:
+            raise HTTPException(413, "File exceeds 200 MB limit")
+        digest.update(block)
+    stream.seek(0)
+    if not size:
+        raise HTTPException(400, "Uploaded file is empty")
+    return size, digest.hexdigest()
+
+
+def stage_upload(db, access, library_id, filename, content_type, stream, version_of=None, request=None, upload=None):
+    from .storage import upload_fileobj, delete_object
+    size, digest = inspect_file(stream)
+    check_format(stream, filename)
+    key = f"{library_id}/{uuid4()}{Path(filename).suffix.lower()}"
+    document, job = admit(db, access, library_id, filename, content_type, size, digest, key, version_of, request)
+    try:
+        (upload or upload_fileobj)(fileobj=stream, object_key=key, content_type=content_type)
+    except Exception:
+        db.rollback()
+        try:
+            delete_object(key)
+        except Exception:
+            logging.getLogger(__name__).warning("Upload object cleanup deferred")
+        raise
+    return document, job
+
+
+def commit_upload(db, document):
+    from .storage import delete_object
+    key = document.object_key
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            delete_object(key)
+        except Exception:
+            logging.getLogger(__name__).warning("Upload object cleanup deferred")
+        raise
+
+
+def dispatch_ingestion(job_id, dispatch=None):
+    from .tasks import process_document
+    (dispatch or process_document.delay)(str(job_id))
 
 
 def check_format(stream, filename):

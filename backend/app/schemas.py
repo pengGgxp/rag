@@ -71,6 +71,7 @@ class DocumentRead(BaseModel):
     is_active: bool
     supersedes_id: UUID | None
     filename: str
+    content_origin: str = "uploaded"
     content_type: str
     size_bytes: int
     status: DocumentStatus
@@ -89,6 +90,7 @@ class DocumentPreviewRead(BaseModel):
     version_number: int
     is_active: bool
     filename: str
+    content_origin: str = "uploaded"
     content_type: str
     size_bytes: int
     status: DocumentStatus
@@ -112,6 +114,7 @@ class ChunkRead(BaseModel):
     id: UUID
     document_id: UUID
     ordinal: int
+    content_origin: str = "uploaded"
     text: str
     token_count: int
     char_start: int
@@ -183,6 +186,7 @@ class AnswerRequest(BaseModel):
 class CitationRead(BaseModel):
     chunk_id: UUID
     filename: str
+    content_origin: str = "uploaded"
     text: str
     char_start: int
     char_end: int
