@@ -346,6 +346,8 @@ class RechargeOrder(Base):
     credits: Mapped[int] = mapped_column(Integer)
     merchant_num: Mapped[str] = mapped_column(String(100))
     pay_type: Mapped[str] = mapped_column(String(100))
+    provider_key: Mapped[str] = mapped_column(String(40), default="zhifux", server_default="zhifux")
+    payment_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="creating")
     platform_order_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -355,6 +357,20 @@ class RechargeOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
     )
+
+
+class SitePaymentConfig(Base):
+    __tablename__ = "site_payment_configs"
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider_key: Mapped[str] = mapped_column(String(40), default="zhifux")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    api_base_url: Mapped[str] = mapped_column(String(500), default="")
+    merchant_num: Mapped[str] = mapped_column(String(100), default="")
+    pay_type: Mapped[str] = mapped_column(String(100), default="")
+    encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Membership(Base):

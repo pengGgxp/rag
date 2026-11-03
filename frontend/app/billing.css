@@ -342,6 +342,43 @@
 .billing-pending > svg { margin-top: 2px; }
 .billing-pending strong { display: block; font-size: var(--form-font-size); font-weight: 600; }
 .billing-pending p { margin-top: 4px; font-size: var(--form-label-size); line-height: 1.7; }
+.payment-endpoints { display: grid; gap: 12px; margin: var(--form-section-gap) 0 0; }
+.payment-endpoints > div { display: grid; grid-template-columns: minmax(150px, 220px) minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.payment-endpoints dt { color: var(--muted); font-size: var(--form-label-size); }
+.payment-endpoints dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: var(--form-font-size); }
+.payment-endpoints code { font: inherit; }
+.payment-packages-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--form-gap); }
+.payment-packages-heading h2 { margin-bottom: 6px !important; }
+.payment-packages-heading p { margin: 0; }
+.payment-packages-heading > button { flex: 0 0 auto; min-height: var(--form-control-height); }
+.payment-package-list { border-top: 1px solid var(--line); margin-top: var(--form-gap); }
+.payment-package-row { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(160px, 1.4fr) minmax(120px, .8fr) minmax(130px, .9fr) 40px; gap: 12px; align-items: end; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.payment-package-row label { display: grid; gap: 7px; min-width: 0; color: var(--muted); font-size: var(--form-label-size); }
+.payment-package-row input { width: 100%; min-width: 0; min-height: var(--form-control-height); padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: var(--form-font-size); }
+.payment-package-row input:focus { outline: 2px solid var(--brand-soft); outline-offset: 1px; border-color: var(--focus-ring); }
+.payment-package-remove { justify-self: end; width: 40px; height: 40px; color: var(--danger); }
+.payment-package-empty { padding: 20px 0; text-align: left; }
+.payment-secret-action { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: var(--form-label-size); }
+.payment-secret-action button { min-height: var(--form-control-height); flex: 0 0 auto; }
+.payment-footer-note { margin-top: var(--form-section-gap); color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; }
+@media (max-width: 900px) {
+  .payment-package-row { grid-template-columns: repeat(2, minmax(0, 1fr)) 40px; align-items: end; }
+  .payment-package-remove { grid-column: 3; grid-row: 1; align-self: start; }
+}
+@media (max-width: 600px) {
+  .payment-endpoints > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .payment-packages-heading { align-items: stretch; flex-direction: column; }
+  .payment-packages-heading > button { align-self: flex-start; min-height: var(--form-touch-height); }
+  .payment-package-row { grid-template-columns: repeat(2, minmax(0, 1fr)) 44px; gap: 10px; }
+  .payment-package-row label:nth-child(1), .payment-package-row label:nth-child(2) { grid-column: 1 / 3; }
+  .payment-package-row label:nth-child(3) { grid-column: 1; }
+  .payment-package-row label:nth-child(4) { grid-column: 2; }
+  .payment-package-remove { grid-column: 3; grid-row: 1; width: 44px; height: 44px; }
+  .payment-package-row input, .payment-secret-action button { min-height: var(--form-touch-height); }
+  .payment-secret-action { align-items: flex-start; flex-direction: column; }
+  .pricing-footer { align-items: stretch; flex-direction: column; }
+  .pricing-footer .primary { min-height: var(--form-touch-height); justify-content: center; }
+}
 @container (max-width: 700px) {
   .model-price-heading { display: none; }
   .model-price-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }

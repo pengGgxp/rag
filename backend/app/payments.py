@@ -8,14 +8,15 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 from fractions import Fraction
+from typing import Protocol
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -25,10 +26,60 @@ from .audit_log import record_audit
 from .auth import Access, aware, get_access, now
 from .config import Settings, get_settings
 from .credits import recharge
-from .models import RechargeOrder, Workspace
+from .models import RechargeOrder, SitePaymentConfig, Workspace
 
 CALLBACK_PATH = "/payments/zhifux/notify"
 PAY_DURATION_MINUTES = 15
+PROVIDER_KEY = "zhifux"
+
+
+def effective_settings(db, *, base=None, version=None):
+    """Resolve a payment adapter configuration without exposing its secret."""
+    settings = base or get_settings()
+    row = db.get(SitePaymentConfig, version) if version is not None else db.scalar(
+        select(SitePaymentConfig).order_by(SitePaymentConfig.version.desc()).limit(1))
+    if row is None:
+        return settings, None
+    from .site_auth import reveal
+    secret = reveal(row.encrypted_secret) if row.encrypted_secret else ""
+    return settings.model_copy(update={
+        "zhifux_enabled": row.enabled,
+        "zhifux_api_base_url": row.api_base_url,
+        "zhifux_merchant_num": row.merchant_num,
+        "zhifux_pay_type": row.pay_type,
+        "zhifux_secret": SecretStr(secret) if secret else None,
+        "recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
+    }), row.version
+
+
+def payment_admin_view(db):
+    settings, version = effective_settings(db)
+    from .site_auth import cipher
+    try:
+        cipher()
+        encryption_ready = True
+    except HTTPException:
+        encryption_ready = False
+    row = db.get(SitePaymentConfig, version) if version is not None else None
+    packages = []
+    try:
+        packages = [item.model_dump() for item in TypeAdapter(list[RechargePackage]).validate_json(settings.recharge_packages_json)]
+    except ValidationError:
+        pass
+    return {
+        "version": version or 0,
+        "source": "database" if row else "environment",
+        "enabled": settings.zhifux_enabled,
+        "provider_key": PROVIDER_KEY,
+        "api_base_url": settings.zhifux_api_base_url,
+        "merchant_num": settings.zhifux_merchant_num,
+        "pay_type": settings.zhifux_pay_type,
+        "has_secret": bool(row.encrypted_secret) if row else bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value()),
+        "packages": packages,
+        "callback_url": settings.api_public_url.rstrip("/") + CALLBACK_PATH,
+        "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
+        "encryption_ready": encryption_ready,
+    }
 
 
 class RechargePackage(BaseModel):
@@ -161,6 +212,15 @@ class Checkout:
     pay_url: str
 
 
+class PaymentAdapter(Protocol):
+    provider_key: str
+    callback_path: str
+
+    def create_checkout(self, settings: Settings, order: RechargeOrder) -> Checkout: ...
+    def settings_for_order(self, db: Session, order: RechargeOrder | None, fallback: Settings) -> Settings: ...
+    def verify_notification(self, params: dict[str, str], settings: Settings) -> tuple[str, str, str]: ...
+
+
 def start_checkout(settings: Settings, order: RechargeOrder) -> Checkout:
     amount = yuan(order.amount_fen)
     notify_url = settings.api_public_url.rstrip("/") + CALLBACK_PATH
@@ -213,6 +273,53 @@ def start_checkout(settings: Settings, order: RechargeOrder) -> Checkout:
         raise GatewayError() from exc
 
 
+class PaymentFMAdapter:
+    provider_key = PROVIDER_KEY
+    callback_path = CALLBACK_PATH
+
+    def create_checkout(self, settings: Settings, order: RechargeOrder) -> Checkout:
+        return start_checkout(settings, order)
+
+    def settings_for_order(self, db: Session, order: RechargeOrder | None, fallback: Settings) -> Settings:
+        if order is None or order.payment_config_version is None:
+            return fallback
+        settings, _ = effective_settings(db, base=fallback, version=order.payment_config_version)
+        return settings
+
+    def verify_notification(self, params: dict[str, str], settings: Settings) -> tuple[str, str, str]:
+        secret = settings.zhifux_secret
+        if not secret or not secret.get_secret_value():
+            raise HTTPException(503, "fail")
+        state = params.get("state", "")
+        merchant = params.get("merchantNum", "")
+        order_no = params.get("orderNo", "")
+        amount = params.get("amount", "")
+        platform_id = params.get("platformOrderNo", "")
+        signature = params.get("sign", "")
+        if (
+            state != "1" or merchant != settings.zhifux_merchant_num
+            or not re.fullmatch(r"[a-f0-9]{32}", order_no)
+            or not re.fullmatch(r"[0-9]{1,8}(?:\.[0-9]{1,2})?", amount)
+            or not re.fullmatch(r"[a-zA-Z0-9]{1,100}", platform_id)
+            or not re.fullmatch(r"[a-fA-F0-9]{32}", signature)
+            or not secrets.compare_digest(
+                signature.lower(), md5_sign(state + merchant + order_no + amount + secret.get_secret_value()),
+            )
+        ):
+            raise HTTPException(400, "fail")
+        return merchant, amount, platform_id
+
+
+PAYMENT_ADAPTERS: dict[str, PaymentAdapter] = {PROVIDER_KEY: PaymentFMAdapter()}
+
+
+def payment_adapter(provider_key: str) -> PaymentAdapter:
+    adapter = PAYMENT_ADAPTERS.get(provider_key)
+    if adapter is None:
+        raise HTTPException(503, "支付渠道暂不可用")
+    return adapter
+
+
 def order_read(order: RechargeOrder) -> dict:
     status = order.status
     if status in ("pending", "creating", "confirming") and order.expires_at and aware(order.expires_at) <= now():
@@ -232,29 +339,15 @@ def order_read(order: RechargeOrder) -> dict:
 
 
 def accept_payment(db: Session, params: dict[str, str], settings: Settings):
-    secret = settings.zhifux_secret
-    if not secret or not secret.get_secret_value():
-        raise HTTPException(503, "fail")
-    state = params.get("state", "")
-    merchant = params.get("merchantNum", "")
     order_no = params.get("orderNo", "")
-    amount = params.get("amount", "")
-    platform_id = params.get("platformOrderNo", "")
-    signature = params.get("sign", "")
-    if (
-        state != "1" or merchant != settings.zhifux_merchant_num
-        or not re.fullmatch(r"[a-f0-9]{32}", order_no)
-        or not re.fullmatch(r"[0-9]{1,8}(?:\.[0-9]{1,2})?", amount)
-        or not re.fullmatch(r"[a-zA-Z0-9]{1,100}", platform_id)
-        or not re.fullmatch(r"[a-fA-F0-9]{32}", signature)
-        or not secrets.compare_digest(
-            signature.lower(), md5_sign(state + merchant + order_no + amount + secret.get_secret_value()),
-        )
-    ):
-        raise HTTPException(400, "fail")
-    order = db.scalar(select(RechargeOrder).where(
-        RechargeOrder.id == UUID(hex=order_no),
-    ).with_for_update().execution_options(populate_existing=True))
+    order = None
+    if re.fullmatch(r"[a-f0-9]{32}", order_no):
+        order = db.scalar(select(RechargeOrder).where(
+            RechargeOrder.id == UUID(hex=order_no),
+        ).with_for_update().execution_options(populate_existing=True))
+    adapter = payment_adapter(order.provider_key if order is not None else PROVIDER_KEY)
+    settings = adapter.settings_for_order(db, order, settings)
+    merchant, amount, platform_id = adapter.verify_notification(params, settings)
     if (
         order is None or order.merchant_num != merchant
         or Decimal(amount) * 100 != order.amount_fen
@@ -306,9 +399,10 @@ def build_router(get_db):
     router = APIRouter(prefix="/payments", tags=["payments"])
 
     @router.get("/catalog")
-    def catalog(access: Access = Depends(get_access)):
+    def catalog(db: Session = Depends(get_db), access: Access = Depends(get_access)):
         try:
-            packages, custom = recharge_options(get_settings())
+            settings, _ = effective_settings(db)
+            packages, custom = recharge_options(settings)
         except HTTPException:
             packages, custom = [], None
         return {
@@ -338,8 +432,9 @@ def build_router(get_db):
             result = order_read(order)
             db.commit()
             return result
-        settings = get_settings()
+        settings, config_version = effective_settings(db)
         package = resolve_package(settings, payload)
+        adapter = payment_adapter(PROVIDER_KEY)
         order = RechargeOrder(
             id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
             idempotency_key=payload.idempotency_key,
@@ -347,6 +442,7 @@ def build_router(get_db):
             package_name=package.name,
             amount_fen=package.amount_fen, credits=package.credits,
             merchant_num=settings.zhifux_merchant_num, pay_type=settings.zhifux_pay_type,
+            provider_key=adapter.provider_key, payment_config_version=config_version,
             status="creating", expires_at=now() + timedelta(minutes=PAY_DURATION_MINUTES),
         )
         db.add(order)
@@ -359,7 +455,7 @@ def build_router(get_db):
         db.commit()
         order_id = order.id
         try:
-            checkout = start_checkout(settings, order)
+            checkout = adapter.create_checkout(settings, order)
             next_status = "pending"
         except GatewayError as exc:
             checkout = None
@@ -407,7 +503,7 @@ def build_router(get_db):
             raise HTTPException(404, "充值订单不存在")
         return order_read(row)
 
-    @router.api_route("/zhifux/notify", methods=["GET", "POST"], response_class=PlainTextResponse)
+    @router.api_route(payment_adapter(PROVIDER_KEY).callback_path.removeprefix("/payments"), methods=["GET", "POST"], response_class=PlainTextResponse)
     async def notify(request: Request, db: Session = Depends(get_db)):
         try:
             params = await callback_params(request)

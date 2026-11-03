@@ -75,6 +75,7 @@ from .credits import (
 )
 from .extensions import router as extensions_router
 from .payments import build_router as build_payment_router
+from .payment_settings import router as payment_settings_router
 from .llm_providers import router as llm_providers_router, site_router as site_llm_providers_router
 from .credits import site_router as site_usage_policies_router
 from .llm_providers import request_provider_config
@@ -1066,6 +1067,7 @@ app.include_router(search_settings_router)
 app.include_router(workspace_files_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
+app.include_router(payment_settings_router)
 app.include_router(chat_router(get_db, retrieve_knowledge_base))
 app.include_router(extensions_router)
 from .site_skills import router as site_skills_router

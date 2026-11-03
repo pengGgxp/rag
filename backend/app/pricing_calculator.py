@@ -43,9 +43,10 @@ def decimal_text(value):
     return format(result, "f")
 
 
-def reference_package():
+def reference_package(db):
     try:
-        packages = payments.configured_packages(payments.get_settings())
+        settings, _ = payments.effective_settings(db)
+        packages = payments.configured_packages(settings)
     except HTTPException:
         packages = []
     if not packages:
@@ -60,9 +61,9 @@ def package_read(package):
 
 
 @router.get("")
-def read_context(actor=Depends(site_admin)):
+def read_context(db=Depends(get_db), actor=Depends(site_admin)):
     try:
-        package = reference_package()
+        package = reference_package(db)
     except HTTPException as error:
         return {"ready": False, "reference_package": None, "reason": error.detail}
     return {"ready": True, "reference_package": package_read(package), "reason": None}
@@ -70,7 +71,7 @@ def read_context(actor=Depends(site_admin)):
 
 @router.post("/quote")
 def quote(payload: QuoteInput, db=Depends(get_db), actor=Depends(site_admin)):
-    package = reference_package()
+    package = reference_package(db)
     rate = Fraction(package.credits * 100, package.amount_fen)
     cost = Fraction(payload.cost_yuan) + Fraction(payload.overhead_yuan)
     profit = Fraction(payload.profit_yuan)
