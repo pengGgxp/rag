@@ -1,5 +1,13 @@
 # Agent 自主执行
 
+## 对话成果保存（Issue #74）
+
+内置 `list_writable_knowledge_bases`、`save_to_knowledge_base` 和
+`get_saved_document_status`，不需要启用扩展。仅用户明确要求或确认后保存，
+按当前工作区写入权限选择目标，不扩大本会话检索范围。
+保存复用上传入库与计费；活动提供真实文档链接，页面查询进度不占用模型轮次。
+接口、来源隐私、幂等及验收见 [对话成果入库](conversation-documents.md)。
+
 ## 目标与范围
 
 聊天由同一个 Agent 自主完成：直接回答、检索、改写查询、继续检索、
