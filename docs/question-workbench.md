@@ -15,6 +15,11 @@ revocation; visible ordered activities; refresh and slash/picker selection; isol
 tests, PostgreSQL migrations, responsive screenshots and real-model verification.
 Keep the task open until unverified evidence is explicitly resolved. Local only.
 
+UI follow-up (2026-11-03): remove browser-default link underlines inside the
+conversation extension picker. Keep link color, keyboard focus and selection
+behavior. Verify the computed link style in the running local chat; do not change
+document citations or the workbench authorization flow.
+
 Local verification on 2026-11-02: full backend regression 694 passed / 49 skipped;
 final connector and Agent checks 30 passed. A real model loaded the authoring Skill,
 retrieved a synthetic source, saved two sourced questions, assembled a paper and
