@@ -369,6 +369,7 @@ class SitePaymentConfig(Base):
     pay_type: Mapped[str] = mapped_column(String(100), default="")
     encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    custom_recharge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

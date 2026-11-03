@@ -12,7 +12,7 @@ from app import payments, site_auth
 from app.config import Settings
 from app.models import SiteAuditEvent, SitePaymentConfig, User
 from test_auth import PASSWORD, register
-from test_payments import create, notification, sign_ezfp
+from test_payments import create, custom_order, notification, sign_ezfp
 
 ROOT = "/site/admin/payments"
 
@@ -46,6 +46,7 @@ def payload(version=0, **changes):
         "provider_key": "zhifux",
         "api_base_url": "https://gateway.example/api", "merchant_num": "888888",
         "pay_type": "aloop", "secret": None, "clear_secret": False,
+        "custom_recharge_enabled": False,
         "packages": [{"id": "test", "name": "测试档位", "amount_fen": 1234, "credits": 567}],
         **changes,
     }
@@ -140,6 +141,35 @@ def test_invalid_settings_and_version_conflict_do_not_create_revision(accounts, 
     conflict = owner.put(ROOT, json=payload(version=0, secret="other-secret"))
     assert conflict.status_code == 409
     assert db.query(SitePaymentConfig).count() == 1
+
+
+def test_admin_custom_recharge_toggle_controls_public_catalog_and_order_validation(accounts, gateway, monkeypatch):
+    owner, db = admin(accounts)
+    settings, _ = gateway
+    settings.site_config_encryption_key = SecretStr(Fernet.generate_key().decode())
+    monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
+
+    disabled = owner.put(ROOT, json=payload(secret="custom-toggle-test"))
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["custom_recharge_enabled"] is False
+    catalog = owner.get("/payments/catalog").json()
+    assert [item["id"] for item in catalog["packages"]] == ["test"]
+    assert "custom" not in catalog
+    disabled_order = owner.post("/payments/orders", json={"package_id": "custom_amount",
+        "custom_amount_fen": 2345, "idempotency_key": "custom-disabled-1",
+        "quote": "0" * 64})
+    assert disabled_order.status_code == 422
+    assert "未开放自定义充值" in disabled_order.json()["detail"]
+
+    enabled = owner.put(ROOT, json=payload(version=disabled.json()["version"],
+        secret=None, custom_recharge_enabled=True))
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["custom_recharge_enabled"] is True
+    catalog = owner.get("/payments/catalog").json()
+    assert [item["id"] for item in catalog["packages"]] == ["test"]
+    assert catalog["custom"]["id"] == "custom_amount"
+    assert custom_order(owner, 2345).status_code == 201
+    assert db.query(SitePaymentConfig).count() == 2
 
 
 def test_empty_encryption_key_is_reported_as_unavailable(accounts, gateway, monkeypatch):

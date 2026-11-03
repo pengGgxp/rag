@@ -26,6 +26,7 @@ def gateway(accounts, monkeypatch):
         "zhifux_merchant_num": "888888",
         "zhifux_secret": SecretStr("test-only-secret"),
         "zhifux_pay_type": "aloop",
+        "zhifux_custom_recharge_enabled": True,
         "api_public_url": "https://api.example",
         "frontend_url": "https://app.example",
         "recharge_packages_json": json.dumps([
@@ -344,7 +345,7 @@ def custom_order(client, amount_fen, *, key=None, quote=None):
     })
 
 
-def test_presets_preserve_existing_packages_and_conversion(accounts, gateway):
+def test_catalog_only_offers_configured_packages_in_configured_order(accounts, gateway):
     (owner, _, _), _ = accounts
     register(owner)
     settings, _ = gateway
@@ -352,14 +353,26 @@ def test_presets_preserve_existing_packages_and_conversion(accounts, gateway):
         {"id": "starter", "name": "基础包", "amount_fen": 1000, "credits": 1000},
     ])
     catalog = owner.get("/payments/catalog").json()
-    assert [(p["amount_fen"], p["credits"]) for p in catalog["packages"]] == [
-        (1000, 1000), (2000, 2000), (5000, 5000), (10000, 10000), (20000, 20000),
-    ]
+    assert [(p["amount_fen"], p["credits"]) for p in catalog["packages"]] == [(1000, 1000)]
     assert catalog["packages"][0]["id"] == "starter"
     for fen in (2000, 5000, 10000, 20000):
         response = create(owner, package=f"amount_{fen}")
-        assert response.status_code == 201
-        assert response.json()["amount_fen"] == response.json()["credits"] == fen
+        assert response.status_code == 409
+
+
+def test_custom_recharge_is_disabled_by_default_and_enforced_by_order_api(accounts, gateway):
+    (owner, _, _), _ = accounts
+    register(owner)
+    settings, calls = gateway
+    settings.zhifux_custom_recharge_enabled = False
+    catalog = owner.get("/payments/catalog").json()
+    assert catalog["enabled"] and "custom" not in catalog
+    assert [item["id"] for item in catalog["packages"]] == ["test", "other"]
+    response = owner.post("/payments/orders", json={"package_id": "custom_amount",
+        "custom_amount_fen": 2345, "idempotency_key": uuid4().hex, "quote": "0" * 64})
+    assert response.status_code == 422
+    assert "未开放自定义充值" in response.json()["detail"]
+    assert calls == []
 
 
 def test_custom_amount_is_quoted_idempotent_and_paid_once(accounts, gateway):
@@ -382,8 +395,9 @@ def test_custom_amount_is_quoted_idempotent_and_paid_once(accounts, gateway):
     assert owner.get("/usage").json()["balance"] == 1000 + order["credits"]
     entries = db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.kind == "paid_recharge")).all()
     assert len(entries) == 1 and entries[0].amount == order["credits"]
+    settings.zhifux_custom_recharge_enabled = False
     settings.zhifux_enabled = False
-    # A retry recovers its original order even after the catalogue is disabled.
+    # Existing idempotent retries recover the original order after custom recharge is disabled.
     assert custom_order_payload(owner, order["amount_fen"], key).json()["id"] == order["id"]
 
 

@@ -92,6 +92,7 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
             "ezfp_private_key": SecretStr(credentials["private_key"]) if credentials.get("private_key") else None,
             "ezfp_public_key": SecretStr(credentials["public_key"]) if credentials.get("public_key") else None,
             "ezfp_recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
+            "ezfp_custom_recharge_enabled": row.custom_recharge_enabled,
         }), row.version
     return settings.model_copy(update={
         "zhifux_enabled": row.enabled,
@@ -100,6 +101,7 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
         "zhifux_pay_type": row.pay_type,
         "zhifux_secret": SecretStr(secret) if secret else None,
         "recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
+        "zhifux_custom_recharge_enabled": row.custom_recharge_enabled,
     }), row.version
 
 
@@ -116,6 +118,7 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         enabled, api_base_url = settings.ezfp_enabled, settings.ezfp_api_base_url
         merchant_num, pay_type = settings.ezfp_pid, settings.ezfp_pay_type
         packages_json = settings.ezfp_recharge_packages_json
+        custom_recharge_enabled = settings.ezfp_custom_recharge_enabled
         if row:
             credentials = json.loads(reveal(row.encrypted_secret)) if row.encrypted_secret else {}
             has_secret = bool(credentials.get("private_key") and credentials.get("public_key"))
@@ -126,6 +129,7 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         enabled, api_base_url = settings.zhifux_enabled, settings.zhifux_api_base_url
         merchant_num, pay_type = settings.zhifux_merchant_num, settings.zhifux_pay_type
         packages_json = settings.recharge_packages_json
+        custom_recharge_enabled = settings.zhifux_custom_recharge_enabled
         has_secret = bool(row.encrypted_secret) if row else bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
         callback_path = CALLBACK_PATH
     packages = []
@@ -145,6 +149,7 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         "pay_type": pay_type,
         "has_secret": has_secret,
         "packages": packages,
+        "custom_recharge_enabled": custom_recharge_enabled,
         "callback_url": settings.api_public_url.rstrip("/") + callback_path,
         "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
         "encryption_ready": encryption_ready,
@@ -179,6 +184,10 @@ def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
     packages = configured_packages(settings, provider_key)
     if not packages:
         return [], None
+    custom_enabled = (settings.ezfp_custom_recharge_enabled if provider_key == EZFP_PROVIDER_KEY
+                      else settings.zhifux_custom_recharge_enabled)
+    if not custom_enabled:
+        return packages, None
     # Added amounts never introduce a better exchange rate than existing offers.
     reference = min(packages, key=lambda item: Fraction(item.credits, item.amount_fen))
     rate = Fraction(reference.credits, reference.amount_fen)
@@ -188,20 +197,10 @@ def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
     custom_id = CUSTOM_PACKAGE_ID
     while custom_id in identifiers:
         custom_id += "_"
-    options = list(packages)
-    for fen in (2000, 5000, 10000, 20000):
-        credits = fen * rate.numerator // rate.denominator
-        if minimum <= fen <= maximum and not any(item.amount_fen == fen for item in options):
-            identifier = f"amount_{fen}"
-            while identifier in identifiers:
-                identifier += "_"
-            options.append(RechargePackage(id=identifier, name=f"{fen // 100} 元充值",
-                                           amount_fen=fen, credits=credits))
-    options.sort(key=lambda item: item.amount_fen)
     custom = {"id": custom_id, "min_amount_fen": minimum, "max_amount_fen": maximum,
               "rate_credits": reference.credits, "rate_amount_fen": reference.amount_fen,
               "quote": package_quote(reference)} if minimum <= maximum else None
-    return options, custom
+    return packages, custom
 
 
 def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVIDER_KEY):
@@ -217,6 +216,8 @@ def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVI
         return RechargePackage(id=custom["id"], name="自定义充值", amount_fen=fen,
                                credits=fen * custom["rate_credits"] // custom["rate_amount_fen"])
     if payload.custom_amount_fen is not None:
+        if not custom:
+            raise HTTPException(422, "当前支付渠道未开放自定义充值，请选择已有充值档位")
         raise HTTPException(422, "请选择自定义金额后再输入金额")
     package = next((item for item in packages if item.id == payload.package_id), None)
     if package is None:

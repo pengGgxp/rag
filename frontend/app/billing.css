@@ -358,6 +358,8 @@
 .payment-package-row input:focus { outline: 2px solid var(--brand-soft); outline-offset: 1px; border-color: var(--focus-ring); }
 .payment-package-remove { justify-self: end; width: 40px; height: 40px; color: var(--danger); }
 .payment-package-empty { padding: 20px 0; text-align: left; }
+.payment-settings-form .payment-custom-recharge-toggle { display: flex; align-items: center; gap: 10px; min-height: var(--form-touch-height); margin-top: 12px; cursor: pointer; }
+.payment-settings-form .payment-custom-recharge-toggle input { flex: 0 0 16px; width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; }
 .payment-secret-action { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: var(--form-label-size); }
 .payment-secret-action button { min-height: var(--form-control-height); flex: 0 0 auto; }
 .payment-footer-note { margin-top: var(--form-section-gap); color: var(--muted); font-size: var(--form-label-size); line-height: 1.7; }

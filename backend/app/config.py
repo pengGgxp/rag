@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     zhifux_secret: SecretStr | None = None
     zhifux_pay_type: str = ""
     recharge_packages_json: str = "[]"
+    zhifux_custom_recharge_enabled: bool = False
     ezfp_enabled: bool = False
     ezfp_api_base_url: str = "https://www.ezfp.cn/api/pay/create"
     ezfp_pid: str = ""
@@ -62,6 +63,7 @@ class Settings(BaseSettings):
     ezfp_private_key: SecretStr | None = None
     ezfp_public_key: SecretStr | None = None
     ezfp_recharge_packages_json: str = "[]"
+    ezfp_custom_recharge_enabled: bool = False
     usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
     workspace_executor_url: str | None = None
     workspace_runner_image: str = "rag-workspace-executor:latest"

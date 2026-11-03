@@ -29,6 +29,7 @@ class PaymentSettingsInput(BaseModel):
     private_key: SecretStr | None = Field(default=None, max_length=12000)
     public_key: SecretStr | None = Field(default=None, max_length=12000)
     clear_secret: bool = False
+    custom_recharge_enabled: bool = False
     packages: list[payments.RechargePackage] = Field(max_length=20)
 
     @model_validator(mode="after")
@@ -114,6 +115,7 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
             "merchant_num": current.merchant_num,
             "pay_type": current.pay_type,
             "packages": current.packages,
+            "custom_recharge_enabled": current.custom_recharge_enabled,
         }
         had_secret = bool(current.encrypted_secret)
     elif provider_key == payments.PROVIDER_KEY:
@@ -127,11 +129,13 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
             "merchant_num": legacy.zhifux_merchant_num,
             "pay_type": legacy.zhifux_pay_type,
             "packages": [item.model_dump() for item in legacy_packages],
+            "custom_recharge_enabled": legacy.zhifux_custom_recharge_enabled,
         }
         had_secret = bool(legacy.zhifux_secret and legacy.zhifux_secret.get_secret_value())
     else:
         previous = {"enabled": legacy.ezfp_enabled, "api_base_url": legacy.ezfp_api_base_url,
-            "merchant_num": legacy.ezfp_pid, "pay_type": legacy.ezfp_pay_type, "packages": []}
+            "merchant_num": legacy.ezfp_pid, "pay_type": legacy.ezfp_pay_type, "packages": [],
+            "custom_recharge_enabled": legacy.ezfp_custom_recharge_enabled}
         try:
             previous["packages"] = TypeAdapter(list[payments.RechargePackage]).validate_json(legacy.ezfp_recharge_packages_json)
             previous["packages"] = [item.model_dump() for item in previous["packages"]]
@@ -144,6 +148,7 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
         "merchant_num": payload.merchant_num,
         "pay_type": payload.pay_type,
         "packages": [item.model_dump() for item in payload.packages],
+        "custom_recharge_enabled": payload.custom_recharge_enabled,
     }
     changed_fields = [field for field, value in updated.items() if previous[field] != value]
 
@@ -182,7 +187,8 @@ def save_settings(payload: PaymentSettingsInput, request: Request,
         version=version, provider_key=provider_key, enabled=payload.enabled,
         api_base_url=payload.api_base_url, merchant_num=payload.merchant_num,
         pay_type=payload.pay_type, encrypted_secret=encrypted_secret,
-        packages=[item.model_dump() for item in payload.packages], created_by=actor.id,
+        packages=[item.model_dump() for item in payload.packages],
+        custom_recharge_enabled=payload.custom_recharge_enabled, created_by=actor.id,
     )
     db.add(row)
     record(db, actor, "payment.settings_updated", "payment_config", version,

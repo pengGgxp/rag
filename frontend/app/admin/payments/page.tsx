@@ -22,11 +22,12 @@ type Settings = {
   pay_type: string;
   has_secret: boolean;
   packages: Package[];
+  custom_recharge_enabled: boolean;
   callback_url: string;
   return_url: string;
   encryption_ready: boolean;
 };
-type Form = Pick<Settings, "enabled" | "api_base_url" | "merchant_num" | "pay_type" | "packages">;
+type Form = Pick<Settings, "enabled" | "api_base_url" | "merchant_num" | "pay_type" | "packages" | "custom_recharge_enabled">;
 
 const EMPTY_FORM: Form = {
   enabled: false,
@@ -34,6 +35,7 @@ const EMPTY_FORM: Form = {
   merchant_num: "",
   pay_type: "",
   packages: [],
+  custom_recharge_enabled: false,
 };
 
 function formOf(settings: Settings): Form {
@@ -43,6 +45,7 @@ function formOf(settings: Settings): Form {
     merchant_num: settings.merchant_num,
     pay_type: settings.pay_type,
     packages: settings.packages.map((item) => ({ ...item })),
+    custom_recharge_enabled: settings.custom_recharge_enabled,
   };
 }
 
@@ -193,6 +196,11 @@ export default function PaymentsPage() {
                 <div><h2>充值档位</h2><p className="model-budget-description">金额与到账积分共同决定用户的充值报价；修改后只影响新订单和新的报价。</p></div>
                 <button type="button" className="secondary" disabled={busy || form.packages.length >= 20} onClick={() => setForm({ ...form, packages: [...form.packages, newPackage()] })}><Plus size={16} />添加档位</button>
               </div>
+              <label className="provider-enabled payment-custom-recharge-toggle">
+                <input type="checkbox" checked={form.custom_recharge_enabled}
+                  onChange={(event) => setForm({ ...form, custom_recharge_enabled: event.target.checked })} />
+                允许用户自定义充值金额
+              </label>
               {form.packages.length === 0 ? <p className="admin-empty payment-package-empty">尚未配置充值档位</p> : <div className="payment-package-list">
                 {form.packages.map((item, index) => <div className="payment-package-row" key={`${index}-${item.id}`}>
                   <label>档位 ID<input required maxLength={64} value={item.id} onChange={(event) => updatePackage(index, { id: event.target.value })} /></label>
