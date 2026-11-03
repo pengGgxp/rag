@@ -29,6 +29,7 @@ def test_all_management_routes_require_fresh_site_role(accounts):
         ("GET", "/overview", None), ("GET", "/users", None), ("GET", f"/users/{user}", None),
         ("GET", "/workspaces", None), ("GET", f"/workspaces/{workspace}", None), ("GET", "/audit", None),
         ("PUT", f"/users/{user}/status", {"suspended": True}),
+        ("PUT", f"/users/{user}/question-workbench", {"enabled": True, "version": 0}),
         ("POST", f"/users/{user}/revoke-sessions", None), ("POST", f"/users/{user}/resend-verification", None),
     ]:
         # Member is an administrator of their own workspace, not of the site.

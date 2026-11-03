@@ -1,5 +1,27 @@
 # QW1: independent question workbench connector
 
+Task 2026-11-03: make workbench access opt-in per user through site administration.
+Add a versioned, audited user entitlement (default disabled); enforce it for login,
+session introspection, consent, conversation selection and each model tool call.
+Move the launch link from the account menu to product navigation for eligible
+users. Preserve private question data and existing billing; retain user consent
+for model writes. Verify admin-only changes, conflicts, revocation/re-enable,
+session expiry, tool exclusion, backend regressions and responsive UI/build.
+No independent model pricing, workbench business pages or new role system.
+
+Access implementation: `PUT /site/admin/users/{id}/question-workbench` with
+`enabled` and current `version`; edits are site-admin-only, versioned and audited.
+Migration `0046_workbench_access` defaults all accounts to disabled. Enabling does
+not bypass the user's model-write consent. Disabling clears consent in all their
+workspaces and invalidates existing workbench identities/delegations; re-enabling
+does not revive old sessions or consent. Questions, papers and billing are retained.
+
+Validation: 11 connector/site administration checks and 75 conversation/Agent/
+stream/context checks passed. A fresh pgvector PostgreSQL database migrated from
+zero to head, and concurrent changes produced one success and one 409. Frontend
+production build passed. Local browser verified the administrator switch and
+eligible sidebar entry, with no account menu item; screenshots are in ignored output.
+
 The approved app lives in E:/project/question-workbench. RAG retains document
 permissions, model orchestration and billing; question/paper data stays in the new
 app's separate database. No old education project is imported or deployed.

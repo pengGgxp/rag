@@ -25,7 +25,6 @@ import {
   ShieldCheck,
   Settings2,
   UserRound,
-  BookOpenCheck,
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
 import { Modal } from "./modal";
@@ -93,8 +92,6 @@ export function AccountButton() {
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [workbenchAvailable, setWorkbenchAvailable] = useState(false);
-  useEffect(() => { void request<{ available: boolean }>("/question-workbench").then(value => setWorkbenchAvailable(value.available)).catch(() => setWorkbenchAvailable(false)); }, [session.workspace_id]);
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const returnTo = pathname?.startsWith("/settings")
@@ -261,8 +258,6 @@ export function AccountButton() {
             </>
           )}
           <div className="account-menu-divider" />
-          {workbenchAvailable && <Link className="account-menu-item" href="/question-workbench" target="_blank" rel="noreferrer" role="menuitem"
-            ref={element => { if (element) menuItems.current[session.workspaces.length + (session.user.is_site_admin ? 4 : 3)] = element; }} onClick={() => setOpen(false)}><BookOpenCheck size={16} />题目工作台</Link>}
           <button
             ref={(element) => {
               menuItems.current[session.workspaces.length + (session.user.is_site_admin ? 3 : 2)] = element!;

@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 import { ArrowLeft, LogOut, Mail, ShieldBan, ShieldCheck } from "lucide-react";
 import { Dialog } from "../../../../components/ui/dialog";
-import { request } from "../../../api";
+import { ApiError, request } from "../../../api";
 import { useAuth } from "../../../auth";
 import type { AdminUser } from "../page";
 import { WorkspaceCredits } from "../../workspace-credits";
@@ -31,6 +31,21 @@ export default function UserDetailPage() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
   const [notice, setNotice] = useState("");
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [accessError, setAccessError] = useState("");
+  const [accessConflict, setAccessConflict] = useState(false);
+  async function changeWorkbench(enabled: boolean) {
+    if (!user) return;
+    setAccessBusy(true); setAccessError(""); setNotice("");
+    try {
+      await request(`/site/admin/users/${id}/question-workbench`, json({ enabled, version: user.question_workbench_version }, "PUT"));
+      setNotice(enabled ? "已开放题目工作台" : "已关闭题目工作台，已有题目保留");
+      await reload();
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "保存失败，请重试");
+      if (error instanceof ApiError && error.status === 409) setAccessConflict(true);
+    } finally { setAccessBusy(false); }
+  }
   async function confirm() {
     if (!user || !operation) return;
     setBusy(true);
@@ -129,6 +144,19 @@ export default function UserDetailPage() {
                 <dd>{user.active_sessions}</dd>
               </div>
             </dl>
+            <section className="admin-section admin-user-capability">
+              <h2>功能权限</h2>
+              <label className="provider-enabled">
+                <input type="checkbox" checked={user.question_workbench_enabled}
+                  disabled={accessBusy || accessConflict} onChange={event => void changeWorkbench(event.target.checked)} />
+                题目工作台
+              </label>
+              <p>允许该用户访问题目工作台，并在对话中选择出题与组卷工具。</p>
+              {accessError && <p className="form-error" role="alert">{accessError}</p>}
+              {accessConflict && <button className="secondary" onClick={() => {
+                setAccessConflict(false); setAccessError(""); void reload();
+              }}>重新读取</button>}
+            </section>
             <section className="admin-section">
               <h2>账号操作</h2>
               <div className="admin-actions">

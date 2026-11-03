@@ -19,6 +19,8 @@ export type AdminUser = {
   email_verified_at: string | null;
   is_suspended: boolean;
   is_site_admin: boolean;
+  question_workbench_enabled: boolean;
+  question_workbench_version: number;
   created_at: string;
   active_sessions: number;
   login_methods: { password: boolean; wechat: boolean; other_oauth: boolean };

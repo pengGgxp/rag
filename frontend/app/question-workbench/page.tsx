@@ -8,7 +8,7 @@ export default function WorkbenchLaunch() {
   useEffect(() => { let live = true; setError(""); void (async () => {
     if (!state) {
       const status = await request<{ available: boolean; url: string | null }>("/question-workbench");
-      if (!status.available || !status.url) throw new Error("题目工作台暂不可用，请稍后重试");
+      if (!status.available || !status.url) throw new Error("题目工作台暂未开放，请联系管理员");
       if (live) window.location.replace(status.url + "/api/auth/start");
     } else {
       const result = await request<{ redirect: string }>("/question-workbench/authorize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) });

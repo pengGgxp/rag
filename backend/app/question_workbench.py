@@ -34,9 +34,18 @@ def require_service(request: Request):
         raise HTTPException(401, "连接授权无效")
 
 
+def require_access(db, access):
+    access.revalidate(db)
+    user = db.get(User, access.user_id, populate_existing=True)
+    if not user.question_workbench_enabled:
+        raise HTTPException(403, "题目工作台尚未开放，请联系管理员")
+    return user
+
+
 def identity_for(db, access):
-    access = access.revalidate(db)
+    user = require_access(db, access)
     return {"user_id": str(access.user_id), "workspace_id": str(access.workspace_id), "session_hash": access.session_hash,
+            "access_version": user.question_workbench_version,
             "name": db.get(User, access.user_id).name, "workspace_name": db.get(Workspace, access.workspace_id).name}
 
 
@@ -44,6 +53,9 @@ def validate_identity(db, value, tools=False):
     try:
         user_id, workspace_id = UUID(value["user_id"]), UUID(value["workspace_id"])
         access = Access(user_id, workspace_id, "", value["session_hash"]).revalidate(db)
+        user = require_access(db, access)
+        if user.question_workbench_version != value.get("access_version"):
+            raise ValueError()
         session = db.get(LoginSession, value["session_hash"], populate_existing=True)
         if session.user_id != user_id:
             raise ValueError()
@@ -81,13 +93,18 @@ class GrantWrite(Strict):
 
 @router.get("")
 def status(db=Depends(get_db), access=Depends(get_access)):
+    user = db.get(User, access.user_id, populate_existing=True)
+    available = configured() and user.question_workbench_enabled
     grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.workspace_id))
-    return {"available": configured(), "enabled": bool(grant and grant.enabled), "version": grant.version if grant else 0,
-            "url": get_settings().question_workbench_url if configured() else None}
+    return {"available": available, "enabled": bool(available and grant and grant.enabled), "version": grant.version if grant else 0,
+            "url": get_settings().question_workbench_url if available else None}
 
 
 @router.put("/grant")
 def authorize_tools(payload: GrantWrite, request: Request, db=Depends(get_db), access=Depends(get_access)):
+    # Serialize consent with administrator revocation for this account.
+    db.scalar(select(User).where(User.id == access.user_id).with_for_update())
+    require_access(db, access)
     if not configured():
         raise HTTPException(409, "题目工作台暂不可用")
     db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
@@ -109,6 +126,7 @@ def authorize_tools(payload: GrantWrite, request: Request, db=Depends(get_db), a
 
 @router.post("/authorize")
 def authorize_browser(payload: Authorize, db=Depends(get_db), access=Depends(get_access)):
+    require_access(db, access)
     if not configured():
         raise HTTPException(503, "题目工作台暂不可用")
     code = secrets.token_urlsafe(40)
@@ -198,12 +216,13 @@ class Runtime:
         self.version, self.calls, self.uncertain = 0, 0, set()
         if selected and configured():
             with factory() as db:
+                user = db.get(User, access.user_id, populate_existing=True)
                 row = db.get(QuestionWorkbenchGrant, (access.user_id, access.workspace_id))
-                if row and row.enabled:
+                if user and user.question_workbench_enabled and row and row.enabled:
                     self.version = row.version
 
     def check(self, db):
-        self.access.revalidate(db)
+        require_access(db, self.access)
         row = db.get(QuestionWorkbenchGrant, (self.access.user_id, self.access.workspace_id), populate_existing=True)
         if not self.version or not row or not row.enabled or row.version != self.version:
             raise HTTPException(403, "题目工作台授权已变更，请重新选择后继续")

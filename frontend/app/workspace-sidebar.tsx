@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
-import { BookOpen, Files, MessageSquare, Puzzle } from "lucide-react";
-import { AccountButton } from "./auth";
+import { useEffect, useState, type ReactNode } from "react";
+import { BookOpen, BookOpenCheck, Files, MessageSquare, Puzzle } from "lucide-react";
+import { AccountButton, useAuth } from "./auth";
+import { request } from "./api";
 import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
 import { SiteAnnouncementEntry } from "./site-announcement";
@@ -22,6 +23,18 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
   onNavigate: () => void;
 }) {
   const mode = screen === "knowledge" ? "catalog" : screen;
+  const { session } = useAuth();
+  const [workbenchAvailable, setWorkbenchAvailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setWorkbenchAvailable(false);
+    const refresh = () => { void request<{ available: boolean }>("/question-workbench")
+      .then(value => { if (live) setWorkbenchAvailable(value.available); })
+      .catch(() => { if (live) setWorkbenchAvailable(false); }); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => { live = false; window.removeEventListener("focus", refresh); };
+  }, [session.user.id, session.workspace_id]);
   return <>
     <Link className="brand" href="/" onClick={onNavigate}>
       <span className="brand-mark"><img src="/icon.svg" alt="" /></span><span>知库</span>
@@ -34,6 +47,10 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
           <Icon size={18} />{label}
         </Link>
       ))}
+      {workbenchAvailable && <Link className="navigation-item" href="/question-workbench"
+        target="_blank" rel="noreferrer" onClick={onNavigate}>
+        <BookOpenCheck size={18} />题目工作台
+      </Link>}
     </nav>
     {children}
     <div className="sidebar-footer"><SuggestionEntry onOpen={onNavigate} /><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>

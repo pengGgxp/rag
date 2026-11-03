@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import String, delete, func, or_, select
+from sqlalchemy import String, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from . import auth
@@ -14,7 +14,7 @@ from .db import get_db
 from .email_auth import email_rate_limit
 from .models import (
     CreditAccount, CreditLedgerEntry, ExternalIdentity, LLMProviderConfig, LoginSession, Membership,
-    SiteAuditEvent, SiteModelProvider, User, Workspace,
+    SiteAuditEvent, SiteModelProvider, User, Workspace, QuestionWorkbenchGrant,
 )
 from .site_auth import site_admin, send_mail
 from .site_audit import record, RETENTION_DAYS
@@ -104,6 +104,8 @@ def user_summary(db: Session, user: User):
         "email_verified": user.email_verified_at is not None,
         "email_verified_at": user.email_verified_at.isoformat() if user.email_verified_at else None,
         "is_site_admin": user.is_site_admin, "is_suspended": user.is_suspended,
+        "question_workbench_enabled": user.question_workbench_enabled,
+        "question_workbench_version": user.question_workbench_version,
         "created_at": user.created_at.isoformat(),
         "login_methods": {"password": user.password_hash is not None,
             "wechat": any(provider.startswith("senyu:") for provider in identities),
@@ -180,6 +182,32 @@ class UserStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     suspended: bool
     reason_code: str = Field(default="support_review", pattern=r"^(support_review|abuse|security|resolved)$")
+
+
+class WorkbenchAccess(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    version: int = Field(ge=0)
+
+
+@router.put("/users/{user_id}/question-workbench")
+def set_workbench_access(user_id: UUID, payload: WorkbenchAccess, request: Request,
+                         db: Session = Depends(get_db), actor: User = Depends(site_admin)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True))
+    if user is None:
+        raise HTTPException(404, "用户不存在")
+    if user.question_workbench_version != payload.version:
+        raise HTTPException(409, "权限已更新，请重新读取用户信息后重试")
+    if user.question_workbench_enabled != payload.enabled:
+        user.question_workbench_enabled = payload.enabled
+        user.question_workbench_version += 1
+        # Reopening access must not resurrect an earlier model-write consent.
+        db.execute(update(QuestionWorkbenchGrant).where(QuestionWorkbenchGrant.user_id == user.id)
+                   .values(enabled=False, version=QuestionWorkbenchGrant.version + 1))
+        record(db, actor, "user.question_workbench_changed", "user", user.id, request=request,
+               details={"accepted": payload.enabled, "version": user.question_workbench_version})
+        db.commit()
+    return user_summary(db, user)
 
 
 @router.put("/users/{user_id}/status")
