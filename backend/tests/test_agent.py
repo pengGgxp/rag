@@ -380,6 +380,7 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     assert "object_key" not in json.dumps(event)
     assert "不要编造 Markdown、URL 或下载地址" in AGENT_SYSTEM_PROMPT
     assert "同时说明脚本未完成并列出这些文件" in AGENT_SYSTEM_PROMPT
+    assert "不要向用户原样展示 queued、processing、ready 等内部状态码" in AGENT_SYSTEM_PROMPT
 
 
 def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):
