@@ -9,6 +9,8 @@ export type KnowledgeBase = {
 
 export type SourceDocument = {
   id: string;
+  knowledge_base_id: string;
+  content_origin?: string;
   filename: string;
   version_group_id: string;
   version_number: number;

@@ -384,6 +384,7 @@ export default function KnowledgeWorkspace() {
         id: string;
         filename: string;
         parser_name?: string | null;
+        content_origin?: string;
         parsed_text?: string | null;
         error_detail?: string | null;
       }>(`/documents/${doc.id}/preview`);
@@ -392,7 +393,7 @@ export default function KnowledgeWorkspace() {
           ? {
               ...current,
               text: preview.parsed_text || "暂无解析内容",
-              detail: `${extension(preview.filename)} · ${sizeLabel(doc.size_bytes)}${preview.parser_name ? ` · ${preview.parser_name}` : ""}`,
+              detail: `${extension(preview.filename)} · ${sizeLabel(doc.size_bytes)}${preview.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}`,
               error: preview.error_detail || current.error,
             }
           : current,
@@ -409,6 +410,16 @@ export default function KnowledgeWorkspace() {
       );
     }
   }
+  const linkedDocument = params.get("document");
+  const openedLinkedDocument = useRef("");
+  useEffect(() => {
+    if (pathname !== "/" || screen !== "knowledge" || !linkedDocument || openedLinkedDocument.current === linkedDocument) return;
+    const doc = documents.find(item => item.id === linkedDocument && item.knowledge_base_id === selectedId);
+    if (doc) {
+      openedLinkedDocument.current = linkedDocument;
+      void showDocument(doc);
+    }
+  }, [linkedDocument, documents, selectedId, pathname, screen]);
   function openLibrary(
     id: string,
     destination: "knowledge" | "chat" = "knowledge",

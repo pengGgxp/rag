@@ -59,6 +59,7 @@ type Library = {
   document_count: number;
 };
 type Citation = {
+  content_origin?: string;
   chunk_id: string;
   filename: string;
   text: string;
@@ -1165,7 +1166,7 @@ export function ChatWorkspace({
                                   {conversation.knowledge_bases.length > 1
                                     ? `${citation.knowledge_base_name} · `
                                     : ""}
-                                  {citation.filename} · v{citation.version_number ?? 1}
+                                  {citation.filename} · v{citation.version_number ?? 1}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
                                   {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />

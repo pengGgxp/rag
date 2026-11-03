@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, Download, Loader2, Search, Square, Wrench } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, Download, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
-import { API_URL, downloadFile } from "./api";
+import { API_URL, ApiError, downloadFile, request } from "./api";
+import Link from "next/link";
+
+export type SavedDocument = {
+  save_id: string; document_id: string; knowledge_base_id: string; filename: string;
+  document_status: string; terminal: boolean; summary: string;
+};
 
 export type ConversationActivityItem = {
   id: string;
@@ -12,7 +18,45 @@ export type ConversationActivityItem = {
   kind: "retrieval" | "tool" | "compaction";
   status: "waiting" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
   files?: { id: string; path: string; size_bytes: number; version: number }[];
+  saved_document?: SavedDocument;
 };
+
+function SavedDocumentResult({ initial, onUpdate, showStatus }: { initial: SavedDocument; onUpdate: (value: SavedDocument) => void; showStatus: boolean }) {
+  const [value, setValue] = useState(initial);
+  const [error, setError] = useState("");
+  const element = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let disposed = false, visible = false, timer: ReturnType<typeof setTimeout> | undefined;
+    let terminal = false, busy = false;
+    const refresh = async () => {
+      if (disposed || busy || terminal || !visible || document.hidden) return;
+      busy = true;
+      try {
+        const next = await request<SavedDocument>(`/conversation-document-saves/${initial.save_id}`);
+        if (disposed) return;
+        setValue(next); onUpdate(next); setError(""); terminal = next.terminal;
+      } catch (cause) {
+        if (disposed) return;
+        terminal = cause instanceof ApiError && [401, 403, 404].includes(cause.status);
+        setError(terminal ? "资料暂不可访问" : "进度更新失败，可打开资料查看");
+      } finally {
+        busy = false;
+        if (!disposed && !terminal) timer = setTimeout(refresh, 5000);
+      }
+    };
+    const resume = () => { if (timer) clearTimeout(timer); void refresh(); };
+    const observer = new IntersectionObserver(entries => { visible = entries[0].isIntersecting; if (visible) resume(); });
+    if (element.current) observer.observe(element.current);
+    document.addEventListener("visibilitychange", resume);
+    return () => { disposed = true; if (timer) clearTimeout(timer); observer.disconnect(); document.removeEventListener("visibilitychange", resume); };
+  }, [initial.save_id, onUpdate]);
+  return <div ref={element} className="activity-file-downloads">
+    <Link className="activity-file-download" href={`/?library=${encodeURIComponent(value.knowledge_base_id)}&view=documents&document=${encodeURIComponent(value.document_id)}`}>
+      <FileText size={15} aria-hidden="true" /><span>{value.filename}</span>
+    </Link>
+    {(error || showStatus) && <span className="activity-step-summary" role="status">{error || value.summary}</span>}
+  </div>;
+}
 
 const statusLabel = {
   waiting: "等待",
@@ -41,6 +85,14 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
   const [expanded, setExpanded] = useState(items.length > 1 && !finished);
   const [userExpanded, setUserExpanded] = useState(false);
   const [downloadError, setDownloadError] = useState("");
+  const [savedResults, setSavedResults] = useState<Record<string, SavedDocument>>({});
+  const updateSaved = useCallback((value: SavedDocument) => setSavedResults(old => ({ ...old, [value.save_id]: value })), []);
+  items = items.map(item => {
+    const saved = item.saved_document && (savedResults[item.saved_document.save_id] || item.saved_document);
+    return saved ? { ...item, summary: saved.summary,
+      status: (saved.document_status === "failed" || saved.document_status === "deleted" ? "failed"
+        : saved.terminal ? "completed" : "running") as ConversationActivityItem["status"] } : item;
+  });
   useEffect(() => {
     if (!userExpanded) setExpanded(items.length > 1 && !finished);
   }, [finished, userExpanded, items.length]);
@@ -50,7 +102,7 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
   const cancelled = items.some(item => item.status === "cancelled");
   const single = items.length === 1 ? items[0] : null;
   const headline = single
-    ? `${single.label}${single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
+    ? `${single.label}${single.saved_document ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
     : finished
     ? cancelled ? `已停止 · ${items.length} 项活动` : failed ? `${items.length} 项活动 · ${failed} 项失败` : `已完成 ${items.length} 项活动`
     : current?.label ?? "等待下一步";
@@ -67,6 +119,8 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
         : <Wrench size={14} aria-hidden="true" />}
       <span>{headline}</span>
     </button>
+    {items.filter(item => item.saved_document).map(item => <SavedDocumentResult key={item.saved_document!.save_id}
+      initial={item.saved_document!} onUpdate={updateSaved} showStatus={items.length > 1} />)}
     {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
       {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
         href={`${API_URL}/workspaces/${workspaceId}/files/${file.id}/download`} download
