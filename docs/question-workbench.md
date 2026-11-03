@@ -22,6 +22,23 @@ zero to head, and concurrent changes produced one success and one 409. Frontend
 production build passed. Local browser verified the administrator switch and
 eligible sidebar entry, with no account menu item; screenshots are in ignored output.
 
+Administrator-access release deployed on 2026-11-03 at commit `f04e48c`.
+API/Web images built successfully; the image-isolated connector and administrator
+suite passed all 11 checks. Migration `0046_workbench_access` completed, and
+pre/post-migration model prices, existing user fields, balances, ledger and consent
+rows matched. Other service container IDs and both deployment environment files
+remained unchanged. Backups and rollback images are recorded under
+`/data1/rag-releases/qw-access-20261103`; the original request pause was restored.
+
+Live synthetic-account acceptance verified default denial, no self-assignment,
+administrator assignment, stale-version 409, real tool injection and Skill loading,
+public HTTPS single sign-on, revocation of existing sessions/tools, and continued
+invalidation after re-enabling. Test entitlements, sessions and temporary site-admin
+access were removed afterward. No paid model or OCR call was made for this release.
+Local browser layouts were inspected at 1440/700/390px. Existing accounts, including
+administrators, start disabled; a site administrator explicitly enables each intended
+user under Users -> User details -> Feature permissions -> Question workbench.
+
 The approved app lives in E:/project/question-workbench. RAG retains document
 permissions, model orchestration and billing; question/paper data stays in the new
 app's separate database. No old education project is imported or deployed.
