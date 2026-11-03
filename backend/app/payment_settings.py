@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from . import payments
@@ -61,12 +60,14 @@ class PaymentSettingsInput(BaseModel):
                 private_raw = self.private_key.get_secret_value().encode() if self.private_key else b""
                 public_raw = self.public_key.get_secret_value().encode() if self.public_key else b""
                 if private_raw or public_raw:
-                    private = serialization.load_pem_private_key(private_raw, password=None)
-                    public = serialization.load_pem_public_key(public_raw)
+                    private = payments._load_ezfp_key(private_raw.decode(), private=True)
+                    public = payments._load_ezfp_key(public_raw.decode(), private=False)
                     if not isinstance(private, rsa.RSAPrivateKey) or not isinstance(public, rsa.RSAPublicKey):
                         raise ValueError("RSA keys required")
                     if private.key_size < 2048 or public.key_size < 2048:
                         raise ValueError("RSA keys must be at least 2048 bits")
+                    object.__setattr__(self, "private_key", SecretStr(payments._ezfp_key_pem(private_raw.decode(), private=True)))
+                    object.__setattr__(self, "public_key", SecretStr(payments._ezfp_key_pem(public_raw.decode(), private=False)))
             except (ValueError, TypeError, AttributeError):
                 raise ValueError("请填写有效的商户 RSA 私钥与平台 RSA 公钥（至少 2048 位）")
         return self

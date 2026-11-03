@@ -18,6 +18,30 @@ let csrfToken = "";
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
+
+const VALIDATION_FIELD_NAMES: Record<string, string> = {
+  version: "配置版本", provider_key: "支付渠道", enabled: "启用状态",
+  api_base_url: "支付网关地址", merchant_num: "商户号", pay_type: "支付方式编码",
+  secret: "商户密钥", private_key: "商户 RSA 私钥", public_key: "平台 RSA 公钥",
+  packages: "充值档位", id: "档位 ID", name: "显示名称", amount_fen: "金额", credits: "到账积分",
+};
+
+function errorMessage(detail: unknown, status: number): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const error = entry as { loc?: unknown[]; msg?: unknown };
+      if (typeof error.msg !== "string") return [];
+      const field = Array.isArray(error.loc)
+        ? [...error.loc].reverse().find((part): part is string => typeof part === "string" && !["body", "query", "path"].includes(part))
+        : undefined;
+      return [`${field ? VALIDATION_FIELD_NAMES[field] ?? "配置" : "配置"}：${error.msg}`];
+    });
+    if (messages.length) return [...new Set(messages)].join("；");
+  }
+  return `请求失败 (${status})`;
+}
 export function setCsrfToken(value: string) {
   csrfToken = value;
 }
@@ -72,9 +96,7 @@ export async function request<T>(
   const data = await response.json();
   if (!response.ok)
     throw new ApiError(response.status,
-      typeof data.detail === "string"
-        ? data.detail
-        : `请求失败 (${response.status})`,
+      errorMessage(data.detail, response.status),
     );
   return data as T;
 }
@@ -114,9 +136,7 @@ export async function streamRequest(
       window.dispatchEvent(new Event("rag-session-expired"));
     const error = await response.json().catch(() => ({}));
     throw new ApiError(response.status,
-      typeof error.detail === "string"
-        ? error.detail
-        : `请求失败 (${response.status})`,
+      errorMessage(error.detail, response.status),
     );
   }
   if (!response.body) throw new Error("浏览器未提供回答数据流");

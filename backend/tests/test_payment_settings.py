@@ -1,4 +1,5 @@
 from uuid import UUID
+import base64
 import json
 
 from cryptography.fernet import Fernet
@@ -215,3 +216,29 @@ def test_ezfp_credentials_are_validated_encrypted_and_versioned(accounts, gatewa
     paid = owner.get(payments.EZFP_CALLBACK_PATH, params=callback)
     assert paid.status_code == 200 and paid.text == "success"
     assert owner.get(f"/payments/orders/{order['id']}").json()["status"] == "paid"
+
+
+def test_ezfp_accepts_bare_base64_der_keys_from_merchant_portal(accounts, gateway, monkeypatch):
+    owner, db = admin(accounts)
+    settings, _ = gateway
+    settings.site_config_encryption_key = SecretStr(Fernet.generate_key().decode())
+    monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_der = private.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption())
+    platform = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_der = platform.public_key().public_bytes(serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo)
+    private_base64 = base64.b64encode(private_der).decode("ascii")
+    public_base64 = base64.b64encode(public_der).decode("ascii")
+
+    saved = owner.put(f"{ROOT}/ezfp", json=ezfp_payload(
+        private_key=private_base64, public_key=public_base64))
+    assert saved.status_code == 200, saved.text
+    row = db.get(SitePaymentConfig, saved.json()["version"])
+    credentials = json.loads(site_auth.reveal(row.encrypted_secret))
+    assert "-----BEGIN PRIVATE KEY-----" in credentials["private_key"]
+    assert "-----BEGIN PUBLIC KEY-----" in credentials["public_key"]
+    assert private_base64 not in saved.text and public_base64 not in saved.text
+    assert payments._load_ezfp_key(credentials["private_key"], private=True).key_size == 2048
+    assert payments._load_ezfp_key(credentials["public_key"], private=False).key_size == 2048

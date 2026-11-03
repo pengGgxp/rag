@@ -32,6 +32,26 @@ from .config import Settings, get_settings
 from .credits import recharge
 from .models import RechargeOrder, SitePaymentConfig, Workspace
 
+
+def _load_ezfp_key(raw: str, *, private: bool):
+    """Accept PEM or the bare Base64 DER format shown by the ezfp portal."""
+    value = raw.strip().encode("ascii")
+    loader = serialization.load_pem_private_key if private else serialization.load_pem_public_key
+    der_loader = serialization.load_der_private_key if private else serialization.load_der_public_key
+    if value.startswith(b"-----BEGIN "):
+        return loader(value, password=None) if private else loader(value)
+    der = base64.b64decode(b"".join(value.split()), validate=True)
+    return der_loader(der, password=None) if private else der_loader(der)
+
+
+def _ezfp_key_pem(raw: str, *, private: bool) -> str:
+    key = _load_ezfp_key(raw, private=private)
+    if private:
+        return key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                 serialization.NoEncryption()).decode("ascii")
+    return key.public_bytes(serialization.Encoding.PEM,
+                            serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
+
 CALLBACK_PATH = "/payments/zhifux/notify"
 EZFP_CALLBACK_PATH = "/payments/ezfp/notify"
 EZFP_ENDPOINT = "https://www.ezfp.cn/api/pay/create"
@@ -385,7 +405,7 @@ def _verify_rsa(params, settings):
     if params.get("sign_type", "RSA").upper() != "RSA" or not signature or len(signature) > 2048:
         return False
     try:
-        public_key = serialization.load_pem_public_key(settings.ezfp_public_key.get_secret_value().encode())
+        public_key = _load_ezfp_key(settings.ezfp_public_key.get_secret_value(), private=False)
         public_key.verify(base64.b64decode(signature, validate=True), _signed_fields(params).encode("utf-8"),
                           padding.PKCS1v15(), hashes.SHA256())
         return True
@@ -407,7 +427,7 @@ class EzfpAdapter:
             "name": f"知库积分充值 - {order.package_name}"[:100], "money": yuan(order.amount_fen),
             "clientip": client_ip, "timestamp": str(int(now().timestamp())), "sign_type": "RSA"}
         try:
-            private_key = serialization.load_pem_private_key(settings.ezfp_private_key.get_secret_value().encode(), password=None)
+            private_key = _load_ezfp_key(settings.ezfp_private_key.get_secret_value(), private=True)
             params["sign"] = base64.b64encode(private_key.sign(_signed_fields(params).encode("utf-8"),
                 padding.PKCS1v15(), hashes.SHA256())).decode("ascii")
         except (ValueError, TypeError, AttributeError) as exc:
