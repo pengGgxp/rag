@@ -24,6 +24,8 @@ const VALIDATION_FIELD_NAMES: Record<string, string> = {
   api_base_url: "支付网关地址", merchant_num: "商户号", pay_type: "支付方式编码",
   secret: "商户密钥", private_key: "商户 RSA 私钥", public_key: "平台 RSA 公钥",
   packages: "充值档位", id: "档位 ID", name: "显示名称", amount_fen: "金额", credits: "到账积分",
+  package_id: "充值档位", quote: "充值报价", payment_method_id: "付款方式", custom_amount_fen: "充值金额",
+  payment_methods: "付款方式", code: "网关编码", label: "显示名称", custom_credits_per_yuan: "每元积分数",
 };
 
 function errorMessage(detail: unknown, status: number): string {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowUpRight, ChevronLeft, ChevronRight, CreditCard, Info, Loader2, RefreshCw } from "lucide-react";
 import { request } from "./api";
 import { formatCredits } from "./credit-format";
@@ -26,9 +27,7 @@ export type CreditUsage = {
 };
 type Package = { id: string; name: string; amount_fen: number; credits: number; quote: string };
 type CustomRecharge = { id: string; min_amount_fen: number; max_amount_fen: number; credits_per_yuan: number; quote: string };
-type PaymentMethod = { code: string; label: string };
-type PaymentProvider = { provider_key: string; name: string; packages: Package[]; payment_methods: PaymentMethod[]; custom?: CustomRecharge };
-type Catalog = { enabled: boolean; providers?: PaymentProvider[]; packages: Package[]; custom?: CustomRecharge };
+type Catalog = { enabled: boolean; packages: Package[]; custom?: CustomRecharge };
 type Order = {
   id: string;
   order_no: string;
@@ -82,19 +81,18 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
   workspaceName: string;
   onBusyChange: (busy: boolean) => void;
 }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [usage, setUsage] = useState<CreditUsage | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [orders, setOrders] = useState<OrderPage | null>(null);
   const [page, setPage] = useState(1);
-  const [selected, setSelected] = useState("");
-  const [providerKey, setProviderKey] = useState("");
-  const [paymentMethodCode, setPaymentMethodCode] = useState("");
-  const [customAmount, setCustomAmount] = useState("");
+  const [selected, setSelected] = useState(searchParams.get("package") ?? "");
+  const [customAmount, setCustomAmount] = useState(searchParams.get("amount") ?? "");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const attempt = useRef<{ providerKey: string; packageId: string; amount: number; key: string; quote: string; method: string } | null>(null);
   const previousStates = useRef(new Map<string, string>());
   const generation = useRef(0);
 
@@ -116,14 +114,8 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
       setUsage(balance);
       setCatalog(options);
       setOrders(history);
-      const list = options.providers?.length ? options.providers : [{provider_key: "zhifux", name: "支付 FM", packages: options.packages, payment_methods: [{code: "aloop", label: "支付"}], custom: options.custom}];
-      const activeProvider = list.find((item) => item.provider_key === providerKey) ?? list[0];
-      setProviderKey(activeProvider?.provider_key ?? "");
-      setPaymentMethodCode((currentMethod) => activeProvider?.payment_methods?.some((method) => method.code === currentMethod)
-        ? currentMethod : activeProvider?.payment_methods?.length === 1 ? activeProvider.payment_methods[0].code : "");
-      setSelected((value) => list.some((item) => item.provider_key === activeProvider?.provider_key &&
-        (item.custom?.id === value || item.packages.some((pkg) => pkg.id === value)))
-        ? value : activeProvider?.packages[0]?.id ?? activeProvider?.custom?.id ?? "");
+      setSelected((value) => options.custom?.id === value || options.packages.some((pkg) => pkg.id === value)
+        ? value : options.packages[0]?.id ?? options.custom?.id ?? "");
       setError("");
       if (newlyPaid) setNotice("充值成功，积分已到账");
     } catch (e) {
@@ -131,7 +123,7 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     } finally {
       if (current === generation.current) setLoading(false);
     }
-  }, [page, providerKey]);
+  }, [page]);
 
   useEffect(() => {
     void load();
@@ -151,16 +143,14 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
   }, [load, hasPending]);
 
   const customFen = parseAmount(customAmount);
-  const providers = catalog?.providers?.length ? catalog.providers : catalog ? [{provider_key: "zhifux", name: "支付 FM", packages: catalog.packages, payment_methods: [{code: "aloop", label: "支付"}], custom: catalog.custom}] : [];
-  const selectedProvider = providers.find((item) => item.provider_key === providerKey) ?? providers[0];
-  const custom = selectedProvider?.custom;
+  const custom = catalog?.custom;
   const isCustom = Boolean(custom && selected === custom.id);
   const customValid = custom && customFen !== null
     && customFen >= custom.min_amount_fen && customFen <= custom.max_amount_fen && customFen % 100 === 0;
   const selectedPackage = isCustom
     ? customValid ? { id: custom.id, name: "自定义充值", amount_fen: customFen,
       credits: (customFen / 100) * custom.credits_per_yuan, quote: custom.quote } : undefined
-    : selectedProvider?.packages.find((item) => item.id === selected);
+    : catalog?.packages.find((item) => item.id === selected);
 
   async function checkout() {
     const option = selectedPackage;
@@ -169,32 +159,15 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
     onBusyChange(true);
     setError("");
     setNotice("");
-    if (attempt.current?.providerKey !== selectedProvider?.provider_key || attempt.current?.packageId !== selected || attempt.current.quote !== option.quote || attempt.current.amount !== option.amount_fen || attempt.current.method !== paymentMethodCode) {
-      attempt.current = { providerKey: selectedProvider?.provider_key ?? "zhifux", packageId: selected, amount: option.amount_fen, key: crypto.randomUUID(), quote: option.quote, method: paymentMethodCode };
-    }
     try {
-      const order = await request<Order>("/payments/orders", {
+      await request("/payments/checkout-preview", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ package_id: selected, provider_key: selectedProvider?.provider_key ?? "zhifux", idempotency_key: attempt.current.key, quote: option.quote,
-          payment_method_code: paymentMethodCode, ...(isCustom ? { custom_amount_fen: option.amount_fen } : {}) }),
+        body: JSON.stringify({ package_id: selected, quote: option.quote,
+          ...(isCustom ? { custom_amount_fen: option.amount_fen } : {}) }),
       });
-      attempt.current = null;
-      previousStates.current.set(order.id, order.status);
-      const quoteMatches = order.amount_fen === option.amount_fen && order.credits === option.credits;
-      if (order.status === "pending" && order.pay_url && quoteMatches) {
-        const back = new URL(window.location.href);
-        back.searchParams.set("account", "1");
-        back.searchParams.set("billing", "1");
-        window.history.replaceState(null, "", back);
-        window.location.assign(order.pay_url);
-        return;
-      }
-      setNotice(!quoteMatches ? "充值档位已更新，请核对订单后再继续支付"
-        : order.status === "paid" ? "充值成功，积分已到账"
-        : order.status === "failed" ? "支付订单创建失败，请稍后重试"
-        : "订单正在确认，请勿重复付款。已付款未到账请联系支持。");
-      if (page === 1) await load(true);
-      else setPage(1);
+      const query = new URLSearchParams({ package: selected, quote: option.quote });
+      if (isCustom) query.set("amount", String(option.amount_fen / 100));
+      router.push(`/payments/checkout?${query}`);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -224,25 +197,9 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
         <div className="settings-skeleton" role="status" aria-label="加载中"><span /><span /><span /></div>
       ) : catalog?.enabled ? (
         <form className="recharge-form" onSubmit={(event) => { event.preventDefault(); void checkout(); }}>
-          {providers.length > 1 && <fieldset className="payment-provider-options" disabled={busy}>
-            <legend>支付方式</legend>
-            {providers.map((provider) => <label key={provider.provider_key} data-selected={provider.provider_key === selectedProvider?.provider_key}>
-              <input type="radio" name="payment-provider" value={provider.provider_key} checked={provider.provider_key === selectedProvider?.provider_key}
-              onChange={() => { setProviderKey(provider.provider_key); setPaymentMethodCode(provider.payment_methods?.length === 1 ? provider.payment_methods[0].code : ""); setSelected(provider.packages[0]?.id ?? provider.custom?.id ?? ""); setCustomAmount(""); attempt.current = null; }} />
-              <span>{provider.name}</span>
-            </label>)}
-          </fieldset>}
-          {(selectedProvider?.payment_methods?.length ?? 0) > 1 && <fieldset className="payment-provider-options" disabled={busy}>
-            <legend>付款方式</legend>
-            {selectedProvider!.payment_methods.map((method) => <label key={method.code} data-selected={method.code === paymentMethodCode}>
-              <input type="radio" name="payment-method" value={method.code} checked={method.code === paymentMethodCode}
-                onChange={() => { setPaymentMethodCode(method.code); attempt.current = null; }} />
-              <span>{method.label}</span>
-            </label>)}
-          </fieldset>}
           <fieldset className="recharge-options" disabled={busy}>
             <legend>积分充值</legend>
-            {selectedProvider?.packages.map((item) => (
+            {catalog.packages.map((item) => (
               <label className="recharge-option" key={item.id} data-selected={selected === item.id}>
                 <input type="radio" name="recharge-package" value={item.id}
                   checked={selected === item.id} onChange={() => setSelected(item.id)} />
@@ -273,9 +230,9 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
           </div>}
           <div className="recharge-checkout">
             <span>应付 <strong>{selectedPackage ? money(selectedPackage.amount_fen) : "--"}</strong></span>
-            <button className="primary" type="submit" disabled={busy || !selectedPackage || !paymentMethodCode}>
+            <button className="primary" type="submit" disabled={busy || !selectedPackage}>
               {busy ? <Loader2 size={16} className="spin" /> : <CreditCard size={16} />}
-              {busy ? "创建订单" : "前往支付"}
+              {busy ? "核对中" : "下一步"}
             </button>
           </div>
         </form>

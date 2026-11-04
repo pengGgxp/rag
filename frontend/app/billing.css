@@ -1,6 +1,21 @@
 .billing-panel {
   min-width: 0;
 }
+.checkout-scroll { flex: 1; min-height: 0; overflow: auto; padding: var(--workspace-content-padding); }
+.checkout-content { max-width: 560px; margin: 0 auto; min-width: 0; }
+.checkout-back { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--muted); text-decoration: none; }
+.checkout-back:hover { color: var(--ink); }
+.checkout-summary { display: grid; gap: 16px; padding-block: 24px; margin: 16px 0 24px; border-block: 1px solid var(--line); }
+.checkout-summary > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.checkout-summary dt { color: var(--muted); }
+.checkout-summary dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.checkout-summary .checkout-amount { font-size: 28px; font-weight: 600; }
+.payment-provider-options.checkout-methods label { min-height: 44px; }
+.checkout-pay { width: 100%; min-height: 44px; margin-block: 16px; }
+.checkout-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.checkout-link { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; text-decoration: none; }
+.checkout-result { padding-block: 8px; }
+.checkout-content > p[role="status"] { display: flex; align-items: center; gap: 8px; }
 .billing-heading {
   display: flex;
   align-items: flex-start;
@@ -356,6 +371,9 @@
 .payment-package-row label { display: grid; gap: 7px; min-width: 0; color: var(--muted); font-size: var(--form-label-size); }
 .payment-package-row input { width: 100%; min-width: 0; min-height: var(--form-control-height); padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: var(--form-font-size); }
 .payment-package-row input:focus { outline: 2px solid var(--brand-soft); outline-offset: 1px; border-color: var(--focus-ring); }
+.payment-routing-row .provider-enabled { display: flex; align-items: center; gap: 8px; min-height: 44px; }
+.payment-routing-row input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; }
+.payment-routing-row select { width: 100%; min-width: 0; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--form-radius); background: var(--surface); color: var(--ink); }
 .payment-package-remove { justify-self: end; width: 40px; height: 40px; color: var(--danger); }
 .payment-package-empty { padding: 20px 0; text-align: left; }
 .payment-settings-form .payment-custom-recharge-toggle { display: flex; align-items: center; gap: 10px; min-height: var(--form-touch-height); margin-top: 12px; cursor: pointer; }

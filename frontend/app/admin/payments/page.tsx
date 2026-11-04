@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Check, ExternalLink, Plus, Save, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { RechargeSettings } from "./recharge-settings";
+import { Check, ExternalLink, Save } from "lucide-react";
 import { ApiError, request } from "../../api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
@@ -56,14 +57,12 @@ function formOf(settings: Settings): Form {
   };
 }
 
-function newPackage(): Package {
-  return { id: `package_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`, name: "", amount_fen: 0, credits: 0 };
-}
-
 export default function PaymentsPage() {
   const resource = useAdminResource<Settings>("/site/admin/payments");
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [providerKey, setProviderKey] = useState("zhifux");
+  const [providerKey, setProviderKey] = useState("recharge");
+  const [rechargeState, setRechargeState] = useState({ dirty: false, busy: false });
+  const onRechargeState = useCallback((dirty: boolean, busy: boolean) => setRechargeState({ dirty, busy }), []);
   const [pendingProvider, setPendingProvider] = useState("");
   const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [original, setOriginal] = useState<Form>(EMPTY_FORM);
@@ -77,7 +76,7 @@ export default function PaymentsPage() {
   const [notice, setNotice] = useState("");
   const [conflict, setConflict] = useState(false);
   const dirty = JSON.stringify(form) !== JSON.stringify(original) || !!secret || !!privateKey || !!publicKey || clearSecret;
-  useAdminChanges(dirty, busy);
+  useAdminChanges(dirty || rechargeState.dirty, busy || rechargeState.busy);
 
   function accept(value: Settings) {
     const next = formOf(value);
@@ -93,13 +92,6 @@ export default function PaymentsPage() {
   useEffect(() => {
     if (resource.data) accept(resource.data);
   }, [resource.data]);
-
-  function updatePackage(index: number, patch: Partial<Package>) {
-    setForm((current) => ({
-      ...current,
-      packages: current.packages.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
-    }));
-  }
 
   async function save() {
     if (!settings) return;
@@ -130,6 +122,7 @@ export default function PaymentsPage() {
 
   async function selectProvider(key: string) {
     if (key === providerKey || busy) return;
+    if (key === "recharge") { if (settings) accept(settings); setProviderKey(key); return; }
     setBusy(true);
     setError("");
     setNotice("");
@@ -156,13 +149,15 @@ export default function PaymentsPage() {
     <AdminLoad loading={resource.loading} error={resource.error} retry={resource.reload}>
       {settings && <>
         <Tabs.Root value={providerKey} activationMode="manual" onValueChange={(key) => {
-          if (dirty) setPendingProvider(key); else void selectProvider(key);
+          if (dirty || rechargeState.dirty) setPendingProvider(key); else void selectProvider(key);
         }}>
-        <Tabs.List className="payment-provider-tabs" aria-label="支付渠道">
-          <Tabs.Trigger value="zhifux" disabled={busy}>支付 FM</Tabs.Trigger>
-          <Tabs.Trigger value="ezfp" disabled={busy}>易支付</Tabs.Trigger>
+        <Tabs.List className="payment-provider-tabs" aria-label="支付设置分组">
+          <Tabs.Trigger value="recharge" disabled={busy || rechargeState.busy}>充值与付款方式</Tabs.Trigger>
+          <Tabs.Trigger value="zhifux" disabled={busy || rechargeState.busy}>支付 FM</Tabs.Trigger>
+          <Tabs.Trigger value="ezfp" disabled={busy || rechargeState.busy}>易支付</Tabs.Trigger>
         </Tabs.List>
-        <Tabs.Content value={providerKey}>
+        <Tabs.Content value="recharge"><RechargeSettings onStateChange={onRechargeState} /></Tabs.Content>
+        {providerKey !== "recharge" && <Tabs.Content value={providerKey}>
         {notice && <p className="billing-notice" role="status"><Check size={16} />{notice}</p>}
         {error && <div className="admin-error" role="alert">{error}</div>}
         {conflict && <p className="admin-inline-confirm" role="alert">
@@ -179,19 +174,10 @@ export default function PaymentsPage() {
               <div className="provider-form-grid">
                 <label className="provider-enabled provider-form-wide">
                   <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
-                  启用积分充值
+                  启用此支付渠道
                 </label>
                 <label>支付网关地址<input required={form.enabled} type="url" inputMode="url" readOnly={providerKey === "ezfp"} value={form.api_base_url} onChange={(event) => setForm({ ...form, api_base_url: event.target.value })} placeholder="https://..." /></label>
                 <label>商户号<input required={form.enabled} autoComplete="off" value={form.merchant_num} onChange={(event) => setForm({ ...form, merchant_num: event.target.value })} /></label>
-                <div className="provider-form-wide">
-                  <div className="payment-packages-heading"><div><h3>可用付款方式</h3><p className="model-budget-description">编码需与支付商户支持的网关编码一致。</p></div>
-                    <button type="button" className="secondary" disabled={busy || form.payment_methods.length >= 20} onClick={() => setForm({ ...form, payment_methods: [...form.payment_methods, { code: "", label: "" }] })}><Plus size={16} />添加方式</button></div>
-                  <div className="payment-package-list">{form.payment_methods.map((method, index) => <div className="payment-package-row" key={index}>
-                    <label>网关编码<input required={form.enabled} maxLength={100} value={method.code} onChange={(event) => setForm({ ...form, payment_methods: form.payment_methods.map((item, i) => i === index ? { ...item, code: event.target.value } : item) })} placeholder="例如 wxpay" /></label>
-                    <label>用户可见名称<input required={form.enabled} maxLength={60} value={method.label} onChange={(event) => setForm({ ...form, payment_methods: form.payment_methods.map((item, i) => i === index ? { ...item, label: event.target.value } : item) })} placeholder="例如 微信支付" /></label>
-                    <button type="button" className="icon-button payment-package-remove" aria-label="移除付款方式" title="移除付款方式" disabled={busy} onClick={() => setForm({ ...form, payment_methods: form.payment_methods.filter((_, i) => i !== index) })}><Trash2 size={17} /></button>
-                  </div>)}</div>
-                </div>
                 {providerKey === "ezfp" ? <>
                   <label className="provider-form-wide">商户 RSA 私钥<textarea className="payment-key-input" autoComplete="new-password" value={privateKey} disabled={clearSecret} onChange={(event) => setPrivateKey(event.target.value)} placeholder={settings.has_secret ? "已配置，留空保留" : "粘贴商户后台生成的 RSA 私钥"} /></label>
                   <label className="provider-form-wide">平台 RSA 公钥<textarea className="payment-key-input" autoComplete="off" value={publicKey} disabled={clearSecret} onChange={(event) => setPublicKey(event.target.value)} placeholder={settings.has_secret ? "已配置，留空保留" : "粘贴易支付平台公钥"} /></label>
@@ -206,39 +192,18 @@ export default function PaymentsPage() {
                 <div><dt>支付完成返回地址</dt><dd><code>{settings.return_url || "尚未配置"}</code></dd></div>
               </dl>
             </section>
-            <section className="model-form-section">
-              <div className="payment-packages-heading">
-                <div><h2>充值档位</h2><p className="model-budget-description">金额与到账积分共同决定用户的充值报价；修改后只影响新订单和新的报价。</p></div>
-                <button type="button" className="secondary" disabled={busy || form.packages.length >= 20} onClick={() => setForm({ ...form, packages: [...form.packages, newPackage()] })}><Plus size={16} />添加档位</button>
-              </div>
-              <label className="provider-enabled payment-custom-recharge-toggle">
-                <input type="checkbox" checked={form.custom_recharge_enabled}
-                  onChange={(event) => setForm({ ...form, custom_recharge_enabled: event.target.checked })} />
-                允许用户自定义充值金额
-              </label>
-              {form.custom_recharge_enabled && <label>自定义充值比例（积分 / 元）<input type="number" min="1" max="1000000" step="1" value={form.custom_credits_per_yuan} onChange={(event) => setForm({ ...form, custom_credits_per_yuan: Number(event.target.value) || 0 })} /></label>}
-              {form.packages.length === 0 ? <p className="admin-empty payment-package-empty">尚未配置充值档位</p> : <div className="payment-package-list">
-                {form.packages.map((item, index) => <div className="payment-package-row" key={`${index}-${item.id}`}>
-                  <label>档位 ID<input required maxLength={64} value={item.id} onChange={(event) => updatePackage(index, { id: event.target.value })} /></label>
-                  <label>显示名称<input required maxLength={100} value={item.name} onChange={(event) => updatePackage(index, { name: event.target.value })} placeholder="例如：标准档" /></label>
-                  <label>金额（元）<input required type="number" min="0.01" max="10000" step="0.01" value={item.amount_fen ? (item.amount_fen / 100).toFixed(2) : ""} onChange={(event) => updatePackage(index, { amount_fen: Math.round(Number(event.target.value) * 100) || 0 })} /></label>
-                  <label>到账积分<input required type="number" min="1" max="1000000" step="1" value={item.credits || ""} onChange={(event) => updatePackage(index, { credits: Number(event.target.value) || 0 })} /></label>
-                  <button type="button" className="icon-button payment-package-remove" aria-label={`移除${item.name || "此"}充值档位`} title="移除档位" disabled={busy} onClick={() => setForm({ ...form, packages: form.packages.filter((_, itemIndex) => itemIndex !== index) })}><Trash2 size={17} /></button>
-                </div>)}
-              </div>}
-            </section>
-            <div className="payment-footer-note">{!form.enabled ? "充值目前关闭；保存后用户端不会开放新充值。" : !settings.encryption_ready ? "加密配置未就绪，暂不能启用充值。" : "启用前请确认商户参数、密钥和至少一个充值档位完整。"}</div>
+            <div className="payment-footer-note">{!form.enabled ? "此渠道已关闭。" : !settings.encryption_ready ? "加密配置未就绪，暂不能启用。" : "付款方式及充值报价在“充值与付款方式”中统一设置。"}</div>
             <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : ""}</span>
               <button className="primary" disabled={busy || !dirty || conflict || (!settings.encryption_ready && (settings.has_secret || !!secret || !!privateKey || !!publicKey))}>{busy ? "保存中…" : <><Save size={16} />保存设置</>}</button>
             </div>
           </fieldset>
         </form>
-        </Tabs.Content>
+        </Tabs.Content>}
         </Tabs.Root>
       </>}
     </AdminLoad>
     {pendingProvider && <Dialog title="放弃未保存的修改？" onClose={() => setPendingProvider("")}>
-      <p>切换渠道会放弃当前修改。</p>
+      <p>切换页签会放弃当前修改。</p>
       <div className="modal-actions"><button className="secondary" onClick={() => setPendingProvider("")}>继续编辑</button><button className="danger" onClick={() => { const key = pendingProvider; setPendingProvider(""); void selectProvider(key); }}>放弃修改并切换</button></div>
     </Dialog>}
     {confirmClear && <Dialog title="清除支付密钥" onClose={() => setConfirmClear(false)}>

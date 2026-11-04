@@ -39,7 +39,7 @@ export type Preview = {
   error?: string | null;
 };
 
-export type WorkspaceScreen = "catalog" | "knowledge" | "chat" | "extensions" | "files";
+export type WorkspaceScreen = "catalog" | "knowledge" | "chat" | "extensions" | "files" | "billing";
 export type KnowledgeView =
   | "documents"
   | "retrieval"
