@@ -37,6 +37,7 @@ def postgres():
         "zhifux_api_base_url": "https://gateway.example", "zhifux_pay_type": "aloop",
         "api_public_url": "https://api.example", "frontend_url": "https://app.example",
         "recharge_packages_json": '[{"id":"test","name":"test","amount_fen":1234,"credits":567}]',
+        "zhifux_custom_recharge_enabled": True,
     })
     with Session(engine) as db:
         db.add(User(id=user_id, email=f"pg-{user_id}@example.com", name="Payment test"))
@@ -144,9 +145,11 @@ def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch,
     main.app.dependency_overrides[auth.get_access] = lambda: Access(user_id, workspace_id, "admin", token)
     key = uuid4().hex
     quote = payments.package_quote(payments.configured_packages(settings)[0])
-    payload = {"package_id": "custom_amount" if custom else "test", "idempotency_key": key, "quote": quote}
+    payload = {"package_id": "custom_amount" if custom else "test", "idempotency_key": key, "quote": quote,
+               "payment_method_id": "zhifux_aloop"}
     if custom:
-        payload["custom_amount_fen"] = 2345
+        payload["custom_amount_fen"] = 2300
+        payload["quote"] = payments.recharge_options(settings)[1]["quote"]
 
     def submit(_):
         client = TestClient(main.app, headers={"X-RAG-Request": "1"})
@@ -164,8 +167,8 @@ def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch,
         assert len(set(ids)) == len(calls) == 1
         with Session(engine) as db:
             order = db.get(RechargeOrder, calls[0])
-            assert order.amount_fen == (2345 if custom else 1234)
-            assert order.credits == (2345 * 567 // 1234 if custom else 567)
+            assert order.amount_fen == (2300 if custom else 1234)
+            assert order.credits == (2300 if custom else 567)
     finally:
         main.app.dependency_overrides.pop(main.get_db, None)
         main.app.dependency_overrides.pop(auth.get_access, None)

@@ -348,6 +348,10 @@ class RechargeOrder(Base):
     pay_type: Mapped[str] = mapped_column(String(100))
     provider_key: Mapped[str] = mapped_column(String(40), default="zhifux", server_default="zhifux")
     payment_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recharge_config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_method_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    payment_method_label: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    quote: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="creating")
     platform_order_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -373,6 +377,18 @@ class SitePaymentConfig(Base):
     packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
     custom_recharge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SiteRechargeConfig(Base):
+    __tablename__ = "site_recharge_configs"
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    custom_recharge_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    custom_credits_per_yuan: Mapped[int] = mapped_column(Integer, default=100)
+    payment_methods: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

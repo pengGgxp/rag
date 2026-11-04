@@ -160,7 +160,7 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         "packages": packages,
         "custom_recharge_enabled": custom_recharge_enabled,
         "callback_url": settings.api_public_url.rstrip("/") + callback_path,
-        "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
+        "return_url": settings.frontend_url.rstrip("/") + "/payments/checkout",
         "encryption_ready": encryption_ready,
     }
 
@@ -179,14 +179,16 @@ class PaymentMethod(BaseModel):
     label: str = Field(min_length=1, max_length=60)
 
 
-class CreateOrder(BaseModel):
+class CheckoutSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     package_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
-    idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
     quote: str = Field(pattern=r"^[a-f0-9]{64}$")
-    provider_key: str = Field(default=PROVIDER_KEY, pattern=r"^(zhifux|ezfp)$")
-    payment_method_code: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     custom_amount_fen: int | None = Field(default=None, strict=True, ge=100, le=1_000_000)
+
+
+class CreateOrder(CheckoutSelection):
+    idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
+    payment_method_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,120}$")
 
 
 def package_quote(package: RechargePackage) -> str:
@@ -214,10 +216,9 @@ def configured_payment_methods(settings: Settings, provider_key=PROVIDER_KEY) ->
     return []
 
 
-def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
-    packages = configured_packages(settings, provider_key)
-    if not packages:
-        return [], None
+def recharge_options(settings: Settings, provider_key=PROVIDER_KEY, *, packages=None):
+    if packages is None:
+        packages = configured_packages(settings, provider_key)
     custom_enabled = (settings.ezfp_custom_recharge_enabled if provider_key == EZFP_PROVIDER_KEY
                       else settings.zhifux_custom_recharge_enabled)
     if not custom_enabled:
@@ -235,14 +236,16 @@ def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
     quote = hashlib.sha256(f"custom:{credits_per_yuan}:{minimum}:{maximum}".encode()).hexdigest()
     custom = {"id": custom_id, "min_amount_fen": minimum, "max_amount_fen": maximum,
               "credits_per_yuan": credits_per_yuan,
-              # Keep the prior ratio shape readable by an already-open browser tab.
-              "rate_credits": credits_per_yuan * 100, "rate_amount_fen": 10_000,
               "quote": quote} if minimum <= maximum else None
     return packages, custom
 
 
 def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVIDER_KEY):
     packages, custom = recharge_options(settings, provider_key)
+    return resolve_selection(packages, custom, payload)
+
+
+def resolve_selection(packages, custom, payload):
     if custom and payload.package_id == custom["id"]:
         if payload.custom_amount_fen is None:
             raise HTTPException(422, "请输入充值金额")
@@ -257,7 +260,7 @@ def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVI
                                credits=(fen // 100) * custom["credits_per_yuan"])
     if payload.custom_amount_fen is not None:
         if not custom:
-            raise HTTPException(422, "当前支付渠道未开放自定义充值，请选择已有充值档位")
+            raise HTTPException(422, "当前未开放自定义充值，请选择已有充值档位")
         raise HTTPException(422, "请选择自定义金额后再输入金额")
     package = next((item for item in packages if item.id == payload.package_id), None)
     if package is None:
@@ -279,35 +282,43 @@ def https_url(value: str) -> bool:
         return False
 
 
-def configured_packages(settings: Settings, provider_key=PROVIDER_KEY) -> list[RechargePackage]:
+def validate_provider(settings: Settings, provider_key=PROVIDER_KEY):
     if provider_key == EZFP_PROVIDER_KEY:
         enabled, api_url, merchant, pay_type = settings.ezfp_enabled, settings.ezfp_api_base_url, settings.ezfp_pid, settings.ezfp_pay_type
-        raw_packages = settings.ezfp_recharge_packages_json
         secret_ready = bool(settings.ezfp_private_key and settings.ezfp_public_key)
     else:
         enabled, api_url, merchant, pay_type = settings.zhifux_enabled, settings.zhifux_api_base_url, settings.zhifux_merchant_num, settings.zhifux_pay_type
-        raw_packages = settings.recharge_packages_json
         secret_ready = bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
-    methods = configured_payment_methods(settings, provider_key)
     if not enabled:
-        return []
+        raise HTTPException(503, "此付款方式暂不可用，请选择其他方式")
     try:
-        packages = TypeAdapter(list[RechargePackage]).validate_json(raw_packages)
         roots = [api_url, settings.api_public_url, settings.frontend_url]
         valid = (
-            1 <= len(packages) <= 20
-            and len({item.id for item in packages}) == len(packages)
-            and all(https_url(root) and not urlsplit(root).query for root in roots)
+            all(https_url(root) and not urlsplit(root).query for root in roots)
             and (provider_key != EZFP_PROVIDER_KEY or api_url == EZFP_ENDPOINT)
             and len(settings.api_public_url.rstrip("/") + (EZFP_CALLBACK_PATH if provider_key == EZFP_PROVIDER_KEY else CALLBACK_PATH)) <= 200
-            and len(settings.frontend_url.rstrip("/") + "/?account=1&billing=1") <= 200
+            and len(settings.frontend_url.rstrip("/") + "/payments/checkout?order=" + "0" * 36) <= 200
             and bool(re.fullmatch(r"[a-zA-Z0-9]{1,100}", merchant))
-            and bool(methods)
             and secret_ready
         )
         if valid:
-            return packages
+            return
     except (ValidationError, ValueError):
+        pass
+    raise HTTPException(503, "充值暂不可用，请稍后再试")
+
+
+def configured_packages(settings: Settings, provider_key=PROVIDER_KEY) -> list[RechargePackage]:
+    enabled = settings.ezfp_enabled if provider_key == EZFP_PROVIDER_KEY else settings.zhifux_enabled
+    if not enabled:
+        return []
+    validate_provider(settings, provider_key)
+    raw = settings.ezfp_recharge_packages_json if provider_key == EZFP_PROVIDER_KEY else settings.recharge_packages_json
+    try:
+        packages = TypeAdapter(list[RechargePackage]).validate_json(raw)
+        if 1 <= len(packages) <= 20 and len({p.id for p in packages}) == len(packages):
+            return packages
+    except ValidationError:
         pass
     raise HTTPException(503, "充值暂不可用，请稍后再试")
 
@@ -350,7 +361,7 @@ def start_checkout(settings: Settings, order: RechargeOrder) -> Checkout:
         "orderNo": order.id.hex,
         "amount": amount,
         "notifyUrl": notify_url,
-        "returnUrl": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
+        "returnUrl": settings.frontend_url.rstrip("/") + f"/payments/checkout?order={order.id}",
         "payType": order.pay_type,
         "returnType": "json",
         "apiMode": "post_form",
@@ -465,7 +476,7 @@ class EzfpAdapter:
             raise GatewayError(rejected=True)
         params = {"pid": settings.ezfp_pid, "method": "jump", "type": order.pay_type,
             "out_trade_no": order.id.hex, "notify_url": settings.api_public_url.rstrip("/") + self.callback_path,
-            "return_url": settings.frontend_url.rstrip("/") + "/?account=1&billing=1",
+            "return_url": settings.frontend_url.rstrip("/") + f"/payments/checkout?order={order.id}",
             "name": f"知库积分充值 - {order.package_name}"[:100], "money": yuan(order.amount_fen),
             "clientip": client_ip, "timestamp": str(int(now().timestamp())), "sign_type": "RSA"}
         try:
@@ -540,6 +551,7 @@ def order_read(order: RechargeOrder) -> dict:
         "package_name": order.package_name,
         "amount_fen": order.amount_fen,
         "credits": order.credits,
+        "payment_method_label": order.payment_method_label,
         "status": status,
         "pay_url": order.pay_url if status == "pending" else None,
         "created_at": order.created_at.isoformat(),
@@ -618,26 +630,25 @@ def build_router(get_db):
 
     @router.get("/catalog")
     def catalog(db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        try:
-            channels = []
-            for provider_key in PAYMENT_PROVIDERS:
-                try:
-                    provider_settings, _ = effective_settings(db, provider_key=provider_key)
-                    packages, custom = recharge_options(provider_settings, provider_key)
-                    if packages:
-                        channels.append({"provider_key": provider_key, "name": PAYMENT_PROVIDERS[provider_key]["name"],
-                            "packages": [{**item.model_dump(), "quote": package_quote(item)} for item in packages],
-                            "payment_methods": [item.model_dump() for item in configured_payment_methods(provider_settings, provider_key)],
-                            **({"custom": custom} if custom else {})})
-                except HTTPException:
-                    # An unavailable channel must not hide other independently configured providers.
-                    continue
-        except HTTPException:
-            channels = []
-        if not channels:
-            return {"enabled": False, "packages": []}
-        return {"enabled": True, "providers": channels, "packages": channels[0]["packages"],
-                **({"custom": channels[0]["custom"]} if "custom" in channels[0] else {})}
+        from .recharge_settings import catalog as read_catalog
+        return read_catalog(db)
+
+    @router.post("/checkout-preview")
+    def preview(payload: CheckoutSelection, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        from . import recharge_settings
+        config = recharge_settings.current_config(db)
+        package = recharge_settings.resolve_selection(config, payload)
+        methods = recharge_settings.available_methods(db, config)
+        if not methods:
+            raise HTTPException(503, "暂未开放充值，请稍后再试")
+        return {**package.model_dump(), "quote": payload.quote,
+                "payment_methods": [{"id": m["id"], "label": m["label"]} for m, _, _ in methods]}
+
+    @router.get("/order-attempts/{key}")
+    def read_attempt(key: str, db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        row = db.scalar(select(RechargeOrder).where(RechargeOrder.workspace_id == access.workspace_id,
+            RechargeOrder.user_id == access.user_id, RechargeOrder.idempotency_key == key))
+        return order_read(row) if row else None
 
     @router.post("/orders", status_code=201)
     def create_order(
@@ -655,33 +666,33 @@ def build_router(get_db):
         if order:
             requested_id = (f"{payload.package_id}:{payload.custom_amount_fen}"
                             if payload.custom_amount_fen is not None else payload.package_id)
-            if order.package_id != requested_id or order.provider_key != payload.provider_key:
+            if order.package_id != requested_id or order.quote != payload.quote:
                 raise HTTPException(409, "此充值请求已使用其他档位，请重新选择")
-            if payload.payment_method_code and order.pay_type != payload.payment_method_code:
+            if order.payment_method_id != payload.payment_method_id:
                 raise HTTPException(409, "此充值请求已使用其他付款方式，请重新创建订单")
             result = order_read(order)
             db.commit()
             return result
-        adapter = payment_adapter(payload.provider_key)
-        settings, config_version = effective_settings(db, provider_key=adapter.provider_key)
-        package = resolve_package(settings, payload, adapter.provider_key)
+        from . import recharge_settings
+        config = recharge_settings.current_config(db)
+        package = recharge_settings.resolve_selection(config, payload)
+        choice = next((entry for entry in recharge_settings.available_methods(db, config)
+                       if entry[0]["id"] == payload.payment_method_id), None)
+        if choice is None:
+            raise HTTPException(409, "所选付款方式已不可用，请重新选择")
+        selected_method, settings, config_version = choice
+        adapter = payment_adapter(selected_method["provider_key"])
         merchant = settings.ezfp_pid if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_merchant_num
-        methods = configured_payment_methods(settings, adapter.provider_key)
-        selected_method = next((item for item in methods if item.code == payload.payment_method_code), None)
-        if payload.payment_method_code and selected_method is None:
-            raise HTTPException(422, "所选付款方式当前不可用，请刷新后重试")
-        if selected_method is None:
-            if len(methods) != 1:
-                raise HTTPException(422, "请选择付款方式")
-            selected_method = methods[0]
         order = RechargeOrder(
             id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
             idempotency_key=payload.idempotency_key,
             package_id=f"{package.id}:{package.amount_fen}" if payload.custom_amount_fen is not None else package.id,
             package_name=package.name,
             amount_fen=package.amount_fen, credits=package.credits,
-            merchant_num=merchant, pay_type=selected_method.code,
+            merchant_num=merchant, pay_type=selected_method["code"],
             provider_key=adapter.provider_key, payment_config_version=config_version,
+            recharge_config_version=config["version"] or None, payment_method_id=selected_method["id"],
+            payment_method_label=selected_method["label"], quote=payload.quote,
             status="creating", expires_at=now() + timedelta(minutes=PAY_DURATION_MINUTES),
         )
         db.add(order)

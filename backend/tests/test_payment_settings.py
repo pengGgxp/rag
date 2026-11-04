@@ -131,8 +131,6 @@ def test_invalid_settings_and_version_conflict_do_not_create_revision(accounts, 
     monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
     response = owner.put(ROOT, json=payload(api_base_url="http://gateway.example"))
     assert response.status_code == 422
-    assert owner.put(ROOT, json=payload(payment_methods=[])).status_code == 422
-    assert owner.put(ROOT, json=payload(packages=[])).status_code == 422
     assert owner.put(ROOT, json=payload(packages=[
         {"id": "x", "name": "x", "amount_fen": 10, "credits": 1},
         {"id": "x", "name": "y", "amount_fen": 20, "credits": 2},
@@ -177,7 +175,7 @@ def test_admin_custom_recharge_toggle_controls_public_catalog_and_order_validati
     assert "custom" not in catalog
     disabled_order = owner.post("/payments/orders", json={"package_id": "custom_amount",
         "custom_amount_fen": 2345, "idempotency_key": "custom-disabled-1",
-        "quote": "0" * 64})
+        "quote": "0" * 64, "payment_method_id": "zhifux_aloop"})
     assert disabled_order.status_code == 422
     assert "未开放自定义充值" in disabled_order.json()["detail"]
 
@@ -248,9 +246,9 @@ def test_ezfp_credentials_are_validated_encrypted_and_versioned(accounts, gatewa
     assert enabled.status_code == 200
     monkeypatch.setattr(payments.EzfpAdapter, "create_checkout", lambda self, config, order, client_ip="":
         payments.Checkout("ROTATE-1", "https://checkout.example/pay"))
-    quote = next(channel for channel in owner.get("/payments/catalog").json()["providers"]
-        if channel["provider_key"] == "ezfp")["packages"][0]["quote"]
-    order = owner.post("/payments/orders", json={"package_id": "ezfp-basic", "provider_key": "ezfp",
+    settings.zhifux_enabled = False
+    quote = owner.get("/payments/catalog").json()["packages"][0]["quote"]
+    order = owner.post("/payments/orders", json={"package_id": "ezfp-basic", "payment_method_id": "ezfp_wxpay",
         "idempotency_key": "ezfp-rotation-test", "quote": quote}).json()
     replacement = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     replacement_pem = replacement.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,

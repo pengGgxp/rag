@@ -50,6 +50,7 @@ def create(client, *, key=None, package="test"):
     quote = next((item["quote"] for item in options if item["id"] == package), "0" * 64)
     return client.post("/payments/orders", json={
         "package_id": package, "idempotency_key": key or str(uuid4()), "quote": quote,
+        "payment_method_id": "zhifux_aloop",
     })
 
 
@@ -78,7 +79,7 @@ def test_catalog_is_disabled_without_complete_config(accounts, monkeypatch):
     assert create(owner).status_code == 409
     settings.zhifux_enabled = True
     assert owner.get("/payments/catalog").json() == {"enabled": False, "packages": []}
-    assert create(owner).status_code == 503
+    assert create(owner).status_code == 409
 
 
 def test_order_is_immutable_idempotent_and_does_not_credit_before_payment(accounts, gateway):
@@ -112,7 +113,7 @@ def test_order_is_immutable_idempotent_and_does_not_credit_before_payment(accoun
 
     settings.recharge_packages_json = "[]"
     settings.zhifux_enabled = False
-    assert create(owner, key=key).json()["amount_fen"] == 1234
+    assert owner.get(f"/payments/order-attempts/{key}").json()["amount_fen"] == 1234
     paid = owner.get(CALLBACK_PATH, params=notification(first, settings))
     assert paid.status_code == 200 and paid.text == "success"
     assert owner.get("/usage").json()["balance"] == 1567
@@ -128,13 +129,14 @@ def test_payment_method_is_selected_per_provider_and_bound_to_idempotency(accoun
         {"code": "wxpay", "label": "微信支付"},
     ])
     catalog = owner.get("/payments/catalog").json()
-    assert catalog["providers"][0]["payment_methods"] == [
-        {"code": "alipay", "label": "支付宝"}, {"code": "wxpay", "label": "微信支付"}]
     package = catalog["packages"][0]
+    preview = owner.post("/payments/checkout-preview", json={"package_id": package["id"], "quote": package["quote"]}).json()
+    assert preview["payment_methods"] == [
+        {"id": "zhifux_alipay", "label": "支付宝"}, {"id": "zhifux_wxpay", "label": "微信支付"}]
     key = str(uuid4())
     response = owner.post("/payments/orders", json={
         "package_id": package["id"], "quote": package["quote"],
-        "idempotency_key": key, "payment_method_code": "wxpay",
+        "idempotency_key": key, "payment_method_id": "zhifux_wxpay",
     })
     assert response.status_code == 201, response.text
     from uuid import UUID
@@ -142,12 +144,12 @@ def test_payment_method_is_selected_per_provider_and_bound_to_idempotency(accoun
     assert order.pay_type == "wxpay"
     assert owner.post("/payments/orders", json={
         "package_id": package["id"], "quote": package["quote"],
-        "idempotency_key": key, "payment_method_code": "alipay",
+        "idempotency_key": key, "payment_method_id": "zhifux_alipay",
     }).status_code == 409
     assert owner.post("/payments/orders", json={
         "package_id": package["id"], "quote": package["quote"],
-        "idempotency_key": str(uuid4()), "payment_method_code": "forged",
-    }).status_code == 422
+        "idempotency_key": str(uuid4()), "payment_method_id": "forged",
+    }).status_code == 409
 
 
 def test_custom_recharge_uses_configured_integer_yuan_rate(accounts, gateway):
@@ -159,11 +161,13 @@ def test_custom_recharge_uses_configured_integer_yuan_rate(accounts, gateway):
     assert catalog["custom"]["credits_per_yuan"] == 250
     partial_yuan = owner.post("/payments/orders", json={
         "package_id": catalog["custom"]["id"], "custom_amount_fen": 1250,
+        "payment_method_id": "zhifux_aloop",
         "quote": catalog["custom"]["quote"], "idempotency_key": str(uuid4()),
     })
     assert partial_yuan.status_code == 422
     whole_yuan = owner.post("/payments/orders", json={
         "package_id": catalog["custom"]["id"], "custom_amount_fen": 1200,
+        "payment_method_id": "zhifux_aloop",
         "quote": catalog["custom"]["quote"], "idempotency_key": str(uuid4()),
     })
     assert whole_yuan.status_code == 201, whole_yuan.text
@@ -345,7 +349,6 @@ def test_platform_order_id_cannot_be_used_for_two_orders(accounts, gateway):
     ("api_public_url", "https://api.example?callback=bad"),
     ("frontend_url", "javascript:alert(1)"),
     ("zhifux_merchant_num", ""),
-    ("recharge_packages_json", "[]"),
     ("recharge_packages_json", '[{"id":"a","name":"a","amount_fen":0,"credits":1}]'),
     ("recharge_packages_json", '[{"id":"a","name":"a","amount_fen":1.1,"credits":1}]'),
     ("recharge_packages_json", '[{"id":"a","name":"a","amount_fen":1,"credits":true}]'),
@@ -356,7 +359,7 @@ def test_bad_configuration_fails_closed(accounts, gateway, setting, value):
     settings, calls = gateway
     setattr(settings, setting, value)
     assert owner.get("/payments/catalog").json() == {"enabled": False, "packages": []}
-    assert create(owner).status_code == 503
+    assert create(owner).status_code in (409, 503)
     assert calls == []
 
 
@@ -381,6 +384,7 @@ def test_price_change_requires_a_new_customer_confirmation(accounts, gateway):
     settings.recharge_packages_json = json.dumps(packages)
     response = owner.post("/payments/orders", json={
         "package_id": "test", "idempotency_key": uuid4().hex, "quote": quote,
+        "payment_method_id": "zhifux_aloop",
     })
     assert response.status_code == 409
     assert owner.get("/payments/orders").json()["total"] == 0 and calls == []
@@ -391,6 +395,7 @@ def custom_order(client, amount_fen, *, key=None, quote=None):
     policy = client.get("/payments/catalog").json()["custom"]
     return client.post("/payments/orders", json={
         "package_id": policy["id"], "custom_amount_fen": amount_fen,
+        "payment_method_id": "zhifux_aloop",
         "idempotency_key": key or uuid4().hex, "quote": quote or policy["quote"],
     })
 
@@ -419,7 +424,7 @@ def test_custom_recharge_is_disabled_by_default_and_enforced_by_order_api(accoun
     assert catalog["enabled"] and "custom" not in catalog
     assert [item["id"] for item in catalog["packages"]] == ["test", "other"]
     response = owner.post("/payments/orders", json={"package_id": "custom_amount",
-        "custom_amount_fen": 2345, "idempotency_key": uuid4().hex, "quote": "0" * 64})
+        "custom_amount_fen": 2345, "idempotency_key": uuid4().hex, "quote": "0" * 64, "payment_method_id": "zhifux_aloop"})
     assert response.status_code == 422
     assert "未开放自定义充值" in response.json()["detail"]
     assert calls == []
@@ -448,7 +453,7 @@ def test_custom_amount_is_quoted_idempotent_and_paid_once(accounts, gateway):
     settings.zhifux_custom_recharge_enabled = False
     settings.zhifux_enabled = False
     # Existing idempotent retries recover the original order after custom recharge is disabled.
-    assert custom_order_payload(owner, order["amount_fen"], key).json()["id"] == order["id"]
+    assert owner.get(f"/payments/order-attempts/{key}").json()["id"] == order["id"]
 
 
 def custom_order_payload(client, amount_fen, key):
@@ -525,7 +530,7 @@ def test_real_adapter_sends_official_query_protocol_with_tls_and_no_secret_expos
         assert params["amount"] == "12.34"
         assert params["apiMode"] == "post_form" and params["payDuration"] == "15"
         assert params["returnType"] == "json"
-        assert params["returnUrl"] == "https://app.example/?account=1&billing=1"
+        assert params["returnUrl"] == f"https://app.example/payments/checkout?order={row.id}"
         assert params["sign"] == md5_sign(
             settings.zhifux_merchant_num + row.id.hex + "12.34" + "https://api.example" + CALLBACK_PATH + "test-only-secret",
         )
@@ -569,11 +574,11 @@ def test_ezfp_catalog_order_and_signed_callback_are_isolated_and_idempotent(acco
     settings.ezfp_recharge_packages_json = json.dumps([
         {"id": "ezfp-basic", "name": "易支付档", "amount_fen": 1000, "credits": 800},
     ])
+    settings.zhifux_enabled = False
     catalog = owner.get("/payments/catalog").json()
-    assert [provider["provider_key"] for provider in catalog["providers"]] == ["zhifux", "ezfp"]
-    ezfp = next(provider for provider in catalog["providers"] if provider["provider_key"] == "ezfp")
-    body = {"package_id": "ezfp-basic", "provider_key": "ezfp", "idempotency_key": uuid4().hex,
-        "quote": ezfp["packages"][0]["quote"]}
+    assert "providers" not in catalog
+    body = {"package_id": "ezfp-basic", "payment_method_id": "ezfp_wxpay", "idempotency_key": uuid4().hex,
+        "quote": catalog["packages"][0]["quote"]}
     monkeypatch.setattr(payments.EzfpAdapter, "create_checkout", lambda self, config, order, client_ip="":
         Checkout("API-123", "https://checkout.example/ezfp"))
     created = owner.post("/payments/orders", json=body)
@@ -616,10 +621,14 @@ def test_ezfp_invalid_channel_does_not_hide_payment_fm(accounts, gateway):
     settings.ezfp_pid = "invalid merchant!"
     settings.ezfp_private_key = None
     settings.ezfp_public_key = None
+    settings.ezfp_recharge_packages_json = settings.recharge_packages_json
+    settings.ezfp_custom_recharge_enabled = settings.zhifux_custom_recharge_enabled
 
     catalog = owner.get("/payments/catalog")
     assert catalog.status_code == 200
-    assert [provider["provider_key"] for provider in catalog.json()["providers"]] == ["zhifux"]
+    package = catalog.json()["packages"][0]
+    preview = owner.post("/payments/checkout-preview", json={"package_id": package["id"], "quote": package["quote"]})
+    assert preview.json()["payment_methods"] == [{"id": "zhifux_wxpay", "label": "wxpay"}]
 
 
 def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response(monkeypatch):

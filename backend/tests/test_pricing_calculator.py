@@ -39,6 +39,7 @@ def test_reference_includes_ezfp_and_survives_unavailable_fm(accounts, gateway):
     settings.ezfp_recharge_packages_json = json.dumps([
         {"id": "ezfp-reference", "name": "EZFP", "amount_fen": 100, "credits": 1000},
     ])
+    settings.zhifux_enabled = False
     assert owner.get(ROOT).json()["reference_package"]["id"] == "ezfp-reference"
     settings.recharge_packages_json = "invalid"
     assert owner.get(ROOT).json()["reference_package"]["id"] == "ezfp-reference"

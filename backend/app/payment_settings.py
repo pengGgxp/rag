@@ -16,6 +16,9 @@ from .site_auth import site_admin, protect
 
 router = APIRouter(prefix="/site/admin/payments", tags=["site-admin-payments"])
 
+from .recharge_settings import register_admin_routes
+register_admin_routes(router)
+
 
 class PaymentSettingsInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
@@ -44,8 +47,6 @@ class PaymentSettingsInput(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("充值档位 ID 不能重复")
         if self.enabled:
-            if not self.packages:
-                raise ValueError("启用充值前至少需要配置一个充值档位")
             if self.provider_key == payments.EZFP_PROVIDER_KEY:
                 if self.api_base_url != payments.EZFP_ENDPOINT:
                     raise ValueError("易支付接口地址必须使用官方接口地址")
@@ -55,8 +56,6 @@ class PaymentSettingsInput(BaseModel):
                 raise ValueError("支付网关必须是有效的 HTTPS 地址，且不能包含查询参数")
             if not re.fullmatch(r"[a-zA-Z0-9]{1,100}", self.merchant_num):
                 raise ValueError("商户号格式不正确")
-            if not self.payment_methods:
-                raise ValueError("启用充值前至少需要配置一种付款方式")
             if self.clear_secret and not (self.secret and self.secret.get_secret_value()):
                 if self.provider_key != payments.EZFP_PROVIDER_KEY or not (self.private_key and self.private_key.get_secret_value() and self.public_key and self.public_key.get_secret_value()):
                     raise ValueError("启用支付时不能清除唯一的商户密钥")
