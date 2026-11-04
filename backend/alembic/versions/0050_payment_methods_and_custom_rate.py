@@ -3,7 +3,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0050_payment_methods_and_custom_rate"
+revision = "0050_payment_methods_rates"
 down_revision = "0049_payment_recharge_options"
 branch_labels = None
 depends_on = None
