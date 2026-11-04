@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Gift, Loader2, Megaphone, Save } from "lucide-react";
+import { Check, Gift, Loader2, Megaphone, Save, MessageSquare } from "lucide-react";
 import { ApiError, request } from "../../api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
@@ -10,9 +10,10 @@ import "../../billing.css";
 type Settings = {
   version: number; signup_credits: number; announcement_title: string;
   announcement_body: string; announcement_published: boolean;
+  administrator_contact: string;
 };
 type Draft = Omit<Settings, "version" | "signup_credits"> & { signup_credits: string };
-const empty: Draft = { signup_credits: "1000", announcement_title: "", announcement_body: "", announcement_published: false };
+const empty: Draft = { signup_credits: "1000", announcement_title: "", announcement_body: "", announcement_published: false, administrator_contact: "" };
 
 export default function SiteSettingsPage() {
   const resource = useAdminResource<Settings>("/site/admin/settings");
@@ -27,7 +28,8 @@ export default function SiteSettingsPage() {
   useAdminChanges(dirty, busy);
   function accept(value: Settings) {
     const next = { signup_credits: String(value.signup_credits), announcement_title: value.announcement_title,
-      announcement_body: value.announcement_body, announcement_published: value.announcement_published };
+      announcement_body: value.announcement_body, announcement_published: value.announcement_published,
+      administrator_contact: value.administrator_contact };
     setConfig(value); setForm(next); setOriginal(next);
   }
   useEffect(() => { if (resource.data) accept(resource.data); }, [resource.data]);
@@ -79,6 +81,13 @@ export default function SiteSettingsPage() {
               {(form.announcement_title.trim() || form.announcement_body.trim()) && <details className="site-announcement-preview">
                 <summary>预览公告</summary><h3>{form.announcement_title}</h3><div>{form.announcement_body}</div>
               </details>}
+            </section>
+            <section className="model-form-section">
+              <h2><MessageSquare size={17} />管理员联系方式</h2>
+              <label>联系方式<textarea aria-label="管理员联系方式" maxLength={1000} rows={4}
+                value={form.administrator_contact} onChange={event => setForm({ ...form, administrator_contact: event.target.value })}
+                placeholder={"例如：微信：xxx\n邮箱：support@example.com"} /></label>
+              <p className="site-setting-note">显示在意见反馈内容下方，留空则不显示。</p>
             </section>
             <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : ""}</span>
               <button type="submit" className="primary" disabled={busy || !dirty || conflict}>

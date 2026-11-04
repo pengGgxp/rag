@@ -20,6 +20,7 @@ export class ApiError extends Error {
 }
 
 const VALIDATION_FIELD_NAMES: Record<string, string> = {
+  administrator_contact: "管理员联系方式",
   version: "配置版本", provider_key: "支付渠道", enabled: "启用状态",
   api_base_url: "支付网关地址", merchant_num: "商户号", pay_type: "支付方式编码",
   secret: "商户密钥", private_key: "商户 RSA 私钥", public_key: "平台 RSA 公钥",

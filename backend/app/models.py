@@ -23,6 +23,7 @@ class SiteSettings(Base):
     signup_credits: Mapped[int] = mapped_column(Integer, default=1000)
     announcement_title: Mapped[str] = mapped_column(String(120), default="")
     announcement_body: Mapped[str] = mapped_column(Text, default="")
+    administrator_contact: Mapped[str] = mapped_column(Text, default="", server_default="")
     announcement_published: Mapped[bool] = mapped_column(Boolean, default=False)
     announcement_revision: Mapped[int] = mapped_column(Integer, default=0)
     announcement_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

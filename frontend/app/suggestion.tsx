@@ -17,6 +17,18 @@ export function SuggestionProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(false);
   const [discard, setDiscard] = useState(false);
+  const [contact, setContact] = useState("");
+  const [contactError, setContactError] = useState(false);
+  const [contactReload, setContactReload] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setContact(""); setContactError(false);
+    request<{ administrator_contact: string }>("/site/contact")
+      .then(value => { if (active) setContact(value.administrator_contact); })
+      .catch(() => { if (active) setContactError(true); });
+    return () => { active = false; };
+  }, [open, session.user.id, session.workspace_id, contactReload]);
   const pending = useRef<{ key: string; content: string; category: string } | null>(null);
   const submitting = useRef(false);
   const scope = useRef(0);
@@ -42,6 +54,8 @@ export function SuggestionProvider({ children }: { children: ReactNode }) {
       }}>
         <label>反馈类型<select disabled={busy} value={category} onChange={event => setCategory(event.target.value)}><option value="feature">功能建议</option><option value="problem">使用问题</option><option value="other">其他</option></select></label>
         <label>反馈内容<textarea autoFocus required disabled={busy} rows={6} maxLength={2000} value={content} onChange={event => setContent(event.target.value)} /></label>
+        {contact && <section className="suggestion-contact" aria-label="管理员联系方式"><h3>联系管理员</h3><p>{contact}</p></section>}
+        {contactError && <div className="suggestion-contact-error"><span>联系方式暂时无法加载</span><button className="text-button" type="button" onClick={() => setContactReload(value => value + 1)}>重试</button></div>}
         {error && <p className="form-error" role="alert">{error}</p>}
         {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未提交的内容？</span><button className="secondary" type="button" onClick={() => setDiscard(false)}>继续填写</button><button className="danger" type="button" onClick={() => { setContent(""); setOpen(false); setDiscard(false); pending.current = null; }}>放弃反馈</button></div>}
         <div className="managed-actions"><button className="secondary" type="button" disabled={busy} onClick={close}>取消</button><button className="primary" disabled={busy || !content.trim()} type="submit">{busy ? <Loader2 size={16} className="spin" /> : <Send size={16} />}提交反馈</button></div>

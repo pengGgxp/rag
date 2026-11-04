@@ -13,6 +13,27 @@ from test_auth import PASSWORD, register, share, switch
 ROOT = "/site/admin/settings"
 
 
+def test_administrator_contact_permissions_clear_conflict_and_safe_public_read(accounts):
+    owner, db, _ = admin(accounts)
+    (_, member, anonymous), _ = accounts
+    register(member, "contact-reader@example.com")
+    assert anonymous.get("/site/contact").status_code == 401
+    assert member.get("/site/contact").json() == {"administrator_contact": ""}
+    value = "微信：support\n邮箱：help@example.com\n<script>plain text</script>"
+    assert save(owner, administrator_contact=value).status_code == 200
+    assert member.get("/site/contact").json() == {"administrator_contact": value}
+    assert save(owner, version=0, administrator_contact="stale").status_code == 409
+    assert save(owner, administrator_contact="x" * 1001).status_code == 422
+    assert member.get("/site/contact").json()["administrator_contact"] == value
+    row = db.get(SiteSettings, 1)
+    assert row.announcement_revision == 0
+    audit = db.scalar(select(SiteAuditEvent).where(SiteAuditEvent.action == "site.settings_updated"))
+    assert "administrator_contact" in audit.details["fields"]
+    assert value not in str(audit.details)
+    assert save(owner, administrator_contact="").status_code == 200
+    assert member.get("/site/contact").json() == {"administrator_contact": ""}
+
+
 def admin(accounts):
     (owner, _, _), db = accounts
     session = register(owner)

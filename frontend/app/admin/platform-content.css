@@ -40,6 +40,10 @@
 .suggestion-form textarea { width: 100%; resize: vertical; min-height: 160px; }
 .suggestion-form select, .suggestion-form textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--ink); padding: 10px 12px; font: inherit; }
 .suggestion-form .managed-actions { justify-content: flex-end; }
+.suggestion-contact { border-top: 1px solid var(--line); padding-top: 16px; min-width: 0; }
+.suggestion-contact h3 { margin: 0 0 8px; font-size: var(--form-font-size); font-weight: 500; }
+.suggestion-contact p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: var(--form-label-size); user-select: text; }
+.suggestion-contact-error { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: var(--form-label-size); }
 .suggestion-form .admin-inline-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 @media (max-width: 700px) {
   .skill-resource-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }

@@ -27,6 +27,7 @@ def read_settings(row):
         "signup_credits": row.signup_credits if row else DEFAULT_SIGNUP_CREDITS,
         "announcement_title": row.announcement_title if row else "",
         "announcement_body": row.announcement_body if row else "",
+        "administrator_contact": row.administrator_contact if row else "",
         "announcement_published": row.announcement_published if row else False,
         "announcement_revision": row.announcement_revision if row else 0,
         "announcement_updated_at": row.announcement_updated_at if row else None,
@@ -40,6 +41,7 @@ class SettingsInput(BaseModel):
     announcement_title: str = Field(max_length=120)
     announcement_body: str = Field(max_length=10_000)
     announcement_published: bool
+    administrator_contact: str = Field(default="", max_length=1000)
 
     @model_validator(mode="after")
     def complete_published_announcement(self):
@@ -91,3 +93,9 @@ def published_announcement(db: Session = Depends(get_db), session=Depends(curren
         "revision": row.announcement_revision, "title": row.announcement_title,
         "body": row.announcement_body, "updated_at": row.announcement_updated_at,
     }}
+
+
+@router.get("/site/contact")
+def administrator_contact(db: Session = Depends(get_db), session=Depends(current_session)):
+    row = db.get(SiteSettings, 1, populate_existing=True)
+    return {"administrator_contact": row.administrator_contact if row else ""}
