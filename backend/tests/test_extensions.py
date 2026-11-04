@@ -31,6 +31,24 @@ def access_for(client, db):
     return auth.get_access(session, db)
 
 
+def test_platform_resource_followup_uses_current_scope_without_load_flag(accounts, monkeypatch):
+    import base64
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    item = create(admin, files=[{"path": "guide.txt", "content": base64.b64encode(b"Platform guide").decode()}])
+    access = access_for(admin, db)
+    previous = ExtensionRuntime(lambda: nullcontext(db), access)
+    assert "instructions" in previous.execute("load_skill", {"skill_id": item["id"]})
+    current = ExtensionRuntime(lambda: nullcontext(db), access)
+    args = {"skill_id": item["id"], "path": "guide.txt"}
+    assert current.execute("read_skill_resource", args)["content"] == "Platform guide"
+    assert not current.loaded
+    assert current.execute("read_skill_resource", {**args, "path": "../guide.txt"}).get("error")
+    assert current.execute("read_skill_resource", {**args, "offset": -1}).get("error")
+    admin.put(f"/site/admin/skills/{item['id']}", json={**{key:item[key] for key in
+        ("name", "description", "markdown", "version")}, "enabled": False})
+    assert current.execute("read_skill_resource", args).get("error")
+
+
 def test_admin_crud_import_permissions_conflicts_and_audit(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     (_, member, anonymous), _ = accounts

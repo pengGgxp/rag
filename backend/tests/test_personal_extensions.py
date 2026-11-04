@@ -68,7 +68,10 @@ def test_personal_package_draft_limits_reading_ownership_and_conflicts(accounts,
     access = access_for(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [row["id"]], [])
     args = {"skill_id": row["id"]}
-    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
+    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
+    assert not runtime.loaded
+    unselected = ExtensionRuntime(lambda: nullcontext(db), access, [], [])
+    assert unselected.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
     loaded = runtime.execute("load_skill", args)
     assert loaded["resources"] == [{"path": "references/guide.md"}, {"path": "scripts/task.py"}]
     assert "NEVER RUN" in runtime.execute("read_skill_resource", {**args, "path": "scripts/task.py"})["content"]
@@ -79,6 +82,7 @@ def test_personal_package_draft_limits_reading_ownership_and_conflicts(accounts,
     assert update.status_code == 200 and update.json()["version"] == 2
     assert admin.put(f"/agent/skills/{row['id']}", json={**body, "version": 1}).status_code == 409
     assert runtime.execute("load_skill", args).get("error")
+    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
     assert admin.get(f"/agent/skills/{row['id']}/export").status_code == 200
 
 

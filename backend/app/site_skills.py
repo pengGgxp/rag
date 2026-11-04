@@ -242,8 +242,6 @@ class SkillRuntime:
         if name == "read_skill_resource":
             if not {"skill_id", "path"}.issubset(arguments) or set(arguments) - {"skill_id", "path", "offset"} or not isinstance(arguments["path"], str):
                 return {"error": "资料路径无效，请使用 Skill 提供的文件清单"}
-            if snapshot["id"] not in self.loaded:
-                return {"error": "请先读取该 Skill 的方法与文件清单"}
             content = snapshot["resources"].get(arguments["path"])
             if content is None:
                 return {"error": "该资料不存在或当前不支持读取"}

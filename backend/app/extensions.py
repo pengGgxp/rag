@@ -290,9 +290,9 @@ class ExtensionRuntime(SkillRuntime):
                     "working_directory": "/workspace", "scripts": snapshot["scripts"], "read_only": True,
                     "instructions": "使用解释器和目录中的绝对脚本路径运行；包内相对资料位于同一目录。输出写入 /workspace，不要修改 Skill 包。"}
                     if snapshot["scripts"] and self.execution_available else None}
-        if (set(arguments) - {"skill_id", "path", "offset"} or snapshot["id"] not in self.loaded
+        if (set(arguments) - {"skill_id", "path", "offset"}
                 or not isinstance(arguments.get("path"), str)):
-            return {"error": "请先加载 Skill，再读取清单内的文字资料"}
+            return {"error": "资料参数无效，请读取清单内的文字资料"}
         content = snapshot["resources"].get(arguments["path"])
         offset = arguments.get("offset", 0)
         if content is None or type(offset) is not int or not 0 <= offset <= len(content):
