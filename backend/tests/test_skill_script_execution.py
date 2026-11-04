@@ -80,6 +80,7 @@ def test_output_tools_work_without_skill_or_executor_and_recheck_role(accounts, 
     stored = {}
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: io.BytesIO(stored[key]))
+    monkeypatch.setattr("app.resource_cache.download_range_fileobj", lambda key, start, end: io.BytesIO(stored[key][start:end+1]))
     access = access_for(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
     assert "write_file" in {item["function"]["name"] for item in runtime.tools}
@@ -234,6 +235,23 @@ def test_executor_mounts_packages_read_only_and_cleans_both_volumes(monkeypatch)
     assert "--cap-drop=ALL" in actual and "--security-opt=no-new-privileges" in actual
     assert "--network=rag-workspace-runners" in actual
     assert len([args for args, _ in calls if args[1:3] == ["volume", "rm"]]) == 2
+
+
+def test_executor_preserves_hidden_names_and_outputs_larger_than_five_mb(monkeypatch):
+    data = io.BytesIO()
+    payload = b"x" * 6_000_000
+    with tarfile.open(fileobj=data, mode="w") as bundle:
+        for path, body in [("./large.bin", payload), ("./.result.txt", b"hidden")]:
+            info = tarfile.TarInfo(path); info.size = len(body)
+            bundle.addfile(info, io.BytesIO(body))
+    def process(args, **kwargs):
+        if "tar" in args and "-c" in args:
+            return subprocess.CompletedProcess(args, 0, data.getvalue(), b"")
+        return subprocess.CompletedProcess(args, 0, "" if kwargs.get("text") else b"", "" if kwargs.get("text") else b"")
+    monkeypatch.setattr(executor_service.subprocess, "run", process)
+    result = executor_service.run(executor_service.RunRequest(workspace_id="test", command="true"))
+    assert base64.b64decode(result["files"]["large.bin"]) == payload
+    assert base64.b64decode(result["files"][".result.txt"]) == b"hidden"
 
 
 @pytest.mark.skipif(os.environ.get("RAG_TEST_REAL_EXECUTOR") != "1", reason="requires a local Docker runner image")

@@ -29,7 +29,7 @@ def validate_thinking(protocol, thinking):
         raise ValueError("Responses 调用类型仅支持 OpenAI 思考适配器，请调整模型思考配置")
 
 
-def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
+def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False, resource_context=None):
     from .llm import LLMConfigurationError
     try:
         validate_thinking(config.api_protocol, config.thinking)
@@ -38,7 +38,7 @@ def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto"
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用，请选择其他模型")
     from .chat_attachments import model_messages
-    messages = model_messages(messages, config)
+    messages = model_messages(messages, config, resource_context)
     items = []
     for message in messages:
         if message.get("role") == "assistant" and OUTPUT_FIELD in message:

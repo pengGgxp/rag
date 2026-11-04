@@ -211,7 +211,7 @@ def test_cleanup_rechecks_expiry_after_lock_and_releases_only_deleted_objects(ac
     assert not deleted
     monkeypatch.setattr(billing, "lock_workspace", original_lock)
     db.refresh(row)
-    row.expires_at = now()-timedelta(days=1); db.commit()
+    row.expires_at = now()-timedelta(days=1); row.deleted_at = now(); db.commit()
     def failed(_):
         raise IOError("temporary deletion failure")
     monkeypatch.setattr(storage, "delete_object", failed)

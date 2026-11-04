@@ -49,7 +49,7 @@ def test_attachment_ownership_expiry_and_deletion(accounts, objects):
     response = upload(owner)
     assert response.status_code == 201, response.text
     item = response.json()
-    assert set(item) == {"id", "filename", "content_type", "size_bytes", "kind"}
+    assert {"id", "filename", "content_type", "size_bytes", "kind", "resource_id", "version"} <= set(item)
     assert "object_key" not in response.text and "Private attached" not in response.text
     path = f"/chat/attachments/{item['id']}"
     assert outsider.get(path + "/content").status_code == 404
@@ -57,7 +57,7 @@ def test_attachment_ownership_expiry_and_deletion(accounts, objects):
     assert outsider.delete(path).status_code == 404
     share(owner, "outsider@example.com", "admin")
     switch(outsider, identity["workspace_id"])
-    assert outsider.get(path + "/content").status_code == 404
+    assert outsider.get(path + "/content").status_code == 200
     result = owner.get(path + "/content")
     assert result.content == b"Private attached facts" and "no-store" in result.headers["cache-control"]
     assert owner.delete(path).status_code == 204
@@ -66,10 +66,10 @@ def test_attachment_ownership_expiry_and_deletion(accounts, objects):
     row = db.get(ChatAttachment, UUID(fresh["id"]))
     row.created_at = auth.now() - timedelta(hours=25)
     db.commit()
-    assert owner.get(f"/chat/attachments/{row.id}/content").status_code == 410
+    assert owner.get(f"/chat/attachments/{row.id}/content").status_code == 200
     deleted = []
     attachments.cleanup(db, SimpleNamespace(delete=lambda key: deleted.append(key)))
-    assert len(deleted) == 2 and not db.scalars(select(ChatAttachment)).all()
+    assert not deleted and len(db.scalars(select(ChatAttachment)).all()) == 2
 
 
 @pytest.mark.parametrize("name,data,code", [
@@ -173,12 +173,8 @@ def test_send_history_retry_and_no_extra_attachment_charge(client, objects, monk
     assert len(detail["messages"][0]["attachments"]) == 2
     assert detail["messages"][0]["content"] == ""
     assert "object_key" not in str(detail) and "Private attached facts" not in str(detail)
-    assert http.delete(f"/chat/attachments/{document['id']}").status_code == 409
     duplicate = http.post(f"/conversations/{conv['id']}/messages", json=payload)
     assert duplicate.status_code == 200 and len(calls) == 1
-    conflict = http.post(f"/conversations/{conv['id']}/messages", json={
-        **payload, "request_id": str(uuid4())})
-    assert conflict.status_code == 409
     fail = True
     failed, _ = turn(http, conv["id"], "followup")
     assert failed[-1][1]["status"] == "failed"
@@ -194,9 +190,9 @@ def test_send_history_retry_and_no_extra_attachment_charge(client, objects, monk
     assert result.status_code == 422 and len(calls) == 3
     assert len(db.scalars(select(CreditLedgerEntry)).all()) == count
     assert http.delete(f"/conversations/{conv['id']}").status_code == 204
-    assert http.get(f"/chat/attachments/{document['id']}/content").status_code == 404
+    assert http.get(f"/chat/attachments/{document['id']}/content").status_code == 200
     attachments.cleanup(db, SimpleNamespace(delete=lambda key: objects.pop(key)))
-    assert not objects
+    assert objects
 
 
 def test_text_model_accepts_documents_rejects_image_before_hold(client, objects, monkeypatch):
@@ -266,7 +262,7 @@ def test_compaction_treats_images_as_images_and_retains_original(client, objects
     item = upload(http, "image.png", PNG).json()
     original = db.scalar(select(ChatMessage).where(
         ChatMessage.conversation_id == UUID(conversation), ChatMessage.sequence == 0))
-    db.get(ChatAttachment, UUID(item["id"])).message_id = original.id
+    original.attachments.append(db.get(ChatAttachment, UUID(item["id"])))
     db.commit(); db.expire_all()
     calls = summary_provider(monkeypatch)
     assert compact(http, conversation, provider)[-1][1]["status"] == "completed"

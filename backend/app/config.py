@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     ezfp_custom_credits_per_yuan: int = Field(default=100, ge=1, le=1_000_000)
     usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
     workspace_executor_url: str | None = None
+    resource_cache_dir: str = "/tmp/rag-resource-cache"
+    resource_cache_max_bytes: int = Field(default=5 * 1024**3, ge=0)
+    resource_cache_idle_seconds: int = Field(default=24 * 3600, ge=1)
     workspace_runner_image: str = "rag-workspace-executor:latest"
     workspace_file_retention_days: int = Field(default=3, ge=1, le=30)
     workspace_file_quota_mb: int = Field(default=500, ge=50, le=5000)

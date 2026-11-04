@@ -53,6 +53,19 @@ def download_range_fileobj(object_key: str, start: int, end: int):
         Range=f"bytes={start}-{end}")["Body"]
 
 
+def head_object(object_key: str):
+    backend = cos_backend()
+    if backend:
+        return backend.head(object_key)
+    from botocore.exceptions import ClientError
+    try:
+        return client().head_object(Bucket=get_settings().s3_bucket, Key=object_key)
+    except ClientError as exc:
+        if str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+
+
 def delete_object(object_key: str) -> None:
     backend = cos_backend()
     if backend:

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from .auth import Access, aware, get_access, now
 from .audit_log import record_audit
@@ -101,9 +101,10 @@ def inventory(db, identifier, *, exclude_key=None):
         ("documents", select(Document.object_key, Document.size_bytes).join(KnowledgeBase)
             .where(KnowledgeBase.workspace_id == identifier)),
         ("attachments", select(ChatAttachment.object_key, ChatAttachment.size_bytes)
-            .where(ChatAttachment.workspace_id == identifier)),
+            .where(ChatAttachment.workspace_id == identifier, ChatAttachment.object_deleted_at.is_(None))),
         ("outputs", select(WorkspaceFileVersion.object_key, WorkspaceFileVersion.size_bytes)
-            .where(WorkspaceFileVersion.workspace_id == identifier, WorkspaceFileVersion.deleted_at.is_(None))),
+            .where(WorkspaceFileVersion.workspace_id == identifier, WorkspaceFileVersion.deleted_at.is_(None),
+                WorkspaceFileVersion.available.is_not(False))),
         ("reserved", select(DocumentUpload.object_key, DocumentUpload.size_bytes)
             .where(DocumentUpload.workspace_id == identifier,
                 DocumentUpload.state.not_in(["cleaned", "cancelled", "completed"]))),
@@ -134,8 +135,9 @@ def check_capacity(db, identifier, additional, *, exclude_key=None, skill_replac
     usage = inventory(db, identifier, exclude_key=exclude_key)
     if usage["used_bytes"] - skill_replaced_bytes + additional > storage_limit(db, identifier, config):
         raise HTTPException(413, "工作区存储空间不足，请联系工作区管理员增加额度")
-    if output and usage["breakdown"]["outputs"] + additional > config.output_limit_bytes:
-        raise HTTPException(413, "临时输出空间已满，请缩小输出或等待过期文件清理")
+    state = db.get(WorkspaceStorageState, identifier)
+    if state is not None:
+        state.over_quota_since = None
     return config
 
 
@@ -210,6 +212,8 @@ def transfer_checkpoint(db, identifier, *, preparing=0, sent=0, finish=None):
     lock_workspace(db, row.workspace_id)
     db.refresh(row)
     if row.status != "active":
+        if finish == row.status and not preparing and not sent:
+            return
         raise RuntimeError("Transfer reservation expired")
     if sent:
         if sent != row.inflight_bytes:
@@ -257,11 +261,16 @@ def workspace_read(db, identifier):
     state.over_quota_since = (state.over_quota_since or now()) if usage["used_bytes"] > limit else None
     history = db.scalars(select(StorageEntitlement).where(StorageEntitlement.workspace_id == identifier,
         StorageEntitlement.kind != "free").order_by(StorageEntitlement.created_at.desc()).limit(100)).all()
+    transfers = list(db.execute(select(StorageTransfer.resource, func.sum(StorageTransfer.sent_bytes)).where(
+        StorageTransfer.workspace_id == identifier, StorageTransfer.created_at >= month_bounds(now())[0])
+        .group_by(StorageTransfer.resource)))
     result = {**usage, "limit_bytes": limit,
         "download_remaining_bytes": sum(max(0, e.download_bytes-e.used_bytes-e.reserved_bytes) for e in grants),
-        "download_resets_at": month_bounds(now())[1], "retention_days": config.retention_days,
+        "download_resets_at": month_bounds(now())[1], "retention_days": None,
         "over_quota_since": state.over_quota_since,
-        "cleanup_due_at": aware(state.over_quota_since)+timedelta(days=7) if state.over_quota_since else None,
+        "download_usage": {"model_read": sum(size for resource, size in transfers if resource.startswith("model_read:")),
+            "user_download": sum(size for resource, size in transfers if not resource.startswith("model_read:"))},
+        "cleanup_due_at": aware(state.over_quota_since)+timedelta(days=30) if state.over_quota_since else None,
         "entitlements": [entitlement_read(e) for e in grants if e.kind != "free"],
         "history": [entitlement_read(e) for e in history], "config_version": config.version,
         "packages": [p for p in sorted(config.packages, key=lambda p: p["order"]) if p["enabled"]]}
@@ -396,6 +405,62 @@ def workspace_list(page: int=Query(1, ge=1), db=Depends(get_db), actor=Depends(s
 
 
 def maintenance(db):
-    # Metadata only; this never deletes originals or changes existing balances.
+    from .models import ChatAttachment, WorkspaceFile, WorkspaceFileVersion
+    from .storage import delete_object
     for identifier in list(db.scalars(select(Workspace.id))):
-        workspace_read(db, identifier)
+        state = workspace_read(db, identifier)
+        if not state["over_quota_since"] or aware(state["over_quota_since"])+timedelta(days=30) > now():
+            continue
+        lock_workspace(db, identifier)
+        current_state = db.get(WorkspaceStorageState, identifier, populate_existing=True)
+        if (current_state is None or current_state.over_quota_since is None
+                or aware(current_state.over_quota_since)+timedelta(days=30) > now()):
+            db.rollback()
+            continue
+        config = settings(db)
+        limit = storage_limit(db, identifier, config)
+        candidates = []
+        for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,
+                WorkspaceFile.deleted_at.is_(None)).order_by(WorkspaceFile.created_at, WorkspaceFile.id)):
+            version = db.scalar(select(WorkspaceFileVersion).where(
+                WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == row.current_version,
+                WorkspaceFileVersion.deleted_at.is_(None)))
+            if version:
+                candidates.append((row.created_at, str(row.id), "file", row, version.size_bytes))
+        for row in db.scalars(select(ChatAttachment).where(ChatAttachment.workspace_id == identifier,
+                ChatAttachment.resource_file_id.is_(None), ChatAttachment.deleted_at.is_(None), ChatAttachment.over_quota_deleted_at.is_(None))
+                .order_by(ChatAttachment.created_at, ChatAttachment.id)):
+            candidates.append((row.created_at, str(row.id), "attachment", row, row.size_bytes))
+        for _, _, kind, row, _ in sorted(candidates, key=lambda item: (aware(item[0]), item[1])):
+            if inventory(db, identifier)["used_bytes"] <= limit:
+                break
+            if kind == "file":
+                row.deleted_at = now()
+                for version in row.versions:
+                    if version.deleted_at is None:
+                        if db.scalar(select(Document.id).where(Document.object_key == version.object_key)):
+                            continue
+                        try:
+                            delete_object(version.object_key)
+                            version.deleted_at = now()
+                            for attachment in db.scalars(select(ChatAttachment).where(
+                                    ChatAttachment.object_key == version.object_key)):
+                                attachment.deleted_at = row.deleted_at
+                                attachment.object_deleted_at = version.deleted_at
+                        except Exception:
+                            pass
+                for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
+                    attachment.deleted_at = row.deleted_at
+            else:
+                row.over_quota_deleted_at = now()
+                row.deleted_at = now()
+                try:
+                    if not db.scalar(select(Document.id).where(Document.object_key == row.object_key)):
+                        delete_object(row.object_key)
+                        row.object_deleted_at = now()
+                except Exception:
+                    pass
+            record_audit(db, action="resource.auto_deleted", workspace_id=identifier,
+                resource_type="resource", resource_id=row.id, metadata={"reason": "storage_over_quota"})
+            db.flush()
+        db.commit()

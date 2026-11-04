@@ -358,6 +358,8 @@ def verify_upload(identifier: str) -> None:
 
 @celery_app.task
 def maintain_uploads() -> None:
+    from .resource_cache import prune_cache
+    prune_cache()
     from .document_uploads import cleanup_uploads, cleanup_orphans, recover_uploads
     cleanup_uploads()
     recover_uploads()
@@ -366,6 +368,10 @@ def maintain_uploads() -> None:
     with SessionLocal() as db:
         from .storage_billing import maintenance
         maintenance(db)
+    with SessionLocal() as db:
+        from .resources import verify_pending_objects
+        from .storage import head_object
+        verify_pending_objects(db, head_object)
     with SessionLocal() as db:
         storage = ocr_storage(db)
         if storage:
@@ -386,26 +392,30 @@ def maintain_uploads() -> None:
 
 
 def cleanup_workspace_files() -> None:
-    """Remove expired temporary Skill outputs from object storage and metadata."""
+    """Collect explicitly deleted resource objects; valid resources never expire."""
     from .storage import delete_object
     with SessionLocal() as db:
-        expired = db.scalars(select(WorkspaceFile).where(
-            (WorkspaceFile.deleted_at.is_not(None)) |
-            (WorkspaceFile.expires_at <= datetime.now(timezone.utc)))).all()
+        expired = db.scalars(select(WorkspaceFile).where(WorkspaceFile.deleted_at.is_not(None))).all()
         for row in expired:
             from .storage_billing import lock_workspace
             lock_workspace(db, row.workspace_id)
             db.refresh(row)
-            if row.deleted_at is None and aware(row.expires_at) > datetime.now(timezone.utc):
+            if row.deleted_at is None:
                 continue
             for version in row.versions:
                 if version.deleted_at is not None:
+                    continue
+                if db.scalar(select(Document.id).where(Document.object_key == version.object_key)):
                     continue
                 try:
                     delete_object(version.object_key)
                 except Exception:
                     continue
                 version.deleted_at = datetime.now(timezone.utc)
+                from .models import ChatAttachment
+                for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.object_key)):
+                    attachment.deleted_at = row.deleted_at
+                    attachment.object_deleted_at = version.deleted_at
             if all(version.deleted_at is not None for version in row.versions):
                 row.deleted_at = datetime.now(timezone.utc)
         db.commit()

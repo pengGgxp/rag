@@ -1065,6 +1065,8 @@ app.include_router(pricing_calculator_router)
 app.include_router(site_settings_router)
 app.include_router(search_settings_router)
 app.include_router(workspace_files_router)
+from .resources import router as resources_router
+app.include_router(resources_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(payment_settings_router)

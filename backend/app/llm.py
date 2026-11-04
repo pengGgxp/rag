@@ -164,12 +164,14 @@ class OpenAICompatibleChatProvider:
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
         if self.config.api_protocol == "responses":
             from .llm_responses import payload
-            return payload(self.config, messages, temperature, tools=tools, tool_choice=tool_choice, stream=stream)
+            return payload(self.config, messages, temperature, tools=tools, tool_choice=tool_choice, stream=stream,
+                resource_context=getattr(self, "resource_context", None))
         thinking = self.config.thinking
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
         from .chat_attachments import model_messages
-        payload = {"model": self.model, "messages": model_messages(messages, self.config)}
+        payload = {"model": self.model, "messages": model_messages(messages, self.config,
+            getattr(self, "resource_context", None))}
         # Older encrypted continuations also contain empty call arrays. Normalize
         # the outbound copy so existing conversations work without rewriting history.
         for message in payload["messages"]:

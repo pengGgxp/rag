@@ -87,7 +87,7 @@ class ExtensionRuntime(SkillRuntime):
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
         self.execution_available = bool(get_settings().workspace_executor_url) and access.role in ("admin", "editor")
         workspace_tools = [item for item in tool_definitions()
-            if access.role in ("admin", "editor") and (item["function"]["name"] != "run_command"
+            if (access.role in ("admin", "editor") or item["function"]["name"] in ("list_files", "read_file")) and (item["function"]["name"] != "run_command"
                 or self.execution_available)]
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
         self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
@@ -122,7 +122,7 @@ class ExtensionRuntime(SkillRuntime):
             return "使用「教师出题」"
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
-            return {"list_files": "查看工作区输出", "read_file": "读取文件", "write_file": "生成文件",
+            return {"list_files": "查看资源库", "read_file": "读取文件", "write_file": "生成文件",
                 "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "运行脚本"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
 
@@ -186,7 +186,7 @@ class ExtensionRuntime(SkillRuntime):
                     except HTTPException as error:
                         if error.status_code in (401, 403):
                             raise
-                        code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",
+                        code = {402: "file_download_quota", 404: "file_missing", 409: "file_conflict", 413: "file_capacity",
                             422: "file_arguments"}.get(error.status_code, "file_storage")
                         return {"error": FILE_TOOL_ERRORS[code], "error_code": code}
             return super().execute(name, arguments, check_active)

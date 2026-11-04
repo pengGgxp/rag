@@ -583,14 +583,18 @@ def chat_router(get_db, retrieve):
             message.thinking_diagnostics = []
             message.encrypted_display_thinking = None
         else:
-            for position, attachment in enumerate(attachments):
-                attachment.position = position
             user_message = ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 2,
                 role="user", content=payload.query or "", attachments=attachments,
                 document_mentions=document_mentions,
             )
             db.add(user_message)
+            db.flush()
+            from .models import chat_message_resources
+            for position, attachment in enumerate(attachments):
+                db.execute(update(chat_message_resources).where(
+                    chat_message_resources.c.message_id == user_message.id,
+                    chat_message_resources.c.attachment_id == attachment.id).values(position=position))
             message = ChatMessage(
                 conversation_id=conversation.id, sequence=next_sequence - 1,
                 role="assistant", status="streaming", request_id=payload.request_id,
@@ -734,6 +738,7 @@ def chat_router(get_db, retrieve):
                 yield emit("message", message_read(message))
             yield emit("phase", {"phase": "planning"})
             provider = OpenAICompatibleChatProvider(config=provider_config)
+            provider.resource_context = (factory, access)
             if not hasattr(provider, "complete_with_tools"):
                 raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")
             agent_run = None

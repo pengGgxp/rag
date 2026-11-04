@@ -43,8 +43,9 @@ def test_concurrent_binding_is_once_and_preserves_original(auth_postgres):
                 db.rollback()
                 return exc.status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
-        assert sorted(pool.map(bind, ids)) == [200, 409]
+        assert sorted(pool.map(bind, ids)) == [200, 200]
     with Session(auth_postgres) as db:
         saved = db.get(ChatAttachment, identifier)
-        assert saved.message_id and saved.content_hash == "a" * 64 and saved.text_content == "facts"
-        assert len(db.scalars(select(ChatMessage).where(ChatMessage.conversation_id.in_(ids))).all()) == 1
+        assert saved.message_id is None and saved.content_hash == "a" * 64 and saved.text_content == "facts"
+        messages = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id.in_(ids))).all()
+        assert len(messages) == 2 and all(item.attachments[0].id == identifier for item in messages)

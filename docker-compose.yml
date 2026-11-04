@@ -90,6 +90,11 @@ services:
       RECHARGE_PACKAGES_JSON: ${RECHARGE_PACKAGES_JSON:-[]}
       USAGE_AUTHORIZATION_HOLD_CREDITS: ${USAGE_AUTHORIZATION_HOLD_CREDITS:-1}
       WORKSPACE_EXECUTOR_URL: http://workspace-executor:8090
+      RESOURCE_CACHE_DIR: /var/cache/rag-resources
+      RESOURCE_CACHE_MAX_BYTES: ${RESOURCE_CACHE_MAX_BYTES:-5368709120}
+      RESOURCE_CACHE_IDLE_SECONDS: ${RESOURCE_CACHE_IDLE_SECONDS:-86400}
+    volumes:
+      - resource_cache:/var/cache/rag-resources
     ports:
       - "8000:8000"
     healthcheck:
@@ -130,6 +135,9 @@ services:
       S3_BUCKET: rag-documents
       S3_REGION: us-east-1
       SITE_CONFIG_ENCRYPTION_KEY: ${SITE_CONFIG_ENCRYPTION_KEY:-}
+      RESOURCE_CACHE_DIR: /var/cache/rag-resources
+      RESOURCE_CACHE_MAX_BYTES: ${RESOURCE_CACHE_MAX_BYTES:-5368709120}
+      RESOURCE_CACHE_IDLE_SECONDS: ${RESOURCE_CACHE_IDLE_SECONDS:-86400}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
@@ -145,6 +153,8 @@ services:
       DOCMIND_TIMEOUT_SECONDS: ${DOCMIND_TIMEOUT_SECONDS:-300}
       DOCMIND_POLL_SECONDS: ${DOCMIND_POLL_SECONDS:-3}
       USAGE_AUTHORIZATION_HOLD_CREDITS: ${USAGE_AUTHORIZATION_HOLD_CREDITS:-1}
+    volumes:
+      - resource_cache:/var/cache/rag-resources
     depends_on:
       db:
         condition: service_healthy
@@ -170,4 +180,5 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  resource_cache:
 

@@ -49,6 +49,8 @@ def input_archive(files, *, skill=False):
             total += len(data)
             if skill and total > MAX_BUNDLE_BYTES:
                 raise HTTPException(413, "本次加载的 Skill 文件总大小超过限制")
+            if not skill and (len(data) > 200 * 1024 * 1024 or total > 512 * 1024 * 1024):
+                raise HTTPException(413, "执行输入单文件不能超过 200 MiB，总计不能超过 512 MiB")
             info = tarfile.TarInfo(path)
             info.size = len(data)
             info.mode = 0o555 if skill and path.lower().endswith((".sh", ".bash", ".py", ".js", ".mjs", ".cjs")) else 0o444 if skill else 0o644
@@ -96,9 +98,11 @@ def run(payload: RunRequest):
                 return
             with tarfile.open(fileobj=io.BytesIO(exported.stdout), mode="r:") as bundle:
                 for item in bundle.getmembers():
-                    if item.isfile() and item.size <= 5_000_000:
+                    if item.isfile() and item.size <= 200 * 1024 * 1024:
+                        path = item.name.removeprefix("./")
+                        safe_path(path)
                         handle = bundle.extractfile(item)
-                        if handle: changed[item.name.lstrip("./")]=base64.b64encode(handle.read()).decode()
+                        if handle: changed[path]=base64.b64encode(handle.read()).decode()
         try:
             completed=subprocess.run(command,text=True,capture_output=True,timeout=60)
         except subprocess.TimeoutExpired:
