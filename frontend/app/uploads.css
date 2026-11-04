@@ -9,6 +9,18 @@
 .upload-window .field-hint { margin: 0; }
 .upload-start { display: flex; justify-content: flex-end; }
 .upload-window .upload-file-list { margin: 0; }
+.upload-selection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.upload-selection-actions button, .upload-start button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; }
+.upload-preparing { display: flex; align-items: center; gap: 8px; color: var(--muted); margin: 0; }
+.upload-window .upload-file-list { max-height: 240px; overflow: auto; }
+.upload-window .upload-file-list li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.upload-window .upload-file-list li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.upload-window .upload-file-list li > svg, .upload-window .upload-file-list small { flex-shrink: 0; }
+.upload-window .upload-file-list .icon-button { flex-shrink: 0; min-width: 44px; min-height: 44px; }
+.upload-import-issues { min-width: 0; color: var(--muted); font-size: var(--form-label-size); }
+.upload-import-issues summary { cursor: pointer; min-height: 44px; display: list-item; align-content: center; }
+.upload-import-issues ul { list-style: none; padding: 0; margin: 8px 0 0; max-height: 180px; overflow: auto; }
+.upload-import-issues li { padding: 6px 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .upload-task-entry { width: 100%; }
 .upload-task-entry small { margin-left: auto; font-variant-numeric: tabular-nums; }
 .transfer-list { list-style: none; padding: 0; margin: 0; }

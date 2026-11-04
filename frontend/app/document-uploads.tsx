@@ -1,19 +1,20 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Check, FileText, Loader2, Pause, Play, RefreshCw, Upload, X } from "lucide-react";
+import { BookOpen, Check, FileText, FolderOpen, Loader2, Pause, Play, RefreshCw, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
 import { ApiError, request } from "./api";
 import { useAuth } from "./auth";
+import { BATCH_COUNT, BATCH_LIMIT, DOCUMENT_ACCEPT, DOCUMENT_LIMIT, droppedDocuments, prepareDocuments, type ImportFile, type ImportIssue } from "./document-import";
 import "./uploads.css";
 
-const LIMIT = 200 * 1024 * 1024;
+const LIMIT = DOCUMENT_LIMIT;
 type Destination = { id: string; name: string; versionOf?: string; filename?: string };
 type Task = {
   key: string; uploadId?: string; workspace: string; library: Destination;
-  name: string; size: number; modified: number; type: string; partSize: number;
+  name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
   hashes: Record<number, string>; state: string; transferred: number;
   error?: string; documentId?: string;
 };
@@ -76,15 +77,19 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   const files = useRef(new Map<string, File>());
   const running = useRef(new Map<string, AbortController>());
   const [dialog, setDialog] = useState<{ destination?: Destination } | null>(null);
-  const [selected, setSelected] = useState<File[]>([]);
+  const [selected, setSelected] = useState<ImportFile[]>([]);
+  const [issues, setIssues] = useState<ImportIssue[]>([]);
+  const [preparing, setPreparing] = useState(false);
+  const selection = useRef<AbortController | null>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const [selectionError, setSelectionError] = useState("");
   const storageKey = `rag-uploads-v1:${session.user.id}`;
   function publish(next: Task[]) {
     current.current = next; setTasks(next);
     try {
       // Never serialize File objects, URLs, credentials or transient errors.
-      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, workspace, library, name, size, modified, type, partSize, hashes, state, documentId }) =>
-        ({ key, uploadId, workspace, library, name, size, modified, type, partSize, hashes, state, documentId }))));
+      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state, documentId }) =>
+        ({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state, documentId }))));
     } catch { /* Uploads remain usable if browser storage is unavailable. */ }
   }
   function patch(key: string, changes: Partial<Task>) {
@@ -100,7 +105,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       current.current = restored; setTasks(restored);
     } catch { /* Invalid local metadata cannot authorize server operations. */ }
     const controllers = running.current;
-    return () => { controllers.forEach(controller => controller.abort()); };
+    return () => { controllers.forEach(controller => controller.abort()); selection.current?.abort(); };
   }, [storageKey]);
   useEffect(() => {
     let changed = false;
@@ -110,7 +115,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       return { ...task, state: "paused", error: "已切换工作区，返回原工作区后可继续" };
     });
     if (changed) publish(next);
-    setDialog(null); setSelected([]);
+    selection.current?.abort(); setPreparing(false); setDialog(null); setSelected([]); setIssues([]);
     // Upload state remains mounted outside the workspace-keyed page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.workspace_id]);
@@ -123,6 +128,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     patch(task.key, { state, documentId: remote.document_id, error: remote.error || remote.document_error || undefined,
       ...(restart ? { uploadId: undefined, hashes: {}, transferred: 0 } : {}),
       ...(["verifying", "processing", "ready", "processing_failed"].includes(state) ? { transferred: task.size } : {}) });
+    if (["verifying", "processing", "ready", "processing_failed", "deleted", "cancelled"].includes(state)) files.current.delete(task.key);
     if (remote.document_id && !task.documentId)
       window.dispatchEvent(new CustomEvent("rag-upload-admitted", { detail: { library: task.library.id } }));
   }
@@ -234,6 +240,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     if (running.current.size) return;
+    if (tasks.filter(t => t.workspace === workspace.current && t.state === "verifying").length >= 10) return;
     const next = tasks.find(t => t.workspace === workspace.current && t.state === "queued" && files.current.has(t.key));
     if (next) void run(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -255,43 +262,86 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       patch(task.key, { state: "cancelled" }); files.current.delete(task.key);
     } catch (e) { patch(task.key, { state: "failed", error: message(e) }); }
   }
-  function choose(list: FileList | null) {
-    const candidates = Array.from(list ?? []);
-    setSelectionError(candidates.some(file => file.size > LIMIT || file.size === 0) ? "文件不能为空，单个文件最大 200 MiB" : "");
-    setSelected(candidates.filter(file => file.size > 0 && file.size <= LIMIT).slice(0, dialog?.destination?.versionOf ? 1 : 20));
+  async function choose(input: readonly File[] | ((signal: AbortSignal) => Promise<File[]>)) {
+    selection.current?.abort();
+    const controller = new AbortController(); selection.current = controller;
+    setPreparing(true); setSelectionError("");
+    try {
+      const candidates = typeof input === "function" ? await input(controller.signal) : input;
+      const result = await prepareDocuments(candidates, controller.signal, Boolean(dialog?.destination?.versionOf));
+      controller.signal.throwIfAborted();
+      const merged = dialog?.destination?.versionOf ? [] : [...selected];
+      let bytes = merged.reduce((sum, item) => sum + item.file.size, 0);
+      for (const item of result.files) {
+        if (merged.some(old => old.path === item.path && old.file.size === item.file.size && old.file.lastModified === item.file.lastModified)) {
+          result.issues.push({ path: item.path, reason: "已在待上传列表中" }); continue;
+        }
+        if (merged.length >= BATCH_COUNT || bytes + item.file.size > BATCH_LIMIT) {
+          result.issues.push({ path: item.path, reason: "本批超过 200 个文档或 500 MiB，请分批上传" }); continue;
+        }
+        merged.push(item); bytes += item.file.size;
+      }
+      setSelected(merged); setIssues(result.issues);
+      if (!merged.length && !result.issues.length) setSelectionError("没有找到支持的文档，请选择其他文件");
+    } catch (e) {
+      if (!controller.signal.aborted) setSelectionError(message(e));
+    } finally { if (selection.current === controller) setPreparing(false); }
+  }
+  function closeDialog() {
+    selection.current?.abort(); setPreparing(false); setDialog(null); setSelected([]); setIssues([]);
   }
   function enqueue() {
     if (!dialog?.destination) return;
-    const next = selected.map(file => {
+    const next = selected.map(({ file, path }) => {
       const task: Task = { key: crypto.randomUUID(), workspace: session.workspace_id, library: dialog.destination!,
-        name: file.name, size: file.size, modified: file.lastModified, type: file.type,
+        name: file.name, sourcePath: path, size: file.size, modified: file.lastModified, type: file.type,
         partSize: 8 * 1024 * 1024, hashes: {}, state: "queued", transferred: 0 };
       files.current.set(task.key, file); return task;
     });
-    publish([...current.current, ...next]); setSelected([]);
+    publish([...current.current, ...next]); setSelected([]); setIssues([]);
   }
   const visible = tasks.filter(task => task.workspace === session.workspace_id);
-  const open = (destination?: Destination) => { setDialog({ destination }); setSelected([]); setSelectionError(""); };
+  const open = (destination?: Destination) => { selection.current?.abort(); setPreparing(false); setDialog({ destination }); setSelected([]); setIssues([]); setSelectionError(""); };
   return <Context.Provider value={{ tasks: visible, open }}>
     {children}
     {dialog && <Dialog title={dialog.destination?.versionOf ? `上传 ${dialog.destination.filename} 的新版本` : dialog.destination ? "上传文档" : "上传任务"}
-      onClose={() => setDialog(null)} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
+      onClose={closeDialog} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
       <div className="upload-window">
         {dialog.destination && <>
           <div className="upload-destination"><BookOpen size={15} /><span>{dialog.destination.name}</span></div>
-          <label className={`dropzone ${selected.length ? "has-file" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); choose(e.dataTransfer.files); }}>
-            <input type="file" aria-label="选择文件" multiple={!dialog.destination.versionOf} accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.xlsx" onChange={e => choose(e.target.files)} />
+          <label className={`dropzone ${selected.length ? "has-file" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => {
+            e.preventDefault(); if (preparing) return;
+            const transfer = e.dataTransfer;
+            void choose(signal => droppedDocuments(transfer, signal));
+          }}>
+            <input type="file" aria-label="选择文件" disabled={preparing} multiple={!dialog.destination.versionOf}
+              accept={DOCUMENT_ACCEPT + (dialog.destination.versionOf ? "" : ",.zip")}
+              onChange={e => { void choose(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
             <span className="upload-symbol"><Upload size={26} /></span>
-            <strong>{selected.length ? `已选择 ${selected.length} 个文件` : "选择文件或拖拽到此处"}</strong>
-            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX</span><small>单文件最大 200 MiB</small>
+            <strong>{preparing ? "正在整理文件" : selected.length ? `待上传 ${selected.length} 个文档` : "选择文件或拖拽到此处"}</strong>
+            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX{!dialog.destination.versionOf && "、ZIP"}</span>
+            <small>单文件最大 200 MiB{!dialog.destination.versionOf && " · 每批最多 200 个文档、500 MiB"}</small>
           </label>
-          {!!selected.length && <ul className="upload-file-list">{selected.map((file, i) => <li key={i}><FileText size={14} /><span>{file.name}</span><small>{size(file.size)}</small></li>)}</ul>}
+          {!dialog.destination.versionOf && <div className="upload-selection-actions">
+            <input type="file" ref={folderInput} aria-label="选择文件夹" className="sr-only" tabIndex={-1} disabled={preparing} multiple
+              {...{ webkitdirectory: "", directory: "" }} onChange={e => { void choose(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
+            <button className="secondary" disabled={preparing} onClick={() => folderInput.current?.click()}><FolderOpen size={16} />选择文件夹</button>
+            {!!selected.length && <button className="secondary" disabled={preparing} onClick={() => { setSelected([]); setIssues([]); }}>清空待上传</button>}
+          </div>}
+          {preparing && <p className="upload-preparing" role="status"><Loader2 size={16} className="spin" />正在检查文档和压缩包</p>}
+          {!!selected.length && <ul className="upload-file-list">{selected.map(({ file, path }, i) => <li key={i}>
+            <FileText size={14} /><span title={path}>{path}</span><small>{size(file.size)}</small>
+            <button className="icon-button" disabled={preparing} title="移除此文件" aria-label={`移除待上传的${path}`} onClick={() => setSelected(selected.filter((_, index) => i !== index))}><X size={14} /></button>
+          </li>)}</ul>}
+          {!!issues.length && <details className="upload-import-issues" open={!selected.length}><summary>未加入 {issues.length} 个项目</summary>
+            <ul>{issues.map((issue, i) => <li key={i}><span>{issue.path}</span><small>{issue.reason}</small></li>)}</ul>
+          </details>}
           {selectionError && <p className="form-error" role="alert">{selectionError}</p>}
-          <div className="upload-start"><button className="primary" disabled={!selected.length} onClick={enqueue}><Upload size={15} />开始上传</button></div>
+          <div className="upload-start"><button className="primary" disabled={!selected.length || preparing} onClick={enqueue}><Upload size={15} />上传{selected.length ? ` ${selected.length} 个文档` : ""}</button></div>
         </>}
         <ul className="transfer-list" aria-label="上传任务">
           {visible.map(task => <li key={task.key}>
-            <div className="transfer-heading"><FileText size={17} /><strong title={task.name}>{task.name}</strong><span>{size(task.size)}</span></div>
+            <div className="transfer-heading"><FileText size={17} /><strong title={task.sourcePath || task.name}>{task.sourcePath || task.name}</strong><span>{size(task.size)}</span></div>
             <div className="transfer-state" aria-live="polite">
               {task.state === "ready" ? <Check size={14} /> : ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
               <span>{labels[task.state] || "等待恢复"}</span>
