@@ -20,3 +20,10 @@
 - 1440、700、390px 截图保存至 `output/playwright/batch-*.png`；人工检查桌面及手机截图，无横向溢出。复用原 Radix Dialog、上传入口和任务组件，新增模块只承担导入校验与解包。
 - 不包含线上部署，也未改变权限、价格、OCR 或后端入库协议。
 - 最终 `npm run build`、`git diff --check` 通过。测试使用 Node 24 自带 TypeScript 擦除执行测试，无需新增测试框架。
+
+## 线上部署（2026-11-04）
+
+- 用户追加授权后发布 `db0de25`，仅构建和更新 Web。备份目录为 `/data1/rag-releases/web-batch-import-db0de25-20261104`，保存原源码、配置及 Web 镜像标识；旧镜像标签为 `before-batch-import-db0de25`。
+- 服务器生产构建通过，环境和 Compose 校验和保持一致。API、数据库、Redis、对象存储、Worker 和执行器的原容器保持运行，数据库仍为 `0051_recharge_checkout`，未执行迁移。
+- 公网首页返回 200，16 个页面 JavaScript 资源读取成功，确认包含文件夹选择和新批量限制；API 健康检查正常。
+- 未触发真实 COS 上传和付费解析；部署完成不代表真实云端批量入库已验收。
