@@ -28,11 +28,9 @@ router.include_router(mcp_router)
 
 
 def defaults(db, access):
-    skills = db.scalars(select(AgentSkill.id).where(AgentSkill.owner_id == access.user_id,
-        AgentSkill.workspace_id == access.workspace_id, AgentSkill.enabled.is_(True))).all()
     servers = db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
         MCPServer.workspace_id == access.workspace_id, MCPServer.enabled.is_(True))).all()
-    return list(map(str, skills)), [str(row.id) for row in servers if row.allowed_tools and row.last_checked_at]
+    return [], [str(row.id) for row in servers if row.allowed_tools and row.last_checked_at]
 
 
 def validate_selection(db, access, skill_ids, server_ids):
@@ -41,7 +39,7 @@ def validate_selection(db, access, skill_ids, server_ids):
             raise HTTPException(422, "选择的扩展过多")
         for identifier in identifiers:
             row = owned(db, model, UUID(str(identifier)), access)
-            if not row.enabled or model is MCPServer and (not row.allowed_tools or not row.last_checked_at):
+            if model is MCPServer and (not row.enabled or not row.allowed_tools or not row.last_checked_at):
                 raise HTTPException(409, "选中的扩展已停用或尚未授权")
 
 
@@ -57,7 +55,7 @@ class ExtensionRuntime(SkillRuntime):
             access = self.access = access.revalidate(db)
             for row in db.scalars(select(AgentSkill).options(joinedload(AgentSkill.files)).where(
                     AgentSkill.owner_id == access.user_id, AgentSkill.workspace_id == access.workspace_id,
-                    AgentSkill.id.in_([UUID(str(item)) for item in skill_ids]), AgentSkill.enabled.is_(True))).unique():
+                    AgentSkill.enabled.is_(True))).unique():
                 files = {item.path: item.content for item in row.files}
                 checked = package_review({"SKILL.md": row.markdown.encode("utf-8"), **files})
                 if checked["has_limitations"] and not row.limitations_acknowledged:
@@ -147,7 +145,6 @@ class ExtensionRuntime(SkillRuntime):
                 with self.factory() as db:
                     self.question_workbench.check(db)
                 if name == "load_skill":
-                    self.loaded.add("question-workbench")
                     return {"name": "教师出题", "instructions": METHOD, "version": 1}
                 result = self.question_workbench.execute(name, arguments, check_active)
                 return {**result, "_extension": {"tool": name, "version": self.question_workbench.version}}
@@ -170,21 +167,20 @@ class ExtensionRuntime(SkillRuntime):
                     Draft202012Validator(definition["parameters"]).validate(arguments)
                 except ValidationError:
                     return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
-                loaded = self.loaded & self.personal_ids
+                packages = {}
                 with self.factory() as db:
                     access = self.access.revalidate(db)
-                    for identifier in loaded if name == "run_command" else []:
+                    for identifier in self.personal_ids if name == "run_command" else []:
                         row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
                         if row is None or not row.enabled or row.owner_id != self.access.user_id or row.workspace_id != self.access.workspace_id:
-                            return {"error": "已加载的 Skill 已停用或无权使用，请重新开始请求",
-                                "error_code": "skill_unavailable"}
+                            continue
+                        packages[identifier] = self.snapshots[identifier]["package_files"]
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     try:
                         return execute_tool(name, arguments, db, access, access.workspace_id,
                             conversation_id=message.conversation_id if message else None, request_id=self.request_id,
-                            skill_packages={identifier: self.snapshots[identifier]["package_files"] for identifier in loaded}
-                                if name == "run_command" else {}, check_active=check_active)
+                            skill_packages=packages, check_active=check_active)
                     except PayloadValidationError:
                         return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}
                     except HTTPException as error:
@@ -282,14 +278,13 @@ class ExtensionRuntime(SkillRuntime):
         if name == "load_skill":
             if set(arguments) != {"skill_id"}:
                 return {"error": "工具参数无效"}
-            self.loaded.add(snapshot["id"])
             return {key: snapshot[key] for key in ("id", "name", "version", "instructions", "limitations")} | {
                 "resources": [{"path": path} for path in snapshot["resources"]],
-                "execute_scripts": bool(snapshot["scripts"]) and self.execution_available,
+                "execute_scripts": self.execution_available,
                 "execution": {"tool": "run_command", "directory": f"/skills/{snapshot['id']}",
                     "working_directory": "/workspace", "scripts": snapshot["scripts"], "read_only": True,
                     "instructions": "使用解释器和目录中的绝对脚本路径运行；包内相对资料位于同一目录。输出写入 /workspace，不要修改 Skill 包。"}
-                    if snapshot["scripts"] and self.execution_available else None}
+                    if self.execution_available else None}
         if (set(arguments) - {"skill_id", "path", "offset"}
                 or not isinstance(arguments.get("path"), str)):
             return {"error": "资料参数无效，请读取清单内的文字资料"}

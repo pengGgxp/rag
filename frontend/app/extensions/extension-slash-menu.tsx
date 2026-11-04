@@ -36,7 +36,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
       .map(item => ({ id: item.id, kind: "mcp" as const, name: item.name, description: `${item.allowed_tools.length} 项已授权工具` })),
   ].filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(query)).slice(0, 30);
   const activeIndex = Math.min(index, Math.max(0, options.length - 1));
-  const effective = selection ?? { skill_ids: catalog.skills.filter(item => item.enabled).map(item => item.id),
+  const effective = selection ?? { skill_ids: [],
     mcp_server_ids: catalog.servers.filter(item => item.enabled && item.last_checked_at && item.allowed_tools.length).map(item => item.id) };
   const ready = open && !saving;
   useEffect(() => { setDismissed(false); setIndex(0); setError(""); }, [draft, caret]);
@@ -62,9 +62,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
     if (!extensionsReady) return;
     setSaving(true); setError("");
     try {
-      if (item.kind === "skill" && !effective.skill_ids.includes(item.id))
-        await onChange({ ...effective, skill_ids: [...effective.skill_ids, item.id] });
-      else if (item.kind === "mcp" && !effective.mcp_server_ids.includes(item.id))
+      if (item.kind === "mcp" && !effective.mcp_server_ids.includes(item.id))
         await onChange({ ...effective, mcp_server_ids: [...effective.mcp_server_ids, item.id] });
       else if (item.kind === "application") {
         if (!await grantWorkbench(catalog.workbench)) return;
@@ -108,7 +106,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
           {item.kind === "command" ? <Minimize2 size={17} /> : item.kind === "mcp" ? <Plug size={17} /> : <FileText size={17} />}
           <span className="extension-slash-copy"><strong>{item.name}</strong><small>{item.description}</small></span>
           <span className="extension-slash-source">{item.kind === "command" ? "命令" : item.kind === "application" ? "应用" : item.kind === "platform" ? "平台 Skill" : item.kind === "skill" ? "我的 Skill" : "MCP"}</span>
-          {(item.kind === "skill" && effective.skill_ids.includes(item.id) || item.kind === "mcp" && effective.mcp_server_ids.includes(item.id)) && <Check size={15} aria-label="已选择" />}
+          {item.kind === "mcp" && effective.mcp_server_ids.includes(item.id) && <Check size={15} aria-label="已选择" />}
         </button>)}
         {!options.length && <p role="status">{query ? "没有匹配项" : "暂无可用命令或扩展"}</p>}
       </div>

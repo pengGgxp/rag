@@ -27,16 +27,24 @@ def scripted(client, **changes):
     ], **changes)
 
 
-def test_runtime_exposes_real_execution_and_passes_only_loaded_pinned_packages(accounts, monkeypatch):
+def test_runtime_passes_available_pinned_packages_without_selection_or_loading(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     first, second = scripted(admin), scripted(admin, name="Second")
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [first["id"], second["id"]])
+    scripted(admin, name="Disabled", enabled=False)
+    (_, member, _), _ = accounts
+    from test_auth import register
+    register(member, "other-script-owner@example.com")
+    foreign = scripted(member, name="Other owner")
+    # Even within the same workspace, another member's private package stays private.
+    db.get(AgentSkill, UUID(foreign["id"])).workspace_id = access_for(admin, db).workspace_id
+    db.commit()
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
     assert "run_command" in {item["function"]["name"] for item in runtime.tools}
     captured = []
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
     assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
-    assert captured.pop()["skill_packages"] == {}
+    assert set(captured.pop()["skill_packages"]) == {first["id"], second["id"]}
     loaded = runtime.execute("load_skill", {"skill_id": first["id"]})
     assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/skills/{first['id']}"
     assert loaded["execution"]["read_only"] and loaded["execution"]["scripts"] == ["scripts/task.py"]
@@ -46,13 +54,14 @@ def test_runtime_exposes_real_execution_and_passes_only_loaded_pinned_packages(a
     db.commit()
     assert runtime.execute("run_command", {"command": "python script.py"})["exit_code"] == 0
     package = captured[0]["skill_packages"]
-    assert set(package) == {first["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
+    assert set(package) == {first["id"], second["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
     assert package[first["id"]]["assets/value.bin"] == b"\xff\x00"
     assert runtime.execute("run_command", {"command": "x", "skill_files": {}}).get("error")
     row.enabled = False
     db.commit()
-    assert runtime.execute("run_command", {"command": "python script.py"}).get("error")
-    assert len(captured) == 1
+    assert runtime.execute("run_command", {"command": "echo unrelated task"})["exit_code"] == 0
+    assert set(captured[-1]["skill_packages"]) == {second["id"]}
+    assert len(captured) == 2
 
 
 def test_missing_executor_does_not_advertise_execution(accounts, monkeypatch):
@@ -97,7 +106,7 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     with monkeypatch.context() as patch:
         patch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
         assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
-        assert captured[0]["skill_packages"] == {}
+        assert set(captured[0]["skill_packages"]) == {selected["id"]}
     def unavailable(*args):
         raise HTTPException(503, "SECRET SDK DIAGNOSTIC")
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)

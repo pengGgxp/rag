@@ -204,7 +204,6 @@ READ_SKILL_RESOURCE = {"type": "function", "function": {"name": "read_skill_reso
 class SkillRuntime:
     def __init__(self, factory, access, *_unused):
         self.factory, self.access = factory, access
-        self.loaded = set()
         with factory() as db:
             access.revalidate(db)
             rows = db.scalars(select(SiteSkill).options(joinedload(SiteSkill.files)).where(SiteSkill.enabled.is_(True))
@@ -254,7 +253,6 @@ class SkillRuntime:
                     "offset": offset, "total_characters": len(content), "next_offset": end if end < len(content) else None}
         if name != "load_skill" or set(arguments) != {"skill_id"}:
             return {"error": "该能力不可用"}
-        self.loaded.add(snapshot["id"])
         return {"id": snapshot["id"], "name": snapshot["name"], "version": snapshot["version"],
                 "instructions": snapshot["instructions"],
                 "resources": [{"path": path} for path in snapshot["resources"]]}

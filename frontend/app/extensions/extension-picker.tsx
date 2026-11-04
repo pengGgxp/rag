@@ -20,10 +20,9 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
   const [error, setError] = useState("");
   const anchor = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
-  const effective = selection ?? { skill_ids: skills.filter(item => item.enabled).map(item => item.id),
+  const effective = selection ?? { skill_ids: [],
     mcp_server_ids: servers.filter(item => item.enabled && item.allowed_tools.length).map(item => item.id) };
-  const unavailable = effective.skill_ids.filter(id => !skills.some(item => item.id === id && item.enabled)).length
-    + effective.mcp_server_ids.filter(id => !servers.some(item => item.id === id && item.enabled && item.allowed_tools.length)).length;
+  const unavailable = effective.mcp_server_ids.filter(id => !servers.some(item => item.id === id && item.enabled && item.allowed_tools.length)).length;
   async function change(next: ExtensionSelection) {
     setSaving(true); setError("");
     try { await onChange(next); } catch (e) { setError(e instanceof Error ? e.message : "选择未保存"); }
@@ -49,10 +48,7 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
                 .then(() => onChange({ ...effective, question_workbench: false })).then(retry).catch(e => setError(e.message)).finally(() => setSaving(false));
             }}>撤销授权</button>}</>}
           <h3>平台 Skill · 自动发现</h3>{platform.map(item => <p key={item.id}>{item.name}</p>)}{!platform.length && <p>暂无平台 Skill</p>}
-          <h3>我的 Skill</h3>{skills.filter(item => item.enabled).map(item => <label className="extension-check" key={item.id}>
-            <input type="checkbox" disabled={saving || !supportsTools} checked={effective.skill_ids.includes(item.id)} onChange={e => void change({ ...effective,
-              skill_ids: e.target.checked ? [...effective.skill_ids, item.id] : effective.skill_ids.filter(id => id !== item.id) })} />{item.name}
-          </label>)}{!skills.some(item => item.enabled) && <p>暂无启用的个人 Skill</p>}
+          <h3>我的 Skill · 自动发现</h3>{skills.filter(item => item.enabled).map(item => <p key={item.id}>{item.name}</p>)}{!skills.some(item => item.enabled) && <p>暂无启用的个人 Skill</p>}
           <h3>我的 MCP</h3>{servers.filter(item => item.enabled && item.allowed_tools.length).map(item => <label className="extension-check" key={item.id}>
             <input type="checkbox" disabled={saving || !supportsTools} checked={effective.mcp_server_ids.includes(item.id)} onChange={e => void change({ ...effective,
               mcp_server_ids: e.target.checked ? [...effective.mcp_server_ids, item.id] : effective.mcp_server_ids.filter(id => id !== item.id) })} />{item.name}

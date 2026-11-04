@@ -41,7 +41,6 @@ def test_platform_resource_followup_uses_current_scope_without_load_flag(account
     current = ExtensionRuntime(lambda: nullcontext(db), access)
     args = {"skill_id": item["id"], "path": "guide.txt"}
     assert current.execute("read_skill_resource", args)["content"] == "Platform guide"
-    assert not current.loaded
     assert current.execute("read_skill_resource", {**args, "path": "../guide.txt"}).get("error")
     assert current.execute("read_skill_resource", {**args, "offset": -1}).get("error")
     admin.put(f"/site/admin/skills/{item['id']}", json={**{key:item[key] for key in
@@ -103,7 +102,7 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
     item = create(admin)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access)
     assert {tool["function"]["name"] for tool in runtime.tools} == {
-        "load_skill", "list_files", "read_file", "write_file", "apply_patch", "delete_file",
+        "load_skill", "read_skill_resource", "list_files", "read_file", "write_file", "apply_patch", "delete_file",
         "list_writable_knowledge_bases", "save_to_knowledge_base", "get_saved_document_status"}
     assert "SECRET" not in str(runtime.skills) and "instructions" not in str(runtime.skills)
     args = {"skill_id": item["id"]}
@@ -113,7 +112,7 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
     assert runtime.execute("load_skill", args)["instructions"] == item["markdown"]
     assert runtime.execute("load_skill", args)["resources"] == []
     assert runtime.execute("load_skill", args)["version"] == 1
-    assert runtime.execute("load_skill", {"skill_id": str(private.id)}).get("error")
+    assert runtime.execute("load_skill", {"skill_id": str(private.id)})["instructions"] == "SECRET"
     assert runtime.execute("read_skill_file", args).get("error")
     assert runtime.execute("mcp_anything", args).get("error")
     assert runtime.execute("load_skill", {**args, "extra": True}).get("error")

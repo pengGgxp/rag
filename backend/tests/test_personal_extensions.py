@@ -69,9 +69,8 @@ def test_personal_package_draft_limits_reading_ownership_and_conflicts(accounts,
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [row["id"]], [])
     args = {"skill_id": row["id"]}
     assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
-    assert not runtime.loaded
     unselected = ExtensionRuntime(lambda: nullcontext(db), access, [], [])
-    assert unselected.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
+    assert unselected.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
     loaded = runtime.execute("load_skill", args)
     assert loaded["resources"] == [{"path": "references/guide.md"}, {"path": "scripts/task.py"}]
     assert "NEVER RUN" in runtime.execute("read_skill_resource", {**args, "path": "scripts/task.py"})["content"]
@@ -143,16 +142,20 @@ def test_request_fixed_skill_and_conversation_defaults_and_legacy_selection(acco
     admin, db, _ = setup_site(accounts, monkeypatch)
     first = skill(admin)
     chat = admin.post("/conversations", json={}).json()
-    assert chat["skill_ids"] == [first["id"]]
+    assert chat["skill_ids"] == []
     second = skill(admin, name="Second")
-    assert admin.get(f"/conversations/{chat['id']}").json()["skill_ids"] == [first["id"]]
+    assert admin.get(f"/conversations/{chat['id']}").json()["skill_ids"] == []
     access = access_for(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [first["id"]], [])
     row = db.get(AgentSkill, UUID(first["id"]))
     row.markdown, row.version = "Changed", 2
     db.commit()
     assert runtime.execute("load_skill", {"skill_id": first["id"]})["instructions"] == first["markdown"]
-    assert runtime.execute("load_skill", {"skill_id": second["id"]}).get("error")
+    assert runtime.execute("load_skill", {"skill_id": second["id"]})["instructions"] == second["markdown"]
+    third = skill(admin, name="Added during request")
+    assert runtime.execute("load_skill", {"skill_id": third["id"]}).get("error")
+    following = ExtensionRuntime(lambda: nullcontext(db), access)
+    assert following.execute("load_skill", {"skill_id": third["id"]})["instructions"] == third["markdown"]
     current = db.get(Conversation, UUID(chat["id"]))
     current.active_request_id = uuid4(); db.commit()
     assert admin.put(f"/conversations/{chat['id']}/extensions", json={}).status_code == 409
