@@ -367,6 +367,8 @@ class SitePaymentConfig(Base):
     api_base_url: Mapped[str] = mapped_column(String(500), default="")
     merchant_num: Mapped[str] = mapped_column(String(100), default="")
     pay_type: Mapped[str] = mapped_column(String(100), default="")
+    payment_methods: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    custom_credits_per_yuan: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
     encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
     custom_recharge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

@@ -112,12 +112,62 @@ def test_order_is_immutable_idempotent_and_does_not_credit_before_payment(accoun
 
     settings.recharge_packages_json = "[]"
     settings.zhifux_enabled = False
-    # Already quoted orders and successful callbacks survive catalogue changes.
     assert create(owner, key=key).json()["amount_fen"] == 1234
     paid = owner.get(CALLBACK_PATH, params=notification(first, settings))
     assert paid.status_code == 200 and paid.text == "success"
     assert owner.get("/usage").json()["balance"] == 1567
     assert db.get(RechargeOrder, UUID(first["id"])).status == "paid"
+
+
+def test_payment_method_is_selected_per_provider_and_bound_to_idempotency(accounts, gateway):
+    (owner, _, _), db = accounts
+    register(owner)
+    settings, _calls = gateway
+    settings.zhifux_payment_methods_json = json.dumps([
+        {"code": "alipay", "label": "支付宝"},
+        {"code": "wxpay", "label": "微信支付"},
+    ])
+    catalog = owner.get("/payments/catalog").json()
+    assert catalog["providers"][0]["payment_methods"] == [
+        {"code": "alipay", "label": "支付宝"}, {"code": "wxpay", "label": "微信支付"}]
+    package = catalog["packages"][0]
+    key = str(uuid4())
+    response = owner.post("/payments/orders", json={
+        "package_id": package["id"], "quote": package["quote"],
+        "idempotency_key": key, "payment_method_code": "wxpay",
+    })
+    assert response.status_code == 201, response.text
+    from uuid import UUID
+    order = db.get(RechargeOrder, UUID(response.json()["id"]))
+    assert order.pay_type == "wxpay"
+    assert owner.post("/payments/orders", json={
+        "package_id": package["id"], "quote": package["quote"],
+        "idempotency_key": key, "payment_method_code": "alipay",
+    }).status_code == 409
+    assert owner.post("/payments/orders", json={
+        "package_id": package["id"], "quote": package["quote"],
+        "idempotency_key": str(uuid4()), "payment_method_code": "forged",
+    }).status_code == 422
+
+
+def test_custom_recharge_uses_configured_integer_yuan_rate(accounts, gateway):
+    (owner, _, _), _db = accounts
+    register(owner)
+    settings, _calls = gateway
+    settings.zhifux_custom_credits_per_yuan = 250
+    catalog = owner.get("/payments/catalog").json()
+    assert catalog["custom"]["credits_per_yuan"] == 250
+    partial_yuan = owner.post("/payments/orders", json={
+        "package_id": catalog["custom"]["id"], "custom_amount_fen": 1250,
+        "quote": catalog["custom"]["quote"], "idempotency_key": str(uuid4()),
+    })
+    assert partial_yuan.status_code == 422
+    whole_yuan = owner.post("/payments/orders", json={
+        "package_id": catalog["custom"]["id"], "custom_amount_fen": 1200,
+        "quote": catalog["custom"]["quote"], "idempotency_key": str(uuid4()),
+    })
+    assert whole_yuan.status_code == 201, whole_yuan.text
+    assert whole_yuan.json()["credits"] == 3000
 
 
 def test_callbacks_are_public_signed_and_idempotent(accounts, gateway):
@@ -380,16 +430,16 @@ def test_custom_amount_is_quoted_idempotent_and_paid_once(accounts, gateway):
     register(owner)
     settings, calls = gateway
     key = uuid4().hex
-    response = custom_order(owner, 2345, key=key)
+    response = custom_order(owner, 2300, key=key)
     assert response.status_code == 201
     order = response.json()
-    assert order["amount_fen"] == 2345
-    assert order["credits"] == 2345 * 567 // 1234  # no new volume discount
-    assert custom_order(owner, 2345, key=key).json()["id"] == order["id"]
-    assert custom_order(owner, 2346, key=key).status_code == 409
+    assert order["amount_fen"] == 2300
+    assert order["credits"] == 2300
+    assert custom_order(owner, 2300, key=key).json()["id"] == order["id"]
+    assert custom_order(owner, 2400, key=key).status_code == 409
     assert len(calls) == 1
     assert owner.get("/usage").json()["balance"] == 1000
-    data = notification(order, settings, amount="23.45")
+    data = notification(order, settings, amount="23.00")
     assert anonymous.get(CALLBACK_PATH, params=data).text == "success"
     assert anonymous.get(CALLBACK_PATH, params=data).text == "success"
     assert owner.get("/usage").json()["balance"] == 1000 + order["credits"]
@@ -421,10 +471,8 @@ def test_custom_quote_changes_and_payload_tampering_fail_before_checkout(account
     register(owner)
     settings, calls = gateway
     policy = owner.get("/payments/catalog").json()["custom"]
-    packages = json.loads(settings.recharge_packages_json)
-    packages[0]["credits"] += 1
-    settings.recharge_packages_json = json.dumps(packages)
-    assert custom_order(owner, 2345, quote=policy["quote"]).status_code == 409
+    settings.zhifux_custom_credits_per_yuan += 1
+    assert custom_order(owner, 2300, quote=policy["quote"]).status_code == 409
     for changes in ({"credits": 999999}, {"amount_fen": 1}, {"custom_amount_fen": 2000}):
         assert owner.post("/payments/orders", json={"package_id": "test",
             "idempotency_key": uuid4().hex, "quote": "0" * 64, **changes}).status_code == 422
@@ -454,9 +502,9 @@ def test_custom_limits_avoid_zero_or_excessive_integer_credits(accounts, gateway
         {"id": "one", "name": "高比例", "amount_fen": 100, "credits": 1000000},
     ])
     catalog = owner.get("/payments/catalog").json()
-    assert catalog["custom"]["max_amount_fen"] == 100
+    assert catalog["custom"]["max_amount_fen"] == 1_000_000
     assert custom_order(owner, 101).status_code == 422
-    assert custom_order(owner, 100).json()["credits"] == 1000000
+    assert custom_order(owner, 10_000).json()["credits"] == 10_000
     assert len(calls) == 1
 
 

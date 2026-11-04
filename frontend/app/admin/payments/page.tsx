@@ -10,6 +10,7 @@ import * as Tabs from "../../../components/ui/tabs";
 import "../../billing.css";
 
 type Package = { id: string; name: string; amount_fen: number; credits: number };
+type PaymentMethod = { code: string; label: string };
 type Settings = {
   version: number;
   source: "database" | "environment";
@@ -20,6 +21,8 @@ type Settings = {
   api_base_url: string;
   merchant_num: string;
   pay_type: string;
+  payment_methods: PaymentMethod[];
+  custom_credits_per_yuan: number;
   has_secret: boolean;
   packages: Package[];
   custom_recharge_enabled: boolean;
@@ -27,13 +30,15 @@ type Settings = {
   return_url: string;
   encryption_ready: boolean;
 };
-type Form = Pick<Settings, "enabled" | "api_base_url" | "merchant_num" | "pay_type" | "packages" | "custom_recharge_enabled">;
+type Form = Pick<Settings, "enabled" | "api_base_url" | "merchant_num" | "pay_type" | "payment_methods" | "custom_credits_per_yuan" | "packages" | "custom_recharge_enabled">;
 
 const EMPTY_FORM: Form = {
   enabled: false,
   api_base_url: "",
   merchant_num: "",
   pay_type: "",
+  payment_methods: [],
+  custom_credits_per_yuan: 100,
   packages: [],
   custom_recharge_enabled: false,
 };
@@ -44,6 +49,8 @@ function formOf(settings: Settings): Form {
     api_base_url: settings.api_base_url,
     merchant_num: settings.merchant_num,
     pay_type: settings.pay_type,
+    payment_methods: settings.payment_methods ?? [{ code: settings.pay_type, label: settings.pay_type }],
+    custom_credits_per_yuan: settings.custom_credits_per_yuan ?? 100,
     packages: settings.packages.map((item) => ({ ...item })),
     custom_recharge_enabled: settings.custom_recharge_enabled,
   };
@@ -176,7 +183,15 @@ export default function PaymentsPage() {
                 </label>
                 <label>支付网关地址<input required={form.enabled} type="url" inputMode="url" readOnly={providerKey === "ezfp"} value={form.api_base_url} onChange={(event) => setForm({ ...form, api_base_url: event.target.value })} placeholder="https://..." /></label>
                 <label>商户号<input required={form.enabled} autoComplete="off" value={form.merchant_num} onChange={(event) => setForm({ ...form, merchant_num: event.target.value })} /></label>
-                <label>{providerKey === "ezfp" ? "支付方式编码" : "支付产品编码"}<input required={form.enabled} autoComplete="off" value={form.pay_type} onChange={(event) => setForm({ ...form, pay_type: event.target.value })} /></label>
+                <div className="provider-form-wide">
+                  <div className="payment-packages-heading"><div><h3>可用付款方式</h3><p className="model-budget-description">编码需与支付商户支持的网关编码一致。</p></div>
+                    <button type="button" className="secondary" disabled={busy || form.payment_methods.length >= 20} onClick={() => setForm({ ...form, payment_methods: [...form.payment_methods, { code: "", label: "" }] })}><Plus size={16} />添加方式</button></div>
+                  <div className="payment-package-list">{form.payment_methods.map((method, index) => <div className="payment-package-row" key={index}>
+                    <label>网关编码<input required={form.enabled} maxLength={100} value={method.code} onChange={(event) => setForm({ ...form, payment_methods: form.payment_methods.map((item, i) => i === index ? { ...item, code: event.target.value } : item) })} placeholder="例如 wxpay" /></label>
+                    <label>用户可见名称<input required={form.enabled} maxLength={60} value={method.label} onChange={(event) => setForm({ ...form, payment_methods: form.payment_methods.map((item, i) => i === index ? { ...item, label: event.target.value } : item) })} placeholder="例如 微信支付" /></label>
+                    <button type="button" className="icon-button payment-package-remove" aria-label="移除付款方式" title="移除付款方式" disabled={busy} onClick={() => setForm({ ...form, payment_methods: form.payment_methods.filter((_, i) => i !== index) })}><Trash2 size={17} /></button>
+                  </div>)}</div>
+                </div>
                 {providerKey === "ezfp" ? <>
                   <label className="provider-form-wide">商户 RSA 私钥<textarea className="payment-key-input" autoComplete="new-password" value={privateKey} disabled={clearSecret} onChange={(event) => setPrivateKey(event.target.value)} placeholder={settings.has_secret ? "已配置，留空保留" : "粘贴商户后台生成的 RSA 私钥"} /></label>
                   <label className="provider-form-wide">平台 RSA 公钥<textarea className="payment-key-input" autoComplete="off" value={publicKey} disabled={clearSecret} onChange={(event) => setPublicKey(event.target.value)} placeholder={settings.has_secret ? "已配置，留空保留" : "粘贴易支付平台公钥"} /></label>
@@ -201,6 +216,7 @@ export default function PaymentsPage() {
                   onChange={(event) => setForm({ ...form, custom_recharge_enabled: event.target.checked })} />
                 允许用户自定义充值金额
               </label>
+              {form.custom_recharge_enabled && <label>自定义充值比例（积分 / 元）<input type="number" min="1" max="1000000" step="1" value={form.custom_credits_per_yuan} onChange={(event) => setForm({ ...form, custom_credits_per_yuan: Number(event.target.value) || 0 })} /></label>}
               {form.packages.length === 0 ? <p className="admin-empty payment-package-empty">尚未配置充值档位</p> : <div className="payment-package-list">
                 {form.packages.map((item, index) => <div className="payment-package-row" key={`${index}-${item.id}`}>
                   <label>档位 ID<input required maxLength={64} value={item.id} onChange={(event) => updatePackage(index, { id: event.target.value })} /></label>

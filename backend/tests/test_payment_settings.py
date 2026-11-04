@@ -131,6 +131,7 @@ def test_invalid_settings_and_version_conflict_do_not_create_revision(accounts, 
     monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
     response = owner.put(ROOT, json=payload(api_base_url="http://gateway.example"))
     assert response.status_code == 422
+    assert owner.put(ROOT, json=payload(payment_methods=[])).status_code == 422
     assert owner.put(ROOT, json=payload(packages=[])).status_code == 422
     assert owner.put(ROOT, json=payload(packages=[
         {"id": "x", "name": "x", "amount_fen": 10, "credits": 1},
@@ -140,6 +141,25 @@ def test_invalid_settings_and_version_conflict_do_not_create_revision(accounts, 
     assert saved.status_code == 200
     conflict = owner.put(ROOT, json=payload(version=0, secret="other-secret"))
     assert conflict.status_code == 409
+    assert db.query(SitePaymentConfig).count() == 1
+
+
+def test_payment_methods_and_custom_rate_are_versioned_per_provider(accounts, gateway, monkeypatch):
+    owner, db = admin(accounts)
+    settings, _ = gateway
+    settings.site_config_encryption_key = SecretStr(Fernet.generate_key().decode())
+    monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
+    methods = [{"code": "wallet-x", "label": "钱包 X"}, {"code": "bank-y", "label": "银行卡"}]
+    saved = owner.put(ROOT, json=payload(secret="rate-test", payment_methods=methods,
+        custom_credits_per_yuan=275))
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["payment_methods"] == methods
+    assert saved.json()["custom_credits_per_yuan"] == 275
+    row = db.get(SitePaymentConfig, saved.json()["version"])
+    assert row.payment_methods == methods and row.custom_credits_per_yuan == 275
+    duplicate = owner.put(ROOT, json=payload(version=saved.json()["version"], secret=None,
+        payment_methods=[{"code": "same", "label": "甲"}, {"code": "same", "label": "乙"}]))
+    assert duplicate.status_code == 422
     assert db.query(SitePaymentConfig).count() == 1
 
 
@@ -168,7 +188,7 @@ def test_admin_custom_recharge_toggle_controls_public_catalog_and_order_validati
     catalog = owner.get("/payments/catalog").json()
     assert [item["id"] for item in catalog["packages"]] == ["test"]
     assert catalog["custom"]["id"] == "custom_amount"
-    assert custom_order(owner, 2345).status_code == 201
+    assert custom_order(owner, 2300).status_code == 201
     assert db.query(SitePaymentConfig).count() == 2
 
 

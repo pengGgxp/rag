@@ -7,7 +7,6 @@ import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
-from fractions import Fraction
 from typing import Protocol
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID, uuid4
@@ -93,6 +92,8 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
             "ezfp_public_key": SecretStr(credentials["public_key"]) if credentials.get("public_key") else None,
             "ezfp_recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
             "ezfp_custom_recharge_enabled": row.custom_recharge_enabled,
+            "ezfp_payment_methods_json": json.dumps(row.payment_methods, ensure_ascii=False),
+            "ezfp_custom_credits_per_yuan": row.custom_credits_per_yuan,
         }), row.version
     return settings.model_copy(update={
         "zhifux_enabled": row.enabled,
@@ -102,6 +103,8 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
         "zhifux_secret": SecretStr(secret) if secret else None,
         "recharge_packages_json": json.dumps(row.packages, ensure_ascii=False),
         "zhifux_custom_recharge_enabled": row.custom_recharge_enabled,
+        "zhifux_payment_methods_json": json.dumps(row.payment_methods, ensure_ascii=False),
+        "zhifux_custom_credits_per_yuan": row.custom_credits_per_yuan,
     }), row.version
 
 
@@ -119,6 +122,8 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         merchant_num, pay_type = settings.ezfp_pid, settings.ezfp_pay_type
         packages_json = settings.ezfp_recharge_packages_json
         custom_recharge_enabled = settings.ezfp_custom_recharge_enabled
+        payment_methods = configured_payment_methods(settings, provider_key)
+        custom_credits_per_yuan = settings.ezfp_custom_credits_per_yuan
         if row:
             credentials = json.loads(reveal(row.encrypted_secret)) if row.encrypted_secret else {}
             has_secret = bool(credentials.get("private_key") and credentials.get("public_key"))
@@ -130,6 +135,8 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         merchant_num, pay_type = settings.zhifux_merchant_num, settings.zhifux_pay_type
         packages_json = settings.recharge_packages_json
         custom_recharge_enabled = settings.zhifux_custom_recharge_enabled
+        payment_methods = configured_payment_methods(settings, provider_key)
+        custom_credits_per_yuan = settings.zhifux_custom_credits_per_yuan
         has_secret = bool(row.encrypted_secret) if row else bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
         callback_path = CALLBACK_PATH
     packages = []
@@ -147,6 +154,8 @@ def payment_admin_view(db, provider_key=PROVIDER_KEY):
         "api_base_url": api_base_url,
         "merchant_num": merchant_num,
         "pay_type": pay_type,
+        "payment_methods": [item.model_dump() for item in payment_methods],
+        "custom_credits_per_yuan": custom_credits_per_yuan,
         "has_secret": has_secret,
         "packages": packages,
         "custom_recharge_enabled": custom_recharge_enabled,
@@ -164,12 +173,19 @@ class RechargePackage(BaseModel):
     credits: int = Field(ge=1, le=1_000_000)
 
 
+class PaymentMethod(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+    code: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    label: str = Field(min_length=1, max_length=60)
+
+
 class CreateOrder(BaseModel):
     model_config = ConfigDict(extra="forbid")
     package_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,64}$")
     idempotency_key: str = Field(pattern=r"^[a-zA-Z0-9_-]{8,64}$")
     quote: str = Field(pattern=r"^[a-f0-9]{64}$")
     provider_key: str = Field(default=PROVIDER_KEY, pattern=r"^(zhifux|ezfp)$")
+    payment_method_code: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     custom_amount_fen: int | None = Field(default=None, strict=True, ge=100, le=1_000_000)
 
 
@@ -180,6 +196,24 @@ def package_quote(package: RechargePackage) -> str:
 CUSTOM_PACKAGE_ID = "custom_amount"
 
 
+def configured_payment_methods(settings: Settings, provider_key=PROVIDER_KEY) -> list[PaymentMethod]:
+    if provider_key == EZFP_PROVIDER_KEY:
+        raw = settings.ezfp_payment_methods_json
+        legacy_code = settings.ezfp_pay_type
+    else:
+        raw = settings.zhifux_payment_methods_json
+        legacy_code = settings.zhifux_pay_type
+    if raw is not None:
+        try:
+            methods = TypeAdapter(list[PaymentMethod]).validate_json(raw)
+            return methods if len(methods) <= 20 and len({item.code for item in methods}) == len(methods) else []
+        except ValidationError:
+            return []
+    if re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", legacy_code or ""):
+        return [PaymentMethod(code=legacy_code, label=legacy_code)]
+    return []
+
+
 def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
     packages = configured_packages(settings, provider_key)
     if not packages:
@@ -188,18 +222,22 @@ def recharge_options(settings: Settings, provider_key=PROVIDER_KEY):
                       else settings.zhifux_custom_recharge_enabled)
     if not custom_enabled:
         return packages, None
-    # Added amounts never introduce a better exchange rate than existing offers.
-    reference = min(packages, key=lambda item: Fraction(item.credits, item.amount_fen))
-    rate = Fraction(reference.credits, reference.amount_fen)
-    minimum = max(100, (rate.denominator + rate.numerator - 1) // rate.numerator)
-    maximum = min(1_000_000, 1_000_000 * rate.denominator // rate.numerator)
+    credits_per_yuan = (settings.ezfp_custom_credits_per_yuan if provider_key == EZFP_PROVIDER_KEY
+                        else settings.zhifux_custom_credits_per_yuan)
+    if not 1 <= credits_per_yuan <= 1_000_000:
+        return packages, None
+    minimum = 100
+    maximum = min(1_000_000, (1_000_000 // credits_per_yuan) * 100)
     identifiers = {item.id for item in packages}
     custom_id = CUSTOM_PACKAGE_ID
     while custom_id in identifiers:
         custom_id += "_"
+    quote = hashlib.sha256(f"custom:{credits_per_yuan}:{minimum}:{maximum}".encode()).hexdigest()
     custom = {"id": custom_id, "min_amount_fen": minimum, "max_amount_fen": maximum,
-              "rate_credits": reference.credits, "rate_amount_fen": reference.amount_fen,
-              "quote": package_quote(reference)} if minimum <= maximum else None
+              "credits_per_yuan": credits_per_yuan,
+              # Keep the prior ratio shape readable by an already-open browser tab.
+              "rate_credits": credits_per_yuan * 100, "rate_amount_fen": 10_000,
+              "quote": quote} if minimum <= maximum else None
     return packages, custom
 
 
@@ -211,10 +249,12 @@ def resolve_package(settings: Settings, payload: CreateOrder, provider_key=PROVI
         fen = payload.custom_amount_fen
         if not custom["min_amount_fen"] <= fen <= custom["max_amount_fen"]:
             raise HTTPException(422, "充值金额超出范围，请重新输入")
+        if fen % 100:
+            raise HTTPException(422, "自定义充值金额必须为整元")
         if payload.quote != custom["quote"]:
             raise HTTPException(409, "充值价格已更新，请刷新并确认到账积分后重试")
         return RechargePackage(id=custom["id"], name="自定义充值", amount_fen=fen,
-                               credits=fen * custom["rate_credits"] // custom["rate_amount_fen"])
+                               credits=(fen // 100) * custom["credits_per_yuan"])
     if payload.custom_amount_fen is not None:
         if not custom:
             raise HTTPException(422, "当前支付渠道未开放自定义充值，请选择已有充值档位")
@@ -248,6 +288,7 @@ def configured_packages(settings: Settings, provider_key=PROVIDER_KEY) -> list[R
         enabled, api_url, merchant, pay_type = settings.zhifux_enabled, settings.zhifux_api_base_url, settings.zhifux_merchant_num, settings.zhifux_pay_type
         raw_packages = settings.recharge_packages_json
         secret_ready = bool(settings.zhifux_secret and settings.zhifux_secret.get_secret_value())
+    methods = configured_payment_methods(settings, provider_key)
     if not enabled:
         return []
     try:
@@ -261,7 +302,7 @@ def configured_packages(settings: Settings, provider_key=PROVIDER_KEY) -> list[R
             and len(settings.api_public_url.rstrip("/") + (EZFP_CALLBACK_PATH if provider_key == EZFP_PROVIDER_KEY else CALLBACK_PATH)) <= 200
             and len(settings.frontend_url.rstrip("/") + "/?account=1&billing=1") <= 200
             and bool(re.fullmatch(r"[a-zA-Z0-9]{1,100}", merchant))
-            and bool(re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", pay_type))
+            and bool(methods)
             and secret_ready
         )
         if valid:
@@ -586,6 +627,7 @@ def build_router(get_db):
                     if packages:
                         channels.append({"provider_key": provider_key, "name": PAYMENT_PROVIDERS[provider_key]["name"],
                             "packages": [{**item.model_dump(), "quote": package_quote(item)} for item in packages],
+                            "payment_methods": [item.model_dump() for item in configured_payment_methods(provider_settings, provider_key)],
                             **({"custom": custom} if custom else {})})
                 except HTTPException:
                     # An unavailable channel must not hide other independently configured providers.
@@ -615,6 +657,8 @@ def build_router(get_db):
                             if payload.custom_amount_fen is not None else payload.package_id)
             if order.package_id != requested_id or order.provider_key != payload.provider_key:
                 raise HTTPException(409, "此充值请求已使用其他档位，请重新选择")
+            if payload.payment_method_code and order.pay_type != payload.payment_method_code:
+                raise HTTPException(409, "此充值请求已使用其他付款方式，请重新创建订单")
             result = order_read(order)
             db.commit()
             return result
@@ -622,14 +666,21 @@ def build_router(get_db):
         settings, config_version = effective_settings(db, provider_key=adapter.provider_key)
         package = resolve_package(settings, payload, adapter.provider_key)
         merchant = settings.ezfp_pid if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_merchant_num
-        pay_type = settings.ezfp_pay_type if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_pay_type
+        methods = configured_payment_methods(settings, adapter.provider_key)
+        selected_method = next((item for item in methods if item.code == payload.payment_method_code), None)
+        if payload.payment_method_code and selected_method is None:
+            raise HTTPException(422, "所选付款方式当前不可用，请刷新后重试")
+        if selected_method is None:
+            if len(methods) != 1:
+                raise HTTPException(422, "请选择付款方式")
+            selected_method = methods[0]
         order = RechargeOrder(
             id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
             idempotency_key=payload.idempotency_key,
             package_id=f"{package.id}:{package.amount_fen}" if payload.custom_amount_fen is not None else package.id,
             package_name=package.name,
             amount_fen=package.amount_fen, credits=package.credits,
-            merchant_num=merchant, pay_type=pay_type,
+            merchant_num=merchant, pay_type=selected_method.code,
             provider_key=adapter.provider_key, payment_config_version=config_version,
             status="creating", expires_at=now() + timedelta(minutes=PAY_DURATION_MINUTES),
         )
