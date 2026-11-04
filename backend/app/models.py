@@ -4,13 +4,20 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
 LEGACY_WORKSPACE_ID = UUID("00000000-0000-4000-a000-000000000001")
+
+chat_message_resources = Table(
+    "chat_message_resources", Base.metadata,
+    Column("message_id", PGUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="CASCADE"), primary_key=True),
+    Column("attachment_id", PGUUID(as_uuid=True), ForeignKey("chat_attachments.id", ondelete="CASCADE"), primary_key=True),
+    Column("position", Integer, nullable=False, server_default="0"),
+)
 
 
 class SiteSettings(Base):
@@ -704,7 +711,8 @@ class ChatMessage(Base):
         uselist=False, cascade="all, delete-orphan", lazy="selectin"
     )
     attachments: Mapped[list["ChatAttachment"]] = relationship(
-        lazy="selectin", order_by="(ChatAttachment.position, ChatAttachment.created_at, ChatAttachment.id)",
+        secondary=chat_message_resources, lazy="selectin",
+        order_by="(chat_message_resources.c.position, ChatAttachment.created_at, ChatAttachment.id)",
     )
 
 
@@ -713,18 +721,25 @@ class ChatAttachment(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=True, index=True)
+    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True)
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
     size_bytes: Mapped[int] = mapped_column(Integer)
     content_hash: Mapped[str] = mapped_column(String(64))
     object_key: Mapped[str] = mapped_column(String(500), unique=True)
     kind: Mapped[str] = mapped_column(String(20))
+    source: Mapped[str] = mapped_column(String(24), default="chat_upload", server_default="chat_upload")
+    resource_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    resource_file_id: Mapped[UUID | None] = mapped_column(ForeignKey("workspace_files.id"), nullable=True, index=True)
+    resource_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     text_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    over_quota_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    object_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -737,6 +752,7 @@ class WorkspaceFile(Base):
     content_type: Mapped[str] = mapped_column(String(150), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     content_hash: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(24), default="model_output", server_default="model_output")
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
@@ -761,6 +777,7 @@ class WorkspaceFileVersion(Base):
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    available: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
 
 
 class WorkspaceExecutionJob(Base):
