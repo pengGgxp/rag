@@ -43,9 +43,8 @@ export function QuotaSettings({ onState }: { onState: (state: { dirty: boolean; 
     {conflict && <div className="admin-inline-confirm"><span>重新加载会放弃本页修改。</span><button className="secondary" disabled={busy} onClick={() => { setConflict(false); void resource.reload(); }}>放弃修改并重新加载</button></div>}
     <form className="provider-form model-detail-form" onSubmit={e => { e.preventDefault(); void save(); }}>
       <fieldset className="provider-form-fields" disabled={busy}>
-        <section className="model-form-section"><h2>免费额度与临时输出</h2><div className="provider-form-grid">
-          {([ ["free_storage_bytes", "免费存储空间（MiB）"], ["free_download_bytes", "每月免费下载（MiB）"], ["output_limit_bytes", "临时输出上限（MiB）"] ] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min="0" max="1048576" step="1" value={form[key]/MiB} onChange={e => setForm({ ...form, [key]: Number(e.target.value)*MiB })} /></label>)}
-          <label>临时输出保留天数<input type="number" required min="1" max="30" value={form.retention_days} onChange={e => setForm({ ...form, retention_days:Number(e.target.value) })} /></label>
+        <section className="model-form-section"><h2>免费额度</h2><div className="provider-form-grid">
+          {([ ["free_storage_bytes", "免费存储空间（MiB）"], ["free_download_bytes", "每月免费下载（MiB）"] ] as const).map(([key, label]) => <label key={key}>{label}<input required type="number" min="0" max="1048576" step="1" value={form[key]/MiB} onChange={e => setForm({ ...form, [key]: Number(e.target.value)*MiB })} /></label>)}
         </div></section>
         <section className="model-form-section"><h2>套餐</h2>
           {form.packages.map((p,index) => <details className="quota-package" key={p.id} open={index === 0}>
@@ -64,7 +63,7 @@ export function QuotaSettings({ onState }: { onState: (state: { dirty: boolean; 
         </section>
         <section className="model-form-section"><details><summary>成本参考</summary><div className="provider-form-grid">
           {Object.entries({ storage_yuan_gib_month:"标准存储（元 / GiB / 月）", egress_yuan_gib:"公网流量（元 / GiB）", reads_yuan_10000:"读取请求（元 / 万次）", writes_yuan_10000:"写入请求（元 / 万次）", transfer_yuan_gib:"平台传输分摊（元 / GiB）" }).map(([key,label]) => <label key={key}>{label}<input inputMode="decimal" pattern="[0-9]+(\.[0-9]{1,8})?" required value={form.costs[key] ?? "0"} onChange={e => setForm({ ...form, costs:{...form.costs,[key]:e.target.value} })} /></label>)}
-        </div><p className="storage-note">成本参考不自动修改已发布售价；临时输出保留时间不随购买延长。</p></details></section>
+        </div><p className="storage-note">成本参考不自动修改已发布售价。</p></details></section>
         <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : ""}</span><button className="primary" disabled={busy || !dirty}>{busy ? <Loader2 size={16} className="spin" /> : <Save size={16} />}保存额度与套餐</button></div>
       </fieldset>
     </form>

@@ -54,9 +54,10 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
     {data && <>
       <dl className="storage-summary"><div><dt>存储空间</dt><dd>{bytes(data.used_bytes)} <small>/ {bytes(data.limit_bytes)}</small></dd></div>
         <div><dt>剩余下载额度</dt><dd>{bytes(data.download_remaining_bytes)}</dd></div></dl>
-      <p className="storage-note">临时输出保留 {data.retention_days} 天。每月免费额度于 {date(data.download_resets_at)} 重置。</p>
-      {data.over_quota_since && <p className="auth-error" role="alert">存储空间已超出额度，暂时无法添加文件或保存新输出。请联系工作区管理员增加额度。</p>}
-      {admin && <details className="storage-breakdown"><summary>用量明细</summary><dl>{Object.entries({ documents: "资料与保留版本", attachments: "对话附件", outputs: "临时输出", skills: "个人 Skill", reserved: "上传预留" }).map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{bytes(data.breakdown[key] ?? 0)}</dd></div>)}</dl></details>}
+      <p className="storage-note">每月免费额度于 {date(data.download_resets_at)} 重置。</p>
+      {data.download_usage && <p className="storage-note">本月用户下载 {bytes(data.download_usage.user_download)} · 模型读取 {bytes(data.download_usage.model_read)}</p>}
+      {data.over_quota_since && <p className="auth-error" role="alert">存储空间已超出额度，暂停新增。请删除不需要的资源或增加额度；持续超额将于 {data.cleanup_due_at ? date(data.cleanup_due_at) : "宽限期结束"} 起清理最早存入的资源。</p>}
+      {admin && <details className="storage-breakdown"><summary>用量明细</summary><dl>{Object.entries({ documents: "资料与保留版本", attachments: "资源附件", outputs: "资源文件", skills: "个人 Skill", reserved: "上传预留" }).map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{bytes(data.breakdown[key] ?? 0)}</dd></div>)}</dl></details>}
       {!admin && data.packages.length > 0 && <section className="storage-package-section"><h2>增加额度</h2>
         <div className="storage-package-list">{data.packages.map(item => <div className="storage-package-row" key={item.id}>
           <div><strong>{item.name}</strong><span>{item.storage_bytes ? `${bytes(item.storage_bytes)} 存储 · ` : ""}{bytes(item.download_bytes)} 下载 · {item.days} 天</span></div>
@@ -79,7 +80,7 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
         <div><dt>增加存储空间</dt><dd>{bytes(purchase.item.storage_bytes)}</dd></div>
         <div><dt>增加下载额度</dt><dd>{bytes(purchase.item.download_bytes)}</dd></div>
         <div><dt>有效期</dt><dd>到账后 {purchase.item.days} 天，预计 {date(purchase.expires)} 到期</dd></div></dl>
-      <p className="storage-note">一次购买，不会自动续费。临时输出仍按原保留时间清理。</p>
+        <p className="storage-note">一次购买，不会自动续费。</p>
       {dialogError && <p className="auth-error" role="alert">{dialogError}</p>}
       <div className="storage-dialog-actions"><button className="secondary" disabled={busy} onClick={() => setPurchase(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void confirm()}>{busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}确认购买</button></div>
       </div>

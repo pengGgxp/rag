@@ -4,6 +4,7 @@
 node_modules/
 .next/
 .next-qw/
+.next-resource-check/
 .venv/
 **/.venv/
 __pycache__/

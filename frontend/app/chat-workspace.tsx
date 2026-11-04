@@ -1374,6 +1374,7 @@ export function ChatWorkspace({
             </div>
             <div className="composer-footer">
               <AttachmentButton disabled={running || loading || modelLoading || !selectedModel?.available}
+                select={item => attachments.selectResource(item, !!selectedModel?.supports_images)}
                 add={files => { const error = attachments.add(files, !!selectedModel?.supports_images); if (error) report(new Error(error)); }} />
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
                 loading={modelLoading} disabled={running || loading || modelLoading || !!modelError}

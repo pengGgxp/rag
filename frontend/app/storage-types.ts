@@ -13,6 +13,6 @@ export type StorageAllowances = { used_bytes: number; limit_bytes: number; downl
   retention_days: number; download_resets_at: string; over_quota_since: string | null;
   cleanup_due_at: string | null; entitlements: Entitlement[]; history: Entitlement[];
   packages: StoragePackage[]; config_version: number;
-  breakdown: Record<string, number> };
+  breakdown: Record<string, number>; download_usage?: { model_read: number; user_download: number } };
 export type StorageQuota = { version: number; free_storage_bytes: number; free_download_bytes: number;
   output_limit_bytes: number; retention_days: number; packages: StoragePackage[]; costs: Record<string, string> };

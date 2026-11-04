@@ -63,7 +63,7 @@ export async function request<T>(
   let timedOut = false;
   const timeout = path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
     || /\/models\/discover$/.test(path) || path === "/site/admin/search/test"
-    || path === "/chat/attachments"
+    || path === "/chat/attachments" || (path === "/resources" && options?.body instanceof FormData)
     || path.startsWith("/site/admin/skills")
     || path.startsWith("/agent/")
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
