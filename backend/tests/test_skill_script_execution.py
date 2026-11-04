@@ -33,7 +33,10 @@ def test_runtime_exposes_real_execution_and_passes_only_loaded_pinned_packages(a
     first, second = scripted(admin), scripted(admin, name="Second")
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [first["id"], second["id"]])
     assert "run_command" in {item["function"]["name"] for item in runtime.tools}
-    assert runtime.execute("run_command", {"command": "python script.py"}).get("error")
+    captured = []
+    monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
+    assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+    assert captured.pop()["skill_packages"] == {}
     loaded = runtime.execute("load_skill", {"skill_id": first["id"]})
     assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/skills/{first['id']}"
     assert loaded["execution"]["read_only"] and loaded["execution"]["scripts"] == ["scripts/task.py"]
@@ -41,8 +44,6 @@ def test_runtime_exposes_real_execution_and_passes_only_loaded_pinned_packages(a
     row.files[0].content = b"CHANGED AFTER REQUEST"
     row.version += 1
     db.commit()
-    captured = []
-    monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
     assert runtime.execute("run_command", {"command": "python script.py"})["exit_code"] == 0
     package = captured[0]["skill_packages"]
     assert set(package) == {first["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
@@ -92,7 +93,11 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     selected = scripted(admin)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]])
     assert runtime.execute("list_files", {})["items"] == []
-    assert runtime.execute("run_command", {"command": "echo no"})["error_code"] == "skill_load_required"
+    captured = []
+    with monkeypatch.context() as patch:
+        patch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
+        assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+        assert captured[0]["skill_packages"] == {}
     def unavailable(*args):
         raise HTTPException(503, "SECRET SDK DIAGNOSTIC")
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
@@ -104,6 +109,35 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     assert runtime.execute("write_file", {"path": "report.txt", "content": "changed", "expected_version": 9})["error_code"] == "file_conflict"
     assert runtime.execute("write_file", {"path": "../forbidden", "content": "bad"})["error_code"] == "file_arguments"
     assert runtime.execute("write_file", {"path": "report.txt", "content": "bad", "expected_version": 0})["error_code"] == "file_arguments"
+
+
+def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatch):
+    from test_extensions import create
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    access = access_for(admin, db)
+    captured = []
+    def runner(*args, **kwargs):
+        captured.append(kwargs["json"])
+        return SimpleNamespace(raise_for_status=lambda: None,
+            json=lambda: {"status": "completed", "exit_code": 0, "files": {}})
+    monkeypatch.setattr("httpx.post", runner)
+    for platform in (False, True):
+        if platform:
+            method = create(admin)
+        runtime = ExtensionRuntime(lambda: nullcontext(db), access)
+        if platform:
+            assert "instructions" in runtime.execute("load_skill", {"skill_id": method["id"]})
+        assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+        assert captured[-1]["skill_files"] == {}
+    member = db.get(Membership, (access.workspace_id, access.user_id))
+    member.role = "viewer"
+    db.commit()
+    with pytest.raises(HTTPException) as error:
+        runtime.execute("run_command", {"command": "echo forbidden"})
+    assert error.value.status_code == 403 and len(captured) == 2
+    viewer = ExtensionRuntime(lambda: nullcontext(db), access)
+    assert "run_command" not in {item["function"]["name"] for item in viewer.tools}
 
 
 def test_script_nonzero_exit_is_failure_and_keeps_completed_outputs(accounts, monkeypatch):

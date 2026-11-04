@@ -88,10 +88,9 @@ class ExtensionRuntime(SkillRuntime):
         self.skills = [{key: value for key, value in row.items()
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
         self.execution_available = bool(get_settings().workspace_executor_url) and access.role in ("admin", "editor")
-        has_script_skill = any(row.get("scripts") for row in self.snapshots.values())
         workspace_tools = [item for item in tool_definitions()
             if access.role in ("admin", "editor") and (item["function"]["name"] != "run_command"
-                or has_script_skill and self.execution_available)]
+                or self.execution_available)]
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
         self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
             if self.skills else []) + workspace_tools + [{"type": "function", "function": {"name": alias,
@@ -172,9 +171,6 @@ class ExtensionRuntime(SkillRuntime):
                 except ValidationError:
                     return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
                 loaded = self.loaded & self.personal_ids
-                if name == "run_command" and not any(self.snapshots[identifier].get("scripts") for identifier in loaded):
-                    return {"error": "请先使用 load_skill 加载本次选择的脚本 Skill，再运行命令",
-                        "error_code": "skill_load_required"}
                 with self.factory() as db:
                     access = self.access.revalidate(db)
                     for identifier in loaded if name == "run_command" else []:

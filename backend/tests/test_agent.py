@@ -318,7 +318,7 @@ def test_unknown_tool_returns_error_to_model(runtime):
 @pytest.mark.parametrize("name,result,expected", [
     ("write_file", {"error": "PRIVATE", "error_code": "file_storage"}, "稍后重试"),
     ("write_file", {"error": "PRIVATE", "error_code": "file_conflict"}, "重新读取"),
-    ("run_command", {"error": "PRIVATE", "error_code": "skill_load_required"}, "读取所选方法"),
+    ("run_command", {"error": "PRIVATE", "error_code": "file_tool_unavailable"}, "重新开始对话"),
     ("run_command", {"error": "PRIVATE", "uncertain": True}, "勿重复运行"),
     ("mcp_remote", {"error": "PRIVATE", "error_code": "file_storage"}, "重新选择扩展"),
 ])

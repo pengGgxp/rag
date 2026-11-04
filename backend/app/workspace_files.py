@@ -17,7 +17,6 @@ MAX_OUTPUT = 12000
 FILE_TOOL_ERRORS = {
     "file_tool_unavailable": "当前无法生成或修改文件，请重新开始对话后再试",
     "file_arguments": "文件内容或路径不符合要求，正在等待修正",
-    "skill_load_required": "需要先读取所选方法，再运行脚本",
     "skill_unavailable": "所选方法已停用或不可用，请重新选择后再试",
     "file_missing": "文件不存在或已过期，请重新生成",
     "file_conflict": "文件已变化，请重新读取后再修改",
