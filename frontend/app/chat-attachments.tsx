@@ -186,11 +186,10 @@ export function AttachmentButton({ disabled, add, select }: { disabled: boolean;
     tabIndex={-1} disabled={disabled || !canWrite} onChange={event => { add(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
     <Tooltip content="添加图片或文件"><button type="button" className="chat-attach-button" disabled={disabled}
       aria-label="添加图片或文件" onClick={() => setOpen(true)}><Paperclip size={18} /></button></Tooltip>
-    {open && <Modal title={library ? "选择资源" : "添加附件"} wide={library} onClose={() => { setOpen(false); setLibrary(false); }}>
-      {!library && <ResourceNotice />}
+    {open && <Modal title={library ? "选择资源" : "添加附件"} wide={library} restoreFocusSelector=".chat-attach-button" onClose={() => { setOpen(false); setLibrary(false); }}>
       {library ? <ResourceLibrary select={async item => { await select(item); setOpen(false); setLibrary(false); }} /> :
-        <div className="storage-dialog-actions">{canWrite && <button className="secondary" type="button" onClick={() => { setOpen(false); input.current?.click(); }}><Paperclip size={16} />上传文件</button>}
-          <button className="secondary" type="button" onClick={() => setLibrary(true)}><Files size={16} />从资源库选择</button></div>}
+        <div className="attachment-source-body"><div className="attachment-source-actions">{canWrite && <button type="button" onClick={() => { setOpen(false); input.current?.click(); }}><span className="attachment-source-icon"><Paperclip size={20} /></span><span><strong>上传文件</strong><small>从设备选择图片或文档</small></span></button>}
+          <button type="button" onClick={() => setLibrary(true)}><span className="attachment-source-icon"><Files size={20} /></span><span><strong>从资源库选择</strong><small>使用工作区已保存的文件</small></span></button></div><ResourceNotice /></div>}
     </Modal>}
   </>;
 }

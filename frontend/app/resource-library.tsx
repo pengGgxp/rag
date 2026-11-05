@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Download, File, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { ChevronRight, Download, File, FileImage, FileText, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { API_URL, downloadFile, request, sessionHeaders } from "./api";
 import { useAuth } from "./auth";
 import { Modal } from "./modal";
@@ -100,7 +100,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   }
   const due = quota?.cleanup_due_at ? new Date(quota.cleanup_due_at).toLocaleDateString("zh-CN") : "";
   const daysLeft = quota?.cleanup_due_at ? Math.max(0, Math.ceil((new Date(quota.cleanup_due_at).getTime() - Date.now()) / 86400000)) : null;
-  return <div className="workspace-files-content">
+  return <div className={`workspace-files-content${select ? " resource-picker" : ""}`}>
     <div className="workspace-files-toolbar">
       <label className="workspace-files-search"><Search size={16} /><input aria-label="搜索资源" placeholder="搜索资源"
         value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} /></label>
@@ -111,27 +111,28 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
         disabled={loading || busy} onClick={() => void load()}><RefreshCw size={16} /></button></Tooltip>
       {!select && canWrite && <><input ref={input} type="file" accept={attachmentAccept} multiple hidden
         onChange={e => { void upload(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
-        <button className="secondary" disabled={busy || Boolean(quota?.over_quota_since)} onClick={() => input.current?.click()}><Upload size={16} />上传</button></>}
+        <button className="primary" disabled={busy || Boolean(quota?.over_quota_since)} onClick={() => input.current?.click()}><Upload size={16} />上传文件</button></>}
     </div>
-    <ResourceNotice />
-    {quota && <p className="workspace-files-hint">已用 {bytes(quota.used_bytes)} / {bytes(quota.limit_bytes)}</p>}
+    {!select && <ResourceNotice />}
+    <div className="resource-list-summary"><span>{select ? "选择要添加到对话的文件" : "全部资源"}</span>{!select && quota && <span>存储已用 {bytes(quota.used_bytes)} / {bytes(quota.limit_bytes)}</span>}</div>
     {quota?.over_quota_since && <p className="auth-error" role="alert">空间已超额，暂停新增资源。请删除不需要的资源或增加额度；若持续超额，将于 {due} 起清理最早存入的资源。{daysLeft !== null && daysLeft <= 7 ? `宽限期${daysLeft <= 1 ? "即将结束" : `还剩 ${daysLeft} 天`}。` : ""}</p>}
     {error && <p className="workspace-files-error" role="alert">{error}</p>}
     <section className="workspace-files-results" aria-label="资源列表" aria-busy={loading || busy}>
-      {loading ? <p className="workspace-files-state">正在加载资源</p> : !items.length ? <p className="workspace-files-state">暂无资源</p> :
+      {loading ? <p className="workspace-files-state">正在加载资源…</p> : !items.length ? <div className="workspace-files-state"><FilesEmpty /><strong>{query || source ? "没有找到匹配的资源" : "暂无资源"}</strong><span>{query || source ? "试试其他关键词或来源" : "上传的附件和生成的文件会保存在这里"}</span></div> :
         <div className="workspace-file-list">{items.map(item => <div className="workspace-file-row" key={item.id}>
-          <File size={18} aria-hidden="true" /><div className="workspace-file-copy">
+          <span className={`workspace-file-icon${item.content_type.startsWith("image/") ? " resource-icon-image" : ""}`}>{item.content_type.startsWith("image/") ? <FileImage size={21} /> : item.content_type.startsWith("text/") || item.content_type === "application/pdf" ? <FileText size={21} /> : <File size={21} />}</span><div className="workspace-file-copy">
             <button type="button" className="resource-file-name" disabled={busy || item.availability === "missing"} title={item.path} onClick={() => void open(item)}>{item.path.split("/").pop()}</button>
             <small>{bytes(item.size_bytes)} · {sources[item.source] ?? "资源"} · {item.availability === "missing" ? "文件已不可用" : item.availability === "pending" ? "待核验" : new Date(item.updated_at).toLocaleDateString("zh-CN")}</small>
           </div>
+          {select && <ChevronRight size={16} className="resource-select-arrow" aria-hidden="true" />}
           {!select && <><Tooltip content="下载"><button type="button" className="icon-button workspace-file-download" aria-label={`下载 ${item.path}`} disabled={busy || item.availability === "missing"}
             onClick={() => void downloadFile(`/resources/${item.id}/download?version=${item.version}`, item.path.split("/").pop()!).catch(e => setError(e.message))}><Download size={16} /></button></Tooltip>
             {canWrite && <Tooltip content="删除"><button type="button" className="icon-button" aria-label={`删除 ${item.path}`} disabled={busy} onClick={() => setRemove(item)}><Trash2 size={16} /></button></Tooltip>}</>}
         </div>)}</div>}
     </section>
-    {(page > 0 || more) && <div className="storage-dialog-actions"><button className="secondary" disabled={page === 0 || loading} onClick={() => setPage(p => p - 1)}>上一页</button><span>{page + 1}</span><button className="secondary" disabled={!more || loading} onClick={() => setPage(p => p + 1)}>下一页</button></div>}
+    {(page > 0 || more) && <div className="resource-pagination"><button className="secondary" disabled={page === 0 || loading} onClick={() => setPage(p => p - 1)}>上一页</button><span>{page + 1}</span><button className="secondary" disabled={!more || loading} onClick={() => setPage(p => p + 1)}>下一页</button></div>}
     {remove && <Modal title="删除资源" busy={busy} onClose={() => setRemove(null)}>
-      <p>删除“{remove.path.split("/").pop()}”后，其他会话将无法继续读取此资源。</p>
+      <p className="resource-delete-copy">删除“{remove.path.split("/").pop()}”后，其他会话将无法继续读取此资源。</p>
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="modal-footer"><button className="secondary" disabled={busy} onClick={() => setRemove(null)}>取消</button><button className="danger" disabled={busy} onClick={async () => {
         setBusy(true); setError("");
@@ -146,3 +147,5 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     </Modal>}
   </div>;
 }
+
+function FilesEmpty() { return <File size={28} aria-hidden="true" />; }

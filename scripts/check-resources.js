@@ -21,7 +21,7 @@ async page => {
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   await page.getByRole("textbox", { name: "搜索资源" }).fill("无匹配资源");
-  await page.getByText("暂无资源", { exact: true }).waitFor();
+  await page.getByText("没有找到匹配的资源", { exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/resources/empty-390.png" });
   await page.getByRole("textbox", { name: "搜索资源" }).fill("");
   await page.locator('input[type="file"]').setInputFiles({ name: "浏览器验收.txt", mimeType: "text/plain", buffer: Buffer.from("资源上传与跨会话选用") });
@@ -44,7 +44,7 @@ async page => {
     await page.context().addCookies([{ name: "rag_session", value: token, url: base }]);
     await page.reload();
     await page.getByRole("button", { name: "产品说明与团队协作使用记录.txt", exact: true }).waitFor();
-    check(await page.getByRole("button", { name: "上传", exact: true }).count() === (role === "viewer" ? 0 : 1), `Wrong upload permission: ${role}`);
+    check(await page.getByRole("button", { name: "上传文件", exact: true }).count() === (role === "viewer" ? 0 : 1), `Wrong upload permission: ${role}`);
     check(await page.getByRole("button", { name: /删除.*产品说明/ }).count() === (role === "viewer" ? 0 : 1), `Wrong deletion permission: ${role}`);
     await page.screenshot({ path: `output/playwright/resources/${role}-390.png` });
   }
@@ -56,7 +56,7 @@ async page => {
   });
   await page.reload();
   await page.getByText(/宽限期即将结束/).waitFor();
-  check(await page.getByRole("button", { name: "上传", exact: true }).isDisabled(), "Overage upload must be disabled");
+  check(await page.getByRole("button", { name: "上传文件", exact: true }).isDisabled(), "Overage upload must be disabled");
   await page.screenshot({ path: "output/playwright/resources/overage-390.png" });
   await page.unroute(`${api}/storage/allowances`);
   await page.context().addCookies([{ name: "rag_session", value: cookie, url: base }]);
