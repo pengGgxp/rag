@@ -67,6 +67,21 @@ def test_spec_validation_and_read_only(accounts, monkeypatch):
     assert client.post("/image-tasks", json={"prompt": "x", "workspace_id": str(uuid4()), "idempotency_key": str(uuid4())}).status_code == 422
 
 
+def test_insufficient_balance_and_disabled_default_do_not_submit(accounts, monkeypatch):
+    client, db, identity = configure(accounts, monkeypatch)
+    account = db.get(CreditAccount, UUID(identity["workspace_id"]))
+    account.balance = Decimal("2")
+    db.commit()
+    assert client.post("/image-tasks", json={"prompt": "x", "idempotency_key": str(uuid4())}).status_code == 402
+    assert db.scalar(select(ImageTask)) is None
+    assert account.balance == Decimal("2")
+    settings = client.get("/site/admin/image-models").json()
+    assert client.put("/site/admin/image-models", json={**settings, "version": 0}).status_code == 409
+    assert client.put("/site/admin/image-models", json={**settings, "generate_model_id": None}).status_code == 200
+    assert client.post("/image-tasks", json={"prompt": "x", "idempotency_key": str(uuid4())}).status_code == 503
+    assert db.scalar(select(ImageTask)) is None
+
+
 def test_uncertain_result_keeps_hold_and_never_replays(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
     from app import image_adapters

@@ -1,0 +1,15 @@
+.image-task-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-block: 12px; min-width: 0; }
+.image-task-result > .activity-step-summary { display: flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--muted); font-size: 13px; }
+.image-task-files { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; }
+.image-task-result .activity-file-download { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; max-width: 100%; padding: 4px 0; border: 0; background: transparent; color: var(--accent, #2459dc); font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
+.image-task-result .activity-file-download span { overflow-wrap: anywhere; }
+.image-task-result .activity-file-download:hover { text-decoration: underline; }
+.image-task-result .activity-file-download:focus-visible { outline: 2px solid var(--accent, #2459dc); outline-offset: 4px; }
+.image-task-preview { display: block; width: auto; max-width: 100%; height: auto; max-height: 65dvh; object-fit: contain; margin: auto; }
+.image-spec-row { padding-block: 16px; border-top: 1px solid var(--line); }
+.image-review-row { padding-block: 16px; border-bottom: 1px solid var(--line); }
+.image-review-row dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.image-review-row dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .image-task-result .activity-file-download, .image-model-settings button { min-height: 44px; }
+}

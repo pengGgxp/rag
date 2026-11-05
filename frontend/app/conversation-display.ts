@@ -1,4 +1,5 @@
 import type { ConversationActivityItem, SavedDocument } from "./conversation-activity";
+import type { ImageTaskResult } from "./image-task-result";
 
 export type DisplayBlock = { id: string; type: "text"; text: string }
   | { id: string; type: "activity"; call_id: string }
@@ -8,6 +9,7 @@ export type ToolEvent = {
   summary?: string; result_count?: number;
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
+  image_task?: ImageTaskResult;
 };
 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
@@ -15,6 +17,7 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     id: item.call_id, label: item.label, summary: item.summary,
     files: item.files,
     saved_document: item.saved_document,
+    image_task: item.image_task,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "cancelled"

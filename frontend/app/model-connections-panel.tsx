@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ImageModelSettings } from "./image-model-settings";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, ChevronDown, Download, Layers, Loader2, Plus, PlugZap, Save, Search, Star, X } from "lucide-react";
 import { Tooltip } from "../components/ui/tooltip";
@@ -9,20 +10,20 @@ import * as Tabs from "../components/ui/tabs";
 import { ApiError, request } from "./api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useAdminChanges } from "./admin/admin-changes";
-import { availabilityLabel, type ModelProvider, type Policy } from "./model-types";
+import { availabilityLabel, type ChatProtocol, type ModelProvider, type Policy } from "./model-types";
 import { ModelConfigFields, draftModel, modelError, modelPayload, type ModelDraft } from "./model-config-fields";
 import { PolicyTable } from "./policy-table";
 import "./billing.css";
 
 export type ModelConnection = {
   id: string; name: string; platform: string; base_url: string; timeout_seconds: number;
-  api_protocol: "chat_completions" | "responses";
+  api_protocol: ChatProtocol; website_url: string;
   has_api_key: boolean; enabled: boolean; version: number; model_count: number; available_model_count: number;
 };
 type Platform = { id: string; name: string; base_url: string; adapter: string };
 const base = "/site/admin/model-connections";
-const platformNames: Record<string, string> = { deepseek: "DeepSeek", bailian: "阿里云百炼", openai: "OpenAI", custom: "自定义兼容接口" };
-const protocolNames = { chat_completions: "OpenAI Chat Completions", responses: "OpenAI Responses" };
+const platformNames: Record<string, string> = { deepseek: "DeepSeek", bailian: "阿里云百炼", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", custom: "自定义兼容接口" };
+const protocolNames = { chat_completions: "OpenAI Chat Completions", responses: "OpenAI Responses", anthropic: "Anthropic Messages", gemini: "Gemini 原生" };
 
 export function ConnectionCatalog() {
   const resource = useAdminResource<ModelConnection[]>(base);
@@ -30,7 +31,9 @@ export function ConnectionCatalog() {
   const search = params.get("q") ?? "", status = params.get("status") ?? "all";
   const [query, setQuery] = useState(search);
   useEffect(() => setQuery(search), [search]);
-  useAdminChanges(false, false);
+  const [imageState, setImageState] = useState({ dirty: false, busy: false });
+  const imageStateChanged = useCallback((dirty: boolean, busy: boolean) => setImageState({ dirty, busy }), []);
+  useAdminChanges(imageState.dirty, imageState.busy);
   function filter(q: string, state: string) {
     const next = new URLSearchParams();
     if (q) next.set("q", q);
@@ -60,10 +63,11 @@ export function ConnectionCatalog() {
       </div>
       {items?.length === 0 && <p className="admin-empty">{resource.data?.length ? "没有符合条件的供应商" : "尚未添加供应商"}</p>}
     </AdminLoad>
+    <ImageModelSettings state={imageStateChanged} />
   </>;
 }
 
-const blank = { name: "", platform: "custom", api_protocol: "", base_url: "", api_key: "", timeout_seconds: 60, enabled: true, version: 0 };
+const blank = { name: "", platform: "custom", api_protocol: "", website_url: "", base_url: "", api_key: "", timeout_seconds: 60, enabled: true, version: 0 };
 export function ConnectionDetail({ id }: { id: string }) {
   const isNew = id === "new", router = useRouter(), params = useSearchParams();
   const resource = useAdminResource<ModelConnection>(isNew ? null : `${base}/${encodeURIComponent(id)}`);
@@ -84,7 +88,7 @@ export function ConnectionDetail({ id }: { id: string }) {
   const dirty = JSON.stringify(form) !== JSON.stringify(original);
   useAdminChanges(dirty || modelsDirty, busy || modelsBusy);
   function accept(c: ModelConnection) {
-    const next = { name: c.name, platform: c.platform, api_protocol: c.api_protocol, base_url: c.base_url, api_key: "",
+    const next = { name: c.name, platform: c.platform, api_protocol: c.api_protocol, website_url: c.website_url ?? "", base_url: c.base_url, api_key: "",
       timeout_seconds: c.timeout_seconds, enabled: c.enabled, version: c.version };
     setConnection(c); setForm(next); setOriginal(next);
   }
@@ -139,14 +143,15 @@ export function ConnectionDetail({ id }: { id: string }) {
         <Tabs.Content value="connection">
           <form className="provider-form model-detail-form" onSubmit={e => { e.preventDefault(); void save(); }}>
             <fieldset className="provider-form-fields" disabled={busy}>
-              <section className="model-form-section"><h2>调用类型</h2>
-                <div className="provider-form-grid"><label>OpenAI 接口<select required value={form.api_protocol}
+              <section className="model-form-section"><h2>新模型默认协议</h2>
+                <div className="provider-form-grid"><label>对话协议<select required value={form.api_protocol}
                   onChange={e => setForm({ ...form, api_protocol: e.target.value })}>
                   <option value="" disabled>请选择调用类型</option>
                   <option value="chat_completions">OpenAI Chat Completions</option>
                   <option value="responses">OpenAI Responses</option>
+                  <option value="anthropic">Anthropic Messages</option>
+                  <option value="gemini">Gemini 原生</option>
                 </select></label></div>
-                {form.api_protocol && <div className="connection-endpoint"><code>{form.api_protocol === "responses" ? "/responses" : "/chat/completions"}</code></div>}
               </section>
               {form.api_protocol && <>
               <section className="model-form-section"><h2>平台与名称</h2>
@@ -159,6 +164,8 @@ export function ConnectionDetail({ id }: { id: string }) {
                 <div className="provider-form-grid"><label>供应商名称<input required maxLength={120} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label></div>
               </section>
               <section className="model-form-section"><h2>连接凭据</h2><div className="provider-form-grid">
+                <label className="provider-form-wide">官网地址<input type="url" maxLength={1000} value={form.website_url} onChange={e => setForm({ ...form, website_url: e.target.value })} /></label>
+                {connection?.website_url && <a href={connection.website_url} target="_blank" rel="noreferrer">供应商官网</a>}
                 <label className="provider-form-wide">接口地址<input type="url" required maxLength={1000} value={form.base_url}
                   placeholder="https://api.example.com/v1" onChange={e => setForm({ ...form, base_url: e.target.value })} /></label>
                 <label><span className="provider-key-label">API Key<small>{connection?.has_api_key ? "已配置，留空保留" : "尚未配置"}</small></span>
@@ -235,7 +242,7 @@ function ModelImport({ connection, existing, dirty, working, reload, finished }:
   function select(model: string) {
     if (existingNames.has(model)) return;
     setDrafts(rows => rows.some(d => d.model === model) ? rows.filter(d => d.model !== model)
-      : rows.length >= 50 ? rows : [...rows, draftModel(model, template.data?.policies)]);
+      : rows.length >= 50 ? rows : [...rows, { ...draftModel(model, template.data?.policies), chat_protocol: connection.api_protocol }]);
     setError("");
   }
   async function discover() {
@@ -296,11 +303,11 @@ function ModelImport({ connection, existing, dirty, working, reload, finished }:
           open={invalid ? invalid === d.model : index === 0 ? true : undefined}>
           <summary><ChevronDown size={16} aria-hidden="true" /><span>{d.name || d.model}</span><small>{modelError(d, true) ? "待完善" : "可启用"}</small></summary>
           <fieldset className="provider-form-fields" disabled={!!busy}>
-            <ModelConfigFields value={d} change={value => setDrafts(rows => rows.map((r, i) => i === index ? value : r))} platform={connection.platform} apiProtocol={connection.api_protocol} />
-            <h3>模型基准价</h3>
+            <ModelConfigFields value={d} change={value => setDrafts(rows => rows.map((r, i) => i === index ? value : r))} platform={connection.platform} apiProtocol={d.chat_protocol} />
+            {d.supports_chat && <><h3>模型基准价</h3>
             <PolicyTable name={`${d.model}基准价`} policies={d.policies} busy={!!busy} requirePrices={false}
               update={(price, patch) => setDrafts(rows => rows.map((r, i) => i === index ? { ...r,
-                policies: r.policies.map(p => p.capability === price.capability ? { ...p, ...patch } : p) } : r))} />
+                policies: r.policies.map(p => p.capability === price.capability ? { ...p, ...patch } : p) } : r))} /></>}
           </fieldset>
         </details>)}
         <div className="pricing-footer"><span>共 {drafts.length} 个模型</span><div className="model-save-actions">

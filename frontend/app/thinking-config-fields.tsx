@@ -8,6 +8,7 @@ const levels = {
   deepseek: ["disabled", "low", "high", "max"],
   openai: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   bailian: ["low", "medium", "high"],
+  gemini: ["minimal", "low", "medium", "high"],
 };
 const labels: Record<string, string> = {
   disabled: "关闭", none: "无", minimal: "最少", low: "低", medium: "中", high: "高", xhigh: "更高", max: "最高",
@@ -62,7 +63,7 @@ export function ThinkingConfigFields({ value, onChange, suggestedAdapter }: {
       <label>思考方式<select value={value.kind} onChange={event => {
         const kind = event.target.value as ThinkingConfig["kind"];
         const suggested = suggestedAdapter && suggestedAdapter !== "none" ? suggestedAdapter : "deepseek";
-        const adapter = kind === "budget" ? "bailian" : value.adapter === "none"
+        const adapter = kind === "budget" ? (["anthropic", "gemini"].includes(suggested) ? suggested : "bailian") : value.adapter === "none"
           ? kind === "toggle" && suggested === "openai" ? "deepseek" : suggested
           : value.adapter === "openai" && kind === "toggle" ? "deepseek" : value.adapter;
         reset(kind, adapter);
@@ -74,6 +75,8 @@ export function ThinkingConfigFields({ value, onChange, suggestedAdapter }: {
       {configurable && <label>接口适配器<select value={value.adapter} onChange={event => reset(value.kind, event.target.value as ThinkingConfig["adapter"])}>
         {value.kind !== "budget" && <option value="deepseek">DeepSeek</option>}
         <option value="bailian">百炼兼容接口</option>
+        {(value.kind === "toggle" || value.kind === "budget") && <option value="anthropic">Anthropic Messages</option>}
+        <option value="gemini">Gemini 原生</option>
         {(value.kind === "effort" || value.kind === "fixed") && <option value="openai">OpenAI Chat Completions</option>}
       </select></label>}
     </div>
@@ -82,7 +85,7 @@ export function ThinkingConfigFields({ value, onChange, suggestedAdapter }: {
       <summary><SlidersHorizontal size={15} aria-hidden="true" />高级兼容设置<ChevronDown size={15} aria-hidden="true" /></summary>
       <div className="thinking-capability-flags">
         <label className="provider-enabled"><input type="checkbox" checked={value.supports_tools}
-          onChange={event => onChange({ ...value, supports_tools: event.target.checked })} />支持 Chat Completions 工具调用</label>
+          onChange={event => onChange({ ...value, supports_tools: event.target.checked })} />支持工具调用</label>
         {value.adapter === "bailian" && <>
           <label className="provider-enabled"><input type="checkbox" checked={value.stream_only}
             onChange={event => onChange({ ...value, stream_only: event.target.checked })} />仅支持流式响应</label>

@@ -10,7 +10,7 @@ import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-u
 import { useAdminChanges } from "./admin/admin-changes";
 import { availabilityLabel, type ModelProvider } from "./model-types";
 import { ThinkingDiagnostics } from "./thinking-diagnostics";
-import { ModelConfigFields, draftModel, modelError, modelPayload, type ModelDraft } from "./model-config-fields";
+import { ImageConfigFields, ModelConfigFields, draftModel, modelError, modelPayload, type ModelDraft } from "./model-config-fields";
 import { PolicyTable } from "./policy-table";
 import type { ModelConnection } from "./model-connections-panel";
 import "./billing.css";
@@ -42,6 +42,8 @@ export function ModelProviderDetail({ id }: { id: string }) {
     const next = { ...draftModel(value.model, value.prices), name: value.name, enabled: value.enabled,
       thinking: value.thinking ?? draftModel().thinking, context_capacity: value.context_capacity ?? null,
       supports_images: value.supports_images ?? false,
+      supports_chat: value.supports_chat ?? true, chat_protocol: value.chat_protocol ?? value.api_protocol,
+      image_config: value.image_config ?? draftModel().image_config,
       max_output_tokens: value.max_output_tokens ?? null };
     setProvider(value); setForm(next); setConnectionId(value.connection_id);
     setOriginal(JSON.stringify({ ...next, connectionId: value.connection_id }));
@@ -73,13 +75,13 @@ export function ModelProviderDetail({ id }: { id: string }) {
     <Link href={provider ? `/admin/models/connections/${provider.connection_id}` : "/admin/models"} className="admin-back">
       <ArrowLeft size={15} />{provider?.connection_name ?? "模型管理"}</Link>
     <AdminHeading title={provider?.name ?? "模型详情"}>
-      {provider && (provider.is_default ? <span className="model-default"><Star size={14} />问答默认模型</span>
+      {provider?.supports_chat && (provider.is_default ? <span className="model-default"><Star size={14} />问答默认模型</span>
         : <button className="secondary" disabled={busy || dirty || !provider.available} onClick={() => void action(async () => {
           accept(await request<ModelProvider>(`${base}/${id}/default`, json({ version: provider.version })));
           setNotice("问答默认模型已更新");
         })}><Star size={15} />设为问答默认模型</button>)}
     </AdminHeading>
-    {provider && <div className="model-detail-summary"><span className="model-availability" data-warning={!provider.available}>
+    {provider && <div className="model-detail-summary"><span className="model-availability" data-warning={!provider.available && provider.supports_chat}>
       {availabilityLabel(provider.unavailable_reason)}</span><span>{provider.model}</span></div>}
     {notice && <p className="billing-notice" role="status"><Check size={16} />{notice}</p>}
     {error && <div className="admin-error" role="alert">{error}</div>}
@@ -106,18 +108,21 @@ export function ModelProviderDetail({ id }: { id: string }) {
                 {connections.data?.map(c => <option key={c.id} value={c.id}>{c.name}{!c.enabled ? "（已停用）" : ""}</option>)}
               </select></label></div>
             {connections.error && <p className="form-error">{connections.error}<button type="button" className="secondary" onClick={connections.reload}>重试</button></p>}
-            <ModelConfigFields value={form} change={setForm} platform={selected?.platform} apiProtocol={selected?.api_protocol} />
+            <ModelConfigFields value={form} change={setForm} platform={selected?.platform} apiProtocol={form.chat_protocol} />
             <label className="provider-enabled"><input type="checkbox" checked={form.enabled}
               onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用模型</label>
           </fieldset>
-          <details className="model-advanced"><summary>参数验证</summary>
+          {form.supports_chat && <details className="model-advanced"><summary>参数验证</summary>
             <ThinkingDiagnostics id={provider.id} version={provider.version} connectionId={selected?.id ?? provider.connection_id} connectionVersion={selected?.version ?? provider.connection_version}
               thinkingVersion={provider.thinking_version ?? 0} thinking={form.thinking} maxOutput={form.max_output_tokens} dirty={dirty} />
-          </details></Tabs.Content>
+          </details>}</Tabs.Content>
           <Tabs.Content value="pricing">
             <p className="pricing-description">修改影响后续新调用，既有消费不变。免费请明确填写 0。</p>
-            <PolicyTable name="模型基准价" policies={form.policies} busy={busy} requirePrices={form.enabled}
-              update={(price, patch) => setForm(v => ({ ...v, policies: v.policies.map(p => p.capability === price.capability ? { ...p, ...patch } : p) }))} />
+            {form.supports_chat && <PolicyTable name="模型基准价" policies={form.policies} busy={busy} requirePrices={form.enabled}
+              update={(price, patch) => setForm(v => ({ ...v, policies: v.policies.map(p => p.capability === price.capability ? { ...p, ...patch } : p) }))} />}
+            {(form.image_config.generate || form.image_config.edit) && <fieldset className="provider-form-fields" disabled={busy}>
+              <ImageConfigFields value={form.image_config} change={image_config => setForm(value => ({ ...value, image_config }))} />
+            </fieldset>}
           </Tabs.Content>
         </Tabs.Root>
         <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : "已保存"}</span>

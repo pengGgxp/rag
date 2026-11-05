@@ -5,6 +5,7 @@ import { Check, ChevronRight, CircleAlert, CircleDashed, Download, FileText, Loa
 import { Motion } from "../components/ui/motion";
 import { API_URL, ApiError, downloadFile, request } from "./api";
 import Link from "next/link";
+import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
 
 export type SavedDocument = {
   save_id: string; document_id: string; knowledge_base_id: string; filename: string;
@@ -19,6 +20,7 @@ export type ConversationActivityItem = {
   status: "waiting" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
+  image_task?: ImageTaskResult;
 };
 
 function SavedDocumentResult({ initial, onUpdate, showStatus }: { initial: SavedDocument; onUpdate: (value: SavedDocument) => void; showStatus: boolean }) {
@@ -86,8 +88,12 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
   const [userExpanded, setUserExpanded] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const [savedResults, setSavedResults] = useState<Record<string, SavedDocument>>({});
+  const [imageResults, setImageResults] = useState<Record<string, ImageTaskResult>>({});
+  const updateImage = useCallback((value: ImageTaskResult) => setImageResults(old => ({ ...old, [value.task_id]: value })), []);
   const updateSaved = useCallback((value: SavedDocument) => setSavedResults(old => ({ ...old, [value.save_id]: value })), []);
   items = items.map(item => {
+    const image = item.image_task && (imageResults[item.image_task.task_id] || item.image_task);
+    if (image) return { ...item, summary: image.summary, status: (!image.terminal ? "running" : image.status === "uncertain" ? "uncertain" : ["failed", "save_failed"].includes(image.status) ? "failed" : image.status === "cancelled" ? "cancelled" : "completed") as ConversationActivityItem["status"] };
     const saved = item.saved_document && (savedResults[item.saved_document.save_id] || item.saved_document);
     return saved ? { ...item, summary: saved.summary,
       status: (saved.document_status === "failed" || saved.document_status === "deleted" ? "failed"
@@ -102,10 +108,10 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
   const cancelled = items.some(item => item.status === "cancelled");
   const single = items.length === 1 ? items[0] : null;
   const headline = single
-    ? `${single.label}${single.saved_document ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
-    : finished
+    ? `${single.label}${single.saved_document || single.image_task ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
+    : current ? current.summary || current.label : finished
     ? cancelled ? `已停止 · ${items.length} 项活动` : failed ? `${items.length} 项活动 · ${failed} 项失败` : `已完成 ${items.length} 项活动`
-    : current?.label ?? "等待下一步";
+    : "等待下一步";
   return <div className="conversation-activity">
     <button type="button" className="activity-toggle" aria-expanded={expanded}
       aria-label={`${expanded ? "收起" : "展开"}执行活动`}
@@ -121,6 +127,7 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
     </button>
     {items.filter(item => item.saved_document).map(item => <SavedDocumentResult key={item.saved_document!.save_id}
       initial={item.saved_document!} onUpdate={updateSaved} showStatus={items.length > 1} />)}
+    {items.filter(item => item.image_task).map(item => <ImageTaskActivity key={item.image_task!.task_id} initial={item.image_task!} onUpdate={updateImage} showStatus={items.length > 1} />)}
     {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
       {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
         href={`${API_URL}/resources/${file.id}/download?version=${file.version}`} download

@@ -20,7 +20,7 @@ Issue #51，关联 #41、#44、#49。当前开发版直接切换，不提供迁�
 - 模型基本设置新增“支持图片输入”，默认关闭，管理员按实际能力显式开启；
   Chat Completions 与 Responses 都遵守该能力，不按模型名称推断。对话附件见
   [图片与文件问答](chat-attachments.md)（Issue #56）。
-- 新增时先选 OpenAI Chat Completions 或 OpenAI Responses，之后才填写其他信息。
+- 新增时先选新模型默认协议（Chat Completions、Responses、Anthropic 或 Gemini），之后才填写其他信息。
   协议、流式及续传约定见 [调用类型](model-api-protocols.md)（Issue #52）。
 
 ## 接口与可靠性
