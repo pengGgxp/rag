@@ -12,3 +12,10 @@
 - scripts/check-resources.js 通过：搜索、上传、预览、删除、对话选用与移除、viewer/editor 权限、超额禁用及横向溢出。
 - 修复选择弹窗 Escape 关闭后焦点未恢复的问题，已验证返回附件按钮。
 - 前端生产构建及 TypeScript 通过；git diff --check 通过。本次尚未部署线上。
+
+## 线上发布
+
+- 2026-11-05 通过 XTerminal 发布 939d08c，仅重建并更新 Web，无数据库迁移。
+- 备份：/data1/rag-releases/resource-ui-939d08c，保留源码及原 Web 镜像。
+- 服务器构建成功，公网 /resources 返回 200、/api/health 正常；公网浏览器验证新样式已加载。受保护界面的视觉验收沿用本地隔离账号截图，未借用线上用户会话。
+- API、Worker、执行器和数据服务容器 ID 保持不变。
