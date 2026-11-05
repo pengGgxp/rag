@@ -16,6 +16,7 @@ from .models import LLMProviderConfig, ModelBillingSettings, ModelConnection, Si
 from .site_auth import site_admin
 from .site_audit import record
 from .thinking import ThinkingConfig, public_capability
+from .model_capabilities import ChatProtocol, ImageConfig
 
 router = APIRouter(prefix="/site/admin/llm-providers", tags=["site-admin"])
 selection_router = APIRouter(tags=["models"])
@@ -41,6 +42,9 @@ class SiteProviderInput(BaseModel):
     policies: list[ModelPrice] | None = Field(default=None, max_length=3)
     enabled: bool = False
     supports_images: bool = Field(default=False, strict=True)
+    supports_chat: bool = True
+    chat_protocol: ChatProtocol | None = None
+    image_config: ImageConfig = Field(default_factory=ImageConfig)
     version: int = Field(default=0, ge=0)
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
     context_capacity: int | None = Field(default=None, ge=1024, le=100_000_000, strict=True)
@@ -94,7 +98,9 @@ def read_provider(db, row):
     return {"id": str(row.id), "key": row.key, "name": row.name, "model": row.model,
         "connection_id": str(row.connection_id), "connection_name": connection.name if connection else "",
         "connection_version": connection.version if connection else 0,
-        "api_protocol": connection.api_protocol if connection else "chat_completions",
+        "api_protocol": row.chat_protocol,
+        "chat_protocol": row.chat_protocol, "supports_chat": row.supports_chat,
+        "image_config": row.image_config,
         "platform": connection.platform if connection else "custom", "enabled": row.enabled,
         "version": row.version,
         "supports_images": row.supports_images,
@@ -114,7 +120,7 @@ def apply_provider(db, row, payload):
     from .llm_responses import validate_thinking
     from .thinking import select_thinking
     try:
-        validate_thinking(connection.api_protocol, select_thinking(payload.thinking.model_dump(), 0))
+        validate_thinking(payload.chat_protocol or connection.api_protocol, select_thinking(payload.thinking.model_dump(), 0))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     row.connection_id, row.name, row.model = connection.id, payload.name.strip(), payload.model.strip()
@@ -122,6 +128,9 @@ def apply_provider(db, row, payload):
         raise HTTPException(422, "名称和模型不能为空")
     row.context_capacity, row.max_output_tokens = payload.context_capacity, payload.max_output_tokens
     row.supports_images = payload.supports_images
+    row.chat_protocol = payload.chat_protocol or connection.api_protocol
+    row.supports_chat = payload.supports_chat
+    row.image_config = payload.image_config.model_dump(mode="json")
     if db.scalar(select(SiteModelProvider.id).where(SiteModelProvider.connection_id == connection.id,
             SiteModelProvider.model == row.model, SiteModelProvider.id != row.id)):
         raise HTTPException(422, f"该连接已配置模型 {row.model}")
@@ -130,7 +139,9 @@ def apply_provider(db, row, payload):
         if len(prices) != len(payload.policies):
             raise HTTPException(422, "模型价格项目重复")
         row.prices = prices
-    if payload.enabled and not complete(row.prices):
+    if payload.enabled and not payload.supports_chat and not (payload.image_config.generate or payload.image_config.edit):
+        raise HTTPException(422, "请至少配置一项模型能力")
+    if payload.enabled and payload.supports_chat and not complete(row.prices):
         raise HTTPException(422, "启用前请补齐三项模型价格")
     if payload.enabled and (not connection.enabled or not connection.encrypted_api_key):
         raise HTTPException(422, "请先启用并完善供应商连接")
@@ -242,6 +253,8 @@ def delete_global(identifier: UUID, payload: VersionInput, db=Depends(get_db), a
 
 
 def unavailable_reason(db, provider, binding, shared):
+    if not provider.supports_chat:
+        return "not_chat_model"
     if not provider.enabled:
         return "model_disabled"
     connection = connection_for(db, provider, refresh=True)

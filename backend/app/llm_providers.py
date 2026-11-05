@@ -74,7 +74,7 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
                               thinking_option_id, thinking_config_version)
     from .llm_responses import validate_thinking
     try:
-        validate_thinking(connection.api_protocol, thinking)
+        validate_thinking(shared.chat_protocol, thinking)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     try:
@@ -88,7 +88,7 @@ def request_provider_config(db, workspace_id, site_provider_id, thinking_option_
         provider_name=shared.name, site_provider_id=str(shared.id), thinking=thinking,
         context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
         config_version=shared.version, connection_id=str(connection.id), connection_version=connection.version,
-        api_protocol=connection.api_protocol, supports_images=shared.supports_images)
+        api_protocol=shared.chat_protocol, supports_images=shared.supports_images)
 
 
 @site_router.get("")

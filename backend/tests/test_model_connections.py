@@ -175,17 +175,17 @@ def test_explicit_protocol_saved_frozen_validated_and_not_public(accounts, monke
         "thinking": effort("openai")}).status_code == 409
     assert chosen.api_protocol == "responses"
     assert llm_providers.request_provider_config(db, UUID(identity["workspace_id"]),
-        UUID(configured["id"])).api_protocol == "chat_completions"
+        UUID(configured["id"])).api_protocol == "responses"
     db.commit()
     public = client.get("/models/available").text
     assert "api_protocol" not in public and "base_url" not in public and "secret" not in public
     preview = client.post(f"/site/admin/llm-providers/{configured['id']}/thinking/preview", json={
         "version": configured["version"], "thinking": effort("openai"), "max_output_tokens": 128})
-    assert preview.status_code == 200 and preview.json()["parameters"]["reasoning_effort"] == "high"
+    assert preview.status_code == 200 and preview.json()["parameters"]["reasoning"] == {"effort": "high"}
     assert client.put(path, json={**payload, "version": 1}).status_code == 409
 
 
-def test_protocol_change_rejects_incompatible_existing_models(accounts, monkeypatch):
+def test_connection_default_change_preserves_existing_model_protocol(accounts, monkeypatch):
     from test_thinking import effort
     client, db, _ = setup_site(accounts, monkeypatch)
     c = connection(client)
@@ -195,5 +195,6 @@ def test_protocol_change_rejects_incompatible_existing_models(accounts, monkeypa
     assert response.status_code == 201
     changed = client.put(path, json={"name": c["name"], "base_url": c["base_url"],
         "api_protocol": "responses", "version": 1})
-    assert changed.status_code == 422 and "model-a" in changed.text
-    assert client.get(path).json()["api_protocol"] == "chat_completions"
+    assert changed.status_code == 200
+    assert client.get(path).json()["api_protocol"] == "responses"
+    assert client.get(f"/site/admin/llm-providers/{response.json()[0]['id']}").json()["chat_protocol"] == "chat_completions"

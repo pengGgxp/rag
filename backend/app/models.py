@@ -137,10 +137,11 @@ class CreditLedgerEntry(Base):
 
 class ModelConnection(Base):
     __tablename__ = "model_connections"
-    __table_args__ = (CheckConstraint("api_protocol IN ('chat_completions', 'responses')",
+    __table_args__ = (CheckConstraint("api_protocol IN ('chat_completions', 'responses', 'anthropic', 'gemini')",
                                      name="ck_model_connection_protocol"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120))
+    website_url: Mapped[str] = mapped_column(Text, default="", server_default="")
     platform: Mapped[str] = mapped_column(String(30), default="custom")
     api_protocol: Mapped[str] = mapped_column(String(30), default="chat_completions",
                                              server_default="chat_completions")
@@ -158,6 +159,9 @@ class SiteModelProvider(Base):
     __table_args__ = (UniqueConstraint("connection_id", "model", name="uq_connection_model"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     connection_id: Mapped[UUID] = mapped_column(ForeignKey("model_connections.id"), index=True)
+    chat_protocol: Mapped[str] = mapped_column(String(30), default="chat_completions", server_default="chat_completions")
+    supports_chat: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    image_config: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     key: Mapped[str] = mapped_column(String(100), unique=True)
     name: Mapped[str] = mapped_column(String(120))
     model: Mapped[str] = mapped_column(String(200))
@@ -188,6 +192,40 @@ class ThinkingTest(Base):
     status: Mapped[str] = mapped_column(String(20), default="running")
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImageModelSettings(Base):
+    __tablename__ = "image_model_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    generate_model_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True)
+    edit_model_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ImageTask(Base):
+    __tablename__ = "image_tasks"
+    __table_args__ = (UniqueConstraint("workspace_id", "actor_user_id", "idempotency_key", name="uq_image_task_request"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    model_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
+    session_hash: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    encrypted_credentials: Mapped[str] = mapped_column(Text)
+    held_credits: Mapped[Decimal] = mapped_column(Numeric(24, 4))
+    charged_credits: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    settled: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    upstream_request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    outputs: Mapped[list] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class LLMProviderConfig(Base):

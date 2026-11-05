@@ -45,11 +45,16 @@ class TestInput(BaseModel):
 
 def parameter_preview(config):
     try:
-        payload = OpenAICompatibleChatProvider(config=config)._payload([], stream=True)
+        provider = OpenAICompatibleChatProvider(config=config)
+        if config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import request as native_request
+            payload = native_request(provider, [], streaming=True)[2]
+        else:
+            payload = provider._payload([], stream=True)
     except LLMConfigurationError as exc:
         raise HTTPException(422, str(exc)) from None
     allowed = {"thinking", "reasoning_effort", "enable_thinking", "thinking_budget",
-        "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "stream", "stream_options"}
+        "max_tokens", "max_completion_tokens", "max_output_tokens", "reasoning", "stream", "stream_options", "generationConfig"}
     return {key: value for key, value in payload.items() if key in allowed}
 
 
@@ -60,7 +65,7 @@ def preview(identifier: UUID, payload: PreviewInput, db=Depends(get_db), actor=D
     connection = lock_connection(db, payload.connection_id or row.connection_id, payload.connection_version)
     config = ChatProviderConfig("", "", row.model,
         thinking=select_thinking(payload.thinking.model_dump(), row.thinking_version, payload.option_id),
-        max_output_tokens=payload.max_output_tokens, api_protocol=connection.api_protocol)
+        max_output_tokens=payload.max_output_tokens, api_protocol=row.chat_protocol)
     return {"parameters": parameter_preview(config), "version": row.version,
         "thinking_version": row.thinking_version}
 

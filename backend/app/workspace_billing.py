@@ -102,7 +102,7 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
         if shared and provider_id is not None:
             result[key].update(connection_id=str(provider.connection_id),
                                connection_version=connection.version if connection else 0,
-                               api_protocol=connection.api_protocol if connection else None)
+                               api_protocol=provider.chat_protocol)
         if valid:
             result[key]["credits_per_unit"] = normalized.model_dump()["credits_per_unit"]
     return result

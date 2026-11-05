@@ -180,6 +180,7 @@ def test_conversation_tools_billing_and_history_use_responses(client, monkeypatc
     selected = db.get(SiteModelProvider, UUID(model_id(http)))
     connection = db.get(ModelConnection, selected.connection_id)
     connection.api_protocol = "responses"
+    selected.chat_protocol = "responses"
     # Keep this test on the existing price source, exercise both settlement algorithms.
     db.add(ModelBillingSettings(id=1, enabled=metered, shared_pricing_enabled=False))
     db.commit()

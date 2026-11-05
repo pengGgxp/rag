@@ -25,6 +25,10 @@ def endpoint(url, protocol):
 
 
 def validate_thinking(protocol, thinking):
+    if protocol == "chat_completions" and thinking.adapter in ("anthropic", "gemini"):
+        raise ValueError("原生思考适配器需要对应的原生对话协议")
+    if protocol in ("anthropic", "gemini") and thinking.adapter not in ("none", protocol):
+        raise ValueError("原生协议不能使用其他供应商的思考参数")
     if protocol == "responses" and thinking.adapter not in ("none", "openai"):
         raise ValueError("Responses 调用类型仅支持 OpenAI 思考适配器，请调整模型思考配置")
 

@@ -21,6 +21,8 @@ PLATFORMS = [
     {"id": "deepseek", "name": "DeepSeek", "base_url": "https://api.deepseek.com", "adapter": "deepseek"},
     {"id": "bailian", "name": "阿里云百炼", "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "adapter": "bailian"},
     {"id": "openai", "name": "OpenAI", "base_url": "https://api.openai.com/v1", "adapter": "openai"},
+    {"id": "anthropic", "name": "Anthropic", "base_url": "https://api.anthropic.com/v1", "adapter": "none"},
+    {"id": "gemini", "name": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta", "adapter": "none"},
     {"id": "custom", "name": "自定义兼容接口", "base_url": "", "adapter": "none"},
 ]
 
@@ -28,8 +30,9 @@ PLATFORMS = [
 class ConnectionInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
-    platform: Literal["deepseek", "bailian", "openai", "custom"] = "custom"
-    api_protocol: Literal["chat_completions", "responses"]
+    website_url: str = Field(default="", max_length=1000)
+    platform: Literal["deepseek", "bailian", "openai", "anthropic", "gemini", "custom"] = "custom"
+    api_protocol: Literal["chat_completions", "responses", "anthropic", "gemini"]
     base_url: str = Field(min_length=1, max_length=1000)
     api_key: SecretStr | None = Field(default=None, min_length=1)
     timeout_seconds: int = Field(default=60, ge=1, le=600, strict=True)
@@ -70,11 +73,12 @@ def read_connection(db, row):
     from .shared_providers import unavailable_reason
     models = db.scalars(select(SiteModelProvider).where(SiteModelProvider.connection_id == row.id)).all()
     return {"id": str(row.id), "name": row.name, "platform": row.platform,
-        "api_protocol": row.api_protocol,
+        "api_protocol": row.api_protocol, "website_url": row.website_url,
         "base_url": row.base_url, "timeout_seconds": row.timeout_seconds,
         "has_api_key": bool(row.encrypted_api_key), "enabled": row.enabled, "version": row.version,
         "model_count": len(models), "available_model_count": sum(
-            unavailable_reason(db, model, None, True) is None for model in models)}
+            unavailable_reason(db, model, None, True) is None or bool(model.enabled and row.enabled and row.encrypted_api_key
+                and (model.image_config.get("generate") or model.image_config.get("edit"))) for model in models)}
 
 
 @router.get("/platforms")
@@ -113,9 +117,11 @@ def apply_connection(row, payload):
     if not payload.name.strip():
         raise HTTPException(422, "请填写供应商名称")
     row.name, row.platform = payload.name.strip(), payload.platform
+    row.website_url = validate_base_url(payload.website_url) if payload.website_url else ""
     row.base_url = validate_base_url(payload.base_url)
     from .llm_responses import endpoint
-    endpoint(row.base_url, payload.api_protocol)
+    if payload.api_protocol in ("chat_completions", "responses"):
+        endpoint(row.base_url, payload.api_protocol)
     row.api_protocol = payload.api_protocol
     row.timeout_seconds, row.enabled = payload.timeout_seconds, payload.enabled
     if payload.api_key:
@@ -145,7 +151,7 @@ def update_connection(identifier: UUID, payload: ConnectionInput, db=Depends(get
     from .thinking import select_thinking
     for model in db.scalars(select(SiteModelProvider).where(SiteModelProvider.connection_id == identifier)):
         try:
-            validate_thinking(payload.api_protocol, select_thinking(model.thinking_config, model.thinking_version))
+            validate_thinking(model.chat_protocol, select_thinking(model.thinking_config, model.thinking_version))
         except ValueError as exc:
             raise HTTPException(422, f"{model.name}：{exc}") from None
     apply_connection(row, payload)
@@ -167,13 +173,17 @@ def delete_connection(identifier: UUID, payload: ConnectionVersion, db=Depends(g
     db.commit()
 
 
-def discover_models(url, secret, timeout):
+def discover_models(url, secret, timeout, protocol="chat_completions"):
     # Bounded read; credentials stay on the server and are never forwarded on redirects.
     try:
         deadline = monotonic() + min(timeout, 10)
         from .llm_responses import api_root
-        with httpx.stream("GET", f"{api_root(url)}/models",
-                headers={"Authorization": f"Bearer {secret}"}, timeout=min(timeout, 10),
+        root = api_root(url)
+        if protocol == "gemini" and not root.endswith(("/v1", "/v1beta")):
+            root += "/v1beta"
+        headers = {"x-goog-api-key": secret} if protocol == "gemini" else {"x-api-key": secret, "anthropic-version": "2023-06-01"} if protocol == "anthropic" else {"Authorization": f"Bearer {secret}"}
+        with httpx.stream("GET", f"{root}/models",
+                headers=headers, timeout=min(timeout, 10),
                 follow_redirects=False) as response:
             if response.status_code != 200:
                 raise HTTPException(502, "未能获取模型列表，请检查连接或手动添加模型")
@@ -185,11 +195,12 @@ def discover_models(url, secret, timeout):
                 if len(raw) > 1024 * 1024:
                     raise HTTPException(502, "模型列表过大，请手动添加模型")
         data = json.loads(raw)
-        entries = data.get("data") if isinstance(data, dict) else None
+        entries = data.get("models" if protocol == "gemini" else "data") if isinstance(data, dict) else None
         if not isinstance(entries, list):
             raise ValueError("invalid model list")
-        return sorted({item["id"].strip() for item in entries if isinstance(item, dict)
-            and isinstance(item.get("id"), str) and 0 < len(item["id"].strip()) <= 200})[:1000]
+        field = "name" if protocol == "gemini" else "id"
+        return sorted({item[field].strip().removeprefix("models/") for item in entries if isinstance(item, dict)
+            and isinstance(item.get(field), str) and 0 < len(item[field].strip()) <= 200})[:1000]
     except (httpx.HTTPError, ValueError, TypeError):
         raise HTTPException(502, "未能获取模型列表，请检查连接或手动添加模型") from None
 
@@ -206,7 +217,7 @@ def discover(identifier: UUID, payload: ConnectionVersion, db=Depends(get_db), a
     url, timeout, version = row.base_url, row.timeout_seconds, row.version
     db.commit()
     try:
-        models = discover_models(url, secret, timeout)
+        models = discover_models(url, secret, timeout, row.api_protocol) if row.api_protocol in ("anthropic", "gemini") else discover_models(url, secret, timeout)
     except HTTPException:
         record(db, actor, "model_connections.discovered", "model_connection", identifier, result="failure")
         db.commit()

@@ -10,6 +10,7 @@ EFFORTS = {
     "deepseek": ("disabled", "low", "high", "max"),
     "openai": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
     "bailian": ("low", "medium", "high"),
+    "gemini": ("minimal", "low", "medium", "high"),
 }
 
 
@@ -23,7 +24,7 @@ class ThinkingOption(BaseModel):
 class ThinkingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["unconfigured", "unsupported", "fixed", "toggle", "effort", "budget"] = "unconfigured"
-    adapter: Literal["none", "deepseek", "bailian", "openai"] = "none"
+    adapter: Literal["none", "deepseek", "bailian", "openai", "anthropic", "gemini"] = "none"
     options: list[ThinkingOption] = Field(default_factory=list, max_length=10)
     default_option_id: str | None = None
     budget_min: int = Field(default=1, ge=1, le=2_147_483_647, strict=True)
@@ -40,6 +41,8 @@ class ThinkingConfig(BaseModel):
             return self
         if self.adapter == "none":
             raise ValueError("请选择接口适配器")
+        if self.adapter == "anthropic" and self.kind not in ("toggle", "budget"):
+            raise ValueError("Anthropic 思考请选择开关或 Token 预算")
         if self.stream_only and self.adapter != "bailian":
             raise ValueError("仅百炼适配器支持仅流式模式")
         if self.always_thinking and (self.adapter != "bailian" or self.kind == "toggle"):
@@ -50,8 +53,8 @@ class ThinkingConfig(BaseModel):
             return self
         if self.adapter == "openai" and self.kind != "effort":
             raise ValueError("OpenAI 适配器仅支持等级或固定思考")
-        if self.kind == "budget" and self.adapter != "bailian":
-            raise ValueError("预算预设仅适用于百炼适配器")
+        if self.kind == "budget" and self.adapter not in ("bailian", "anthropic", "gemini"):
+            raise ValueError("此适配器不支持思考预算")
         ids = [option.id for option in self.options]
         values = [option.value for option in self.options]
         if not ids or len(ids) != len(set(ids)) or len(values) != len(set(values)):
@@ -87,6 +90,18 @@ class ThinkingSelection:
     def parameters(self):
         if self.adapter == "none":
             return {}
+        if self.adapter == "anthropic":
+            return {"thinking": {"type": "disabled"}} if self.value == "disabled" else {
+                "thinking": {"type": "enabled", "budget_tokens": self.value if self.kind == "budget" else 1024}}
+        if self.adapter == "gemini":
+            config = {"includeThoughts": self.value != "disabled"}
+            if self.kind == "budget":
+                config["thinkingBudget"] = self.value
+            elif self.kind == "effort":
+                config["thinkingLevel"] = str(self.value).upper()
+            elif self.value == "disabled":
+                config["thinkingBudget"] = 0
+            return {"thinkingConfig": config}
         if self.adapter == "deepseek":
             result = {"thinking": {"type": "disabled" if self.value == "disabled" else "enabled"}}
             if self.kind == "effort" and self.value != "disabled":
@@ -107,7 +122,7 @@ class ThinkingSelection:
 
     @property
     def displays_reasoning(self):
-        return self.adapter in ("deepseek", "bailian") and self.kind != "unsupported"
+        return self.adapter in ("deepseek", "bailian", "anthropic", "gemini") and self.kind != "unsupported"
 
     def snapshot(self):
         if self.kind in ("unconfigured", "unsupported"):

@@ -107,7 +107,7 @@ class ChatProviderConfig:
 
     @property
     def continuation_required(self):
-        return self.api_protocol == "responses" or self.thinking.continuation_required
+        return self.api_protocol in ("responses", "anthropic", "gemini") or self.thinking.continuation_required
 
     @property
     def llm_configured(self) -> bool:
@@ -162,6 +162,9 @@ class OpenAICompatibleChatProvider:
             assert_available(self.config.site_provider_id, self.config.connection_id)
 
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
+        if self.config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import request
+            return request(self, messages, tools, tool_choice, temperature, stream)[2]
         if self.config.api_protocol == "responses":
             from .llm_responses import payload
             return payload(self.config, messages, temperature, tools=tools, tool_choice=tool_choice, stream=stream,
@@ -279,6 +282,12 @@ class OpenAICompatibleChatProvider:
     def complete(self, messages: list[dict[str, str]], temperature: float = 0.0) -> str:
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import complete
+            response = complete(self, messages, temperature=temperature)
+            if not response.content:
+                raise LLMProviderError("模型未返回正文")
+            return response.content
         if self.config.api_protocol == "responses":
             from .llm_responses import complete
             response = complete(self, messages, temperature=temperature)
@@ -314,6 +323,9 @@ class OpenAICompatibleChatProvider:
         """
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import complete
+            return complete(self, messages, tools, tool_choice)
         if self.config.api_protocol == "responses":
             from .llm_responses import complete
             return complete(self, messages, tools, tool_choice)
@@ -367,6 +379,10 @@ class OpenAICompatibleChatProvider:
         from httpx_sse import EventSource
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import stream
+            yield from stream(self, messages, tools, tool_choice)
+            return
         if self.config.api_protocol == "responses":
             from .llm_responses import stream
             yield from stream(self, messages, tools, tool_choice)
@@ -468,6 +484,11 @@ class OpenAICompatibleChatProvider:
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.reset_observation()
         self.check_available()
+        if self.config.api_protocol in ("anthropic", "gemini"):
+            from .llm_native import stream_text
+            async for text in stream_text(self, messages):
+                yield text
+            return
         if self.config.api_protocol == "responses":
             from .llm_responses import stream_text
             async for text in stream_text(self, messages):
