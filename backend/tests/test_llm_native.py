@@ -72,3 +72,25 @@ def test_native_thinking_budget_uses_native_parameters(protocol):
         assert "temperature" not in body
     else:
         assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 2048, "includeThoughts": True}
+
+
+def test_async_native_stream_closes_transport_when_cancelled(monkeypatch):
+    import asyncio
+    import httpx
+    from app import llm_native
+    closed = []
+    class Wire(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}\n\n'
+            await asyncio.sleep(60)
+        async def aclose(self):
+            closed.append(True)
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(llm_native.httpx, "AsyncClient", lambda **kwargs: original_client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Wire())), **kwargs))
+    async def consume():
+        stream = llm_native.stream_text(provider("gemini"), [{"role": "user", "content": "hello"}])
+        assert await anext(stream) == "hello"
+        await stream.aclose()
+    asyncio.run(consume())
+    assert closed == [True]

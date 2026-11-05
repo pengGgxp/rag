@@ -392,7 +392,7 @@ def chat_router(get_db, retrieve):
         from .model_connections import connection_for
         connection = connection_for(db, shared)
         config = ChatProviderConfig("", "", shared.model, site_provider_id=str(shared.id),
-            connection_id=str(connection.id), api_protocol=connection.api_protocol,
+            connection_id=str(connection.id), api_protocol=shared.chat_protocol,
             supports_images=shared.supports_images,
             context_capacity=shared.context_capacity, max_output_tokens=shared.max_output_tokens,
             thinking=select_thinking(shared.thinking_config, shared.thinking_version,
@@ -846,7 +846,7 @@ def chat_router(get_db, retrieve):
                         if name == "compaction":
                             data = {**data, "kind": "compaction", "name": "compact_context"}
                         summary = {
-                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary", "files", "saved_document",
+                            key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary", "files", "saved_document", "image_task",
                                                        "skill_id", "skill_name", "skill_version")
                             if key in data
                         }

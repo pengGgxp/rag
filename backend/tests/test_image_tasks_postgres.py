@@ -1,0 +1,73 @@
+"""Admission and settlement races against a disposable migrated PostgreSQL database."""
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from decimal import Decimal
+from threading import Barrier, Lock
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app import image_adapters, image_tasks, llm_providers, workspace_billing, workspace_files
+from app.auth import Access, digest, now
+from app.credits import ensure_account
+from app.image_tasks import ImageInput
+from app.model_capabilities import ImageConfig
+from app.models import CreditAccount, ImageTask, LoginSession, Membership, ModelConnection, SiteModelProvider, UsageEvent, User, Workspace, WorkspaceFile
+from test_auth_postgres import auth_postgres
+from test_image_tasks import png
+
+
+def test_concurrent_image_admission_and_worker_claim_settle_once(auth_postgres, monkeypatch):
+    engine = auth_postgres
+    with Session(engine) as db:
+        user = User(email=f"image-{uuid4().hex}@example.com", name="Image test", email_verified_at=now())
+        workspace = Workspace(name="Image test")
+        db.add_all([user, workspace]); db.flush()
+        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
+        token = digest(uuid4().hex)
+        db.add(LoginSession(token_hash=token, user_id=user.id, workspace_id=workspace.id,
+            csrf_token="test-only", expires_at=now()+timedelta(hours=1)))
+        connection = ModelConnection(name="Synthetic image", base_url="https://example.invalid/v1", encrypted_api_key="enc:key")
+        db.add(connection); db.flush()
+        config = ImageConfig.model_validate({"generate": True, "specs": [{"operation": "generate", "size": "1024x1024", "quality": "standard", "credits_per_image": "3.25"}]})
+        model = SiteModelProvider(key=uuid4().hex, name="Synthetic image", model="synthetic", connection_id=connection.id,
+            supports_chat=False, enabled=True, image_config=config.model_dump(mode="json"))
+        db.add(model); db.flush()
+        ensure_account(db, workspace.id, initial=100)
+        db.commit()
+        uid, wid, mid, cid = user.id, workspace.id, model.id, connection.id
+    monkeypatch.setattr(image_tasks, "dispatch", lambda _: None)
+    monkeypatch.setattr(image_tasks, "selected_model", lambda db, _: (db.get(SiteModelProvider, mid), db.get(ModelConnection, cid), config))
+    monkeypatch.setattr(workspace_billing, "context_for_workspace", lambda db, identifier: {"multiplier_percent": 125, "workspace_id": str(identifier)})
+    monkeypatch.setattr(llm_providers, "_encrypt_api_key", lambda value: "enc:"+value)
+    monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
+    access = Access(uid, wid, "admin", token)
+    barrier = Barrier(4)
+    key = uuid4().hex
+    def submit(_):
+        with Session(engine) as db:
+            barrier.wait(timeout=10)
+            return image_tasks.create(db, access, ImageInput(prompt="synthetic"), key)["task_id"]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        identifiers = list(pool.map(submit, range(4)))
+    assert len(set(identifiers)) == 1
+    calls, uploaded, lock = [], {}, Lock()
+    def generate(*_):
+        with lock:
+            calls.append(1)
+        return [(png(), "image/png")], "synthetic-request", {}
+    monkeypatch.setattr(image_adapters, "generate", generate)
+    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, mime: uploaded.update({key: stream.read()}))
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: image_tasks.run(identifiers[0], factory), range(4)))
+    assert len(calls) == 1
+    with Session(engine) as db:
+        task = db.get(ImageTask, UUID(identifiers[0]))
+        assert task.status == "completed", task.error
+        assert task.charged_credits == Decimal("4.0625")
+        assert db.get(CreditAccount, wid).balance == Decimal("95.9375")
+        assert len(db.scalars(select(UsageEvent).where(UsageEvent.request_id == task.id)).all()) == 1
+        assert len(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == wid)).all()) == 1
+        assert len(uploaded) == 1

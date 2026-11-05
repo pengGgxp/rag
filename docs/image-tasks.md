@@ -11,6 +11,7 @@
   Gemini 的尺寸/质量字段分别映射 aspectRatio/imageSize；不自动翻译或更换规格。
 - `GET/PUT /site/admin/image-models` 管理默认模型并校验配置版本；生成/编辑可以分别关闭。
 - `POST /image-tasks` 创建任务，幂等键为 UUID；`GET /image-tasks/{id}` 返回状态和资源。
+  `GET /image-tasks/by-request/{key}` 仅查询本人当前工作区原请求，便于付费测试断线及刷新恢复。
   cancel 只停止未开始工作或标记取消；retry-save 仅重试资源交付，不再调用上游生成。
 - 内置工具为 generate_image、edit_image、get_image_task。当前对话不支持工具或后台未配置时不注入。
   相同运行请求和参数通过持久化摘要命中同一任务。工具没有供应商或所有者参数。
@@ -26,6 +27,7 @@
 这会带来短期数据库容量开销；save_failed 任务需及时恢复，不能把此暂存当作另一份永久资源。
 Worker 启动和可见任务状态查询可恢复 queued/saving；running 超时进入人工核对。
 未确认的任务不能重新生成，管理员在核实上游后通过 tasks/{id}/resolve 结算确认张数并审计。
+后台模型管理的“待核对图片任务”提供核对入口；确认需填写依据，不会再次请求上游。
 
 图片校验真实格式、字节与像素并移除元数据；结果地址仅接受固定公网 DNS 的 HTTPS 直连，
 不跟随重定向。密钥、暂存正文、上游地址和提示词不进入公开任务响应或错误日志。

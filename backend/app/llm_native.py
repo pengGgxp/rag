@@ -1,5 +1,4 @@
 """Native Messages/GenerateContent adapters for the Agent's normalized contract."""
-import asyncio
 import base64
 import json
 from copy import deepcopy
@@ -87,6 +86,8 @@ def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0,
                 body["thinking"] = {"type": "enabled", "budget_tokens": budget}
                 body.pop("temperature", None)
         if tools:
+            if body.get("thinking", {}).get("type") == "enabled" and tool_choice not in ("auto", "none"):
+                raise LLMConfigurationError("启用思考时不支持强制工具调用")
             body["tools"] = [{"name": t["function"]["name"], "description": t["function"].get("description", ""),
                               "input_schema": t["function"]["parameters"]} for t in tools]
             body["tool_choice"] = {"type": "auto" if tool_choice == "auto" else "none" if tool_choice == "none" else "any"}
@@ -248,13 +249,19 @@ def stream(provider, messages, tools=None, tool_choice="auto"):
 
 
 async def stream_text(provider, messages):
-    # Run blocking transport off the event loop while forwarding each received chunk.
-    iterator = iter(stream(provider, messages))
-    sentinel = object()
-    while True:
-        item = await asyncio.to_thread(next, iterator, sentinel)
-        if item is sentinel:
-            break
-        kind, value = item
-        if kind == "delta":
-            yield value["text"]
+    url, headers, body = request(provider, messages, streaming=True)
+    state = NativeStream(provider)
+    provider.stream_diagnostic = "sse"
+    try:
+        async with httpx.AsyncClient(timeout=provider.timeout_seconds) as client:
+            async with client.stream("POST", url, headers=headers, json=body) as response:
+                if response.status_code >= 400:
+                    raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
+                async for event in EventSource(response).aiter_sse():
+                    if event.data:
+                        for kind, value in state.feed(json.loads(event.data)):
+                            if kind == "delta":
+                                yield value["text"]
+        state.finish()
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        raise LLMProviderError("模型流式连接或响应异常，请重试") from exc

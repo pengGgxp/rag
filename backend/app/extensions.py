@@ -95,6 +95,9 @@ class ExtensionRuntime(SkillRuntime):
                 "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
                 "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
         self.versions = sorted([(row["id"], row["version"]) for row in self.skills] + list(self.mcp_tokens.items()))
+        from .image_tools import tools as image_tools
+        with factory() as db:
+            self.tools.extend(image_tools(db, access))
         from .conversation_documents import TOOLS as DOCUMENT_TOOLS
         if access.role in ("admin", "editor"):
             self.tools.extend(DOCUMENT_TOOLS)
@@ -112,6 +115,9 @@ class ExtensionRuntime(SkillRuntime):
             self.versions.sort()
 
     def label(self, name, arguments=None):
+        from .image_tools import LABELS as IMAGE_LABELS
+        if name in IMAGE_LABELS:
+            return IMAGE_LABELS[name]
         from .conversation_documents import LABELS as DOCUMENT_LABELS
         if name in DOCUMENT_LABELS:
             return DOCUMENT_LABELS[name]
@@ -129,6 +135,9 @@ class ExtensionRuntime(SkillRuntime):
     def execute(self, name, arguments, check_active=None):
         if check_active:
             check_active()
+        from .image_tools import LABELS as IMAGE_LABELS, execute as image_tool
+        if name in IMAGE_LABELS:
+            return image_tool(self, name, arguments)
         from .conversation_documents import LABELS as DOCUMENT_LABELS, execute as document_tool
         if name in DOCUMENT_LABELS:
             try:

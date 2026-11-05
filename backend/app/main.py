@@ -1082,6 +1082,9 @@ from .shared_providers import router as shared_providers_router, selection_route
 app.include_router(shared_providers_router)
 from .model_connections import router as model_connections_router
 app.include_router(model_connections_router)
+from .image_tasks import router as image_tasks_router, admin_router as image_models_router
+app.include_router(image_tasks_router)
+app.include_router(image_models_router)
 from .thinking_admin import router as thinking_admin_router
 app.include_router(thinking_admin_router)
 app.include_router(selection_router)

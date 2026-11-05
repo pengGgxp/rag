@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.signals import worker_ready
 from sqlalchemy import select
 from uuid import UUID
 from datetime import datetime, timezone
@@ -33,6 +34,23 @@ from .workspace_billing import document_snapshot
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
+
+
+@celery_app.task
+def process_image_task(identifier):
+    from .image_tasks import run
+    run(identifier)
+
+
+@celery_app.task
+def recover_image_tasks():
+    from .image_tasks import recover
+    recover()
+
+
+@worker_ready.connect
+def image_tasks_on_worker_ready(**_):
+    recover_image_tasks.delay()
 
 
 def ocr_storage(session):
