@@ -92,6 +92,7 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
                         if not block:
                             raise IOError("资源内容不完整")
                         billing.transfer_checkpoint(db, transfer, preparing=len(block))
+                        db.commit()
                         billing.transfer_checkpoint(db, transfer, sent=len(block))
                         db.commit()
                         data.extend(block)
