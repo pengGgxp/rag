@@ -18,6 +18,7 @@ import {
   UsersRound,
   FileText,
   MessageSquare,
+  Monitor,
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useAuth } from "../auth";
@@ -34,6 +35,7 @@ const navigation = [
   { href: "/admin/pricing", label: "计费管理", icon: Coins },
   { href: "/admin/payments", label: "支付设置", icon: CreditCard },
   { href: "/admin/storage", label: "文件存储", icon: HardDrive },
+  { href: "/admin/cloud-computer", label: "云电脑", icon: Monitor },
   { href: "/admin/audit", label: "站点审计", icon: ScrollText },
   { href: "/admin/auth", label: "认证与登录", icon: Settings2 },
   { href: "/admin/settings", label: "站点设置", icon: SlidersHorizontal },

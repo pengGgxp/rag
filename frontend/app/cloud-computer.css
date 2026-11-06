@@ -1,0 +1,8 @@
+.cloud-computer-panel { color: var(--text-muted, #66716b); font-size: 12px; padding: 0 12px 8px; line-height: 1.5; min-width: 0; }
+.cloud-computer-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.cloud-computer-line > span { display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
+.cloud-computer-panel .icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
+.cloud-computer-panel .text-button { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; }
+.cloud-computer-panel > a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; text-decoration: none; }
+.cloud-computer-price { color: inherit; font-size: inherit; }
+@media (prefers-reduced-motion: reduce) { .cloud-computer-panel .spin { animation: none; } }

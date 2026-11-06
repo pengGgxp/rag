@@ -44,6 +44,7 @@ import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension
 import type { ExtensionSelection } from "./extensions/extension-data";
 import { DocumentMentionMenu, type MentionDocument, type MentionMenuHandle } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
+import { CloudComputerPanel } from "./cloud-computer";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
 import { Tooltip } from "../components/ui/tooltip";
@@ -1276,6 +1277,7 @@ export function ChatWorkspace({
           follow.current = true; setLatest(false);
         }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
+          <CloudComputerPanel key={`${session.workspace_id}:${conversation?.id ?? "new"}`} conversationId={conversation?.id ?? null} workspaceId={session.workspace_id} />
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
           </div>}
