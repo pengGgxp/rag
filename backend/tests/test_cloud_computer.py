@@ -182,6 +182,7 @@ def test_initial_price_is_one_credit_and_remains_disabled():
     draft = cloud.settings_read(None)
     assert Decimal(str(draft["credits_per_minute"])) == Decimal("1")
     assert draft["enabled"] is False
+    assert draft["blocked_hosts"] == []
 
 
 def test_balance_reservation_and_cumulative_rounding(accounts, monkeypatch):

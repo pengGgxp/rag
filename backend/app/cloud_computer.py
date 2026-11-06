@@ -34,7 +34,7 @@ class Configuration(BaseModel):
     idle_seconds: int = Field(default=600, ge=60, le=1800)
     max_seconds: int = Field(default=3600, ge=300, le=3600)
     concurrency: int = Field(default=5, ge=1, le=100)
-    blocked_hosts: list[str] = Field(default_factory=lambda: ["zk.str1ct.top", "q.str1ct.top"], max_length=100)
+    blocked_hosts: list[str] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def valid(self):

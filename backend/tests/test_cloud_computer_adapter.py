@@ -21,14 +21,15 @@ def test_create_requires_network_isolation_and_connect_preserves_deadline():
         calls["connect"] = kwargs
         return sandbox
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
-    provider.config = {"template": "fake", "max_seconds": 3600, "blocked_hosts": ["zk.str1ct.top"]}
+    provider.config = {"template": "fake", "max_seconds": 3600, "blocked_hosts": []}
     provider.options = {}
     provider.sdk = SimpleNamespace(create=create, get_info=lambda *_a, **_k: info, connect=connect)
     provider.create("synthetic-session")
     config = calls["create"]
     assert config["secure"] is True and config["timeout"] == 3600
     assert config["network"]["allow_public_traffic"] is False
-    assert config["network"]["deny_out"] == PRIVATE_NETWORKS+["zk.str1ct.top"]
+    assert config["network"]["deny_out"] == PRIVATE_NETWORKS
+    assert not {"zk.str1ct.top", "q.str1ct.top"}.intersection(config["network"]["deny_out"])
     provider.connect("synthetic")
     assert 80 <= calls["connect"]["timeout"] <= 85
 
