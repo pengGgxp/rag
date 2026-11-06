@@ -20,7 +20,7 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     image_task: item.image_task,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
-      : item.status === "interrupted" ? "cancelled"
+      : item.status === "interrupted" ? "uncertain"
       : ["waiting", "running", "completed", "cancelled", "uncertain"].includes(item.status)
         ? item.status as ConversationActivityItem["status"] : "waiting",
   };

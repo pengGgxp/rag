@@ -193,7 +193,8 @@ def read(row):
         "terminal": row.ended_at is not None, "credits": str(row.charged_credits if row.ended_at else min(estimated, row.charged_credits+row.held_credits)),
         "credits_per_minute": str(row.snapshot["credits_per_minute"]), "seconds": seconds,
         "idle_ends_at": (aware(row.last_activity_at)+timedelta(seconds=row.snapshot["idle_seconds"])).isoformat() if row.status == "ready" else None,
-        "started_at": row.started_at, "ended_at": row.ended_at}
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "ended_at": row.ended_at.isoformat() if row.ended_at else None}
 
 
 @router.get("/cloud-computer/catalog")

@@ -383,6 +383,55 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     assert "不要向用户原样展示 queued、processing、ready 等内部状态码" in AGENT_SYSTEM_PROMPT
 
 
+@pytest.mark.parametrize("state", ["starting", "ready", "ended"])
+def test_cloud_file_results_reach_model_and_allow_remaining_tools(runtime, state):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from app.cloud_computer import read
+
+    timestamp = datetime(2026, 11, 6, 13, 17, 13, tzinfo=timezone.utc)
+    computer = SimpleNamespace(id=uuid4(), status=state, error=None,
+        started_at=None if state == "starting" else timestamp,
+        ended_at=timestamp if state == "ended" else None, billing_stopped_at=None,
+        last_activity_at=timestamp, charged_credits=Decimal("0"), held_credits=Decimal("20"),
+        snapshot={"credits_per_minute": "2", "max_seconds": 3600, "idle_seconds": 600})
+    completed = []
+
+    class Extensions:
+        tools = []
+        skills = []
+
+        def label(self, name, arguments):
+            return name
+
+        def execute(self, name, arguments, **kwargs):
+            completed.append(name)
+            return {"status": "completed", "cloud_computer": read(computer)}
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            if self.count == 1:
+                return ToolResponse(content=None, tool_calls=[
+                    ToolCall(id="write", name="write_file", arguments={}),
+                    ToolCall(id="run", name="run_command", arguments={}),
+                ])
+            results = [json.loads(item["content"]) for item in messages if item["role"] == "tool"]
+            assert len(results) == 2
+            for result in results:
+                value = result["cloud_computer"]
+                assert value["started_at"] == (None if state == "starting" else timestamp.isoformat())
+                assert value["ended_at"] == (timestamp.isoformat() if state == "ended" else None)
+            return ToolResponse(content="File saved.", tool_calls=[])
+
+    events = list(stream_retrieval_agent(**runtime.arguments, provider=Provider(), extensions=Extensions()))
+    assert completed == ["write_file", "run_command"]
+    assert [data["status"] for name, data in events if name == "tool_result"] == ["completed", "completed"]
+    assert any(name == "complete" for name, _ in events)
+
+
 def test_stop_between_rounds_prevents_additional_model_and_tool_calls(runtime):
     class Provider:
         count = 0

@@ -887,6 +887,7 @@ def chat_router(get_db, retrieve):
             disconnected = True
             raise
         except Exception:
+            logging.getLogger(__name__).exception("Conversation execution failed for request %s", request_id)
             final_status = "failed"
             error_detail = "本次回答未能完成，请重试"
         finally:
