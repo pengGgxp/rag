@@ -1,0 +1,55 @@
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.cloud_computer_adapter import AlibabaSandbox, LAUNCHER, MANIFEST, PRIVATE_NETWORKS
+
+
+def test_create_requires_network_isolation_and_connect_preserves_deadline():
+    calls = {}
+    started = datetime.now(timezone.utc)
+    info = SimpleNamespace(started_at=started, end_at=started+timedelta(seconds=90))
+    sandbox = SimpleNamespace(sandbox_id="synthetic", get_info=lambda: info)
+    def create(**kwargs):
+        calls["create"] = kwargs
+        return sandbox
+    def connect(identifier, **kwargs):
+        calls["connect"] = kwargs
+        return sandbox
+    provider = AlibabaSandbox.__new__(AlibabaSandbox)
+    provider.config = {"template": "fake", "max_seconds": 3600, "blocked_hosts": ["zk.str1ct.top"]}
+    provider.options = {}
+    provider.sdk = SimpleNamespace(create=create, get_info=lambda *_a, **_k: info, connect=connect)
+    provider.create("synthetic-session")
+    config = calls["create"]
+    assert config["secure"] is True and config["timeout"] == 3600
+    assert config["network"]["allow_public_traffic"] is False
+    assert config["network"]["deny_out"] == PRIVATE_NETWORKS+["zk.str1ct.top"]
+    provider.connect("synthetic")
+    assert 80 <= calls["connect"]["timeout"] <= 85
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="launcher requires the Linux bash template")
+def test_launcher_bounds_stdout_and_stderr(tmp_path):
+    launcher = tmp_path/"launcher.py"
+    launcher.write_text(LAUNCHER)
+    (tmp_path/"input.json").write_text(json.dumps({"cwd": str(tmp_path), "command": "python3 -c \"import sys; sys.stdout.write('a'*50000); sys.stderr.write('b'*50000)\""}))
+    subprocess.run([sys.executable, str(launcher), str(tmp_path)], check=True, timeout=15)
+    result = json.loads((tmp_path/"result.json").read_text())
+    assert result == {"exit_code": 0, "stdout": "a"*12000, "stderr": "b"*12000}
+    assert not (tmp_path/"stdout").exists()
+
+
+def test_manifest_excludes_dependencies_and_retains_outputs(tmp_path):
+    (tmp_path/"report.txt").write_text("synthetic")
+    for directory in ("node_modules", ".venv", "__pycache__", ".cache", ".git"):
+        path = tmp_path/directory
+        path.mkdir()
+        (path/"not-an-output.txt").write_text("dependency")
+    script = MANIFEST.replace('Path("/home/user/workspace")', f"Path({str(tmp_path)!r})")
+    result = subprocess.run([sys.executable, "-c", script], check=True, timeout=10, capture_output=True, text=True)
+    assert list(json.loads(result.stdout)) == ["report.txt"]
