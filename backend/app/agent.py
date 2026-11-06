@@ -19,6 +19,8 @@ FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "write_file", "apply_pat
 
 
 def tool_failure_summary(name, result):
+    if name in ("start_preview", "stop_preview"):
+        return result.get("preview", {}).get("summary") or result.get("error") or "预览未能启动，请检查命令和端口后重试"
     if name in ("save_to_knowledge_base", "list_writable_knowledge_bases", "get_saved_document_status"):
         return result.get("error") or "保存未完成，请确认内容和目标知识库后重试"
     if result.get("uncertain"):
@@ -54,6 +56,8 @@ AGENT_SYSTEM_PROMPT = (
     "可直接使用 run_command 在隔离环境中编写和运行命令、处理工作区文件，不要求选择或加载 Skill。"
     "资源库就是当前云电脑的工作目录，工作区文件已挂载，可直接用路径读写，无需下载、缓存或准备输入。"
     "list_files、read_file、write_file、apply_patch、delete_file 与 run_command 复用同一台云电脑；首次文件操作可启动环境，按环境存续时间计费。"
+    "用户需要交互网页时，使用 start_preview 启动监听 0.0.0.0 的 HTTP 服务并指定端口，关闭 WebSocket 热更新；只有工具返回就绪后才能给出真实预览入口。"
+    "不要用 run_command 等待网页服务退出，也不要编造 localhost 或沙箱域名给用户。修改共享文件后让用户手动刷新；stop_preview 只停止网页，不结束计费环境。"
     "用户附件中的资源路径可直接用于将图片插入文档等任务；路径不明时通过文件工具查看。资源只保留当前文件，修改和删除直接生效。"
     "同一用户和会话在环境结束前保留文件及已安装依赖；新环境仍可直接访问整个工作区当前资源目录。"
     "命令在 /home/user/workspace 运行，Skill 位于 /skills，依赖和缓存应放在工作目录之外。只有需要执行的用户任务才能启动云电脑，普通问答不要启动。"
@@ -370,7 +374,7 @@ def stream_retrieval_agent(
                     })
                     write(("tool_result", {**activity, "status": tool_results[-1]["status"],
                         "summary": tool_failure_summary(call.name, result) if tool_results[-1]["status"] in ("error", "uncertain")
-                        else result["summary"] if saved_document or image_task else saved_file_summary if output_files
+                        else result.get("summary", "预览状态已更新") if result.get("preview") else result["summary"] if saved_document or image_task else saved_file_summary if output_files
                         else f"已回查 {result['result_count']} 条消息" if call.name == "read_conversation_history"
                         else f"已读取「{result['name']}」的补充资料" if call.name == "read_skill_resource" and result.get("name")
                         else f"已读取「{result['name']}」的方法" if kind == "skill" and result.get("name")
@@ -378,6 +382,7 @@ def stream_retrieval_agent(
                         **({"files": output_files} if output_files else {}),
                         **({"saved_document": saved_document} if saved_document else {}),
                         **({"image_task": image_task} if image_task else {}),
+                        **({"preview": result["preview"]} if result.get("preview") else {}),
                         **({"skill_id": result["id"], "skill_name": result["name"], "skill_version": result["version"]}
                            if call.name in ("load_skill", "read_skill_resource") and result.get("id") else {})}))
                     check_active()

@@ -90,6 +90,9 @@ class ExtensionRuntime(SkillRuntime):
             cloud_settings = db.get(CloudSettings, 1)
             self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
         workspace_tools = tool_definitions() if self.execution_available else []
+        from .cloud_preview import TOOLS as PREVIEW_TOOLS
+        if self.execution_available and get_settings().preview_enabled:
+            workspace_tools = workspace_tools + PREVIEW_TOOLS
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
         self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
             if self.skills else []) + workspace_tools + [{"type": "function", "function": {"name": alias,
@@ -130,12 +133,23 @@ class ExtensionRuntime(SkillRuntime):
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
             return {"list_files": "查看资源库", "read_file": "读取文件", "write_file": "生成文件",
-                "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行"}[name]
+                "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行",
+                "start_preview": "启动成果预览", "stop_preview": "停止成果预览"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
 
     def execute(self, name, arguments, check_active=None):
         if check_active:
             check_active()
+        from .cloud_preview import LABELS as PREVIEW_LABELS, execute as preview_tool
+        if name in PREVIEW_LABELS:
+            if name not in self.workspace_tool_names:
+                return {"error": "成果预览尚未开放"}
+            try:
+                return preview_tool(self, name, arguments, check_active)
+            except PayloadValidationError:
+                return {"error": "请检查启动命令、网页端口和预览名称", "error_code": "preview_arguments"}
+            except HTTPException as error:
+                return {"error": str(error.detail), "error_code": "preview_unavailable"}
         from .image_tools import LABELS as IMAGE_LABELS, execute as image_tool
         if name in IMAGE_LABELS:
             return image_tool(self, name, arguments)

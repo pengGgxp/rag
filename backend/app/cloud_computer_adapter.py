@@ -14,6 +14,11 @@ ROOT = "/home/user/workspace"
 STATE = "/tmp/zhiku-cloud-computer"
 DEPENDENCIES = f"{STATE}/deps"
 
+
+def preview_ingress_port(identifier):
+    from uuid import UUID
+    return 51000 + UUID(str(identifier)).int % 12000
+
 # The launcher captures output on disk rather than accumulating arbitrary model
 # stdout in the API process. Its process group can be terminated independently.
 LAUNCHER = '''import json, os, subprocess, sys, threading
@@ -34,6 +39,111 @@ for thread in threads: thread.join()
 result = {"exit_code": code, **{name: data.decode("utf-8", errors="replace") for name, data in tails.items()}}
 (job / "result.tmp").write_text(json.dumps(result))
 os.replace(job / "result.tmp", job / "result.json")
+'''
+
+# Service stdio goes to bounded logs instead of the command launcher's pipes.
+# A durable intent precedes Popen; a lost response is probed, never replayed.
+PREVIEW_LAUNCHER = '''import json, os, signal, socket, subprocess, sys, time, urllib.request
+from pathlib import Path
+job = Path(sys.argv[1])
+payload = json.loads((job / "input.json").read_text())
+result = job / "result.json"
+def finish(value):
+    (job / "result.tmp").write_text(json.dumps(value))
+    os.replace(job / "result.tmp", result)
+try:
+    with socket.socket() as sock:
+        if sock.connect_ex(("127.0.0.1", payload["port"])) == 0:
+            raise RuntimeError("port already in use; select a different HTTP port")
+    # An exclusive marker prevents two launchers from executing the command twice.
+    with (job / "launch-intent").open("x") as marker: marker.write("starting")
+    if (job / "stop-requested").exists(): raise RuntimeError("preview stopped")
+    process = subprocess.Popen([sys.executable, str(job / "preview-service.py"), str(job)], cwd=payload["cwd"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+    (job / "service-pgid").write_text(str(process.pid))
+    if (job / "stop-requested").exists(): raise RuntimeError("preview stopped")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        if process.poll() is not None: raise RuntimeError("HTTP service exited before readiness")
+        try:
+            with opener.open("http://127.0.0.1:" + str(payload["port"]) + "/", timeout=1) as response:
+                if response.status < 500: break
+        except urllib.error.HTTPError as error:
+            if error.code < 500: break
+        except (OSError, TimeoutError): pass
+        time.sleep(.25)
+    else: raise RuntimeError("HTTP readiness timed out; listen on the requested port")
+    finish({"exit_code": 0, "stdout": "HTTP service ready", "stderr": ""})
+except FileExistsError:
+    # Another durable launch owns this job; do not overwrite its result.
+    pass
+except Exception as error:
+    if "process" in globals() and process.poll() is None:
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+    finish({"exit_code": 1, "stdout": "", "stderr": str(error)[:500]})
+'''
+
+PREVIEW_SERVICE = '''import json, subprocess, sys, threading
+from pathlib import Path
+job = Path(sys.argv[1])
+payload = json.loads((job / "input.json").read_text())
+process = subprocess.Popen(["bash", "-lc", payload["command"]], cwd=payload["cwd"],
+    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def drain(pipe, name):
+    tail = bytearray()
+    for block in iter(lambda: pipe.read1(4096), b""):
+        tail.extend(block)
+        del tail[:-65536]
+        (job / name).write_bytes(tail)
+threads = [threading.Thread(target=drain, args=(pipe, name), daemon=True) for pipe, name in
+    [(process.stdout, "service-stdout.log"), (process.stderr, "service-stderr.log")]]
+for thread in threads: thread.start()
+code = process.wait()
+(job / "service-exit").write_text(str(code))
+'''
+
+# Alibaba forwards its traffic header to the destination process. A root-owned
+# ingress removes it before untrusted application code can inspect requests.
+PREVIEW_INGRESS = '''import http.client, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+application, ingress = map(int, sys.argv[1:3])
+hop = {"connection","keep-alive","transfer-encoding","te","trailer","upgrade","proxy-authorization","proxy-authenticate"}
+class Handler(BaseHTTPRequestHandler):
+ protocol_version = "HTTP/1.1"
+ def log_message(self,*args): pass
+ def proxy(self):
+  connection = http.client.HTTPConnection("127.0.0.1", application, timeout=30)
+  try:
+   length = int(self.headers.get("content-length","0"))
+   if length < 0 or length > 16777216: self.send_error(413); return
+   excluded = hop | {"e2b-traffic-access-token","x-zk-preview-host","host","content-length","authorization","x-access-token"}
+   headers = {key:value for key,value in self.headers.items() if key.lower() not in excluded}
+   headers["Host"] = self.headers.get("x-zk-preview-host", "127.0.0.1:"+str(application))
+   body = self.rfile.read(length) if length else None
+   connection.request(self.command,self.path,body=body,headers=headers)
+   response = connection.getresponse()
+   self.send_response(response.status)
+   for key,value in response.getheaders():
+    if key.lower() not in hop | {"content-length","e2b-traffic-access-token"}: self.send_header(key,value)
+   self.send_header("Connection","close"); self.end_headers()
+   received = 0
+   if self.command != "HEAD":
+    while True:
+     block = response.read(65536)
+     if not block: break
+     received += len(block)
+     if received > 67108864: break
+     self.wfile.write(block)
+  except (OSError, http.client.HTTPException, ValueError):
+   try: self.send_error(502)
+   except OSError: pass
+  finally:
+   self.close_connection = True
+   connection.close()
+ do_GET=do_HEAD=do_POST=do_PUT=do_PATCH=do_DELETE=do_OPTIONS=proxy
+ThreadingHTTPServer(("0.0.0.0",ingress),Handler).serve_forever()
 '''
 
 class AlibabaSandbox:
@@ -134,6 +244,49 @@ class AlibabaSandbox:
         sandbox.files.write(f"{job}/operation.json", json.dumps(operation), user="user")
         sandbox.files.write(f"{job}/file-tool.py", Path(__file__).with_name("cloud_file_operation.py").read_text(encoding="utf-8"), user="user")
         return self.start(sandbox, identifier, f"python3 {job}/file-tool.py {job}")
+
+    def start_preview(self, sandbox, identifier, payload):
+        job = f"{STATE}/jobs/{identifier}"
+        ingress = f"{STATE}/ingress/{identifier}"
+        sandbox.commands.run(f"mkdir -p {job}", user="user")
+        sandbox.commands.run(f"mkdir -p {ingress}; chmod 700 {STATE}/ingress {ingress}", user="root")
+        sandbox.files.write(f"{ingress}/proxy.py", PREVIEW_INGRESS, user="root")
+        proxy = sandbox.commands.run(f"python3 {ingress}/proxy.py {payload['port']} {preview_ingress_port(identifier)}",
+            background=True, timeout=0, user="root")
+        sandbox.files.write(f"{ingress}/pid", str(proxy.pid), user="root")
+        sandbox.files.write(f"{job}/input.json", json.dumps({**payload, "cwd": ROOT}), user="user")
+        sandbox.files.write(f"{job}/preview-launcher.py", PREVIEW_LAUNCHER, user="user")
+        sandbox.files.write(f"{job}/preview-service.py", PREVIEW_SERVICE, user="user")
+        handle = sandbox.commands.run(f"python3 {job}/preview-launcher.py {job}", background=True,
+            timeout=0, user="user", envs={"PYTHONPATH": DEPENDENCIES, "PIP_TARGET": DEPENDENCIES,
+                "npm_config_prefix": f"{STATE}/npm"})
+        sandbox.files.write(f"{job}/launcher-pid", str(handle.pid), user="user")
+        return handle.pid
+
+    def preview_target(self, sandbox, port, identifier):
+        import httpx
+        host, token = sandbox.get_host(preview_ingress_port(identifier)), sandbox.traffic_access_token
+        if not token:
+            raise RuntimeError("authenticated preview traffic is unavailable")
+        with httpx.stream("GET", f"https://{host}/", headers={"e2b-traffic-access-token": token},
+                timeout=10, follow_redirects=False) as response:
+            if response.status_code >= 500:
+                raise RuntimeError("HTTP ingress is not ready")
+        return host, token
+
+    def preview_alive(self, sandbox, identifier):
+        script = ("import os\nfrom pathlib import Path\np=Path(" + repr(f"{STATE}/jobs/{identifier}/service-pgid") + ")\n"
+            "try:\n assert not p.with_name('service-exit').exists(); os.kill(int(p.read_text()),0); print('alive')\nexcept (OSError,ValueError,AssertionError): print('dead')\n")
+        return sandbox.commands.run("python3 -c " + shlex.quote(script), user="user").stdout.strip() == "alive"
+
+    def stop_preview(self, sandbox, identifier):
+        sandbox.files.write(f"{STATE}/jobs/{identifier}/stop-requested", "stop", user="user")
+        script = ("import os,signal\nfrom pathlib import Path\np=Path(" + repr(f"{STATE}/jobs/{identifier}/service-pgid") + ")\n"
+            "try:\n if p.exists(): os.killpg(int(p.read_text()),signal.SIGKILL)\nexcept ProcessLookupError: pass\n")
+        sandbox.commands.run("python3 -c " + shlex.quote(script), user="user")
+        root_script = ("import os,signal\nfrom pathlib import Path\np=Path(" + repr(f"{STATE}/ingress/{identifier}/pid") + ")\n"
+            "try:\n if p.exists(): os.kill(int(p.read_text()),signal.SIGKILL)\nexcept ProcessLookupError: pass\n")
+        sandbox.commands.run("python3 -c " + shlex.quote(root_script), user="root")
 
     def file_result(self, sandbox, identifier):
         return json.loads(sandbox.files.read(f"{STATE}/jobs/{identifier}/file-result.json", user="user"))

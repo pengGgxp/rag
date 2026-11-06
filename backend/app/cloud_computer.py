@@ -185,15 +185,18 @@ def reconcile(db, row, end, final=False):
     return not row.billing_stopped_at
 
 
-def read(row):
+def read(row, db=None):
     labels = {"starting": "正在启动云电脑", "ready": "云电脑运行中", "running": "正在执行", "stopping": "正在结束云电脑",
               "uncertain": "正在核对云电脑状态", "ended": "云电脑已结束", "failed": "云电脑未能启动"}
     seconds, estimated = charge_at(row, now())
+    from .cloud_preview import idle_anchor
+    anchor = idle_anchor(db, row) if db is not None else aware(row.last_activity_at)
     return {"id": str(row.id), "status": row.status, "summary": row.error or labels[row.status],
         "terminal": row.ended_at is not None, "credits": str(row.charged_credits if row.ended_at else min(estimated, row.charged_credits+row.held_credits)),
         "credits_per_minute": str(row.snapshot["credits_per_minute"]), "seconds": seconds,
-        "idle_ends_at": (aware(row.last_activity_at)+timedelta(seconds=row.snapshot["idle_seconds"])).isoformat() if row.status == "ready" else None,
+        "idle_ends_at": (anchor+timedelta(seconds=row.snapshot["idle_seconds"])).isoformat() if row.status == "ready" else None,
         "started_at": row.started_at.isoformat() if row.started_at else None,
+        "max_ends_at": (aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"])).isoformat() if row.started_at else None,
         "ended_at": row.ended_at.isoformat() if row.ended_at else None}
 
 
@@ -209,7 +212,7 @@ def current(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access
     owner(db, access, conversation_id)
     row = db.scalar(select(Computer).where(Computer.conversation_id == conversation_id,
         Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id).order_by(Computer.created_at.desc()))
-    return {"computer": read(row) if row else None}
+    return {"computer": read(row, db) if row else None}
 
 
 @router.post("/conversations/{conversation_id}/cloud-computer/end")
@@ -268,6 +271,12 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
             check_capacity(db, access.workspace_id, 0)
     serialize_admission(db)
     payload = {"command": arguments["command"], "inputs": [], "skills": skill_packages or {}}
+    if arguments.get("preview"):
+        from .cloud_preview import Start
+        from .config import get_settings
+        if not get_settings().preview_enabled:
+            raise HTTPException(503, "成果预览尚未开放，请联系管理员")
+        payload["preview"] = Start.model_validate(arguments["preview"]).model_dump()
     if arguments.get("file_operation"):
         payload["file_operation"] = arguments["file_operation"]
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -316,6 +325,10 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
     command = Command(id=uuid4(), session_id=row.id, request_id=request_id, digest=digest, payload=payload,
                       status="queued", cancel_requested=False, result={})
     db.add(command)
+    db.flush()
+    if payload.get("preview"):
+        from .cloud_preview import attach
+        attach(db, row, command, payload["preview"])
     db.commit()
     dispatch(command.id)
     return command
@@ -425,6 +438,14 @@ def _run(identifier, factory=SessionLocal):
                 command.result = {"status": "cancelled", "error": "命令已停止"}
                 db.commit()
                 return
+            if command.payload.get("preview"):
+                from .models import CloudPreview
+                preview = db.scalar(select(CloudPreview).where(CloudPreview.command_id == command.id))
+                if preview.ended_at or preview.status == "stopping":
+                    command.status, command.finished_at = "cancelled", now()
+                    command.result = {"status": "cancelled", "error": "预览已停止"}
+                    db.commit()
+                    return
             if command.payload.get("file_operation", {}).get("reference"):
                 from .workspace_files import resolve_input
                 resolve_input(db, access, command.payload["file_operation"]["reference"])
@@ -432,7 +453,9 @@ def _run(identifier, factory=SessionLocal):
             command.status = "running"
             db.commit()
             submitted = True
-            if command.payload.get("file_operation"):
+            if command.payload.get("preview"):
+                command.process_id = provider.start_preview(sandbox, command.id, command.payload["preview"])
+            elif command.payload.get("file_operation"):
                 command.process_id = provider.start_file(sandbox, command.id, command.payload["file_operation"])
             else:
                 command.process_id = provider.start(sandbox, command.id, command.payload["command"])
@@ -458,6 +481,9 @@ def _run(identifier, factory=SessionLocal):
                     if result["exit_code"] != 0:
                         command.result = {**command.result, "error": "命令未能完成，请根据执行结果调整后再试", "error_code": "script_failed"}
                     command.status = "completed" if command.result.get("status") == "completed" else command.result.get("status", "failed")
+                    if command.payload.get("preview"):
+                        from .cloud_preview import finish_command
+                        finish_command(db, command, row, provider, sandbox)
                     db.commit()
                     break
                 command.heartbeat_at = now()
@@ -472,7 +498,13 @@ def _run(identifier, factory=SessionLocal):
             command.status = "uncertain" if submitted else "failed"
             command.result = {"status": command.status, "error": "执行结果待核对，请查看资源库，勿重复执行" if submitted else "云电脑未能准备文件，请检查资源与额度后重试",
                                   "uncertain": submitted}
-            if submitted:
+            if submitted and command.payload.get("preview"):
+                from .models import CloudPreview
+                preview = db.scalar(select(CloudPreview).where(CloudPreview.command_id == command.id))
+                if preview:
+                    preview.status = "uncertain"
+                    preview.error = "正在核对启动状态，请勿重复启动"
+            elif submitted:
                 row.status = "stopping"
                 row.billing_stopped_at = now()
             elif row.provider_id:
@@ -508,7 +540,8 @@ def execute(db, access, conversation_id, request_id, arguments, skill_packages, 
             try:
                 check_active()
             except BaseException:
-                command.cancel_requested = True
+                if not command.payload.get("preview"):
+                    command.cancel_requested = True
                 db.commit()
                 raise
         time.sleep(.5)
@@ -578,6 +611,12 @@ def _maintain(db, identifier):
     if not row.provider_id:
         return
     alive = provider.exists(row.provider_id)
+    from .cloud_preview import maintain as maintain_preview, idle_anchor
+    try:
+        maintain_preview(db, row, provider, alive)
+    except Exception:
+        # A failed service health probe must not suppress billing or VM expiry.
+        logger.warning("Cloud preview health check deferred: %s", identifier, exc_info=False)
     if not alive:
         end = min(now(), aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]))
         # If disappearance was unexpected, charge no unconfirmed interval.
@@ -609,6 +648,9 @@ def _maintain(db, identifier):
                 if file_result.get("error"):
                     command.result.update(status="failed", error=file_result["error"])
             command.status = command.result["status"]
+            if command.payload.get("preview"):
+                from .cloud_preview import finish_command
+                finish_command(db, command, row, provider, sandbox)
             command.finished_at = now()
             row.status, row.last_activity_at = "ready", now()
             db.commit()
@@ -622,10 +664,11 @@ def _maintain(db, identifier):
     except HTTPException:
         row.status, row.billing_stopped_at = "stopping", row.billing_stopped_at or now()
     expired = now() >= aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"])
-    idle = not commands and now() >= aware(row.last_activity_at)+timedelta(seconds=row.snapshot["idle_seconds"])
+    anchor = idle_anchor(db, row)
+    idle = not commands and now() >= anchor+timedelta(seconds=row.snapshot["idle_seconds"])
     if expired or idle:
         row.status = "stopping"
-        cutoff = aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]) if expired else aware(row.last_activity_at)+timedelta(seconds=row.snapshot["idle_seconds"])
+        cutoff = aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]) if expired else anchor+timedelta(seconds=row.snapshot["idle_seconds"])
         row.billing_stopped_at = row.billing_stopped_at or cutoff
     if row.status != "stopping" and charge_at(row, now())[0] >= row.billed_seconds + 60:
         if not reconcile(db, row, now()):
@@ -654,6 +697,7 @@ def _maintain(db, identifier):
         db.commit()
         logger.error("Cloud computer destruction not confirmed: %s", identifier)
         return
+    maintain_preview(db, row, provider, False)
     reconcile(db, row, now(), final=True)
     row.status, row.ended_at = "ended", now()
     db.commit()

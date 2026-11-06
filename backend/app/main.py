@@ -1099,6 +1099,8 @@ app.include_router(image_tasks_router)
 app.include_router(image_models_router)
 from .cloud_computer import router as cloud_computer_router
 app.include_router(cloud_computer_router)
+from .cloud_preview import router as cloud_preview_router
+app.include_router(cloud_preview_router)
 from .thinking_admin import router as thinking_admin_router
 app.include_router(thinking_admin_router)
 app.include_router(selection_router)

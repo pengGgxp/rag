@@ -68,6 +68,8 @@ services:
       DOCMIND_POLL_SECONDS: ${DOCMIND_POLL_SECONDS:-3}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:8000}
+      PREVIEW_ENABLED: ${PREVIEW_ENABLED:-false}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-preview.str1ct.top}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
       AUTH_SESSION_HOURS: ${AUTH_SESSION_HOURS:-168}
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-}
@@ -114,6 +116,9 @@ services:
       context: ./backend
     command: celery -A app.tasks.celery_app worker --loglevel=info
     environment:
+      PREVIEW_ENABLED: ${PREVIEW_ENABLED:-false}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-preview.str1ct.top}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       DATABASE_URL: postgresql+psycopg://rag:rag@db:5432/rag
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
@@ -151,6 +156,25 @@ services:
       minio:
         condition: service_healthy
       api:
+        condition: service_healthy
+
+  preview:
+    build:
+      context: ./backend
+    command: uvicorn app.preview_gateway:app --host 0.0.0.0 --port 8001 --no-access-log --no-proxy-headers
+    environment:
+      DATABASE_URL: postgresql+psycopg://rag:rag@db:5432/rag
+      SITE_CONFIG_ENCRYPTION_KEY: ${SITE_CONFIG_ENCRYPTION_KEY:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      PREVIEW_ENABLED: ${PREVIEW_ENABLED:-false}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:-preview.str1ct.top}
+    ports:
+      - "127.0.0.1:8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
         condition: service_healthy
 
   web:

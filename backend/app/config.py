@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     docmind_poll_seconds: float = Field(default=3, ge=0.1, le=30)
     frontend_url: str = "http://localhost:3000"
     api_public_url: str = "http://localhost:8000"
+    preview_domain: str = "preview.str1ct.top"
+    preview_enabled: bool = False
     auth_cookie_secure: bool = False
     auth_session_hours: int = 168
     auth_secret_key: SecretStr | None = None

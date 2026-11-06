@@ -1075,6 +1075,35 @@ class CloudComputerCommand(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CloudPreview(Base):
+    __tablename__ = "cloud_previews"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("cloud_computer_sessions.id"), index=True)
+    command_id: Mapped[UUID] = mapped_column(ForeignKey("cloud_computer_commands.id"), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    port: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="starting", index=True)
+    # Provider routing credentials never appear in a tool or browser response.
+    upstream_host: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    encrypted_traffic_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index("uq_cloud_preview_active_session", "session_id", unique=True,
+        postgresql_where=ended_at.is_(None), sqlite_where=ended_at.is_(None)),)
+
+
+class CloudPreviewGrant(Base):
+    __tablename__ = "cloud_preview_grants"
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    preview_id: Mapped[UUID] = mapped_column(ForeignKey("cloud_previews.id"), index=True)
+    session_hash: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RemoteToolExecution(Base):
     __tablename__ = "remote_tool_executions"
     __table_args__ = (UniqueConstraint("message_id", "tool_name", "arguments_digest"),)
