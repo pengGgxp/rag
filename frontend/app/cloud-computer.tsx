@@ -8,6 +8,7 @@ import { json } from "./admin/admin-ui";
 import { Tooltip } from "../components/ui/tooltip";
 import { formatCredits } from "./credit-format";
 import "./cloud-computer.css";
+import { ConversationPreview } from "./cloud-preview";
 
 type Computer = { id: string; status: string; summary: string; terminal: boolean; credits: string;
   credits_per_minute: string; idle_ends_at: string | null };
@@ -63,6 +64,7 @@ export function CloudComputerPanel({ conversationId, workspaceId }: { conversati
   const last = commands[0];
   const price = catalog?.available ? `云电脑 ${formatCredits(Number(catalog.credits_per_minute))} 积分/分钟 · 按秒计费，闲置 ${Math.ceil((catalog.idle_seconds || 600) / 60)} 分钟结束` : "云电脑";
   return <div className="cloud-computer-panel">
+    <ConversationPreview conversationId={conversationId} />
     <div className="cloud-computer-line">
       <Monitor size={14} aria-hidden="true" />
       {computer ? <>

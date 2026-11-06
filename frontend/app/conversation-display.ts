@@ -1,5 +1,6 @@
 import type { ConversationActivityItem, SavedDocument } from "./conversation-activity";
 import type { ImageTaskResult } from "./image-task-result";
+import type { Preview } from "./cloud-preview";
 
 export type DisplayBlock = { id: string; type: "text"; text: string }
   | { id: string; type: "activity"; call_id: string }
@@ -10,6 +11,7 @@ export type ToolEvent = {
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
+  preview?: Preview;
 };
 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
@@ -18,6 +20,7 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     files: item.files,
     saved_document: item.saved_document,
     image_task: item.image_task,
+    preview: item.preview,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "uncertain"

@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, Download, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, Download, ExternalLink, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
 import { API_URL, ApiError, downloadFile, request } from "./api";
 import Link from "next/link";
 import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
+import { openPreview, type Preview } from "./cloud-preview";
 
 export type SavedDocument = {
   save_id: string; document_id: string; knowledge_base_id: string; filename: string;
@@ -21,6 +22,7 @@ export type ConversationActivityItem = {
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
+  preview?: Preview;
 };
 
 function SavedDocumentResult({ initial, onUpdate, showStatus }: { initial: SavedDocument; onUpdate: (value: SavedDocument) => void; showStatus: boolean }) {
@@ -128,6 +130,9 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
     {items.filter(item => item.saved_document).map(item => <SavedDocumentResult key={item.saved_document!.save_id}
       initial={item.saved_document!} onUpdate={updateSaved} showStatus={items.length > 1} />)}
     {items.filter(item => item.image_task).map(item => <ImageTaskActivity key={item.image_task!.task_id} initial={item.image_task!} onUpdate={updateImage} showStatus={items.length > 1} />)}
+    {items.filter(item => item.preview).map(item => <div className="activity-file-downloads" key={item.preview!.id}>
+      <button type="button" className="activity-file-download" onClick={() => openPreview(item.preview!.id)}><ExternalLink size={15} /><span>{item.preview!.status === "ready" ? "打开预览" : "查看预览状态"} · {item.preview!.name}</span></button>
+    </div>)}
     {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
       {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
         href={`${API_URL}/resources/${file.id}/download`} download
