@@ -123,15 +123,27 @@ async def lifespan(_: FastAPI):
         logging.getLogger(__name__).warning("Upload recovery deferred until the next maintenance run")
     retention = asyncio.create_task(audit_retention())
     document_recovery = asyncio.create_task(recover_document_saves())
+    async def cloud_maintenance():
+        from .cloud_computer import maintenance
+        while True:
+            try:
+                await asyncio.to_thread(maintenance)
+            except Exception:
+                logging.getLogger(__name__).warning("Cloud computer maintenance deferred")
+            await asyncio.sleep(15)
+    computer_recovery = asyncio.create_task(cloud_maintenance())
     try:
         yield
     finally:
         retention.cancel()
         document_recovery.cancel()
+        computer_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await retention
         with suppress(asyncio.CancelledError):
             await document_recovery
+        with suppress(asyncio.CancelledError):
+            await computer_recovery
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
@@ -1085,6 +1097,8 @@ app.include_router(model_connections_router)
 from .image_tasks import router as image_tasks_router, admin_router as image_models_router
 app.include_router(image_tasks_router)
 app.include_router(image_models_router)
+from .cloud_computer import router as cloud_computer_router
+app.include_router(cloud_computer_router)
 from .thinking_admin import router as thinking_admin_router
 app.include_router(thinking_admin_router)
 app.include_router(selection_router)

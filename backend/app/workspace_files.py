@@ -186,7 +186,7 @@ def tool_definitions():
         ("write_file","创建或覆盖当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","按版本应用文本文件补丁；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在隔离环境执行 Python（含 Pillow）、Node 或 sh/bash。每次独立临时目录，仅准备 inputs 指定的资源版本，不保留上次输入；未指定则为空。图片嵌入文档应同时指定图片和文档并在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash，同一会话环境存续期间保留文件和依赖；新环境仅准备 inputs 指定的资源版本及 skill_ids 指定的方法文件。命令直接引用 /skills/方法ID/ 路径也会准备对应方法。工作目录 /home/user/workspace，Skill 位于 /skills；只将产物写入工作目录。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
     ]]
 
 
@@ -249,67 +249,6 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         remove(row.id, db, access)
         return {"path":path,"deleted":True}
     if name=="run_command":
-        access.editor(); settings=get_settings()
-        if not settings.workspace_executor_url: return {"error":"脚本执行环境尚未配置，请联系站点管理员"}
-        import httpx
-        files={}
-        versions={}
-        from .resource_cache import read_bytes
-        selected_inputs = [resolve_input(db, access, reference) for reference in arguments.get("inputs", [])]
-        if sum(version.size_bytes for _, version in selected_inputs) > 512 * 1024 * 1024:
-            raise HTTPException(413, "单次执行输入总计不能超过 512 MiB，请分批处理")
-        for row, version in selected_inputs:
-            if check_active: check_active()
-            if row.path in files: raise HTTPException(422, "同一路径只能选择一个资源版本")
-            files[row.path]=base64.b64encode(read_bytes(db, access, row, version)).decode()
-            versions[row.path] = version.version
-        if check_active:
-            check_active()
-        payload={"workspace_id":str(access.workspace_id),"command":arguments["command"],"files":files,
-            "skill_files": {f"{identifier}/{path}": base64.b64encode(data).decode()
-                for identifier, package in (skill_packages or {}).items() for path, data in package.items()}}
-        job=WorkspaceExecutionJob(workspace_id=access.workspace_id,user_id=access.user_id,conversation_id=conversation_id,request_id=request_id,command_digest=hashlib.sha256(arguments["command"].encode()).hexdigest())
-        db.add(job); db.commit()
-        try:
-            response=httpx.post(f"{settings.workspace_executor_url.rstrip('/')}/run",json=payload,timeout=90)
-            response.raise_for_status(); result=response.json()
-        except Exception:
-            job.status="failed"; job.stderr_summary="隔离执行环境暂时不可用"; job.finished_at=now(); db.commit()
-            return {"error":"执行结果未确认，请先检查已有输出，不要自动重复运行", "uncertain": True}
-        job.status=result.get("status", "failed"); job.exit_code=result.get("exit_code"); job.stdout_summary=str(result.get("stdout", ""))[-MAX_OUTPUT:]; job.stderr_summary=str(result.get("stderr", ""))[-MAX_OUTPUT:]; job.finished_at=now(); db.commit()
-        if job.status != "completed" or job.exit_code != 0:
-            job.status = "failed"
-            result["status"] = "failed"
-            result["error"] = "脚本未能完成，请检查本次命令的执行结果"
-            result["error_code"] = "script_failed"
-        changed_files = []
-        generated_files = []
-        save_failed = False
-        for path, encoded in result.pop("files", {}).items():
-            try:
-                data=base64.b64decode(encoded); current=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
-                if current and current.content_hash == hashlib.sha256(data).hexdigest(): continue
-                if current and current.current_version != versions.get(path):
-                    result.setdefault("warnings", []).append(f"文件已被其他任务修改，请重新读取后处理：{path}")
-                    continue
-                saved = _save_bytes(workspace_id, access, db, path, data, current.content_type if current else "application/octet-stream", versions.get(path))
-                generated_files.append(saved)
-                changed_files.append(path)
-            except Exception:
-                save_failed = True
-                result.setdefault("warnings", []).append(f"无法保存文件：{path}")
-        if save_failed:
-            result["status"] = "failed"
-            result["error"] = "脚本已执行，但部分输出未能保存，请勿自动重复运行"
-            result["error_code"] = "script_output_save"
-            job.status = "failed"
-            job.stderr_summary = result["error"]
-        job.changed_files = changed_files
-        from .audit_log import record_audit
-        record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-            action="resource.executed", resource_type="execution", resource_id=job.id,
-            metadata={"status": job.status, "input_count": len(files), "output_count": len(changed_files)})
-        db.commit()
-        result["generated_files"] = generated_files
-        return result
+        from .cloud_computer import execute
+        return execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active)
     return {"error":"未知文件工具"}

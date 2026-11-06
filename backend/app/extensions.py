@@ -85,7 +85,10 @@ class ExtensionRuntime(SkillRuntime):
                     self.mcp_tokens[alias] = row.authorization_version
         self.skills = [{key: value for key, value in row.items()
             if key in ("id", "name", "description", "version", "source")} for row in self.snapshots.values()]
-        self.execution_available = bool(get_settings().workspace_executor_url) and access.role in ("admin", "editor")
+        from .cloud_computer import Settings as CloudSettings
+        with factory() as db:
+            cloud_settings = db.get(CloudSettings, 1)
+            self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
         workspace_tools = [item for item in tool_definitions()
             if (access.role in ("admin", "editor") or item["function"]["name"] in ("list_files", "read_file")) and (item["function"]["name"] != "run_command"
                 or self.execution_available)]
@@ -129,7 +132,7 @@ class ExtensionRuntime(SkillRuntime):
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
             return {"list_files": "查看资源库", "read_file": "读取文件", "write_file": "生成文件",
-                "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "运行脚本"}[name]
+                "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
 
     def execute(self, name, arguments, check_active=None):
@@ -179,7 +182,15 @@ class ExtensionRuntime(SkillRuntime):
                 packages = {}
                 with self.factory() as db:
                     access = self.access.revalidate(db)
-                    for identifier in self.personal_ids if name == "run_command" else []:
+                    if name == "run_command":
+                        access.editor()
+                    needed = set(arguments.get("skill_ids", [])) if name == "run_command" else set()
+                    if name == "run_command":
+                        needed.update(identifier for identifier in self.personal_ids
+                            if f"/skills/{identifier}/" in arguments["command"])
+                        if needed - self.personal_ids:
+                            return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                    for identifier in needed:
                         row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
                         if row is None or not row.enabled or row.owner_id != self.access.user_id or row.workspace_id != self.access.workspace_id:
                             continue
@@ -195,6 +206,8 @@ class ExtensionRuntime(SkillRuntime):
                     except HTTPException as error:
                         if error.status_code in (401, 403):
                             raise
+                        if name == "run_command":
+                            return {"error": str(error.detail), "error_code": "cloud_computer_unavailable"}
                         code = {402: "file_download_quota", 404: "file_missing", 409: "file_conflict", 413: "file_capacity",
                             422: "file_arguments"}.get(error.status_code, "file_storage")
                         return {"error": FILE_TOOL_ERRORS[code], "error_code": code}

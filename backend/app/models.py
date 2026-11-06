@@ -992,6 +992,59 @@ class MCPServer(Base):
     )
 
 
+class CloudComputerSettings(Base):
+    __tablename__ = "cloud_computer_settings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CloudComputerSession(Base):
+    __tablename__ = "cloud_computer_sessions"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
+    session_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="starting", index=True)
+    provider_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    encrypted_api_key: Mapped[str] = mapped_column(Text)
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    held_credits: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    charged_credits: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    billed_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    billing_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    billing_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (Index("uq_cloud_computer_active_user", "user_id", unique=True,
+        postgresql_where=ended_at.is_(None), sqlite_where=ended_at.is_(None)),)
+
+
+class CloudComputerCommand(Base):
+    __tablename__ = "cloud_computer_commands"
+    __table_args__ = (UniqueConstraint("session_id", "request_id", "digest", name="uq_cloud_command_request"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(ForeignKey("cloud_computer_sessions.id"), index=True)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    digest: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    process_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(default=False)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RemoteToolExecution(Base):
     __tablename__ = "remote_tool_executions"
     __table_args__ = (UniqueConstraint("message_id", "tool_name", "arguments_digest"),)

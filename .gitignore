@@ -1,5 +1,6 @@
 .env
 .env.*
+/新建 文本文档.txt
 !.env.example
 node_modules/
 .next/

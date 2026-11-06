@@ -96,20 +96,16 @@ def test_command_only_stages_explicit_resources_and_cache_is_free(accounts, reso
     (owner, _, _), db = accounts
     register(owner); image = upload(owner, "image.png", PNG); upload(owner, "unused.txt")
     actor = access_for(owner, db)
-    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://executor.test")
-    calls = []
-    def run(*_, **kwargs):
-        calls.append(kwargs["json"])
-        return SimpleNamespace(raise_for_status=lambda: None,
-            json=lambda: {"status": "completed", "exit_code": 0, "files": {}})
-    monkeypatch.setattr("httpx.post", run)
-    workspace_files.execute_tool("run_command", {"command": "true"}, db, actor, actor.workspace_id)
-    assert calls[-1]["files"] == {} and not resource_store[1]
+    from test_cloud_computer import enable_execution
+    fake, execute = enable_execution(db, actor, monkeypatch)
+    execute({"command": "true"})
+    assert fake.writes == 0 and not resource_store[1]
     args = {"command": "true", "inputs": [{"id": image["id"], "version": 1}]}
-    workspace_files.execute_tool("run_command", args, db, actor, actor.workspace_id)
-    assert list(calls[-1]["files"]) == [image["path"]]
-    assert base64.b64decode(calls[-1]["files"][image["path"]]) == PNG
-    workspace_files.execute_tool("run_command", args, db, actor, actor.workspace_id)
+    execute(args)
+    assert list(next(iter(fake.instances.values()))["files"]) == [image["path"]]
+    assert next(iter(fake.instances.values()))["files"][image["path"]] == PNG
+    execute(args)
+    assert fake.writes == 1
     assert len(resource_store[1]) == 1
     transfers = db.scalars(select(StorageTransfer)).all()
     assert len(transfers) == 1 and transfers[0].sent_bytes == len(PNG) and transfers[0].status == "completed"
@@ -128,26 +124,26 @@ def test_embed_image_in_document_saves_version_without_binary_in_stdout(accounts
     actor = access_for(owner, db)
     document = workspace_files._save_bytes(actor.workspace_id, actor, db, "resume.html",
         b'<html><img src="PHOTO"></html>', "text/html")
-    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://executor.test")
-    def run(*_, **kwargs):
-        payload = kwargs["json"]
-        assert set(payload["files"]) == {image["path"], document["path"]}
-        for path, encoded in payload["files"].items():
+    from test_cloud_computer import enable_execution
+    fake, execute = enable_execution(db, actor, monkeypatch)
+    def run(sandbox, identifier, command):
+        assert set(sandbox["files"]) == {image["path"], document["path"]}
+        for path, data in sandbox["files"].items():
             target = tmp_path / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(base64.b64decode(encoded))
+            target.write_bytes(data)
         script = ("from pathlib import Path; import base64; from PIL import Image; "
             f"Image.open({image['path']!r}).verify(); p=Path({document['path']!r}); "
             f"data=base64.b64encode(Path({image['path']!r}).read_bytes()).decode(); "
             "p.write_text(p.read_text().replace('PHOTO','data:image/png;base64,'+data)); print('saved')")
         completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, check=True)
         assert completed.stdout == "saved\n"
-        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {
-            "status": "completed", "exit_code": 0, "stdout": completed.stdout,
-            "files": {document["path"]: base64.b64encode((tmp_path / document["path"]).read_bytes()).decode()}})
-    monkeypatch.setattr("httpx.post", run)
-    result = workspace_files.execute_tool("run_command", {"command": "python embed.py", "inputs": [
-        {"id": image["id"], "version": 1}, {"id": document["id"], "version": 1}]}, db, actor, actor.workspace_id)
+        sandbox["files"][document["path"]] = (tmp_path / document["path"]).read_bytes()
+        fake.result = {"exit_code": 0, "stdout": completed.stdout, "stderr": ""}
+        return 42
+    monkeypatch.setattr(fake, "start", run)
+    result = execute({"command": "python embed.py", "inputs": [
+        {"id": image["id"], "version": 1}, {"id": document["id"], "version": 1}]})
     assert result["generated_files"][0]["version"] == 2
     html = owner.get(f"/resources/{document['id']}/download?version=2").content
     assert b"data:image/png;base64," + base64.b64encode(PNG) in html

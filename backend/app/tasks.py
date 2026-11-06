@@ -37,6 +37,12 @@ celery_app.conf.update(task_track_started=True, task_serializer="json", result_s
 
 
 @celery_app.task
+def run_cloud_command(identifier):
+    from .cloud_computer import run
+    run(identifier)
+
+
+@celery_app.task
 def process_image_task(identifier):
     from .image_tasks import run
     run(identifier)

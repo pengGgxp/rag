@@ -20,6 +20,11 @@ from test_personal_extensions import skill
 from test_shared_providers import setup_site
 
 
+def enable_cloud(db, access, monkeypatch):
+    from test_cloud_computer import enable_execution
+    return enable_execution(db, access, monkeypatch)
+
+
 def scripted(client, **changes):
     return skill(client, limitations_acknowledged=True, files=[
         {"path": "scripts/task.py", "content": base64.b64encode(b"print('PINNED SCRIPT')").decode()},
@@ -29,6 +34,7 @@ def scripted(client, **changes):
 
 def test_runtime_passes_available_pinned_packages_without_selection_or_loading(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
+    enable_cloud(db, access_for(admin, db), monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     first, second = scripted(admin), scripted(admin, name="Second")
     scripted(admin, name="Disabled", enabled=False)
@@ -44,7 +50,9 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     captured = []
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
     assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
-    assert set(captured.pop()["skill_packages"]) == {first["id"], second["id"]}
+    assert captured.pop()["skill_packages"] == {}
+    assert runtime.execute("run_command", {"command": f"python /skills/{first['id']}/scripts/task.py"})["exit_code"] == 0
+    assert set(captured.pop()["skill_packages"]) == {first["id"]}
     loaded = runtime.execute("load_skill", {"skill_id": first["id"]})
     assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/skills/{first['id']}"
     assert loaded["execution"]["read_only"] and loaded["execution"]["scripts"] == ["scripts/task.py"]
@@ -52,15 +60,15 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     row.files[0].content = b"CHANGED AFTER REQUEST"
     row.version += 1
     db.commit()
-    assert runtime.execute("run_command", {"command": "python script.py"})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": "python script.py", "skill_ids": [first["id"]]})["exit_code"] == 0
     package = captured[0]["skill_packages"]
-    assert set(package) == {first["id"], second["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
+    assert set(package) == {first["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
     assert package[first["id"]]["assets/value.bin"] == b"\xff\x00"
     assert runtime.execute("run_command", {"command": "x", "skill_files": {}}).get("error")
     row.enabled = False
     db.commit()
     assert runtime.execute("run_command", {"command": "echo unrelated task"})["exit_code"] == 0
-    assert set(captured[-1]["skill_packages"]) == {second["id"]}
+    assert captured[-1]["skill_packages"] == {}
     assert len(captured) == 2
 
 
@@ -99,6 +107,7 @@ def test_output_tools_work_without_skill_or_executor_and_recheck_role(accounts, 
 
 def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
+    enable_cloud(db, access_for(admin, db), monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     selected = scripted(admin)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]])
@@ -106,7 +115,7 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     captured = []
     with monkeypatch.context() as patch:
         patch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
-        assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+        assert runtime.execute("run_command", {"command": "echo ready", "skill_ids": [selected["id"]]})["exit_code"] == 0
         assert set(captured[0]["skill_packages"]) == {selected["id"]}
     def unavailable(*args):
         raise HTTPException(503, "SECRET SDK DIAGNOSTIC")
@@ -126,12 +135,12 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
     admin, db, _ = setup_site(accounts, monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     access = access_for(admin, db)
+    enable_cloud(db, access, monkeypatch)
     captured = []
     def runner(*args, **kwargs):
-        captured.append(kwargs["json"])
-        return SimpleNamespace(raise_for_status=lambda: None,
-            json=lambda: {"status": "completed", "exit_code": 0, "files": {}})
-    monkeypatch.setattr("httpx.post", runner)
+        captured.append(kwargs)
+        return {"exit_code": 0}
+    monkeypatch.setattr(extensions, "execute_tool", runner)
     for platform in (False, True):
         if platform:
             method = create(admin)
@@ -139,7 +148,7 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
         if platform:
             assert "instructions" in runtime.execute("load_skill", {"skill_id": method["id"]})
         assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
-        assert captured[-1]["skill_files"] == {}
+        assert captured[-1]["skill_packages"] == {}
     member = db.get(Membership, (access.workspace_id, access.user_id))
     member.role = "viewer"
     db.commit()
@@ -153,53 +162,59 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
 def test_script_nonzero_exit_is_failure_and_keeps_completed_outputs(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(admin, db)
-    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    fake, execute = enable_cloud(db, access, monkeypatch)
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
-    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: SimpleNamespace(
-        raise_for_status=lambda: None, json=lambda: {"status": "failed", "exit_code": 1,
-            "files": {"partial.txt": base64.b64encode(b"partial").decode()}}))
-    result = workspace_files.execute_tool("run_command", {"command": "exit 1"}, db, access, access.workspace_id)
+    fake.result = {"exit_code": 1, "stdout": "", "stderr": "synthetic error"}
+    fake.outputs = {"partial.txt": b"partial"}
+    result = execute({"command": "exit 1"})
     assert result["error_code"] == "script_failed" and len(result["generated_files"]) == 1
-    assert db.query(WorkspaceExecutionJob).one().status == "failed"
+    from app.models import CloudComputerCommand
+    assert db.query(CloudComputerCommand).one().status == "failed"
 
 
 def test_run_command_forwards_packages_and_saves_only_outputs(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(admin, db)
-    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
+    fake, execute = enable_cloud(db, access, monkeypatch)
     captured, stored = [], {}
-    def post(url, **kwargs):
-        captured.append(kwargs["json"])
-        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {
-            "status": "completed", "exit_code": 0, "stdout": "ok", "files": {"report.txt": base64.b64encode(b"result").decode()}})
-    monkeypatch.setattr("httpx.post", post)
+    fake.outputs = {"report.txt": b"result"}
+    monkeypatch.setattr(fake, "write_skill", lambda sandbox, path, data: captured.append((path, data)))
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda file, key, *_: stored.update({key: file.read()}))
-    result = workspace_files.execute_tool("run_command", {"command": "python /skills/test/main.py"}, db,
-        access, access.workspace_id, skill_packages={"test": {"main.py": b"print('ok')"}})
+    result = execute({"command": "python /skills/test/main.py"}, {"test": {"main.py": b"print('ok')"}})
     assert result["exit_code"] == 0 and "files" not in result
-    assert captured[0]["skill_files"] == {"test/main.py": base64.b64encode(b"print('ok')").decode()}
+    assert captured == [("test/main.py", b"print('ok')")]
     assert list(stored.values()) == [b"result"]
-    job = db.query(WorkspaceExecutionJob).one()
-    assert job.changed_files == ["report.txt"]
+    from app.models import CloudComputerCommand
+    assert db.query(CloudComputerCommand).one().result["generated_files"][0]["path"] == "report.txt"
 
 
-def test_failed_output_save_rolls_back_metadata_and_allows_next_execution(accounts, monkeypatch):
+def test_failed_output_save_rolls_back_metadata_and_retries_without_execution(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(admin, db)
-    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
-    monkeypatch.setattr("httpx.post", lambda *args, **kwargs: SimpleNamespace(
-        raise_for_status=lambda: None, json=lambda: {"status": "completed", "exit_code": 0,
-            "files": {"report.txt": base64.b64encode(b"result").decode()}}))
+    fake, execute = enable_cloud(db, access, monkeypatch)
+    fake.outputs = {"report.txt": b"result"}
     def unavailable(*args):
         raise HTTPException(503, "storage unavailable")
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
-    result = workspace_files.execute_tool("run_command", {"command": "echo result"}, db, access, access.workspace_id)
-    assert result["status"] == "failed" and not result["generated_files"]
+    result = execute({"command": "echo result"})
+    assert "尚未全部保存" in result["error"] and not result.get("generated_files")
     assert db.query(WorkspaceFile).count() == db.query(WorkspaceFileVersion).count() == 0
-    assert db.query(WorkspaceExecutionJob).one().status == "failed"
+    from app.models import CloudComputerCommand
+    assert db.query(CloudComputerCommand).one().status == "save_failed"
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
-    result = workspace_files.execute_tool("run_command", {"command": "echo result"}, db, access, access.workspace_id)
-    assert result["status"] == "completed" and len(result["generated_files"]) == 1
+    from app import cloud_computer as cloud
+    from sqlalchemy.orm import sessionmaker
+    command = db.query(CloudComputerCommand).one()
+    with pytest.raises(HTTPException) as conflict:
+        execute({"command": "echo result"})
+    assert conflict.value.status_code == 409
+    db.rollback()
+    cloud.retry_save(command.id, db, access)
+    cloud.maintenance(sessionmaker(bind=db.get_bind()))
+    db.expire_all()
+    command = db.get(CloudComputerCommand, command.id)
+    assert command.status == "completed" and len(command.result["generated_files"]) == 1
+    assert fake.starts == 1
     row = db.query(WorkspaceFile).one()
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
     with pytest.raises(HTTPException):
