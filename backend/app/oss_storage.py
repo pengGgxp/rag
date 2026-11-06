@@ -25,11 +25,12 @@ class OssStorage:
     def _request(self, operation, request):
         try:
             return getattr(self.sdk, operation)(request)
-        except oss.exceptions.ServiceError as error:
-            if error.status_code == 404 and operation in ("head_object", "abort_multipart_upload"):
+        except Exception as error:
+            while isinstance(error, oss.exceptions.OperationError):
+                error = error.unwrap()
+            if (isinstance(error, oss.exceptions.ServiceError) and error.status_code == 404
+                    and operation in ("head_object", "abort_multipart_upload")):
                 return None
-            raise HTTPException(503, "对象存储请求失败，请检查连接或权限后重试") from None
-        except Exception:
             raise HTTPException(503, "对象存储请求失败，请检查连接或权限后重试") from None
 
     def put(self, key, stream, content_type="application/octet-stream"):

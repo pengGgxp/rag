@@ -291,14 +291,16 @@ def test_vendor_errors_are_redacted_without_fallback():
 
 def test_sdk_missing_object_is_normalized_but_permission_errors_are_not():
     def missing(_):
-        raise oss.exceptions.ServiceError(status_code=404, code="NoSuchKey", message="private detail",
+        service = oss.exceptions.ServiceError(status_code=404, code="NoSuchKey", message="private detail",
             request_id="test", ec="", timestamp="", request_target="test")
+        raise oss.exceptions.OperationError(name="HeadObject", error=service)
     adapter = bare_oss(head_object=missing, abort_multipart_upload=missing)
     assert adapter.head("missing") is None
     assert adapter.abort("file", "missing-upload") is None
     def forbidden(_):
-        raise oss.exceptions.ServiceError(status_code=403, code="AccessDenied", message="private detail",
+        service = oss.exceptions.ServiceError(status_code=403, code="AccessDenied", message="private detail",
             request_id="test", ec="", timestamp="", request_target="test")
+        raise oss.exceptions.OperationError(name="HeadObject", error=service)
     adapter.sdk.head_object = forbidden
     with pytest.raises(HTTPException) as error:
         adapter.head("file")
