@@ -72,7 +72,7 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", 8136), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     storage.part_url = part_url
-    document_uploads.current_cos = lambda *_: storage
+    document_uploads.current_storage = lambda *_: storage
     storage_settings.CosStorage = lambda *_: storage
     @asynccontextmanager
     async def lifespan(_):

@@ -1,5 +1,6 @@
 boto3==1.35.99
 cos-python-sdk-v5==1.9.44
+alibabacloud-oss-v2==1.4.1
 celery[redis]==5.4.0
 kombu==5.6.2
 fastapi==0.115.6

@@ -15,6 +15,10 @@ from .site_audit import record
 
 
 def migrate(db, *, execute=False, version=None, legacy=None):
+    from .storage_backend import active_settings
+    active = active_settings(db)
+    if active and active.provider != "cos":
+        raise ValueError("当前使用其他供应商，请使用 migrate_storage 进行校验迁移")
     row = locked(db)
     if not row.bucket or row.tested_version != row.version:
         raise ValueError("请先在后台保存并通过存储连接测试")

@@ -5,13 +5,11 @@ from fastapi import HTTPException
 from .config import get_settings
 
 
-def cos_backend():
+def storage_backend():
     from .db import SessionLocal
-    from .models import SiteStorageSettings
-    from .cos_storage import CosStorage
+    from .storage_backend import current_storage
     with SessionLocal() as db:
-        row = db.get(SiteStorageSettings, 1)
-        return CosStorage(row) if row and row.active else None
+        return current_storage(db, require_active=False)
 
 
 def client():
@@ -27,14 +25,14 @@ def client():
 
 
 def upload_fileobj(fileobj, object_key: str, content_type: str) -> None:
-    backend = cos_backend()
+    backend = storage_backend()
     if not backend:
         raise HTTPException(503, "文件存储尚未就绪，请联系站点管理员")
     backend.put(object_key, fileobj, content_type)
 
 
 def download_fileobj(object_key: str):
-    backend = cos_backend()
+    backend = storage_backend()
     if backend:
         return backend.download(object_key)
     settings = get_settings()
@@ -45,7 +43,7 @@ def download_fileobj(object_key: str):
 
 
 def download_range_fileobj(object_key: str, start: int, end: int):
-    backend = cos_backend()
+    backend = storage_backend()
     if backend:
         return backend.download_range(object_key, start, end)
     settings = get_settings()
@@ -54,7 +52,7 @@ def download_range_fileobj(object_key: str, start: int, end: int):
 
 
 def head_object(object_key: str):
-    backend = cos_backend()
+    backend = storage_backend()
     if backend:
         return backend.head(object_key)
     from botocore.exceptions import ClientError
@@ -67,7 +65,7 @@ def head_object(object_key: str):
 
 
 def delete_object(object_key: str) -> None:
-    backend = cos_backend()
+    backend = storage_backend()
     if backend:
         backend.delete(object_key)
         return

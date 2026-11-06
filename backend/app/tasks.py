@@ -60,9 +60,8 @@ def image_tasks_on_worker_ready(**_):
 
 
 def ocr_storage(session):
-    from .cos_storage import CosStorage
-    settings = session.get(SiteStorageSettings, 1)
-    return CosStorage(settings) if settings and settings.active else None
+    from .storage_backend import current_storage
+    return current_storage(session, require_active=False)
 
 
 def cleanup_ocr_object(storage, key):

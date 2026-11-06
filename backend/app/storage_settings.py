@@ -1,36 +1,42 @@
-"""Encrypted site-level COS configuration, without exposing credential values."""
+"""Encrypted independent object-store connections without credential disclosure."""
 import hashlib
 import io
+import re
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from sqlalchemy import func, select, text
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from sqlalchemy import text
 
 from .db import get_db
-from .models import Document, SiteStorageSettings
+from .models import SiteStorageSettings
 from .site_auth import protect, reveal, site_admin
 from .site_audit import record
 from .cos_storage import CosStorage
+from .oss_storage import OssStorage
+from .storage_backend import PROVIDER_IDS, active_settings
 
 router = APIRouter(prefix="/site/admin/storage", tags=["site-admin"])
 
 
-def locked(db):
+def locked(db, provider="cos"):
     if db.bind.dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(3020046)"))
-    row = db.get(SiteStorageSettings, 1, with_for_update=True, populate_existing=True)
+    identifier = PROVIDER_IDS[provider]
+    row = db.get(SiteStorageSettings, identifier, with_for_update=True, populate_existing=True)
     if row is None:
-        row = SiteStorageSettings(id=1, version=0, bucket="", region="", active=False)
+        row = SiteStorageSettings(id=identifier, provider=provider, version=0, bucket="", region="", active=False)
         db.add(row)
         db.flush()
     return row
 
 
-def read(row):
+def read(row, provider="cos"):
     identifier = reveal(row.encrypted_secret_id) if row and row.encrypted_secret_id else ""
-    return {"version": row.version if row else 0, "bucket": row.bucket if row else "zk-1309923787",
-        "region": row.region if row else "ap-guangzhou", "has_secret_id": bool(identifier),
+    provider = row.provider if row else provider
+    return {"provider": provider, "version": row.version if row else 0,
+        "bucket": row.bucket if row else "", "region": row.region if row else "cn-hangzhou" if provider == "oss" else "ap-guangzhou", "has_secret_id": bool(identifier),
         "secret_id_masked": f"{identifier[:4]}…{identifier[-4:]}" if len(identifier) > 8 else "已配置" if identifier else "",
         "has_secret_key": bool(row and row.encrypted_secret_key), "active": bool(row and row.active),
         "tested": bool(row and row.tested_version == row.version), "test_result": row.test_result if row else None}
@@ -39,25 +45,39 @@ def read(row):
 class StorageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: int = Field(ge=0)
-    bucket: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,61}-[0-9]+$")
+    provider: Literal["cos", "oss"] = "cos"
+    bucket: str = Field(min_length=1, max_length=100)
     region: str = Field(pattern=r"^[a-z]{2}(?:-[a-z0-9]+){1,3}$", max_length=60)
     secret_id: SecretStr | None = None
     secret_key: SecretStr | None = None
     clear_credentials: bool = False
 
+    @model_validator(mode="after")
+    def validate_location(self):
+        pattern = r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" if self.provider == "oss" else r"^[a-z0-9][a-z0-9-]{0,61}-[0-9]+$"
+        if not re.fullmatch(pattern, self.bucket):
+            raise ValueError("存储桶名称不符合供应商规则")
+        if self.provider == "oss" and not re.fullmatch(r"(?:cn|ap|us|eu|me|na|sa|af)-[a-z0-9]+(?:-[a-z0-9]+)*", self.region):
+            raise ValueError("请输入 OSS 地域，例如 cn-hangzhou")
+        return self
+
 
 class TestInput(BaseModel):
     version: int = Field(ge=1)
+    provider: Literal["cos", "oss"] = "cos"
 
 
 @router.get("")
 def get_settings(db=Depends(get_db), actor=Depends(site_admin)):
-    return read(db.get(SiteStorageSettings, 1))
+    active = active_settings(db)
+    return {"active_provider": active.provider if active else None,
+        "connections": [read(db.get(SiteStorageSettings, identifier), provider)
+            for provider, identifier in PROVIDER_IDS.items()]}
 
 
 @router.put("")
 def save_settings(payload: StorageInput, db=Depends(get_db), actor=Depends(site_admin)):
-    row = locked(db)
+    row = locked(db, payload.provider)
     if row.version != payload.version:
         raise HTTPException(409, "存储配置已更新，请重新加载后保存")
     if row.active and (payload.bucket != row.bucket or payload.region != row.region):
@@ -79,13 +99,13 @@ def save_settings(payload: StorageInput, db=Depends(get_db), actor=Depends(site_
     if row.active and credentials_changed:
         if not check_connection(row):
             db.rollback()
-            record(db, actor, "storage.updated", "storage", 1, result="failure",
+            record(db, actor, "storage.updated", "storage", row.id, result="failure",
                 details={"fields": sorted(payload.model_fields_set), "accepted": False})
             db.commit()
             raise HTTPException(503, "新凭据验证失败，原存储配置未改变")
         row.tested_version = row.version
         row.test_result = "连接及文件操作验证通过"
-    record(db, actor, "storage.updated", "storage", 1, details={"fields": sorted(payload.model_fields_set), "version": row.version})
+    record(db, actor, "storage.updated", "storage", row.id, details={"provider": row.provider, "fields": sorted(payload.model_fields_set), "version": row.version})
     db.commit()
     return read(row)
 
@@ -95,19 +115,28 @@ def check_connection(row):
     key, multipart_id = f"_checks/{uuid4()}", None
     error = False
     try:
-        storage = CosStorage(row)
+        storage = OssStorage(row) if row.provider == "oss" else CosStorage(row)
         body = b"zhiku-storage-check"
         storage.put(key, io.BytesIO(body))
         with storage.download(key) as downloaded:
             if hashlib.sha256(downloaded.read()).digest() != hashlib.sha256(body).digest():
                 raise ValueError("Object verification failed")
         multipart_id = storage.begin(key + "-multipart", "application/octet-stream")
-        part = storage._call("upload_part", Key=key + "-multipart", UploadId=multipart_id, PartNumber=1, Body=body)
-        storage.complete(key + "-multipart", multipart_id, [{"PartNumber": 1, "ETag": part["ETag"]}])
+        etag = storage.upload_part(key + "-multipart", multipart_id, 1, body)
+        storage.parts(key + "-multipart", multipart_id)
+        storage.complete(key + "-multipart", multipart_id, [{"PartNumber": 1, "ETag": etag}])
         multipart_id = None
         with storage.download(key + "-multipart") as downloaded:
             if downloaded.read() != body:
                 raise ValueError("Multipart verification failed")
+        if int(storage.head(key)["Content-Length"]) != len(body):
+            raise ValueError("Object size verification failed")
+        with storage.download_range(key, 0, 3) as downloaded:
+            if downloaded.read() != body[:4]:
+                raise ValueError("Range verification failed")
+        multipart_id = storage.begin(key + "-multipart", "application/octet-stream")
+        storage.abort(key + "-multipart", multipart_id)
+        multipart_id = None
         next(iter(storage.iter_objects()), None)
         next(iter(storage.incomplete_uploads()), None)
         storage.delete(key + "-multipart")
@@ -127,23 +156,13 @@ def check_connection(row):
 
 @router.post("/test")
 def test_settings(payload: TestInput, db=Depends(get_db), actor=Depends(site_admin)):
-    row = locked(db)
+    row = locked(db, payload.provider)
     if row.version != payload.version:
         raise HTTPException(409, "存储配置已更新，请重新加载后测试")
     error = not check_connection(row)
     row.test_result = "连接及文件操作验证通过" if not error else "连接测试失败，请检查凭据、桶地域及读写清理权限"
     row.tested_version = row.version if not error else None
-    # Empty installations need no migration. Existing documents require the verified migration command.
-    if not error and not db.scalar(select(func.count()).select_from(Document)):
-        row.active = True
-    record(db, actor, "storage.tested", "storage", 1, result="failure" if error else "success",
+    record(db, actor, "storage.tested", "storage", row.id, result="failure" if error else "success",
         details={"version": row.version, "accepted": not error})
     db.commit()
     return {**read(row), "success": not error}
-
-
-def current_cos(db, *, require_active=True):
-    row = db.get(SiteStorageSettings, 1, populate_existing=True)
-    if require_active and (not row or not row.active):
-        raise HTTPException(503, "文件存储尚未就绪，请联系站点管理员")
-    return CosStorage(row)

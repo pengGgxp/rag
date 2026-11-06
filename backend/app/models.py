@@ -4,7 +4,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -51,7 +51,13 @@ class SiteSearchSettings(Base):
 
 class SiteStorageSettings(Base):
     __tablename__ = "site_storage_settings"
+    __table_args__ = (
+        Index("uq_storage_provider", "provider", unique=True),
+        Index("uq_storage_active", "active", unique=True,
+            postgresql_where=text("active = true"), sqlite_where=text("active = 1")),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(12), default="cos", server_default="cos")
     version: Mapped[int] = mapped_column(Integer, default=0)
     bucket: Mapped[str] = mapped_column(String(100), default="")
     region: Mapped[str] = mapped_column(String(60), default="")
@@ -60,6 +66,29 @@ class SiteStorageSettings(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     tested_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     test_result: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+
+class StorageMigration(Base):
+    __tablename__ = "storage_migrations"
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    source_provider: Mapped[str] = mapped_column(String(12))
+    target_provider: Mapped[str] = mapped_column(String(12))
+    source_version: Mapped[int] = mapped_column(Integer)
+    target_version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(24), default="copying")
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StorageMigrationObject(Base):
+    __tablename__ = "storage_migration_objects"
+    migration_id: Mapped[UUID] = mapped_column(ForeignKey("storage_migrations.id"), primary_key=True)
+    object_key: Mapped[str] = mapped_column(String(700), primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    content_type: Mapped[str] = mapped_column(String(150))
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class DocumentUpload(Base):

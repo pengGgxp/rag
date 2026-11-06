@@ -14,7 +14,7 @@ from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_ingestion import admit, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
 from .models import Document, DocumentStatus, DocumentUpload, Membership, User
-from .storage_settings import current_cos
+from .storage_backend import current_storage
 
 router = APIRouter(tags=["document-uploads"])
 PART_SIZE = 8 * 1024 * 1024
@@ -73,7 +73,7 @@ def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), ac
             DocumentUpload.user_id == access.user_id, DocumentUpload.state.in_(["uploading", "completing", "verifying"]),
             DocumentUpload.expires_at > now())) >= 20:
         raise HTTPException(429, "进行中的上传过多，请先完成或取消部分任务")
-    storage = current_cos(db)
+    storage = current_storage(db)
     identifier = uuid4()
     key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
     multipart_id = storage.begin(key, payload.content_type)
@@ -93,7 +93,7 @@ def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), ac
 @router.get("/uploads/{identifier}")
 def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
-    parts = cloud_parts(current_cos(db), row) if row.state == "uploading" else []
+    parts = cloud_parts(current_storage(db), row) if row.state == "uploading" else []
     result = view(row, [{"number": int(part["PartNumber"]), "size": int(part["Size"]),
         "sha256": row.parts.get(str(part["PartNumber"]))} for part in parts])
     if row.document_id:
@@ -116,7 +116,7 @@ def sign_part(identifier: UUID, number: int, payload: PartInput, db=Depends(get_
         raise HTTPException(409, "文件内容与原上传不一致，请重新发起上传")
     size = min(PART_SIZE, row.size_bytes - (number-1)*PART_SIZE)
     row.parts = {**row.parts, str(number): payload.sha256}
-    url = current_cos(db).part_url(row.object_key, row.multipart_id, number, size)
+    url = current_storage(db).part_url(row.object_key, row.multipart_id, number, size)
     db.commit()
     return {"url": url, "expires_in": 900, "size": size}
 
@@ -131,7 +131,7 @@ def complete_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acc
         return view(row)
     if row.state not in ("uploading", "completing"):
         raise HTTPException(409, "上传任务已经结束，请重新上传")
-    storage = current_cos(db)
+    storage = current_storage(db)
     if row.state == "uploading":
         parts = cloud_parts(storage, row)
         if len(parts) != math.ceil(row.size_bytes / PART_SIZE):
@@ -166,7 +166,7 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
     row = owned(db, access, identifier)
     if row.state == "completed":
         raise HTTPException(409, "文件已入库，请在文档列表中管理")
-    storage = current_cos(db)
+    storage = current_storage(db)
     if row.state in ("uploading", "completing"):
         storage.abort(row.object_key, row.multipart_id)
     storage.delete(row.object_key)
@@ -180,7 +180,7 @@ def finalize_upload(identifier):
         row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
         if not row or row.state != "verifying":
             return
-        storage = current_cos(db)
+        storage = current_storage(db)
         try:
             access = worker_access(db, row)
             access.library(db, row.knowledge_base_id, write=True)
@@ -231,7 +231,7 @@ def cleanup_uploads():
             .with_for_update(skip_locked=True)).all()
         if not rows:
             return
-        storage = current_cos(db)
+        storage = current_storage(db)
         for row in rows:
             try:
                 if row.state in ("uploading", "completing"):
@@ -261,12 +261,12 @@ def recover_uploads():
 
 def cleanup_orphans():
     """Only platform-shaped objects older than the session lifetime are eligible."""
-    from .models import SiteStorageSettings
+    from .storage_backend import active_settings
     with SessionLocal() as db:
-        settings = db.get(SiteStorageSettings, 1)
+        settings = active_settings(db)
         if not settings or not settings.active:
             return
-        storage = current_cos(db)
+        storage = current_storage(db)
         cutoff = now() - timedelta(hours=24)
         managed = re.compile(r"^[0-9a-f-]{36}/[0-9a-f-]{36}\.[a-z0-9]+$")
         def old(value):

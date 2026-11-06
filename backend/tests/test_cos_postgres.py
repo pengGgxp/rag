@@ -19,7 +19,7 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     engine = auth_postgres
     raw, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     storage = FakeCos()
-    monkeypatch.setattr(document_uploads, "current_cos", lambda _: storage)
+    monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     monkeypatch.setattr(tasks.verify_upload, "delay", lambda _: None)
     processed = []

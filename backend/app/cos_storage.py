@@ -72,6 +72,9 @@ class CosStorage:
         return self._call("complete_multipart_upload", Key=key, UploadId=upload_id,
             MultipartUpload={"Part": parts})
 
+    def upload_part(self, key, upload_id, number, body):
+        return self._call("upload_part", Key=key, UploadId=upload_id, PartNumber=number, Body=body)["ETag"]
+
     def abort(self, key, upload_id):
         self._call("abort_multipart_upload", Key=key, UploadId=upload_id)
 

@@ -51,6 +51,9 @@ class FakeCos:
         self.downloads += 1
         return io.BytesIO(self.objects[key])
 
+    def download_range(self, key, start, end):
+        return io.BytesIO(self.objects[key][start:end+1])
+
     def put(self, key, stream, _=None):
         self.objects[key] = stream.read()
 
@@ -65,6 +68,9 @@ class FakeCos:
         self.uploads[kwargs["UploadId"]]["parts"][kwargs["PartNumber"]] = kwargs["Body"]
         return {"ETag": '"test-part"'}
 
+    def upload_part(self, key, identifier, number, body):
+        return self._call("upload_part", Key=key, UploadId=identifier, PartNumber=number, Body=body)["ETag"]
+
 
 @pytest.fixture
 def direct(accounts, monkeypatch):
@@ -73,7 +79,7 @@ def direct(accounts, monkeypatch):
     register(outsider, "outsider@example.com")
     kb = library(owner)
     storage = FakeCos()
-    monkeypatch.setattr(uploads, "current_cos", lambda *_: storage)
+    monkeypatch.setattr(uploads, "current_storage", lambda *_: storage)
     monkeypatch.setattr(uploads, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     queued = []
     monkeypatch.setattr(tasks.verify_upload, "delay", queued.append)
@@ -227,8 +233,10 @@ def test_storage_admin_encryption_version_test_and_secret_redaction(accounts, mo
     fake = FakeCos()
     monkeypatch.setattr(storage_settings, "CosStorage", lambda _: fake)
     tested = owner.post("/site/admin/storage/test", json={"version": 1})
-    assert tested.status_code == 200 and tested.json()["success"] and tested.json()["active"]
+    assert tested.status_code == 200 and tested.json()["success"] and not tested.json()["active"]
     assert fake.objects == fake.uploads == {}
+    row.active = True
+    db.commit()
     assert owner.put("/site/admin/storage", json={**body, "version": 1, "region": "ap-shanghai"}).status_code == 409
     assert owner.put("/site/admin/storage", json={**body, "version": 1, "clear_credentials": True}).status_code == 409
     saved = owner.put("/site/admin/storage", json={**body, "version": 1, "secret_id": "", "secret_key": ""})
