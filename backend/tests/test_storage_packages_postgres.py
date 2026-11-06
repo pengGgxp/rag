@@ -60,7 +60,7 @@ def test_concurrent_writes_and_transfers_cannot_exceed_allowance(auth_postgres):
             gate.wait()
             try:
                 billing.check_capacity(db, access.workspace_id, 7)
-                row = WorkspaceFile(workspace_id=access.workspace_id, path=f"test-{index}", content_hash="x",
+                row = WorkspaceFile(workspace_id=access.workspace_id, path=f"test-{index}", content_hash="x", size_bytes=7,
                     created_by=access.user_id, updated_by=access.user_id, expires_at=now()+timedelta(days=3))
                 db.add(row); db.flush()
                 db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=1,

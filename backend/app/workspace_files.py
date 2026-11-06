@@ -35,8 +35,8 @@ def valid_path(path: str) -> str:
 def check_workspace(access, workspace_id):
     if UUID(str(workspace_id)) != access.workspace_id: raise HTTPException(404, "工作区不存在或无权访问")
 def read_file(row):
-    return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": row.current_version, "source": row.source, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
-        "download_url": f"/resources/{row.id}/download?version={row.current_version}", "preview_url": f"/resources/{row.id}/download?version={row.current_version}&preview=true"}
+    return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": 1, "availability": "missing" if row.deleted_at else "available", "source": row.source, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+        "download_url": f"/resources/{row.id}/download", "preview_url": f"/resources/{row.id}/download?preview=true"}
 def owned(db, access, workspace_id, file_id, write=False):
     check_workspace(access, workspace_id); row = db.get(WorkspaceFile, file_id)
     if not row or row.workspace_id != access.workspace_id or row.deleted_at: raise HTTPException(404, "文件不存在")
@@ -84,45 +84,55 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
     if len(data) > MAX_BYTES:
         raise HTTPException(413, "文件不能超过 200 MiB")
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, len(data))
+    from .shared_resources import object_key
+    check_capacity(db, access.workspace_id, len(data), exclude_key=object_key(access.workspace_id, path))
     row = db.scalar(select(WorkspaceFile).where(
         WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path).execution_options(populate_existing=True))
     active = row is not None and row.deleted_at is None
-    if active:
-        if expected_version != row.current_version:
-            raise HTTPException(409, "文件已被修改，请重新读取")
-        version = row.current_version + 1
-    else:
-        if row is not None:
-            raise HTTPException(409, "该路径的资源已删除，请使用新路径保存")
-        version = 1
-        if row is None:
-            row = WorkspaceFile(workspace_id=access.workspace_id, path=path,
-                content_type=content_type, size_bytes=0, content_hash="", current_version=1,
-                created_by=access.user_id, updated_by=access.user_id)
-            db.add(row)
-            db.flush()
+    if row is not None and row.deleted_at:
+        raise HTTPException(409, "该路径的资源已删除，请使用新路径保存")
+    if active and expected_version not in (None, 1):
+        raise HTTPException(409, "文件已被修改，请重新读取")
+    if row is None:
+        row = WorkspaceFile(workspace_id=access.workspace_id, path=path,
+            content_type=content_type, size_bytes=0, content_hash="", current_version=1,
+            created_by=access.user_id, updated_by=access.user_id)
+        db.add(row)
+        db.flush()
     digest = hashlib.sha256(data).hexdigest()
     row.content_type = content_type or row.content_type or "application/octet-stream"
     if row.content_type == "application/octet-stream":
         import mimetypes
         row.content_type = mimetypes.guess_type(path)[0] or row.content_type
     row.size_bytes, row.content_hash = len(data), digest
-    row.current_version, row.updated_by, row.deleted_at = version, access.user_id, None
+    row.current_version, row.updated_by, row.deleted_at = 1, access.user_id, None
     row.expires_at = datetime(9999, 12, 31, tzinfo=timezone.utc)
-    key = f"workspaces/{access.workspace_id}/files/{row.id}/{version}/{path}"
+    from .shared_resources import object_key
+    key = object_key(access.workspace_id, path)
     upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
-    if uploaded is not None: uploaded.append(key)
-    db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
-        object_key=key, content_type=row.content_type, size_bytes=len(data), content_hash=digest,
-        created_by=access.user_id))
-    from .shared_resources import publish
+    from .shared_resources import backend
+    mounted = backend(db)
+    row.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
+    if uploaded is not None and not active: uploaded.append(key)
+    # The mounted directory is the source of truth. Keep exactly one current
+    # metadata row and remove legacy historical pointers when a file is replaced.
+    db.query(WorkspaceFileVersion).filter(WorkspaceFileVersion.file_id == row.id,
+        WorkspaceFileVersion.version != 1).delete(synchronize_session=False)
+    version_row = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
+        WorkspaceFileVersion.version == 1).execution_options(populate_existing=True))
+    if version_row is None:
+        db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=1,
+            object_key=key, content_type=row.content_type, size_bytes=len(data), content_hash=digest,
+            created_by=access.user_id))
+    else:
+        version_row.object_key, version_row.content_type = key, row.content_type
+        version_row.size_bytes, version_row.content_hash = len(data), digest
+        version_row.deleted_at, version_row.available = None, True
     db.flush()
-    publish(db, row, _current_file_version(db, row))
     from .audit_log import record_audit
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="resource.updated" if active else "resource.created", resource_type="resource",
-        resource_id=row.id, metadata={"version": version})
+        resource_id=row.id, metadata={"source": "upload"})
     return row
 @router.get("")
 def listing(workspace_id: UUID, q: str = "", offset: int = 0, limit: int = 100, db=Depends(get_db), access: Access=Depends(get_access)):
@@ -181,15 +191,13 @@ def _apply_unified_patch(original: str, patch: str) -> str:
     return "".join(out)
 
 def tool_definitions():
-    resource_input = {"type": "object", "properties": {"id": {"type": "string", "format": "uuid"},
-        "version": {"type": "integer", "minimum": 1}}, "required": ["id", "version"], "additionalProperties": False}
     return [{"type":"function","function":{"name":n,"description":d,"parameters":p}} for n,d,p in [
-        ("list_files","列出当前工作区资源元信息，不下载正文",{"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":500}},"additionalProperties":False}),
-        ("read_file","按资源 ID 或路径读取文字片段；二进制返回可用于命令输入的资源引用",{"type":"object","properties":{"id":{"type":"string"},"version":{"type":"integer","minimum":1},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
-        ("write_file","创建或覆盖当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","content"],"additionalProperties":False}),
-        ("apply_patch","按版本应用文本文件补丁；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
+        ("list_files","在当前会话云电脑列出资源文件，与 run_command 共用文件目录和环境",{"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":False}),
+        ("read_file","在云电脑按资源 ID 或路径读取当前文件；二进制返回可直接使用的文件路径。",{"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
+        ("write_file","创建或覆盖当前工作区文本文件，内容直接写入资源库。",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False}),
+        ("apply_patch","直接修改当前文件；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 直接挂载整个工作区资源库，同工作区所有会话共享当前文件，写入和删除直接生效。inputs 指定当前版本时无需传输；显式历史版本放在 /tmp/zhiku-cloud-computer/inputs/资源ID/版本/原路径，不覆盖当前文件。同一环境保留依赖。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备，位于 /skills；依赖写到工作目录之外。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备，位于 /skills；依赖写到工作目录之外。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
     ]]
 
 
@@ -199,18 +207,38 @@ def resolve_input(db, access, reference):
     except (ValueError, KeyError, TypeError):
         raise HTTPException(422, "资源 ID 无效") from None
     row = owned(db, access, access.workspace_id, identifier)
+    from .shared_resources import refresh_current_metadata
+    row = refresh_current_metadata(db, access, row)
     version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
-        WorkspaceFileVersion.version == reference.get("version", row.current_version),
-        WorkspaceFileVersion.deleted_at.is_(None)))
+        WorkspaceFileVersion.version == 1, WorkspaceFileVersion.deleted_at.is_(None)))
     if version is None:
         raise HTTPException(404, "资源版本不存在或已删除")
     if version.available is False:
         raise HTTPException(404, "资源对象缺失，请重新上传或生成")
+    from .shared_resources import object_key
+    version.object_key = object_key(access.workspace_id, row.path)
+    version.content_type, version.size_bytes = row.content_type, row.size_bytes
+    version.content_hash = row.content_hash or ""
     return row, version
 
 def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, skill_packages=None, check_active=None):
     check_workspace(access,workspace_id)
-    if name=="list_files": return listing(workspace_id,arguments.get("query", ""),arguments.get("offset",0),arguments.get("limit",100),db,access)
+    from .cloud_computer import execute
+    if name == "run_command":
+        return execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active)
+    if name not in {"list_files", "read_file", "write_file", "apply_patch", "delete_file"}:
+        return {"error": "未知文件工具"}
+    if name not in {"list_files", "read_file"}:
+        access.editor()
+    from .shared_resources import refresh_index
+    if name == "list_files" or (arguments.get("path") and not arguments.get("id")):
+        refresh_index(db, access, arguments.get("path", arguments.get("query", "")), 0, 100)
+    operation = {"name": name}
+    metadata = {}
+    row = None
+    if name == "list_files":
+        operation.update(query=arguments.get("query", ""), offset=max(0, arguments.get("offset", 0)),
+                         limit=min(max(1, arguments.get("limit", 100)), 100))
     if name=="read_file":
         reference = arguments
         if not arguments.get("id"):
@@ -219,39 +247,52 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             if row is None: raise HTTPException(404, "资源不存在")
             reference = {**arguments, "id": str(row.id)}
         row, ver = resolve_input(db, access, reference)
-        result = {**read_file(row), "version": ver.version, "size_bytes": ver.size_bytes,
+        metadata = {**read_file(row), "version": 1, "size_bytes": ver.size_bytes,
             "content_type": ver.content_type, "sha256": ver.content_hash,
-            "download_url": f"/resources/{row.id}/download?version={ver.version}",
-            "preview_url": f"/resources/{row.id}/download?version={ver.version}&preview=true",
-            "input": {"id": str(row.id), "version": ver.version}}
-        if not ver.content_type.startswith("text/") and not row.path.lower().endswith((".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css", ".sh")):
-            return result
-        from .resource_cache import read_bytes
-        offset = min(arguments.get("offset", 0), ver.size_bytes)
-        data = read_bytes(db, access, row, ver, offset=offset, limit=arguments.get("limit", 12000))
-        return {**result, "content": data.decode("utf-8", errors="replace"), "offset": offset,
-            "next_offset": offset + len(data) if offset + len(data) < ver.size_bytes else None}
-    if name=="write_file":
-        access.editor(); payload=TextWrite(path=arguments["path"],content=arguments["content"],expected_version=arguments.get("expected_version")); return write_text(workspace_id,payload,db,access)
-    if name=="apply_patch":
-        access.editor(); path = valid_path(arguments["path"])
+            "download_url": f"/resources/{row.id}/download",
+            "preview_url": f"/resources/{row.id}/download?preview=true",
+            "input": {"id": str(row.id), "version": 1}}
+        operation.update(path=row.path, offset=max(0, arguments.get("offset", 0)),
+            limit=min(max(1, arguments.get("limit", 12000)), 12000), binary=not (
+                ver.content_type.startswith("text/") or row.path.lower().endswith(
+                    (".txt", ".md", ".csv", ".json", ".py", ".js", ".html", ".css", ".sh"))))
+        operation["reference"] = {"id": str(row.id), "version": 1}
+        metadata["file_path"] = "/home/user/workspace/" + row.path
+    elif name in {"write_file", "apply_patch", "delete_file"}:
+        path = valid_path(arguments["path"])
+        if name != "delete_file":
+            from .storage_billing import check_capacity
+            from .shared_resources import object_key
+            check_capacity(db, access.workspace_id, len(arguments.get("content", "").encode("utf-8")),
+                exclude_key=object_key(access.workspace_id, path))
         row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
             WorkspaceFile.path == path, WorkspaceFile.deleted_at.is_(None)))
-        if row is None: return {"error": "文件不存在"}
-        if row.current_version != arguments["expected_version"]: raise HTTPException(409, "文件已被修改，请重新读取")
-        version = _current_file_version(db, row)
-        from .resource_cache import read_bytes
-        content = read_bytes(db, access, row, version)
-        try: updated = _apply_unified_patch(content.decode("utf-8"), arguments["patch"])
-        except UnicodeDecodeError: return {"error": "只能对文本文件应用补丁"}
-        return _save_bytes(workspace_id, access, db, path, updated.encode("utf-8"), row.content_type, arguments["expected_version"])
-    if name=="delete_file":
-        access.editor(); path=valid_path(arguments["path"]); row=db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id,WorkspaceFile.path==path,WorkspaceFile.deleted_at.is_(None)))
-        if not row: return {"error":"文件不存在"}
-        from .resources import remove
-        remove(row.id, db, access)
-        return {"path":path,"deleted":True}
-    if name=="run_command":
-        from .cloud_computer import execute
-        return execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active)
-    return {"error":"未知文件工具"}
+        if name != "write_file" and row is None:
+            raise HTTPException(404, "文件不存在")
+        operation.update(path=path)
+        if name == "write_file":
+            payload = TextWrite(path=path, content=arguments.get("content", ""))
+            operation["content"] = payload.content
+        if name == "apply_patch":
+            payload = PatchWrite(patch=arguments["patch"], expected_version=1)
+            operation["patch"] = payload.patch
+    result = execute(db, access, conversation_id, request_id, {
+        "command": name, "file_operation": operation}, None, check_active)
+    file_result = result.get("file_result", {})
+    if file_result.get("error"):
+        raise HTTPException(file_result["status_code"], file_result["error"])
+    if result.get("status") != "completed":
+        return result
+    value = file_result.get("value", {})
+    if name == "list_files":
+        indexed = {r.path: r for r in db.scalars(select(WorkspaceFile).where(
+            WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None))
+            .execution_options(populate_existing=True))}
+        value["items"] = [{**(read_file(indexed[item["path"]]) if item["path"] in indexed else {}), **item}
+                          for item in value.get("items", [])]
+    elif name in {"write_file", "apply_patch", "delete_file"}:
+        from .shared_resources import register_operation
+        value = register_operation(db, access, operation, value)
+        if name in {"write_file", "apply_patch"}:
+            metadata = value
+    return {**metadata, **value, "cloud_computer": result["cloud_computer"], "command_id": result["command_id"]}

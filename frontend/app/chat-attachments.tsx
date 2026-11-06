@@ -86,11 +86,11 @@ export function useChatAttachments() {
   async function selectResource(item: ResourceFile, supportsImages: boolean) {
     if (current.current.length >= 6) throw new Error("每次最多添加 6 个附件");
     if (item.content_type.startsWith("image/") && !supportsImages) throw new Error("当前模型不支持图片，请选择支持图片的模型");
-    if (current.current.some(value => value.attachment?.resource_id === item.id && value.attachment?.version === item.version))
+    if (current.current.some(value => value.attachment?.resource_id === item.id))
       throw new Error("此资源已添加");
     if (current.current.reduce((total, value) => total + value.file.size, item.size_bytes) > 40 * 1024 * 1024)
       throw new Error("每次附件总计不能超过 40 MiB");
-    const attachment = await request<ChatAttachment>(`/resources/${item.id}/attachment?version=${item.version}`, { method: "POST" });
+    const attachment = await request<ChatAttachment>(`/resources/${item.id}/attachment`, { method: "POST" });
     const file = new File([], attachment.filename, { type: attachment.content_type });
     Object.defineProperty(file, "size", { value: attachment.size_bytes });
     const next: DraftAttachment = { key: crypto.randomUUID(), file, attachment, status: "ready", existing: true };

@@ -1,13 +1,9 @@
-import hashlib
-from types import SimpleNamespace
-from uuid import UUID
-
 import pytest
-from fastapi import HTTPException
+from uuid import UUID
 from sqlalchemy import select
 
 from app import cloud_computer as cloud, shared_resources as shared, workspace_files
-from app.models import WorkspaceFile, WorkspaceFileVersion
+from app.models import WorkspaceFileVersion
 from test_cloud_computer import setup, submit
 from test_cloud_computer_mount import MemoryMount, configure_mount
 from test_resources import resource_store, upload
@@ -21,82 +17,108 @@ def mounted(accounts, monkeypatch, resource_store):
     return client, db, conversation, access, storage
 
 
-def test_changes_use_server_copy_without_body_download_or_cache(accounts, monkeypatch, resource_store):
+def test_shell_edit_is_current_file_without_copy_or_body_read(accounts, monkeypatch, resource_store):
     client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    original_key = db.scalar(select(WorkspaceFileVersion.object_key))
-    key = shared.prefix(access.workspace_id) + item["path"]
-    row = db.get(cloud.Computer, submit(db, access, conversation).session_id)
-    cloud.stage_mount(db, row, access, [])
+    key = shared.object_key(access.workspace_id, item["path"])
+    computer = db.get(cloud.Computer, submit(db, access, conversation).session_id)
     storage.objects[key] = b"cloud modification"
     monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("body downloaded"))
-    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_: pytest.fail("download quota used"))
-    provider = SimpleNamespace(manifest=lambda _sandbox: {item["path"]: {
-        "sha256": hashlib.sha256(b"cloud modification").hexdigest(), "size": len(b"cloud modification")}})
-    files = cloud.synchronize(db, row, provider, None)
-    assert files[0]["version"] == 2
-    assert storage.objects[original_key] == b"resource facts"
-    assert not resource_store[1]
-    assert cloud.synchronize(db, row, provider, None) == []
-    cloud.cleanup_mount(db, row)
+    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_: pytest.fail("cache used"))
+    assert cloud.synchronize(db, computer, None, None) == []
+    result = client.get("/resources").json()["items"]
+    assert result[0]["size_bytes"] == len(b"cloud modification")
+    assert client.get(f"/resources/{item['id']}/download").content == b"cloud modification"
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
+    assert not storage.copies
+    cloud.cleanup_mount(db, computer)
     assert storage.objects[key] == b"cloud modification"
 
 
-def test_filename_recreation_does_not_revive_deleted_resource(accounts, monkeypatch, resource_store):
-    client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
+def test_recreation_keeps_deleted_chat_reference_unavailable(accounts, monkeypatch, resource_store):
+    client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    attached = client.post(f"/resources/{item['id']}/attachment?version=1").json()
+    attached = client.post(f"/resources/{item['id']}/attachment").json()
     assert client.delete(f"/resources/{item['id']}").status_code == 204
-    storage.objects[shared.prefix(access.workspace_id) + item["path"]] = b"new file"
-    files = shared.recover(db, access, storage)
+    storage.objects[shared.object_key(access.workspace_id, item["path"])] = b"new file"
+    files = client.get("/resources").json()["items"]
     assert files[0]["id"] != item["id"]
-    assert files[0]["version"] == 1
     assert client.get(f"/resources/{item['id']}").status_code == 404
     assert client.get(f"/chat/attachments/{attached['id']}/content").status_code == 404
+    from app import tasks
+    tasks.cleanup_workspace_files()
+    assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"new file"
 
 
-def test_external_deletion_updates_resource_and_preserves_old_object(accounts, monkeypatch, resource_store):
-    client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
+def test_shell_delete_invalidates_old_links(accounts, monkeypatch, resource_store):
+    client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    original_key = db.scalar(select(WorkspaceFileVersion.object_key))
-    storage.delete(shared.prefix(access.workspace_id) + item["path"])
-    assert shared.recover(db, access, storage) == []
-    assert client.get(f"/resources/{item['id']}").status_code == 404
-    assert storage.objects[original_key] == b"resource facts"
+    storage.delete(shared.object_key(access.workspace_id, item["path"]))
+    assert client.get(f"/resources/{item['id']}/download").status_code == 404
+    assert client.get("/resources").json()["items"] == []
 
 
-def test_migration_resumes_without_recopy_or_download(accounts, monkeypatch, resource_store):
-    client, db, conversation, access, _, _ = setup(accounts, monkeypatch)
+def test_same_size_edit_invalidates_cache_metadata(accounts, monkeypatch, resource_store):
+    client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
+    item = upload(client, body=b"old")
+    row, version = workspace_files.resolve_input(db, access, {"id": item["id"]})
+    etag = row.live_etag
+    storage.objects[shared.object_key(access.workspace_id, item["path"])] = b"new"
+    row, version = workspace_files.resolve_input(db, access, {"id": item["id"]})
+    assert row.live_etag != etag and not version.content_hash
+    assert client.get(f"/resources/{item['id']}/download").content == b"new"
+
+
+def test_api_write_replaces_one_current_object(accounts, monkeypatch, resource_store):
+    client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    storage = MemoryMount()
-    storage.objects = resource_store[0]
-    configure_mount(db, monkeypatch, storage)
-    monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("migration downloaded bytes"))
-    assert shared.migrate(db) == 1
-    assert shared.migrate(db) == 0
-    assert len(storage.copies) == 1
-    row = db.get(WorkspaceFile, UUID(item["id"]))
-    assert row.live_etag
-    assert storage.objects[shared.prefix(access.workspace_id) + item["path"]] == b"resource facts"
+    workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"API edit", "text/plain")
+    assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"API edit"
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
+    assert not storage.copies
 
 
-def test_concurrent_change_cannot_register_stale_hash(accounts, monkeypatch, resource_store):
-    client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
-    item = upload(client)
-    before = shared.objects(storage, access.workspace_id)
-    storage.objects[shared.prefix(access.workspace_id) + item["path"]] = b"changed concurrently"
-    with pytest.raises(HTTPException) as error:
-        shared.snapshot(db, access, storage, {item["path"]: {
-            "sha256": item["sha256"], "size": item["size_bytes"]}}, before)
-    assert error.value.status_code == 409
-    assert db.get(WorkspaceFile, UUID(item["id"])).current_version == 1
+def legacy_resource(client, db, storage, *, name="legacy.txt"):
+    item = upload(client, name)
+    current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(item["id"])))
+    original = current.object_key
+    key = f"legacy/{item['id']}.txt"
+    storage.objects[key] = storage.objects.pop(original)
+    current.object_key = key
+    from app.models import ChatAttachment
+    attached = db.scalar(select(ChatAttachment).where(ChatAttachment.resource_file_id == UUID(item["id"])))
+    attached.object_key = key
+    db.commit()
+    return item, key, original
 
 
-def test_api_write_is_immediately_visible_without_another_command(accounts, monkeypatch, resource_store):
-    client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
-    item = upload(client)
-    result = workspace_files._save_bytes(access.workspace_id, access, db, item["path"],
-        b"API edit", "text/plain", expected_version=1)
-    assert result["version"] == 2
-    assert storage.objects[shared.prefix(access.workspace_id) + item["path"]] == b"API edit"
-    assert not resource_store[1]
+def test_migration_preflight_checks_missing_and_conflicting_objects_before_copy(accounts, monkeypatch, resource_store):
+    from app.migrate_shared_resources import migrate
+    client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
+    first, old, target = legacy_resource(client, db, storage)
+    second, missing, _ = legacy_resource(client, db, storage, name="missing.txt")
+    body = storage.objects.pop(missing)
+    with pytest.raises(ValueError, match="对象缺失"):
+        migrate(db, execute=True, offline=True)
+    assert not storage.copies and storage.head(target) is None
+    storage.objects[missing] = body
+    storage.objects[target] = b"different live content"
+    with pytest.raises(ValueError, match="未覆盖"):
+        migrate(db)
+    assert not storage.copies and storage.objects[target] == b"different live content"
+
+
+def test_migration_preserves_current_attachment_and_can_be_repeated(accounts, monkeypatch, resource_store):
+    from app.migrate_shared_resources import migrate
+    client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
+    item, old, target = legacy_resource(client, db, storage)
+    assert migrate(db)["verified"] == 1 and not storage.copies
+    with pytest.raises(ValueError, match="停止"):
+        migrate(db, execute=True)
+    assert migrate(db, execute=True, offline=True)["verified"] == 1
+    assert storage.objects[old] == storage.objects[target]
+    assert client.get(f"/resources/{item['id']}/download").content == b"resource facts"
+    copies = len(storage.copies)
+    assert migrate(db, execute=True, offline=True)["already_mounted"] == 1
+    assert len(storage.copies) == copies
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1

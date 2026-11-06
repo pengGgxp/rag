@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import io
@@ -31,6 +32,10 @@ def resource_store(monkeypatch, tmp_path):
     monkeypatch.setattr("app.storage_downloads.download_range_fileobj", get)
     monkeypatch.setattr("app.storage.delete_object", lambda key: objects.pop(key, None))
     monkeypatch.setattr(get_settings(), "resource_cache_dir", str(tmp_path / "cache"))
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    store.objects = objects
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: store)
     return objects, reads
 
 
@@ -73,7 +78,7 @@ def test_upload_shared_reuse_and_conversation_deletion(accounts, resource_store)
     assert chat_attachments.attachment_read(messages[0].attachments[0])["available"] is False
 
 
-def test_version_selection_and_object_inventory_dedup(accounts, resource_store):
+def test_current_file_and_object_inventory_dedup(accounts, resource_store):
     (owner, _, _), db = accounts
     register(owner); item = upload(owner)
     actor = access_for(owner, db)
@@ -81,40 +86,32 @@ def test_version_selection_and_object_inventory_dedup(accounts, resource_store):
     assert original_usage == len(b"resource facts")
     result = workspace_files._save_bytes(actor.workspace_id, actor, db, item["path"], b"changed",
         "text/plain", expected_version=1)
-    assert result["version"] == 2
-    assert owner.get(f"/resources/{item['id']}/download?version=1").content == b"resource facts"
-    assert owner.get(f"/resources/{item['id']}/download?version=2").content == b"changed"
-    old = workspace_files.execute_tool("read_file", {"id": item["id"], "version": 1}, db, actor, actor.workspace_id)
-    assert old["download_url"].endswith("version=1") and old["content"] == "resource facts"
-    with pytest.raises(HTTPException) as conflict:
-        workspace_files._save_bytes(actor.workspace_id, actor, db, item["path"], b"lost", expected_version=1)
-    assert conflict.value.status_code == 409
-    assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == original_usage + len(b"changed")
+    assert result["version"] == 1
+    assert owner.get(f"/resources/{item['id']}/download").content == b"changed"
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
+    assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == len(b"changed")
 
 
-def test_command_only_stages_explicit_resources_and_cache_is_free(accounts, resource_store, monkeypatch):
+def test_command_uses_mount_without_staging_or_internal_download(accounts, resource_store, monkeypatch):
     (owner, _, _), db = accounts
     register(owner); image = upload(owner, "image.png", PNG); upload(owner, "unused.txt")
     actor = access_for(owner, db)
     from test_cloud_computer import enable_execution
     fake, execute = enable_execution(db, actor, monkeypatch)
+    from test_cloud_computer_mount import MemoryMount, configure_mount
+    storage = MemoryMount(); storage.objects = resource_store[0]
+    configure_mount(db, monkeypatch, storage)
     execute({"command": "true"})
     assert fake.writes == 0 and not resource_store[1]
-    args = {"command": "true", "inputs": [{"id": image["id"], "version": 1}]}
-    execute(args)
-    assert list(next(iter(fake.instances.values()))["files"]) == [image["path"]]
-    assert next(iter(fake.instances.values()))["files"][image["path"]] == PNG
-    execute(args)
-    assert fake.writes == 1
-    assert len(resource_store[1]) == 1
-    transfers = db.scalars(select(StorageTransfer)).all()
-    assert len(transfers) == 1 and transfers[0].sent_bytes == len(PNG) and transfers[0].status == "completed"
-    assert owner.get("/storage/allowances").json()["download_usage"]["model_read"] == len(PNG)
+    execute({"command": "true"})
+    assert fake.writes == 0 and not resource_store[1]
+    assert not db.scalars(select(StorageTransfer)).all()
+    assert owner.get("/storage/allowances").json()["download_usage"]["model_read"] == 0
     owner.get(f"/resources/{image['id']}/download")
     assert owner.get("/storage/allowances").json()["download_usage"]["user_download"] == len(PNG)
 
 
-def test_embed_image_in_document_saves_version_without_binary_in_stdout(accounts, resource_store, monkeypatch, tmp_path):
+def test_embed_image_in_mounted_document_without_archive_or_binary_stdout(accounts, resource_store, monkeypatch, tmp_path):
     import subprocess
     import sys
     (owner, _, _), db = accounts
@@ -126,9 +123,14 @@ def test_embed_image_in_document_saves_version_without_binary_in_stdout(accounts
         b'<html><img src="PHOTO"></html>', "text/html")
     from test_cloud_computer import enable_execution
     fake, execute = enable_execution(db, actor, monkeypatch)
+    from test_cloud_computer_mount import MemoryMount, configure_mount
+    from app.shared_resources import prefix
+    storage = MemoryMount(); storage.objects = resource_store[0]
+    configure_mount(db, monkeypatch, storage)
     def run(sandbox, identifier, command):
-        assert set(sandbox["files"]) == {image["path"], document["path"]}
-        for path, data in sandbox["files"].items():
+        assert not sandbox["files"]
+        for key, data in storage.objects.items():
+            path = key.removeprefix(prefix(actor.workspace_id))
             target = tmp_path / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
@@ -138,16 +140,16 @@ def test_embed_image_in_document_saves_version_without_binary_in_stdout(accounts
             "p.write_text(p.read_text().replace('PHOTO','data:image/png;base64,'+data)); print('saved')")
         completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, check=True)
         assert completed.stdout == "saved\n"
-        sandbox["files"][document["path"]] = (tmp_path / document["path"]).read_bytes()
+        storage.objects[prefix(actor.workspace_id) + document["path"]] = (tmp_path / document["path"]).read_bytes()
         fake.result = {"exit_code": 0, "stdout": completed.stdout, "stderr": ""}
         return 42
     monkeypatch.setattr(fake, "start", run)
-    result = execute({"command": "python embed.py", "inputs": [
-        {"id": image["id"], "version": 1}, {"id": document["id"], "version": 1}]})
-    assert result["generated_files"][0]["version"] == 2
-    html = owner.get(f"/resources/{document['id']}/download?version=2").content
+    result = execute({"command": "python embed.py"})
+    assert result["status"] == "completed" and not result.get("generated_files")
+    assert fake.writes == 0 and not resource_store[1]
+    html = owner.get(f"/resources/{document['id']}/download").content
     assert b"data:image/png;base64," + base64.b64encode(PNG) in html
-    assert owner.get(f"/resources/{document['id']}/download?version=1").content == b'<html><img src="PHOTO"></html>'
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 3
     assert db.get(WorkspaceFile, UUID(unused["id"])).current_version == 1
 
 
@@ -217,15 +219,19 @@ def test_over_quota_grace_oldest_first_and_document_reference_protected(accounts
     library = KnowledgeBase(workspace_id=actor.workspace_id, name="Protected")
     db.add(library); db.flush()
     version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(second["id"])))
+    kb_key = f"{library.id}/protected.txt"
+    resource_store[0][kb_key] = b"kb-data!"
     document = Document(knowledge_base_id=library.id, filename="protected.txt", content_type="text/plain",
-        size_bytes=version.size_bytes, object_key=version.object_key, content_hash=version.content_hash)
+        size_bytes=8, object_key=kb_key, content_hash=hashlib.sha256(b"kb-data!").hexdigest())
     db.add(document); db.commit()
     assert owner.delete(f"/resources/{second['id']}").status_code == 204
     monkey = pytest.MonkeyPatch()
     monkey.setattr(tasks, "SessionLocal", __import__("sqlalchemy.orm", fromlist=["sessionmaker"]).sessionmaker(bind=db.bind))
     try: tasks.cleanup_workspace_files()
     finally: monkey.undo()
-    assert version.object_key in resource_store[0]
+    assert version.object_key not in resource_store[0]
+    assert resource_store[0][kb_key] == b"kb-data!"
+    assert owner.get("/resources").json()["items"] == []
     assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == 8
 
 
@@ -233,10 +239,8 @@ def test_missing_migrated_object_is_not_reported_as_available(accounts, resource
     (owner, _, _), db = accounts
     register(owner); item = upload(owner)
     version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(item["id"])))
-    version.available = None; db.commit()
-    assert owner.get("/resources").json()["items"][0]["availability"] == "pending"
-    resources.verify_pending_objects(db, lambda key: None)
-    assert owner.get("/resources").json()["items"][0]["availability"] == "missing"
+    resource_store[0].pop(version.object_key)
+    assert owner.get("/resources").json()["items"] == []
     assert owner.get(f"/resources/{item['id']}/download").status_code == 404
     assert owner.get(f"/chat/attachments/{item['id']}/content").status_code == 404
 
@@ -263,21 +267,23 @@ def test_cached_reads_revalidate_permissions_and_deleted_paths_stay_deleted(acco
     assert owner.get(f"/resources/{item['id']}").status_code == 404
 
 
-def test_patch_keeps_original_expected_version_across_cached_read(accounts, resource_store, monkeypatch):
+def test_patch_propagates_cloud_conflict_without_cached_read(accounts, resource_store, monkeypatch):
     (owner, _, _), db = accounts
     register(owner); item = upload(owner, body=b"old\n")
     actor = access_for(owner, db)
-    original_read = resource_cache.read_bytes
-    def concurrent_read(*args, **kwargs):
-        content = original_read(*args, **kwargs)
-        workspace_files._save_bytes(actor.workspace_id, actor, db, item["path"], b"other\n", "text/plain", 1)
-        return content
-    monkeypatch.setattr(resource_cache, "read_bytes", concurrent_read)
+    def forbidden(*args, **kwargs): pytest.fail("file tool read server cache")
+    monkeypatch.setattr(resource_cache, "read_bytes", forbidden)
+    def concurrent_edit(*args, **kwargs):
+        operation = args[4]["file_operation"]
+        assert operation["patch"] == "@@ -1 +1 @@\n-old\n+patched\n"
+        assert "expected_hash" not in operation
+        return {"status": "completed", "file_result": {"error": "文件已变化，请重新读取", "status_code": 409}}
+    monkeypatch.setattr("app.cloud_computer.execute", concurrent_edit)
     with pytest.raises(HTTPException) as error:
         workspace_files.execute_tool("apply_patch", {"path": item["path"], "expected_version": 1,
             "patch": "@@ -1 +1 @@\n-old\n+patched\n"}, db, actor, actor.workspace_id)
     assert error.value.status_code == 409
-    assert owner.get(f"/resources/{item['id']}/download?version=2").content == b"other\n"
+    assert owner.get(f"/resources/{item['id']}/download?version=1").content == b"old\n"
 
 
 def test_quota_blocks_new_fetch_but_not_cached_version(accounts, resource_store):

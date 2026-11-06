@@ -13,7 +13,7 @@ from .audit_log import record_audit
 from .credit_amounts import CreditRate
 from .credits import _entry, ensure_account
 from .db import get_db
-from .models import AgentSkill, ChatAttachment, Document, DocumentUpload, KnowledgeBase, Workspace, WorkspaceFileVersion
+from .models import AgentSkill, ChatAttachment, Document, DocumentUpload, KnowledgeBase, Workspace, WorkspaceFile
 from .site_auth import site_admin
 from .site_audit import record
 from .storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
@@ -94,23 +94,35 @@ def lock_workspace(db, identifier):
 
 
 def inventory(db, identifier, *, exclude_key=None):
-    """Count retained bytes, including hidden originals and unsuccessfully cleaned outputs."""
+    """Count each retained object once; mounted resources have one current key."""
     objects = {}
     groups = {"documents": 0, "attachments": 0, "outputs": 0, "skills": 0, "reserved": 0}
     sources = [
-        ("documents", select(Document.object_key, Document.size_bytes).join(KnowledgeBase)
-            .where(KnowledgeBase.workspace_id == identifier)),
-        ("attachments", select(ChatAttachment.object_key, ChatAttachment.size_bytes)
-            .where(ChatAttachment.workspace_id == identifier, ChatAttachment.object_deleted_at.is_(None))),
-        ("outputs", select(WorkspaceFileVersion.object_key, WorkspaceFileVersion.size_bytes)
-            .where(WorkspaceFileVersion.workspace_id == identifier, WorkspaceFileVersion.deleted_at.is_(None),
-                WorkspaceFileVersion.available.is_not(False))),
-        ("reserved", select(DocumentUpload.object_key, DocumentUpload.size_bytes)
-            .where(DocumentUpload.workspace_id == identifier,
-                DocumentUpload.state.not_in(["cleaned", "cancelled", "completed"]))),
+        ("documents", db.execute(select(Document.object_key, Document.size_bytes).join(KnowledgeBase)
+            .where(KnowledgeBase.workspace_id == identifier))),
+        ("attachments", db.execute(select(ChatAttachment.object_key, ChatAttachment.size_bytes)
+            .where(ChatAttachment.workspace_id == identifier, ChatAttachment.object_deleted_at.is_(None),
+                ChatAttachment.resource_file_id.is_(None)))),
     ]
-    for group, query in sources:
-        for key, size in db.execute(query):
+    from .shared_resources import object_key
+    from .shared_resources import backend, prefix
+    mounted = backend(db)
+    if mounted is not None:
+        sources.append(("outputs", ((item["Key"], int(item["Size"]))
+            for item in mounted.iter_objects(prefix(identifier)) if not item["Key"].endswith("/"))))
+    else:
+        sources.append(("outputs", ((object_key(row.workspace_id, row.path), row.size_bytes)
+            for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,
+                WorkspaceFile.deleted_at.is_(None))))))
+    reserved = db.execute(
+        select(DocumentUpload.object_key, DocumentUpload.size_bytes).where(
+            DocumentUpload.workspace_id == identifier,
+            DocumentUpload.state.not_in(["cleaned", "cancelled", "completed"]),
+        )
+    )
+    sources.append(("reserved", reserved))
+    for group, rows in sources:
+        for key, size in rows:
             if key != exclude_key and key not in objects:
                 objects[key] = size
                 groups[group] += size
@@ -405,8 +417,7 @@ def workspace_list(page: int=Query(1, ge=1), db=Depends(get_db), actor=Depends(s
 
 
 def maintenance(db):
-    from .models import ChatAttachment, WorkspaceFile, WorkspaceFileVersion
-    from .storage import delete_object
+    from .models import ChatAttachment, WorkspaceFile
     for identifier in list(db.scalars(select(Workspace.id))):
         state = workspace_read(db, identifier)
         if not state["over_quota_since"] or aware(state["over_quota_since"])+timedelta(days=30) > now():
@@ -422,11 +433,7 @@ def maintenance(db):
         candidates = []
         for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,
                 WorkspaceFile.deleted_at.is_(None)).order_by(WorkspaceFile.created_at, WorkspaceFile.id)):
-            version = db.scalar(select(WorkspaceFileVersion).where(
-                WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == row.current_version,
-                WorkspaceFileVersion.deleted_at.is_(None)))
-            if version:
-                candidates.append((row.created_at, str(row.id), "file", row, version.size_bytes))
+            candidates.append((row.created_at, str(row.id), "file", row, row.size_bytes))
         for row in db.scalars(select(ChatAttachment).where(ChatAttachment.workspace_id == identifier,
                 ChatAttachment.resource_file_id.is_(None), ChatAttachment.deleted_at.is_(None), ChatAttachment.over_quota_deleted_at.is_(None))
                 .order_by(ChatAttachment.created_at, ChatAttachment.id)):
@@ -435,33 +442,22 @@ def maintenance(db):
             if inventory(db, identifier)["used_bytes"] <= limit:
                 break
             if kind == "file":
-                if row.live_etag:
-                    from .shared_resources import remove_live
-                    try:
-                        remove_live(db, row)
-                    except Exception:
-                        continue
+                from .shared_resources import remove_live
+                try:
+                    remove_live(db, row)
+                except Exception:
+                    db.rollback()
+                    continue
                 row.deleted_at = now()
-                for version in row.versions:
-                    if version.deleted_at is None:
-                        if db.scalar(select(Document.id).where(Document.object_key == version.object_key)):
-                            continue
-                        try:
-                            delete_object(version.object_key)
-                            version.deleted_at = now()
-                            for attachment in db.scalars(select(ChatAttachment).where(
-                                    ChatAttachment.object_key == version.object_key)):
-                                attachment.deleted_at = row.deleted_at
-                                attachment.object_deleted_at = version.deleted_at
-                        except Exception:
-                            pass
                 for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
                     attachment.deleted_at = row.deleted_at
+                    attachment.object_deleted_at = row.deleted_at
             else:
                 row.over_quota_deleted_at = now()
                 row.deleted_at = now()
                 try:
                     if not db.scalar(select(Document.id).where(Document.object_key == row.object_key)):
+                        from .storage import delete_object
                         delete_object(row.object_key)
                         row.object_deleted_at = now()
                 except Exception:

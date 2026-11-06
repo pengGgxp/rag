@@ -1,5 +1,4 @@
-"""Persistent workspace directory; immutable versions are outside the writable mount."""
-import hashlib
+"""Metadata helpers for the single, workspace-mounted resource directory."""
 import mimetypes
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -23,189 +22,248 @@ def backend(db):
     return current_storage(db) if settings and settings.provider == "oss" else None
 
 
-def etag(head):
-    return head.get("ETag") if head else None
+def object_key(workspace_id, path):
+    return prefix(workspace_id) + path
 
 
-def same_content(left, right):
-    if not left or not right or int(left["Content-Length"]) != int(right["Content-Length"]):
-        return False
-    if left.get("CRC64") is not None and right.get("CRC64") is not None:
-        return left["CRC64"] == right["CRC64"]
-    return etag(left) == etag(right)
-
-
-def publish(db, resource, version):
-    """Publish uploads/edits into the same directory observed by every VM."""
+def mount_config(db, workspace_id):
     storage = backend(db)
     if storage is None:
-        return
-    key = prefix(resource.workspace_id) + resource.path
-    current = storage.head(key)
-    source = storage.head(version.object_key)
-    if not source or int(source["Content-Length"]) != version.size_bytes:
-        raise HTTPException(409, "资源文件尚未保存完整，请重试")
-    if current and etag(current) != resource.live_etag and not same_content(current, source):
-        raise HTTPException(409, "云电脑正在修改该文件，请等待完成后重新读取")
-    if not same_content(current, source):
-        storage.copy(version.object_key, key, etag=etag(source))
-        current = storage.head(key)
-    if not same_content(current, source):
-        raise HTTPException(409, "文件已变化，请重新读取后再保存")
-    resource.live_etag = etag(current)
+        return None, False
+    return storage, prefix(workspace_id)
+
+
+def index_file(db, access, path, *, size, content_type=None, digest="", source="model_output", identifier=None):
+    """Upsert current metadata only; file bytes stay at the mounted object key."""
+    from .storage_billing import lock_workspace
+    from .workspace_files import MAX_BYTES, valid_path, read_file
+    path = valid_path(path)
+    if size < 0 or size > MAX_BYTES:
+        raise HTTPException(413, "文件不能超过 200 MiB")
+    lock_workspace(db, access.workspace_id)
+    row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+        WorkspaceFile.path == path).execution_options(populate_existing=True))
+    if row and row.deleted_at:
+        for old in db.scalars(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id)):
+            db.delete(old)
+        row.path = f"deleted/{row.id}/{uuid4().hex}"
+        db.flush()
+        row = None
+    active = row is not None
+    if row is None:
+        row = WorkspaceFile(id=identifier or uuid4(), workspace_id=access.workspace_id, path=path,
+            content_type=content_type or mimetypes.guess_type(path)[0] or "application/octet-stream",
+            size_bytes=size, content_hash=digest or "", current_version=1, created_by=access.user_id,
+            updated_by=access.user_id, source=source, expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
+        db.add(row)
+    else:
+        row.content_type = content_type or mimetypes.guess_type(path)[0] or row.content_type
+        row.size_bytes, row.content_hash = size, digest or row.content_hash or ""
+        row.current_version = 1
+        row.updated_by, row.source = access.user_id, source
+    for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id,
+            ChatAttachment.deleted_at.is_(None))):
+        if attachment.content_hash != digest or attachment.size_bytes != size:
+            attachment.text_content = None
+            attachment.width = attachment.height = None
+        attachment.object_key = object_key(access.workspace_id, path)
+        attachment.resource_version = 1
+        attachment.size_bytes, attachment.content_type = size, row.content_type
+        attachment.content_hash = digest or row.content_hash
+        attachment.filename = path.rsplit("/", 1)[-1]
+        attachment.object_deleted_at = None
+    row.live_etag = None
+    db.flush()
+    key = object_key(access.workspace_id, path)
+    current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
+        WorkspaceFileVersion.version == 1).execution_options(populate_existing=True))
+    if current is None:
+        db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=1,
+            object_key=key, content_type=row.content_type, size_bytes=size, content_hash=digest or "",
+            created_by=access.user_id))
+    else:
+        current.object_key, current.content_type = key, row.content_type
+        current.size_bytes, current.content_hash = size, digest or ""
+        current.deleted_at, current.available = None, True
+    from .audit_log import record_audit
+    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="resource.updated" if active else "resource.created", resource_type="resource",
+        resource_id=row.id, metadata={"source": source})
+    db.flush()
+    return read_file(row)
+
+
+def refresh_index(db, access, q="", offset=0, limit=100, source=""):
+    """Discover files created by shell commands from object metadata, never read bodies."""
+    storage = backend(db)
+    if storage is None:
+        return None, False
+    from .workspace_files import valid_path, read_file
+    from .audit_log import record_audit
+    from .storage_billing import lock_workspace
+    root = prefix(access.workspace_id)
+    objects = {}
+    for item in storage.iter_objects(root):
+        key = item["Key"]
+        if not key.startswith(root):
+            raise HTTPException(502, "资源目录返回了无效文件")
+        path = key[len(root):]
+        if not path or path.endswith("/") or any(part in EXCLUDED for part in path.split("/")):
+            continue
+        valid_path(path)
+        objects[path] = item
+    rows = []
+    lock_workspace(db, access.workspace_id)
+    for path, item in sorted(objects.items()):
+        row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+            WorkspaceFile.path == path).execution_options(populate_existing=True))
+        size = int(item.get("Size", item.get("size", 0)))
+        if row is None:
+            row = WorkspaceFile(id=uuid4(), workspace_id=access.workspace_id, path=path,
+                content_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
+                size_bytes=size, content_hash="", current_version=1, created_by=access.user_id,
+                updated_by=access.user_id, source="model_output", expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
+            db.add(row)
+            db.flush()
+            db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=1,
+                object_key=object_key(access.workspace_id, path), content_type=row.content_type,
+                size_bytes=size, content_hash="", created_by=access.user_id))
+            record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+                action="resource.created", resource_type="resource", resource_id=row.id,
+                metadata={"source": "cloud_computer"})
+        elif row.deleted_at:
+            for old in db.scalars(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id)):
+                db.delete(old)
+            row.path = f"deleted/{row.id}/{uuid4().hex}"
+            row.updated_by = access.user_id
+            db.flush()
+            row = WorkspaceFile(id=uuid4(), workspace_id=access.workspace_id, path=path,
+                content_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
+                size_bytes=size, content_hash="", current_version=1, created_by=access.user_id,
+                updated_by=access.user_id, source="model_output", expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
+            db.add(row)
+            db.flush()
+            db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=1,
+                object_key=object_key(access.workspace_id, path), content_type=row.content_type,
+                size_bytes=size, content_hash="", created_by=access.user_id))
+        elif row.size_bytes != size:
+            row.size_bytes = size
+            row.content_hash = ""
+            row.updated_by = access.user_id
+            current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
+                WorkspaceFileVersion.version == 1).execution_options(populate_existing=True))
+            if current:
+                current.object_key, current.size_bytes = object_key(access.workspace_id, path), size
+                current.content_type, current.content_hash = row.content_type, ""
+        etag = item.get("ETag")
+        if etag and row.live_etag != etag:
+            row.live_etag, row.content_hash = etag, ""
+            row.updated_at, row.updated_by = now(), access.user_id
+            current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id,
+                WorkspaceFileVersion.version == 1).execution_options(populate_existing=True))
+            if current:
+                current.object_key, current.content_hash = object_key(access.workspace_id, path), ""
+                current.size_bytes, current.content_type = size, row.content_type
+        if q.lower() in path.lower() and (not source or row.source == source):
+            rows.append(row)
+    present = set(objects)
+    for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+            WorkspaceFile.deleted_at.is_(None))):
+        if row.path in present:
+            continue
+        row.deleted_at = now()
+        for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
+            attachment.deleted_at = row.deleted_at
+            attachment.object_deleted_at = row.deleted_at
+    db.commit()
+    return [read_file(row) for row in rows[offset:offset + limit]], len(rows) > offset + limit
 
 
 def remove_live(db, resource):
     storage = backend(db)
     if storage is not None:
-        storage.delete(prefix(resource.workspace_id) + resource.path)
+        storage.delete(object_key(resource.workspace_id, resource.path))
     resource.live_etag = None
+    return True
 
 
-def migrate(db):
-    """One-time, resumable server-side publication; never download or meter bytes."""
+def delete_path(db, access, resource, *, remove_object=True):
+    from .storage_billing import lock_workspace
+    from .auth import now as current_time
+    access.editor()
+    if resource.workspace_id != access.workspace_id:
+        raise HTTPException(404, "资源不存在")
+    lock_workspace(db, access.workspace_id)
     storage = backend(db)
     if storage is None:
-        raise RuntimeError("shared directory requires active OSS")
-    count = 0
-    identifiers = list(db.scalars(select(WorkspaceFile.id).where(
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.live_etag.is_(None))))
-    from .storage_billing import lock_workspace
-    for identifier in identifiers:
-        resource = db.get(WorkspaceFile, identifier, populate_existing=True)
-        lock_workspace(db, resource.workspace_id)
-        db.refresh(resource)
-        if resource.deleted_at or resource.live_etag:
-            db.commit()
-            continue
-        version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == resource.id,
-            WorkspaceFileVersion.version == resource.current_version))
-        if not version or version.available is False or version.deleted_at:
-            db.commit()
-            continue
-        if version.available is None and storage.head(version.object_key) is None:
-            version.available = False
-            db.commit()
-            continue
-        publish(db, resource, version)
-        db.commit()
-        count += 1
-    return count
-
-
-def objects(storage, workspace_id):
-    root = prefix(workspace_id)
-    result = {}
-    from .workspace_files import valid_path
-    for item in storage.iter_objects(root):
-        if not item["Key"].startswith(root):
-            raise RuntimeError("resource object escaped workspace prefix")
-        path = item["Key"][len(root):]
-        if not path or path.endswith("/"):
-            continue
-        valid_path(path)
-        if any(part in EXCLUDED for part in path.split("/")):
-            continue
-        result[path] = item
-    return result
-
-
-def snapshot(db, access, storage, entries, before):
-    """Register only changes, using OSS CopyObject instead of VM file transfers."""
+        raise HTTPException(503, "资源目录尚未就绪")
+    if remove_object:
+        remove_live(db, resource)
+    resource.deleted_at = current_time()
+    for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id)):
+        attachment.deleted_at = resource.deleted_at
+        attachment.object_deleted_at = resource.deleted_at
     from .audit_log import record_audit
-    from .storage_billing import check_capacity, lock_workspace
-    from .workspace_files import MAX_BYTES, read_file, valid_path
-    access.editor()
+    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        action="resource.deleted", resource_type="resource", resource_id=resource.id,
+        metadata={"source": "workspace_mount"})
+    db.commit()
+
+
+def register_operation(db, access, operation, value):
+    """Update the metadata index after a direct mounted file operation; never copy bytes."""
+    from .workspace_files import read_file
+    name, path = operation["name"], operation.get("path", "")
+    row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+        WorkspaceFile.path == path).execution_options(populate_existing=True))
+    if name == "delete_file":
+        if row and not row.deleted_at:
+            delete_path(db, access, row, remove_object=False)
+        return {**value, "deleted": True}
+    if name not in {"write_file", "apply_patch"}:
+        return value
+    if not value.get("sha256") or len(value["sha256"]) != 64:
+        raise HTTPException(502, "文件校验信息缺失，请重试")
+    result = index_file(db, access, path, size=int(value["size_bytes"]),
+        digest=value["sha256"], source="model_output")
+    db.commit()
+    row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+        WorkspaceFile.path == path))
+    return read_file(row) if row else result
+
+
+def refresh_current_metadata(db, access, resource):
+    """Revalidate current mounted object metadata before a server-side image read."""
+    from .storage_billing import lock_workspace
+    from .workspace_files import owned
+    access = access.revalidate(db) if access.session_hash else access
+    resource = owned(db, access, access.workspace_id, resource.id)
+    storage = backend(db)
+    if storage is None:
+        return resource
     lock_workspace(db, access.workspace_id)
-    changed = []
-    try:
-        for path, entry in entries.items():
-            valid_path(path)
-            if any(part in EXCLUDED for part in path.split("/")):
-                continue
-            if entry["size"] > MAX_BYTES:
-                raise HTTPException(413, "文件不能超过 200 MiB")
-            key = prefix(access.workspace_id) + path
-            head = storage.head(key)
-            if not head or path not in before or etag(head) != before[path]["ETag"]:
-                raise HTTPException(409, "共享文件正在变化，请稍后重试登记文件")
-            if int(head["Content-Length"]) != entry["size"]:
-                raise HTTPException(409, "文件仍在写入，请稍后重试登记文件")
-            resource = db.scalar(select(WorkspaceFile).where(
-                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path)
-                .execution_options(populate_existing=True))
-            if resource and resource.deleted_at:
-                # Recreating a filename must not revive deleted message references.
-                resource.path = f"deleted/{resource.id}/{uuid4().hex}"
-                db.flush()
-                resource = None
-            if resource and resource.content_hash == entry["sha256"]:
-                resource.live_etag = etag(head)
-                continue
-            check_capacity(db, access.workspace_id, entry["size"])
-            active = resource is not None
-            if resource is None:
-                resource = WorkspaceFile(id=uuid4(), workspace_id=access.workspace_id,
-                    path=path, current_version=0, created_by=access.user_id,
-                    updated_by=access.user_id, size_bytes=0, content_hash="",
-                    content_type=mimetypes.guess_type(path)[0] or "application/octet-stream")
-                db.add(resource)
-            version_number = resource.current_version + 1
-            archive = f"workspaces/{access.workspace_id}/files/{resource.id}/{version_number}/{path}"
-            storage.copy(key, archive, etag=etag(head))
-            copied = storage.head(archive)
-            if not same_content(copied, head) or etag(storage.head(key)) != etag(head):
-                raise HTTPException(409, "共享文件已变化，请稍后重试登记文件")
-            resource.current_version = version_number
-            resource.size_bytes, resource.content_hash = entry["size"], entry["sha256"]
-            resource.live_etag, resource.updated_by = etag(head), access.user_id
-            resource.expires_at = datetime(9999, 12, 31, tzinfo=timezone.utc)
-            db.flush()
-            db.add(WorkspaceFileVersion(file_id=resource.id, workspace_id=access.workspace_id,
-                version=version_number, object_key=archive, content_type=resource.content_type,
-                size_bytes=entry["size"], content_hash=entry["sha256"], created_by=access.user_id))
-            record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-                action="resource.updated" if active else "resource.created", resource_type="resource",
-                resource_id=resource.id, metadata={"version": version_number, "source": "cloud_computer"})
-            db.flush()
-            changed.append(read_file(resource))
-        for resource in db.scalars(select(WorkspaceFile).where(
-                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
-                WorkspaceFile.live_etag.is_not(None))):
-            if resource.path in entries or any(part in EXCLUDED for part in resource.path.split("/")):
-                continue
-            key = prefix(access.workspace_id) + resource.path
-            if storage.head(key) is not None:
-                continue
-            resource.deleted_at, resource.live_etag = now(), None
-            for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id)):
-                attachment.deleted_at = resource.deleted_at
-            record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-                action="resource.deleted", resource_type="resource", resource_id=resource.id,
-                metadata={"source": "cloud_computer"})
+    key = object_key(access.workspace_id, resource.path)
+    metadata = storage.head(key)
+    if metadata is None:
+        resource.deleted_at = now()
+        for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id)):
+            attachment.deleted_at = resource.deleted_at
+            attachment.object_deleted_at = resource.deleted_at
         db.commit()
-        return changed
-    except BaseException:
-        db.rollback()
-        raise
-
-
-def recover(db, access, storage):
-    """VM disappeared: hash only unindexed changes; never replay a command."""
-    before = objects(storage, access.workspace_id)
-    entries = {}
-    for path, item in before.items():
-        resource = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-            WorkspaceFile.path == path, WorkspaceFile.deleted_at.is_(None)))
-        if resource and resource.live_etag == item["ETag"]:
-            digest = resource.content_hash
-        else:
-            if item["Size"] > 200 * 1024 * 1024:
-                raise HTTPException(413, "文件过大，请在云电脑中缩小后重试")
-            hasher = hashlib.sha256()
-            with storage.download(item["Key"]) as source:
-                for block in iter(lambda: source.read(1024 * 1024), b""):
-                    hasher.update(block)
-            digest = hasher.hexdigest()
-        entries[path] = {"sha256": digest, "size": item["Size"]}
-    return snapshot(db, access, storage, entries, before)
+        raise HTTPException(404, "资源已删除或不可用")
+    size = int(metadata.get("Content-Length", metadata.get("ContentLength", resource.size_bytes)))
+    etag = metadata.get("ETag")
+    changed = size != resource.size_bytes or bool(etag and etag != resource.live_etag)
+    if changed:
+        resource.size_bytes, resource.content_hash, resource.live_etag = size, "", etag
+        current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == resource.id,
+            WorkspaceFileVersion.version == 1))
+        if current:
+            current.object_key, current.size_bytes, current.content_hash = key, size, ""
+        for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id,
+                ChatAttachment.deleted_at.is_(None))):
+            attachment.size_bytes, attachment.content_hash, attachment.object_key = size, "", key
+            attachment.text_content = None
+            attachment.width = attachment.height = None
+        db.commit()
+    return resource

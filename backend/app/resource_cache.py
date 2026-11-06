@@ -62,7 +62,7 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
     length = min(version.size_bytes - offset, limit if limit is not None else version.size_bytes)
     if offset < 0 or length < 0:
         raise HTTPException(422, "读取范围无效")
-    identity = f"{access.workspace_id}:{resource.id}:{version.version}:{version.content_hash}"
+    identity = f"{access.workspace_id}:{resource.id}:{resource.live_etag or version.content_hash}"
     key = hashlib.sha256(f"{identity}:{offset}:{length}".encode()).hexdigest()
     full_key = hashlib.sha256(f"{identity}:0:{version.size_bytes}".encode()).hexdigest()
     # A bounded lock stripe serializes all ranges of a resource version across API processes.
@@ -96,8 +96,13 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
                         billing.transfer_checkpoint(db, transfer, sent=len(block))
                         db.commit()
                         data.extend(block)
-            if offset == 0 and length == version.size_bytes and hashlib.sha256(data).hexdigest() != version.content_hash:
-                raise IOError("资源摘要校验失败")
+            if offset == 0 and length == version.size_bytes:
+                actual_hash = hashlib.sha256(data).hexdigest()
+                if version.content_hash and actual_hash != version.content_hash:
+                    raise IOError("资源摘要校验失败")
+                if not version.content_hash:
+                    version.content_hash = actual_hash
+                    resource.content_hash = actual_hash
             billing.transfer_checkpoint(db, transfer, finish="completed")
             if offset == 0 and length == version.size_bytes:
                 version.available = True

@@ -165,7 +165,7 @@ def test_free_allowance_changes_preserve_consumption_and_active_reservations(acc
     assert admin.get("/storage/allowances").json()["download_remaining_bytes"] == 9
 
 
-def test_capacity_counts_old_versions_and_expired_until_actual_cleanup(accounts):
+def test_capacity_counts_only_current_file_and_never_expires_by_age(accounts):
     admin, _, _, db, a, b = setup(accounts)
     configure(admin, free_storage_bytes=10)
     access = actor(a)
@@ -178,9 +178,9 @@ def test_capacity_counts_old_versions_and_expired_until_actual_cleanup(accounts)
             version=version, object_key=f"test-{version}", size_bytes=4, content_hash="x",
             content_type="text/plain", created_by=access.user_id))
     db.commit()
-    assert billing.inventory(db, access.workspace_id)["used_bytes"] == 8
+    assert billing.inventory(db, access.workspace_id)["used_bytes"] == 2
     with pytest.raises(HTTPException):
-        billing.check_capacity(db, access.workspace_id, 3)
+        billing.check_capacity(db, access.workspace_id, 9)
     old = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.version == 1))
     old.deleted_at = now(); db.commit()
     assert billing.check_capacity(db, access.workspace_id, 3)
@@ -216,11 +216,11 @@ def test_cleanup_rechecks_expiry_after_lock_and_releases_only_deleted_objects(ac
         raise IOError("temporary deletion failure")
     monkeypatch.setattr(storage, "delete_object", failed)
     tasks.cleanup_workspace_files()
-    assert billing.inventory(db, access.workspace_id)["used_bytes"] == 4
+    assert billing.inventory(db, access.workspace_id)["used_bytes"] == 0
     monkeypatch.setattr(storage, "delete_object", deleted.append)
     tasks.cleanup_workspace_files()
     db.expire_all()
-    assert deleted == ["cleanup-test"]
+    assert deleted == []
     assert billing.inventory(db, access.workspace_id)["used_bytes"] == 0
 
 

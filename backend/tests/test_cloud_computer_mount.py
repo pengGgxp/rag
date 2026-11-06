@@ -41,9 +41,16 @@ def configure_mount(db, monkeypatch, storage):
     settings = db.get(CloudComputerSettings, 1)
     settings.config = {**settings.config, "oss_role_arn": ROLE}
     db.commit()
+    from app.models import SiteStorageSettings
+    row = db.get(SiteStorageSettings, 2)
+    if row is None:
+        db.add(SiteStorageSettings(id=2, version=1, provider="oss", bucket=storage.bucket,
+            region=storage.region, encrypted_secret_id="test-id", encrypted_secret_key="test-secret", active=True))
+        db.commit()
     monkeypatch.setattr(storage_backend, "active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket=storage.bucket, region=storage.region))
     monkeypatch.setattr(storage_backend, "current_storage", lambda _db: storage)
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: storage)
 
 
 def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accounts, monkeypatch, resource_store):
@@ -62,7 +69,7 @@ def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accoun
     assert prefix == f"workspaces/{access.workspace_id}/resource-directory/"
     assert storage.objects[prefix + own["path"]] == b"own data"
     assert not any(path.startswith(prefix) and path.endswith('other.txt') for path in storage.objects)
-    assert list(row.manifest) == [own["path"]]
+    assert row.manifest == {}
     reads = len(resource_store[1])
     copies = len(storage.copies)
     cloud.stage_mount(db, row, access, [])
@@ -85,9 +92,9 @@ def test_mount_recovery_indexes_changes_and_never_cleans_shared_files(accounts, 
     storage.objects[prefix + "new.txt"] = b"new output"
     storage.objects["workspaces/other/cloud-computer/other/workspace/keep.txt"] = b"keep"
     result = cloud.recover_mount(db, row)
-    assert {entry["version"] for entry in result} == {1, 2}
-    assert client.get(f"/resources/{item['id']}/download?version=1").content == b"original"
-    assert client.get(f"/resources/{item['id']}/download?version=2").content == b"modified"
+    assert result == []
+    assert client.get(f"/resources/{item['id']}/download").content == b"modified"
+    assert {entry["path"] for entry in client.get("/resources").json()["items"]} == {item["path"], "new.txt"}
     assert cloud.recover_mount(db, row) == []
     cloud.cleanup_mount(db, row)
     assert storage.objects[prefix + item["path"]] == b"modified"
@@ -98,7 +105,7 @@ def test_mount_recovery_indexes_changes_and_never_cleans_shared_files(accounts, 
     assert storage.objects[prefix + "new.txt"] == b"new output"
 
 
-def test_mount_unsaved_changes_block_stale_api_overwrite(accounts, monkeypatch, resource_store):
+def test_mount_direct_edit_and_explicit_overwrite_have_no_history(accounts, monkeypatch, resource_store):
     client, db, conversation, access, _, _ = setup(accounts, monkeypatch)
     storage = MemoryMount()
     storage.objects = resource_store[0]
@@ -109,18 +116,15 @@ def test_mount_unsaved_changes_block_stale_api_overwrite(accounts, monkeypatch, 
     cloud.stage_mount(db, row, access, [])
     prefix = row.snapshot["resource_mount"]["prefix"]
     storage.objects[prefix + item["path"]] = b"cloud edit"
-    with pytest.raises(HTTPException) as error:
-        workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"external edit", expected_version=1)
-    assert error.value.status_code == 409
-    row.error = "needs recovery"
+    assert client.get(f"/resources/{item['id']}/download").content == b"cloud edit"
+    workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"external edit")
     cloud.cleanup_mount(db, row)
-    assert storage.objects[prefix + item["path"]] == b"cloud edit"
-    assert client.get(f"/resources/{item['id']}/download?version=1").content == b"original"
-    assert cloud.recover_mount(db, row)[0]["version"] == 2
-    assert client.get(f"/resources/{item['id']}/download?version=2").content == b"cloud edit"
+    assert storage.objects[prefix + item["path"]] == b"external edit"
+    assert cloud.recover_mount(db, row) == []
+    assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
 
 
-def test_mount_historical_input_does_not_replace_shared_current_file(accounts, monkeypatch, resource_store):
+def test_mount_never_stages_legacy_input_versions(accounts, monkeypatch, resource_store):
     client, db, conversation, access, _, _ = setup(accounts, monkeypatch)
     storage = MemoryMount()
     storage.objects = resource_store[0]
@@ -133,14 +137,27 @@ def test_mount_historical_input_does_not_replace_shared_current_file(accounts, m
     prefix = row.snapshot["resource_mount"]["prefix"]
     assert storage.objects[prefix + item["path"]] == b"version two"
     class HistoricalInput:
-        def write(self, sandbox, path, data, root):
-            assert path == f"{item['id']}/1/{item['path']}"
-            assert data == b"version one"
-            assert root == "/tmp/zhiku-cloud-computer/inputs"
+        def write(self, *args):
+            pytest.fail("mounted resource was staged")
     cloud.stage_mount(db, row, access, command.payload["inputs"], HistoricalInput(), object())
     client.delete(f"/resources/{item['id']}")
     cloud.stage_mount(db, row, access, [])
     assert prefix + item["path"] not in storage.objects and not row.manifest
+
+
+def test_legacy_mount_mode_cannot_read_resource_bodies(accounts, monkeypatch):
+    _, db, conversation, access, _, _ = setup(accounts, monkeypatch)
+    from app.models import CloudComputerSession
+    from uuid import uuid4
+    row = CloudComputerSession(id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
+        conversation_id=conversation.id, session_hash=access.session_hash, status="ready",
+        snapshot={"resource_mount": {"mode": "legacy"}}, encrypted_api_key="test",
+        manifest={}, held_credits=0, charged_credits=0, billed_seconds=0, billing_sequence=0)
+    db.add(row); db.commit()
+    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_a, **_k: pytest.fail("legacy body read"))
+    with pytest.raises(HTTPException) as error:
+        cloud.synchronize(db, row, None, None)
+    assert error.value.status_code == 503
 
 
 @pytest.mark.skipif(os.environ.get("RAG_MOUNT_LIVE_ACCEPT") != "1", reason="explicit paid cloud mount opt-in required")
@@ -182,8 +199,8 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
         import shlex
         script = "from pathlib import Path; p=Path(" + repr(item["path"]) + "); assert p.read_bytes()==b'synthetic original'; p.write_text('synthetic edited'); Path('new.txt').write_text('persistent output'); print('mounted edit complete')"
         run("python3 -c " + shlex.quote(script))
-        assert client.get(f"/resources/{item['id']}/download?version=1").content == b"synthetic original"
-        assert client.get(f"/resources/{item['id']}/download?version=2").content == b"synthetic edited"
+        assert client.get(f"/resources/{item['id']}/download").content == b"synthetic edited"
+        assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
         reads = len(resource_store[1])
         run("python3 -c \"from pathlib import Path; assert Path('new.txt').read_text()=='persistent output'; print('second command retained files')\"")
         assert len(resource_store[1]) == reads
@@ -197,7 +214,7 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
         events = list(db.scalars(select(UsageEvent).where(UsageEvent.capability == "cloud_computer")))
         assert sum(event.credits for event in events) == computer.charged_credits
         print("live_mount_verified", {"seconds": computer.billed_seconds, "credits": str(computer.charged_credits),
-            "versions": [1, 2], "held": str(computer.held_credits), "shared_directory_retained": True})
+            "current_file_only": True, "held": str(computer.held_credits), "shared_directory_retained": True})
     finally:
         db.rollback()
         if computer:

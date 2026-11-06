@@ -80,8 +80,20 @@ def setup(accounts, monkeypatch, rate="0.6"):
     # Use a fixed generated test-only key for repeated encrypt/decrypt calls.
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(get_settings(), "site_config_encryption_key", SimpleNamespace(get_secret_value=lambda: key))
+    from app import storage_backend
+    from app.models import SiteStorageSettings
+    storage_row = db.get(SiteStorageSettings, 1)
+    if storage_row is None:
+        storage_row = SiteStorageSettings(id=2, version=1, provider="oss", bucket="test-bucket", region="cn-hangzhou",
+            encrypted_secret_id="test-id", encrypted_secret_key="test-secret", active=True)
+        db.add(storage_row); db.commit()
+    monkeypatch.setattr(storage_backend, "active_settings", lambda _db: SimpleNamespace(
+        provider="oss", bucket="test-bucket", region="cn-hangzhou"))
+    monkeypatch.setattr(storage_backend, "current_storage", lambda _db: SimpleNamespace(
+        bucket="test-bucket", region="cn-hangzhou"))
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
     body = {"version": 0, "enabled": True, "region": "cn-hangzhou", "template": "test-template", "specification": "test-only",
-            "api_key": "synthetic-api-key", "credits_per_minute": rate}
+            "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}
     response = client.put("/site/admin/cloud-computer", json=body)
     assert response.status_code == 200, response.text
     conversation = Conversation(workspace_id=UUID(identity["workspace_id"]), owner_id=user.id)
@@ -94,7 +106,7 @@ def setup(accounts, monkeypatch, rate="0.6"):
 
 
 def submit(db, access, conversation, command="echo test", request=None, inputs=None):
-    return cloud.submit(db, access, conversation.id, request or uuid4(), {"command": command, "inputs": inputs or []})
+    return cloud.submit(db, access, conversation.id, request or uuid4(), {"command": command})
 
 
 def enable_execution(db, access, monkeypatch):
@@ -102,12 +114,23 @@ def enable_execution(db, access, monkeypatch):
     settings = db.get(CloudComputerSettings, 1)
     if settings is None:
         db.add(CloudComputerSettings(id=1, version=1, enabled=True,
-            config=cloud.Configuration(region="cn-hangzhou", template="test", specification="test", credits_per_minute=0).model_dump(mode="json"),
+            config=cloud.Configuration(region="cn-hangzhou", template="test", specification="test", credits_per_minute=0,
+                oss_role_arn="acs:ram::123:role/test").model_dump(mode="json"),
             encrypted_api_key="test-only"))
     conversation = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
     db.add(conversation); db.commit()
     fake = FakeCloud()
     fake.outputs = {}
+    from test_cloud_computer_mount import MemoryMount, configure_mount
+    from app.shared_resources import prefix
+    fake.storage = MemoryMount()
+    configure_mount(db, monkeypatch, fake.storage)
+    original_start = fake.start
+    def mounted_start(sandbox, identifier, command):
+        for path, data in fake.outputs.items():
+            fake.storage.objects[prefix(access.workspace_id) + path] = data
+        return original_start(sandbox, identifier, command)
+    monkeypatch.setattr(fake, "start", mounted_start)
     factory = sessionmaker(bind=db.get_bind())
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
@@ -142,22 +165,20 @@ def test_connection_check_never_creates_instance(accounts, monkeypatch):
     assert fake.creates == 0
 
 
-def test_reuse_idempotency_input_transfer_and_outputs(accounts, monkeypatch, resource_store):
+def test_reuse_idempotency_and_outputs(accounts, monkeypatch, resource_store):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch)
-    resource = upload(client)
-    reference = {"id": resource["id"], "version": 1}
     request = uuid4()
-    command = submit(db, access, conversation, request=request, inputs=[reference])
+    command = submit(db, access, conversation, request=request)
     original = command.id
-    assert submit(db, access, conversation, request=request, inputs=[reference]).id == original
+    assert submit(db, access, conversation, request=request).id == original
     cloud.run(command.id, factory)
     db.expire_all()
     command = db.get(Command, original)
     assert command.status == "completed", command.result
-    assert command.result["generated_files"][0]["path"] == "result.txt"
-    second = submit(db, access, conversation, command="echo again", inputs=[reference])
+    assert "generated_files" not in command.result
+    second = submit(db, access, conversation, command="echo again")
     cloud.run(second.id, factory)
-    assert fake.creates == 1 and fake.starts == 2 and fake.writes == 1
+    assert fake.creates == 1 and fake.starts == 2 and fake.writes == 0
     assert len(db.scalars(select(Computer)).all()) == 1
     listing = client.get(f"/conversations/{conversation.id}/cloud-computer/commands")
     assert "synthetic-api-key" not in listing.text and "provider_id" not in listing.text
@@ -165,16 +186,14 @@ def test_reuse_idempotency_input_transfer_and_outputs(accounts, monkeypatch, res
 
 def test_replay_returns_original_without_preparing_inputs(accounts, monkeypatch, resource_store):
     _, db, conversation, access, fake, _ = setup(accounts, monkeypatch)
-    resource = upload(accounts[0][0])
-    reference = {"id": resource["id"], "version": 1}
     request = uuid4()
-    original = submit(db, access, conversation, request=request, inputs=[reference])
+    original = submit(db, access, conversation, request=request)
 
     def unavailable(*args):
         raise HTTPException(404, "resource no longer available")
 
     monkeypatch.setattr("app.workspace_files.resolve_input", unavailable)
-    assert submit(db, access, conversation, request=request, inputs=[reference]).id == original.id
+    assert submit(db, access, conversation, request=request).id == original.id
     assert fake.creates == 0
 
 
@@ -351,7 +370,7 @@ def test_lost_worker_recovers_result_without_reexecuting(accounts, monkeypatch, 
     cloud.maintenance(factory)
     db.expire_all()
     command = db.get(Command, command.id)
-    assert command.status == "completed" and command.result["generated_files"]
+    assert command.status == "completed" and "generated_files" not in command.result
     assert fake.starts == 1
     cloud.maintenance(factory)
     assert fake.starts == 1

@@ -3,7 +3,6 @@
 SDK reference: https://help.aliyun.com/zh/agent-sandbox/using-the-cloud-sandbox-via-the-sdk
 No provider credentials or SDK identifiers are exposed to the model.
 """
-import hashlib
 import json
 import shlex
 from datetime import datetime, timezone
@@ -14,8 +13,6 @@ PRIVATE_NETWORKS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 ROOT = "/home/user/workspace"
 STATE = "/tmp/zhiku-cloud-computer"
 DEPENDENCIES = f"{STATE}/deps"
-MAX_FILE = 200 * 1024 * 1024
-MAX_TOTAL = 512 * 1024 * 1024
 
 # The launcher captures output on disk rather than accumulating arbitrary model
 # stdout in the API process. Its process group can be terminated independently.
@@ -38,28 +35,6 @@ result = {"exit_code": code, **{name: data.decode("utf-8", errors="replace") for
 (job / "result.tmp").write_text(json.dumps(result))
 os.replace(job / "result.tmp", job / "result.json")
 '''
-
-MANIFEST = '''import hashlib,json,os,stat
-from pathlib import Path
-root=Path("/home/user/workspace")
-assert not root.is_symlink(), "workspace must be a directory"
-result={}; total=0
-for directory, dirs, files in os.walk(root, followlinks=False):
-    dirs[:]=[name for name in dirs if name not in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} and not Path(directory,name).is_symlink()]
-    for name in files:
-        path=Path(directory,name)
-        info=path.lstat()
-        if not stat.S_ISREG(info.st_mode): continue
-        if info.st_size>209715200: raise RuntimeError("output file exceeds 200 MiB")
-        total+=info.st_size
-        if not os.environ.get("ZHIKU_SHARED_RESOURCES") and (total>536870912 or len(result)>=2000): raise RuntimeError("output bundle too large")
-        digest=hashlib.sha256()
-        with path.open("rb") as handle:
-            for block in iter(lambda:handle.read(1048576),b""): digest.update(block)
-        result[str(path.relative_to(root))]={"sha256":digest.hexdigest(),"size":info.st_size}
-print(json.dumps(result))
-'''
-
 
 class AlibabaSandbox:
     def __init__(self, config, key):
@@ -152,6 +127,17 @@ class AlibabaSandbox:
         sandbox.files.write(f"{job}/launcher-pid", str(handle.pid), user="user")
         return handle.pid
 
+    def start_file(self, sandbox, identifier, operation):
+        from pathlib import Path
+        job = f"{STATE}/jobs/{identifier}"
+        sandbox.commands.run(f"mkdir -p {job}", user="user")
+        sandbox.files.write(f"{job}/operation.json", json.dumps(operation), user="user")
+        sandbox.files.write(f"{job}/file-tool.py", Path(__file__).with_name("cloud_file_operation.py").read_text(encoding="utf-8"), user="user")
+        return self.start(sandbox, identifier, f"python3 {job}/file-tool.py {job}")
+
+    def file_result(self, sandbox, identifier):
+        return json.loads(sandbox.files.read(f"{STATE}/jobs/{identifier}/file-result.json", user="user"))
+
     def poll(self, sandbox, identifier):
         path = f"{STATE}/jobs/{identifier}/result.json"
         if sandbox.files.exists(path, user="user"):
@@ -173,19 +159,6 @@ class AlibabaSandbox:
         sandbox.commands.run("python3 -c " + shlex.quote(script), user="user")
         if process_id:
             sandbox.commands.kill(process_id)
-
-    def manifest(self, sandbox):
-        result = sandbox.commands.run("python3 -c " + shlex.quote(MANIFEST), user="user",
-            envs={"ZHIKU_SHARED_RESOURCES": "1" if getattr(self, "config", {}).get("resource_mount", {}).get("mode") == "shared" else ""})
-        return json.loads(result.stdout)
-
-    def read(self, sandbox, path, expected):
-        from .workspace_files import valid_path
-        data = sandbox.files.read(f"{ROOT}/{valid_path(path)}", format="bytes", user="user")
-        if len(data) > MAX_FILE or hashlib.sha256(data).hexdigest() != expected:
-            raise ValueError("output changed during transfer")
-        return data
-
 
 def adapter(config, encrypted_key):
     from .site_auth import reveal

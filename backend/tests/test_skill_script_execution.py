@@ -82,7 +82,7 @@ def test_missing_executor_does_not_advertise_execution(accounts, monkeypatch):
     assert runtime.execute("run_command", {"command": "echo no"}).get("error")
 
 
-def test_output_tools_work_without_skill_or_executor_and_recheck_role(accounts, monkeypatch):
+def test_output_tools_require_cloud_and_recheck_role(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "")
     stored = {}
@@ -91,18 +91,19 @@ def test_output_tools_work_without_skill_or_executor_and_recheck_role(accounts, 
     monkeypatch.setattr("app.resource_cache.download_range_fileobj", lambda key, start, end: io.BytesIO(stored[key][start:end+1]))
     access = access_for(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
-    assert "write_file" in {item["function"]["name"] for item in runtime.tools}
-    assert runtime.execute("list_files", {})["items"] == []
-    result = runtime.execute("write_file", {"path": "report.txt", "content": "REAL OUTPUT"})
-    assert result["version"] == 1 and list(stored.values()) == [b"REAL OUTPUT"]
-    assert runtime.execute("read_file", {"path": "report.txt"})["content"] == "REAL OUTPUT"
+    assert "write_file" not in {item["function"]["name"] for item in runtime.tools}
+    assert runtime.execute("list_files", {})["error_code"] == "file_tool_unavailable"
+    assert not stored
     assert runtime.execute("run_command", {"command": "echo no"})["error_code"] == "file_tool_unavailable"
+    enable_cloud(db, access, monkeypatch)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
+    assert "write_file" in {item["function"]["name"] for item in runtime.tools}
     member = db.get(Membership, (access.workspace_id, access.user_id))
     member.role = "viewer"
     db.commit()
     with pytest.raises(HTTPException) as error:
         runtime.execute("write_file", {"path": "second.txt", "content": "forbidden"})
-    assert error.value.status_code == 403 and len(stored) == 1
+    assert error.value.status_code == 403 and not stored
 
 
 def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatch):
@@ -111,21 +112,18 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     selected = scripted(admin)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]])
-    assert runtime.execute("list_files", {})["items"] == []
     captured = []
     with monkeypatch.context() as patch:
         patch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
         assert runtime.execute("run_command", {"command": "echo ready", "skill_ids": [selected["id"]]})["exit_code"] == 0
         assert set(captured[0]["skill_packages"]) == {selected["id"]}
-    def unavailable(*args):
-        raise HTTPException(503, "SECRET SDK DIAGNOSTIC")
-    monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    def unavailable(*args, **kwargs):
+        raise HTTPException(503, "云电脑尚未开放，请联系管理员")
+    monkeypatch.setattr("app.cloud_computer.execute", unavailable)
     result = runtime.execute("write_file", {"path": "report.txt", "content": "hello"})
-    assert result["error_code"] == "file_storage" and "SECRET" not in result["error"]
+    assert result["error_code"] == "cloud_computer_unavailable"
     assert db.query(WorkspaceFile).count() == 0
-    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
-    assert runtime.execute("write_file", {"path": "report.txt", "content": "hello"})["version"] == 1
-    assert runtime.execute("write_file", {"path": "report.txt", "content": "changed", "expected_version": 9})["error_code"] == "file_conflict"
+    assert runtime.execute("write_file", {"path": "report.txt", "content": "changed", "expected_version": 9})["error_code"] == "file_arguments"
     assert runtime.execute("write_file", {"path": "../forbidden", "content": "bad"})["error_code"] == "file_arguments"
     assert runtime.execute("write_file", {"path": "report.txt", "content": "bad", "expected_version": 0})["error_code"] == "file_arguments"
 
@@ -167,7 +165,8 @@ def test_script_nonzero_exit_is_failure_and_keeps_completed_outputs(accounts, mo
     fake.result = {"exit_code": 1, "stdout": "", "stderr": "synthetic error"}
     fake.outputs = {"partial.txt": b"partial"}
     result = execute({"command": "exit 1"})
-    assert result["error_code"] == "script_failed" and len(result["generated_files"]) == 1
+    assert result["error_code"] == "script_failed" and not result.get("generated_files")
+    assert admin.get("/resources").json()["items"][0]["path"] == "partial.txt"
     from app.models import CloudComputerCommand
     assert db.query(CloudComputerCommand).one().status == "failed"
 
@@ -183,12 +182,13 @@ def test_run_command_forwards_packages_and_saves_only_outputs(accounts, monkeypa
     result = execute({"command": "python /skills/test/main.py"}, {"test": {"main.py": b"print('ok')"}})
     assert result["exit_code"] == 0 and "files" not in result
     assert captured == [("test/main.py", b"print('ok')")]
-    assert list(stored.values()) == [b"result"]
+    assert not stored
+    assert admin.get("/resources").json()["items"][0]["path"] == "report.txt"
     from app.models import CloudComputerCommand
-    assert db.query(CloudComputerCommand).one().result["generated_files"][0]["path"] == "report.txt"
+    assert not db.query(CloudComputerCommand).one().result.get("generated_files")
 
 
-def test_failed_output_save_rolls_back_metadata_and_retries_without_execution(accounts, monkeypatch):
+def test_command_never_scans_reads_or_archives_outputs(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(admin, db)
     fake, execute = enable_cloud(db, access, monkeypatch)
@@ -196,24 +196,12 @@ def test_failed_output_save_rolls_back_metadata_and_retries_without_execution(ac
     def unavailable(*args):
         raise HTTPException(503, "storage unavailable")
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    monkeypatch.setattr(fake, "manifest", lambda *_: pytest.fail("post-command scan"))
+    monkeypatch.setattr(fake, "read", lambda *_: pytest.fail("output body read"))
     result = execute({"command": "echo result"})
-    assert "尚未全部保存" in result["error"] and not result.get("generated_files")
+    assert result["status"] == "completed" and not result.get("generated_files")
     assert db.query(WorkspaceFile).count() == db.query(WorkspaceFileVersion).count() == 0
-    from app.models import CloudComputerCommand
-    assert db.query(CloudComputerCommand).one().status == "save_failed"
-    monkeypatch.setattr(workspace_files, "upload_fileobj", lambda *args: None)
-    from app import cloud_computer as cloud
-    from sqlalchemy.orm import sessionmaker
-    command = db.query(CloudComputerCommand).one()
-    with pytest.raises(HTTPException) as conflict:
-        execute({"command": "echo result"})
-    assert conflict.value.status_code == 409
-    db.rollback()
-    cloud.retry_save(command.id, db, access)
-    cloud.maintenance(sessionmaker(bind=db.get_bind()))
-    db.expire_all()
-    command = db.get(CloudComputerCommand, command.id)
-    assert command.status == "completed" and len(command.result["generated_files"]) == 1
+    assert admin.get("/resources").json()["items"][0]["path"] == "report.txt"
     assert fake.starts == 1
     row = db.query(WorkspaceFile).one()
     monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)

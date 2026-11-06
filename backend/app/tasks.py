@@ -415,39 +415,9 @@ def maintain_uploads() -> None:
 
 
 def cleanup_workspace_files() -> None:
-    """Collect explicitly deleted resource objects; valid resources never expire."""
-    from .storage import delete_object
-    with SessionLocal() as db:
-        expired = db.scalars(select(WorkspaceFile).where(WorkspaceFile.deleted_at.is_not(None))).all()
-        for row in expired:
-            from .storage_billing import lock_workspace
-            lock_workspace(db, row.workspace_id)
-            db.refresh(row)
-            if row.deleted_at is None:
-                continue
-            if row.live_etag:
-                from .shared_resources import remove_live
-                try:
-                    remove_live(db, row)
-                except Exception:
-                    continue
-            for version in row.versions:
-                if version.deleted_at is not None:
-                    continue
-                if db.scalar(select(Document.id).where(Document.object_key == version.object_key)):
-                    continue
-                try:
-                    delete_object(version.object_key)
-                except Exception:
-                    continue
-                version.deleted_at = datetime.now(timezone.utc)
-                from .models import ChatAttachment
-                for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.object_key)):
-                    attachment.deleted_at = row.deleted_at
-                    attachment.object_deleted_at = version.deleted_at
-            if all(version.deleted_at is not None for version in row.versions):
-                row.deleted_at = datetime.now(timezone.utc)
-        db.commit()
+    # Shared directory deletion happens before its index tombstone is committed.
+    # Replaying deletion by path could remove a newly recreated file.
+    return
 
 
 @celery_app.task(bind=True, max_retries=3)

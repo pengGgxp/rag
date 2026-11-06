@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.cloud_computer_adapter import AlibabaSandbox, DEPENDENCIES, LAUNCHER, MANIFEST, PRIVATE_NETWORKS
+from app.cloud_computer_adapter import AlibabaSandbox, DEPENDENCIES, LAUNCHER, PRIVATE_NETWORKS
 
 
 def test_create_requires_network_isolation_and_connect_preserves_deadline():
@@ -54,7 +54,7 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
     provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": [],
         "oss_role_arn": "acs:ram::123:role/sandbox", "resource_mount": {
             "bucket": "test-bucket", "region": "cn-beijing",
-            "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared"}}
+            "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared", "file_tools": True}}
     provider.options = {}
     def create(**kwargs):
         calls.update(kwargs)
@@ -97,6 +97,6 @@ def test_manifest_excludes_dependencies_and_retains_outputs(tmp_path):
         path = tmp_path/directory
         path.mkdir()
         (path/"not-an-output.txt").write_text("dependency")
-    script = MANIFEST.replace('Path("/home/user/workspace")', f"Path({str(tmp_path)!r})")
-    result = subprocess.run([sys.executable, "-c", script], check=True, timeout=10, capture_output=True, text=True)
-    assert list(json.loads(result.stdout)) == ["report.txt"]
+    from app.cloud_file_operation import perform
+    assert [item["path"] for item in perform({"name": "list_files"}, tmp_path)["items"]] == ["report.txt"]
+    assert not hasattr(AlibabaSandbox, "manifest")

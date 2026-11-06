@@ -39,19 +39,17 @@ def verify_pending_objects(db, head):
 @router.get("")
 def listing(q: str = "", source: str = "", offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500), db=Depends(get_db), access: Access=Depends(get_access)):
+    from .shared_resources import refresh_index
+    discovered, has_more = refresh_index(db, access, q, offset, limit, source)
     query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
         WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%"))
     if source:
         query = query.where(WorkspaceFile.source == source)
     rows = list(db.scalars(query.order_by(WorkspaceFile.created_at.desc(), WorkspaceFile.id)
         .offset(offset).limit(limit + 1)))
-    versions = {version.file_id: version for version in db.scalars(select(WorkspaceFileVersion)
-        .join(WorkspaceFile, WorkspaceFile.id == WorkspaceFileVersion.file_id).where(
-            WorkspaceFile.id.in_([row.id for row in rows[:limit]]),
-            WorkspaceFile.current_version == WorkspaceFileVersion.version))}
-    return {"items": [{**workspace_files.read_file(row), "availability":
-        "missing" if row.id not in versions or versions[row.id].available is False else
-        "pending" if versions[row.id].available is None else "available"} for row in rows[:limit]],
+    if discovered is not None:
+        return {"items": discovered, "offset": offset, "limit": limit, "has_more": has_more}
+    return {"items": [workspace_files.read_file(row) for row in rows[:limit]],
         "offset": offset, "limit": limit, "has_more": len(rows) > limit}
 
 
@@ -71,38 +69,28 @@ def detail(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_acce
 def download(identifier: UUID, request: Request, version: int | None = Query(None, ge=1),
         preview: bool = False, db=Depends(get_db), access: Access=Depends(get_access)):
     from .storage_downloads import download_response
-    row, selected = workspace_files.resolve_input(db, access,
-        {"id": str(identifier), **({"version": version} if version else {})})
+    row, selected = workspace_files.resolve_input(db, access, {"id": str(identifier)})
     # Active HTML/SVG/JavaScript are always attachments, never same-origin executable previews.
     inline = preview and (selected.content_type in {"image/png", "image/jpeg", "image/webp", "application/pdf"}
         or selected.content_type.startswith("text/plain"))
-    return download_response(db, access, request, object_key=selected.object_key,
-        size=selected.size_bytes, filename=PurePosixPath(row.path).name, content_type=selected.content_type,
-        resource=f"user_download:{row.id}:{selected.version}", inline=inline)
+    from .shared_resources import object_key
+    return download_response(db, access, request, object_key=object_key(access.workspace_id, row.path),
+        size=row.size_bytes, filename=PurePosixPath(row.path).name, content_type=row.content_type,
+        resource=f"user_download:{row.id}", inline=inline)
 
 
 @router.delete("/{identifier}", status_code=204)
 def remove(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
-    from .storage_billing import lock_workspace
-    from .audit_log import record_audit
-    lock_workspace(db, access.workspace_id)
-    from .shared_resources import remove_live
-    remove_live(db, row)
-    row.deleted_at = now()
-    for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
-        attachment.deleted_at = row.deleted_at
-    record_audit(db, workspace_id=access.workspace_id, action="resource.deleted",
-        resource_type="resource", resource_id=row.id, actor_user_id=access.user_id,
-        metadata={"version": row.current_version})
-    db.commit()
+    from .shared_resources import delete_path
+    delete_path(db, access, row)
 
 
 @router.post("/{identifier}/attachment")
-def attach(identifier: UUID, version: int = Query(ge=1), db=Depends(get_db), access: Access=Depends(get_access)):
-    resource, selected = workspace_files.resolve_input(db, access, {"id": str(identifier), "version": version})
+def attach(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
+    resource, selected = workspace_files.resolve_input(db, access, {"id": str(identifier)})
     row = db.scalar(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id,
-        ChatAttachment.resource_version == selected.version, ChatAttachment.deleted_at.is_(None)))
+        ChatAttachment.deleted_at.is_(None)))
     if row:
         return chat_attachments.attachment_read(row)
     suffix = PurePosixPath(resource.path).suffix.lower()
@@ -122,7 +110,7 @@ def attach(identifier: UUID, version: int = Query(ge=1), db=Depends(get_db), acc
         filename=PurePosixPath(resource.path).name, object_key=selected.object_key,
         content_type=selected.content_type, content_hash=selected.content_hash, size_bytes=selected.size_bytes,
         kind="image" if image else "document", source=resource.source, resource_path=resource.path,
-        resource_file_id=resource.id, resource_version=selected.version, width=width, height=height,
+        resource_file_id=resource.id, resource_version=1, width=width, height=height,
         text_content=None if image else chat_attachments.extract_document(data, resource.path))
     db.add(row)
     db.commit()

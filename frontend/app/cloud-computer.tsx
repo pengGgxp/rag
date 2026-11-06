@@ -12,7 +12,7 @@ import "./cloud-computer.css";
 type Computer = { id: string; status: string; summary: string; terminal: boolean; credits: string;
   credits_per_minute: string; idle_ends_at: string | null };
 type Command = { id: string; status: string; terminal: boolean; cancel_requested: boolean;
-  result: { error?: string; generated_files?: { id: string; path: string; version: number }[] } };
+  result: { error?: string; generated_files?: { id: string; path: string }[] } };
 type Catalog = { available: boolean; credits_per_minute?: number; idle_seconds?: number };
 
 export function CloudComputerPanel({ conversationId, workspaceId }: { conversationId: string | null; workspaceId: string }) {
@@ -77,8 +77,7 @@ export function CloudComputerPanel({ conversationId, workspaceId }: { conversati
     </div>
     {computer?.terminal && catalog?.available && <div className="cloud-computer-line"><span>{price}</span></div>}
     {last && !last.terminal && <div className="cloud-computer-line"><span>正在处理文件</span><Tooltip content="停止当前命令"><button type="button" className="icon-button" aria-label="停止当前命令" disabled={busy || last.cancel_requested} onClick={() => void act(`/cloud-computer/commands/${last.id}/cancel`)}><Square size={14} /></button></Tooltip></div>}
-    {commands.some(command => command.status === "save_failed") && <div className="cloud-computer-line"><span>部分文件尚未保存</span><button className="text-button" type="button" disabled={busy || computer?.terminal} onClick={() => { const failed = commands.find(command => command.status === "save_failed"); if (failed) void act(`/cloud-computer/commands/${failed.id}/retry-save`); }}><RotateCcw size={14} />重试保存</button></div>}
-    {commands.some(command => command.result.generated_files?.length) && <Link href="/resources">查看生成文件</Link>}
+    {commands.some(command => command.status === "completed") && <Link href="/resources">打开资源库</Link>}
     {error && <div className="cloud-computer-line" role="alert"><span>{error}</span><button type="button" className="icon-button" aria-label="刷新云电脑状态" onClick={() => setRevision(value => value + 1)}><RotateCcw size={14} /></button></div>}
   </div>;
 }

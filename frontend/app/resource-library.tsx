@@ -11,7 +11,7 @@ import { Tooltip } from "../components/ui/tooltip";
 import { ResourceNotice } from "./resource-notice";
 
 export type ResourceFile = { id: string; path: string; content_type: string; size_bytes: number;
-  version: number; source: string; updated_at: string; availability?: "pending" | "missing" | "available" };
+  source: string; updated_at: string; availability?: "pending" | "missing" | "available" };
 const sources: Record<string, string> = { chat_upload: "对话上传", resource_upload: "资源库上传", model_output: "模型生成" };
 
 export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => Promise<void> }) {
@@ -79,10 +79,10 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     setBusy(true); setError("");
     try {
       if (!item.content_type.startsWith("image/") && item.content_type !== "application/pdf" && !item.content_type.startsWith("text/")) {
-        await downloadFile(`/resources/${item.id}/download?version=${item.version}`, item.path.split("/").pop()!);
+        await downloadFile(`/resources/${item.id}/download`, item.path.split("/").pop()!);
         return;
       }
-      const response = await fetch(`${API_URL}/resources/${item.id}/download?version=${item.version}`, {
+      const response = await fetch(`${API_URL}/resources/${item.id}/download`, {
         credentials: "include", headers: sessionHeaders(),
       });
       if (!response.ok) {
@@ -126,7 +126,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
           </div>
           {select && <ChevronRight size={16} className="resource-select-arrow" aria-hidden="true" />}
           {!select && <><Tooltip content="下载"><button type="button" className="icon-button workspace-file-download" aria-label={`下载 ${item.path}`} disabled={busy || item.availability === "missing"}
-            onClick={() => void downloadFile(`/resources/${item.id}/download?version=${item.version}`, item.path.split("/").pop()!).catch(e => setError(e.message))}><Download size={16} /></button></Tooltip>
+            onClick={() => void downloadFile(`/resources/${item.id}/download`, item.path.split("/").pop()!).catch(e => setError(e.message))}><Download size={16} /></button></Tooltip>
             {canWrite && <Tooltip content="删除"><button type="button" className="icon-button" aria-label={`删除 ${item.path}`} disabled={busy} onClick={() => setRemove(item)}><Trash2 size={16} /></button></Tooltip>}</>}
         </div>)}</div>}
     </section>

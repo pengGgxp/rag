@@ -35,7 +35,7 @@ def attachment_read(row):
             "size_bytes": row.size_bytes, "kind": row.kind, "source": row.source,
             "created_at": row.created_at.isoformat(), "available": row.deleted_at is None and row.object_deleted_at is None,
             "resource_id": str(row.resource_file_id) if row.resource_file_id else None,
-            "version": row.resource_version or 1}
+            "version": 1}
 
 
 def image_size(data, suffix):
@@ -161,7 +161,18 @@ def owned(db, access, identifier, *, lock=False):
         if resource is None or resource.deleted_at:
             raise HTTPException(404, "资源已删除")
         from .workspace_files import resolve_input
-        resolve_input(db, access, {"id": str(resource.id), "version": row.resource_version})
+        resource, current = resolve_input(db, access, {"id": str(resource.id)})
+        changed = row.content_hash != current.content_hash or row.size_bytes != current.size_bytes
+        row.object_key, row.size_bytes, row.content_type = current.object_key, current.size_bytes, current.content_type
+        row.content_hash, row.resource_version = current.content_hash, 1
+        if changed or (row.kind == "document" and row.text_content is None) or (row.kind == "image" and not row.width):
+            from .resource_cache import read_bytes
+            raw = read_bytes(db, access, resource, current)
+            if row.kind == "document":
+                row.text_content = extract_document(raw, row.filename)
+            else:
+                row.width, row.height = image_size(raw, Path(row.filename).suffix.lower())
+            row.content_hash = hashlib.sha256(raw).hexdigest()
     return row
 
 
@@ -199,7 +210,9 @@ def create_upload(file, db, access, *, source):
     from .storage_billing import check_capacity
     check_capacity(db, access.workspace_id, len(data))
     identifier = uuid4()
-    key = f"workspaces/{access.workspace_id}/resources/{identifier}/{filename}"
+    from .shared_resources import object_key
+    resource_path = f"uploads/{identifier}/{filename}"
+    key = object_key(access.workspace_id, resource_path)
     document_types = {".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
@@ -207,7 +220,7 @@ def create_upload(file, db, access, *, source):
         filename=filename, content_type=IMAGE_TYPES[suffix] if image else document_types[suffix],
         size_bytes=len(data), content_hash=hashlib.sha256(data).hexdigest(), object_key=key,
         kind="image" if image else "document", source=source,
-        resource_path=f"uploads/{identifier}/{filename}", text_content=text, width=width, height=height)
+        resource_path=resource_path, text_content=text, width=width, height=height)
     upload_fileobj(io.BytesIO(data), key, row.content_type)
     try:
         resource = WorkspaceFile(id=identifier, workspace_id=access.workspace_id,
@@ -216,16 +229,15 @@ def create_upload(file, db, access, *, source):
             created_by=access.user_id, updated_by=access.user_id,
             expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
         db.add(resource)
+        from .shared_resources import backend
+        mounted = backend(db)
+        resource.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
         db.flush()
         db.add(WorkspaceFileVersion(file_id=identifier, workspace_id=access.workspace_id, version=1,
             object_key=key, content_type=row.content_type, size_bytes=len(data),
             content_hash=row.content_hash, created_by=access.user_id))
         row.resource_file_id, row.resource_version = identifier, 1
         db.add(row)
-        from .shared_resources import publish
-        db.flush()
-        publish(db, resource, db.scalar(select(WorkspaceFileVersion).where(
-            WorkspaceFileVersion.file_id == identifier, WorkspaceFileVersion.version == 1)))
         from .audit_log import record_audit
         record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
             action="resource.created", resource_type="resource", resource_id=identifier,
@@ -311,7 +323,7 @@ def user_content(text, attachments):
         if getattr(row, "deleted_at", None) or getattr(row, "object_deleted_at", None):
             parts.append({"type": "text", "text": f"资源已删除或不可用：{row.filename}"})
             continue
-        reference = f"资源 ID：{getattr(row, 'resource_file_id', None) or row.id}，版本：{getattr(row, 'resource_version', None) or 1}，执行路径：{getattr(row, 'resource_path', None) or row.filename}"
+        reference = f"资源 ID：{getattr(row, 'resource_file_id', None) or row.id}，执行路径：{getattr(row, 'resource_path', None) or row.filename}"
         if row.kind == "image":
             parts.append({"type": "text", "text": f"附件图片：{row.filename}；{reference}"})
             parts.append({"type": "chat_image", "attachment_id": str(row.id),
@@ -348,12 +360,21 @@ def model_messages(messages, config, resource_context=None):
                     from .workspace_files import resolve_input
                     from .resource_cache import read_bytes
                     resource, version = resolve_input(db, checked,
-                        {"id": str(attachment.resource_file_id), "version": attachment.resource_version})
+                        {"id": str(attachment.resource_file_id)})
+                    from .shared_resources import refresh_current_metadata
+                    resource = refresh_current_metadata(db, checked, resource)
+                    version.content_type, version.size_bytes = resource.content_type, resource.size_bytes
+                    version.content_hash = resource.content_hash or ""
+                    attachment.content_hash = resource.content_hash or ""
+                    attachment.size_bytes = resource.size_bytes
+                    attachment.object_key = version.object_key
                     raw = read_bytes(db, checked, resource, version)
+                    expected_hash = version.content_hash
             else:
                 with download_fileobj(part["object_key"]) as source:
                     raw = source.read(MAX_IMAGE_BYTES + 1)
-            if len(raw) > MAX_IMAGE_BYTES or hashlib.sha256(raw).hexdigest() != part["sha256"]:
+                expected_hash = part["sha256"]
+            if len(raw) > MAX_IMAGE_BYTES or (expected_hash and hashlib.sha256(raw).hexdigest() != expected_hash):
                 raise LLMConfigurationError("附件内容校验失败，请重新上传")
             url = f"data:{part['content_type']};base64,{base64.b64encode(raw).decode('ascii')}"
             message["content"][index] = {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}

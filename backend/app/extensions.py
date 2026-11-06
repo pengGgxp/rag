@@ -89,9 +89,7 @@ class ExtensionRuntime(SkillRuntime):
         with factory() as db:
             cloud_settings = db.get(CloudSettings, 1)
             self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
-        workspace_tools = [item for item in tool_definitions()
-            if (access.role in ("admin", "editor") or item["function"]["name"] in ("list_files", "read_file")) and (item["function"]["name"] != "run_command"
-                or self.execution_available)]
+        workspace_tools = tool_definitions() if self.execution_available else []
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
         self.tools = ([LOAD_SKILL, *([READ_SKILL_RESOURCE] if any(row["resources"] for row in self.snapshots.values()) else [])]
             if self.skills else []) + workspace_tools + [{"type": "function", "function": {"name": alias,
@@ -206,9 +204,9 @@ class ExtensionRuntime(SkillRuntime):
                     except HTTPException as error:
                         if error.status_code in (401, 403):
                             raise
-                        if name == "run_command":
+                        if error.status_code in (402, 503) or name == "run_command":
                             return {"error": str(error.detail), "error_code": "cloud_computer_unavailable"}
-                        code = {402: "file_download_quota", 404: "file_missing", 409: "file_conflict", 413: "file_capacity",
+                        code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",
                             422: "file_arguments"}.get(error.status_code, "file_storage")
                         return {"error": FILE_TOOL_ERRORS[code], "error_code": code}
             return super().execute(name, arguments, check_active)

@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -28,11 +29,15 @@ def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
             db.add(settings)
         settings.enabled = True
         settings.encrypted_api_key = "test-only-not-used"
-        settings.config = cloud.Configuration(region="cn-hangzhou", template="fake", specification="fake", credits_per_minute=0).model_dump(mode="json")
+        settings.config = cloud.Configuration(region="cn-hangzhou", template="fake", specification="fake", credits_per_minute=0,
+            oss_role_arn="acs:ram::123:role/test").model_dump(mode="json")
         db.commit()
         access = auth.Access(user.id, workspace_id, "admin", session_hash)
         conversation_id = conversation.id
     monkeypatch.setattr(cloud, "dispatch", lambda *_: None)
+    monkeypatch.setattr("app.storage_backend.active_settings", lambda _db: SimpleNamespace(
+        provider="oss", bucket="test-bucket", region="cn-hangzhou"))
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
     barrier = Barrier(4)
     request_id = uuid4()
     def submit(_):

@@ -1,5 +1,4 @@
 "use client";
-
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Download, Eye, Loader2, RotateCcw, Square } from "lucide-react";
@@ -58,15 +57,15 @@ export function ImageTaskActivity({ initial, onUpdate, showStatus = true }: { in
     {value.files.map(file => <span key={file.id} className="image-task-files"><button type="button" className="activity-file-download" disabled={busy} onClick={async () => {
       setBusy(true); setError("");
       try {
-        const response = await fetch(`${API_URL}/resources/${file.id}/download?version=${file.version}`, { credentials: "include", headers: sessionHeaders() });
+        const response = await fetch(`${API_URL}/resources/${file.id}/download`, { credentials: "include", headers: sessionHeaders() });
         if (!response.ok) throw new Error("预览失败，请确认下载额度后重试");
         const blob = await response.blob();
         if (!["image/png", "image/jpeg", "image/webp"].includes(blob.type)) throw new Error("此文件暂不支持图片预览");
         setPreview({ url: URL.createObjectURL(blob), name: file.path.split("/").at(-1) || "图片" });
       } catch (cause) { setError(cause instanceof Error ? cause.message : "预览失败，请重试"); }
       finally { setBusy(false); }
-    }}><Eye size={15} />预览</button><a className="activity-file-download" href={`${API_URL}/resources/${file.id}/download?version=${file.version}`} onClick={event => {
-      event.preventDefault(); void downloadFile(`/resources/${file.id}/download?version=${file.version}`, file.path.split("/").at(-1) || "图片").catch(cause => setError(cause instanceof Error ? cause.message : "下载失败，请重试"));
+    }}><Eye size={15} />预览</button><a className="activity-file-download" href={`${API_URL}/resources/${file.id}/download`} onClick={event => {
+      event.preventDefault(); void downloadFile(`/resources/${file.id}/download`, file.path.split("/").at(-1) || "图片").catch(cause => setError(cause instanceof Error ? cause.message : "下载失败，请重试"));
     }}><Download size={15} /><span>{file.path.split("/").at(-1)}</span></a></span>)}
     {!!value.files.length && <Link className="activity-file-download" href="/resources">查看资源库</Link>}
     {error && <span className="activity-file-download-error" role="alert">{error}</span>}

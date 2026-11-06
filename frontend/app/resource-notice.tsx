@@ -19,7 +19,7 @@ export function ResourceNotice() {
   }, [key]);
   if (!visible) return null;
   return <div className="resource-sharing-notice" role="note">
-    <span>文件在工作区内共享，长期保留并占用存储空间。预览、下载和模型读取消耗下载额度，模型缓存命中免费。</span>
+    <span>文件在工作区内共享并占用存储空间。预览、下载和发送图片消耗下载额度；云电脑按运行时间计费。</span>
     <button type="button" className="secondary" onClick={() => {
       localStorage.setItem(key, "seen"); setVisible(false);
       window.dispatchEvent(new Event("resource-notice-dismissed"));

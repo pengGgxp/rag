@@ -130,11 +130,11 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
     {items.filter(item => item.image_task).map(item => <ImageTaskActivity key={item.image_task!.task_id} initial={item.image_task!} onUpdate={updateImage} showStatus={items.length > 1} />)}
     {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
       {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
-        href={`${API_URL}/resources/${file.id}/download?version=${file.version}`} download
+        href={`${API_URL}/resources/${file.id}/download`} download
         onClick={event => {
           event.preventDefault();
           setDownloadError("");
-          void downloadFile(`/resources/${file.id}/download?version=${file.version}`, file.path.split("/").at(-1) || "文件")
+          void downloadFile(`/resources/${file.id}/download`, file.path.split("/").at(-1) || "文件")
             .catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败，请重试"));
         }}>
         <Download size={15} aria-hidden="true" /><span>下载 {file.path.split("/").at(-1) || file.path}</span>
