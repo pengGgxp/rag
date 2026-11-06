@@ -1,5 +1,9 @@
 # Tencent COS Storage And Uploads
 
+COS/OSS configuration and current verified provider cutover procedure are documented
+in [Object storage: COS and OSS](oss-storage.md). The migration command below is the
+historical legacy-S3 bootstrap only; do not use it to switch between COS and OSS.
+
 Issue: #46. Target bucket: `zk-1309923787`, region `ap-guangzhou`.
 
 ## Scope And Invariants
