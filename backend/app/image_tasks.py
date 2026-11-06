@@ -203,6 +203,7 @@ def run(identifier, factory=None):
             return
         if not row or row.status != "queued":
             return
+        preparation_stage = "authorization"
         try:
             access = task_access(db, row)
             access.editor()
@@ -215,6 +216,7 @@ def run(identifier, factory=None):
                 row.status = "cancelled"
                 db.commit()
                 return
+            preparation_stage = "references"
             references = []
             for reference in row.payload["references"]:
                 resource, version = resolve_input(db, access, reference)
@@ -230,18 +232,26 @@ def run(identifier, factory=None):
                 db.commit()
                 return
             # Resolve local credentials before crossing the billable submission boundary.
+            preparation_stage = "credentials"
             secret = _decrypt_api_key(row.encrypted_credentials)
+            preparation_stage = "authorization"
             access = task_access(db, row)
             access.editor()
             row.status = "running"
             db.commit()
         except Exception as exc:
-            logger.warning("Image task preparation failed: task=%s error_type=%s", identifier, type(exc).__name__)
+            logger.warning("Image task preparation failed: task=%s stage=%s error_type=%s", identifier, preparation_stage, type(exc).__name__)
             db.rollback()
             row = db.get(ImageTask, identifier, with_for_update=True)
             if row.status == "queued":
                 settle(db, row, 0)
-                row.status, row.error = "failed", "图片任务无法开始，请检查权限、参考资源和额度后重试"
+                if isinstance(exc, HTTPException) and isinstance(exc.detail, str):
+                    message = exc.detail
+                else:
+                    message = {"authorization": "图片任务启动失败，请联系管理员并提供任务编号",
+                        "references": "参考图片读取失败，请确认图片可用后重新选择",
+                        "credentials": "图片服务凭据无法读取，请联系管理员检查服务加密配置"}[preparation_stage]
+                row.status, row.error = "failed", message
                 db.commit()
             return
         try:

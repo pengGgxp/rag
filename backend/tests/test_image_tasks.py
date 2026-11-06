@@ -202,7 +202,29 @@ def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypa
     row = db.get(ImageTask, UUID(identifier))
     assert row.status == "failed" and row.settled
     assert row.charged_credits == 0
+    assert row.error == ("登录或工作区权限已失效" if revocation == "session" else "只读成员不能修改资料")
     assert db.get(CreditAccount, wid).balance == before
+    assert calls == []
+
+
+def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app import llm_providers, image_adapters
+    client, db, identity = configure(accounts, monkeypatch)
+    before = db.get(CreditAccount, UUID(identity["workspace_id"])).balance
+    identifier = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).json()["task_id"]
+    def decrypt(_):
+        raise ValueError("private-key-material")
+    monkeypatch.setattr(llm_providers, "_decrypt_api_key", decrypt)
+    calls = []
+    monkeypatch.setattr(image_adapters, "generate", lambda *_: calls.append(1))
+    image_tasks.run(identifier, sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    db.expire_all()
+    result = client.get(f"/image-tasks/{identifier}").json()
+    assert result["status"] == "failed"
+    assert result["summary"] == "图片服务凭据无法读取，请联系管理员检查服务加密配置"
+    assert "private-key-material" not in str(result)
+    assert db.get(CreditAccount, UUID(identity["workspace_id"])).balance == before
     assert calls == []
 
 
