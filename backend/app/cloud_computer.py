@@ -310,8 +310,7 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
             if not storage or storage.provider != "oss":
                 raise HTTPException(503, "资源挂载尚未就绪，请联系管理员")
             snapshot["resource_mount"] = {"bucket": storage.bucket, "region": storage.region,
-                "prefix": f"workspaces/{access.workspace_id}/cloud-computer/{identifier}/workspace/"}
-            mount_resources(db, access, arguments.get("inputs", []))
+                "prefix": f"workspaces/{access.workspace_id}/resource-directory/", "mode": "shared"}
         reserve = amount(Decimal(str(settings.config["credits_per_minute"])) * settings.config["idle_seconds"] / 60)
         if reserve:
             authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
@@ -368,6 +367,29 @@ def mount_storage(db, row):
 
 def stage_mount(db, row, access, explicit, provider=None, sandbox=None):
     """Meter/cache preparation once; never mount immutable resource objects writable."""
+    if row.snapshot["resource_mount"].get("mode") == "shared":
+        from .workspace_files import resolve_input
+        from .cloud_computer_adapter import STATE
+        storage = mount_storage(db, row)
+        from .shared_resources import objects
+        live = objects(storage, row.workspace_id)
+        if sandbox is not None:
+            for reference in explicit:
+                resource, version = resolve_input(db, access, reference)
+                if version.version != resource.current_version:
+                    # Only an explicitly requested historical input is materialized.
+                    with storage.download(version.object_key) as source:
+                        provider.write(sandbox, f"{resource.id}/{version.version}/{resource.path}",
+                            source.read(), root=f"{STATE}/inputs")
+        from .models import WorkspaceFile
+        row.manifest = {resource.path: {"id": str(resource.id), "version": resource.current_version,
+            "sha256": resource.content_hash, "live_etag": live.get(resource.path, {}).get("ETag"),
+            "size": live.get(resource.path, {}).get("Size", resource.size_bytes)}
+            for resource in db.scalars(select(WorkspaceFile).where(
+                WorkspaceFile.workspace_id == row.workspace_id, WorkspaceFile.deleted_at.is_(None)))}
+        row.snapshot = {**row.snapshot, "mount_baseline": live}
+        db.commit()
+        return
     import io
     from .resource_cache import read_bytes
     resources = mount_resources(db, access, explicit)
@@ -399,6 +421,8 @@ def stage_mount(db, row, access, explicit, provider=None, sandbox=None):
 
 
 def cleanup_mount(db, row):
+    if row.snapshot.get("resource_mount", {}).get("mode") == "shared":
+        return
     if not row.snapshot.get("resource_mount") or row.error:
         return
     try:
@@ -415,6 +439,13 @@ def cleanup_mount(db, row):
 
 
 def synchronize(db, row, provider, sandbox):
+    if row.snapshot.get("resource_mount", {}).get("mode") == "shared":
+        from .shared_resources import objects, snapshot
+        storage = mount_storage(db, row)
+        before = row.snapshot.get("mount_baseline") or objects(storage, row.workspace_id)
+        result = snapshot(db, session_access(db, row), storage, provider.manifest(sandbox), before)
+        stage_mount(db, row, session_access(db, row), [])
+        return result
     from .workspace_files import _save_bytes, valid_path, WorkspaceFile
     access = session_access(db, row)
     access.editor()
@@ -443,6 +474,9 @@ def synchronize(db, row, provider, sandbox):
 
 def recover_mount(db, row):
     """A mounted working copy survives VM expiry; recover without re-executing."""
+    if row.snapshot.get("resource_mount", {}).get("mode") == "shared":
+        from .shared_resources import recover
+        return recover(db, session_access(db, row), mount_storage(db, row))
     from .workspace_files import valid_path
     storage = mount_storage(db, row)
     prefix = row.snapshot["resource_mount"]["prefix"]
@@ -534,7 +568,7 @@ def _run(identifier, factory=SessionLocal):
             from .workspace_files import resolve_input
             from .resource_cache import read_bytes
             manifest = dict(row.manifest)
-            for path, previous in list(manifest.items()):
+            for path, previous in ([] if row.snapshot.get("resource_mount", {}).get("mode") == "shared" else list(manifest.items())):
                 try:
                     resolve_input(db, access, {"id": previous["id"], "version": previous["version"]})
                 except HTTPException:

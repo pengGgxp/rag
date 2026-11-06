@@ -62,10 +62,16 @@ class OssStorage:
     def head(self, key):
         result = self._request("head_object", oss.HeadObjectRequest(bucket=self.bucket, key=key))
         return None if result is None else {"Content-Length": result.content_length,
-            "Content-Type": result.content_type, "ETag": result.etag}
+            "Content-Type": result.content_type, "ETag": result.etag,
+            "CRC64": result.hash_crc64}
 
     def delete(self, key):
         self._request("delete_object", oss.DeleteObjectRequest(bucket=self.bucket, key=key))
+
+    def copy(self, source, target, *, etag=None):
+        return self._request("copy_object", oss.CopyObjectRequest(
+            bucket=self.bucket, key=target, source_bucket=self.bucket,
+            source_key=source, if_match=etag))
 
     def begin(self, key, content_type):
         return self._request("initiate_multipart_upload", oss.InitiateMultipartUploadRequest(
@@ -128,6 +134,7 @@ class OssStorage:
                 bucket=self.bucket, max_keys=1000, continuation_token=token, prefix=prefix))
             for item in result.contents or []:
                 yield {"Key": item.key, "Size": item.size,
+                    "ETag": item.etag,
                     "LastModified": item.last_modified.isoformat() if item.last_modified else None}
             if not result.is_truncated:
                 return

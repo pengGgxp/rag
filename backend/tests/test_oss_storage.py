@@ -261,7 +261,7 @@ def test_sdk_pagination_and_multipart_normalization():
     calls = []
     def listing(request):
         calls.append(request)
-        return SimpleNamespace(contents=[SimpleNamespace(key="a", size=4, last_modified=None)],
+        return SimpleNamespace(contents=[SimpleNamespace(key="a", size=4, last_modified=None, etag="etag-a")],
             is_truncated=len(calls) == 1, next_continuation_token="page2")
     adapter = bare_oss(list_objects_v2=listing)
     assert len(list(adapter.iter_objects())) == 2 and calls[1].continuation_token == "page2"

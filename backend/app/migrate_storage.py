@@ -10,7 +10,7 @@ from .db import SessionLocal
 from .models import (
     ChatAttachment, CloudComputerCommand, CloudComputerSession, Conversation, Document,
     DocumentUpload, ImageTask, IngestionJob, JobState, SiteStorageSettings,
-    StorageMigration, StorageMigrationObject, WorkspaceExecutionJob, WorkspaceFileVersion,
+    StorageMigration, StorageMigrationObject, WorkspaceExecutionJob, WorkspaceFileVersion, WorkspaceFile,
 )
 from .migrate_cos import fingerprint
 from .site_audit import record
@@ -36,6 +36,12 @@ def manifest(db):
         add(row)
     for row in db.scalars(select(ChatAttachment).where(ChatAttachment.object_deleted_at.is_(None))):
         add(row)
+    from .shared_resources import prefix
+    from types import SimpleNamespace
+    for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.deleted_at.is_(None),
+            WorkspaceFile.live_etag.is_not(None))):
+        add(SimpleNamespace(object_key=prefix(row.workspace_id)+row.path, size_bytes=row.size_bytes,
+            content_hash=row.content_hash, content_type=row.content_type))
     return dict(sorted(objects.items()))
 
 

@@ -435,6 +435,12 @@ def maintenance(db):
             if inventory(db, identifier)["used_bytes"] <= limit:
                 break
             if kind == "file":
+                if row.live_etag:
+                    from .shared_resources import remove_live
+                    try:
+                        remove_live(db, row)
+                    except Exception:
+                        continue
                 row.deleted_at = now()
                 for version in row.versions:
                     if version.deleted_at is None:

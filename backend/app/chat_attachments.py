@@ -222,6 +222,10 @@ def create_upload(file, db, access, *, source):
             content_hash=row.content_hash, created_by=access.user_id))
         row.resource_file_id, row.resource_version = identifier, 1
         db.add(row)
+        from .shared_resources import publish
+        db.flush()
+        publish(db, resource, db.scalar(select(WorkspaceFileVersion).where(
+            WorkspaceFileVersion.file_id == identifier, WorkspaceFileVersion.version == 1)))
         from .audit_log import record_audit
         record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
             action="resource.created", resource_type="resource", resource_id=identifier,

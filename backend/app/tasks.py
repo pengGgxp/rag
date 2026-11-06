@@ -425,6 +425,12 @@ def cleanup_workspace_files() -> None:
             db.refresh(row)
             if row.deleted_at is None:
                 continue
+            if row.live_etag:
+                from .shared_resources import remove_live
+                try:
+                    remove_live(db, row)
+                except Exception:
+                    continue
             for version in row.versions:
                 if version.deleted_at is not None:
                     continue

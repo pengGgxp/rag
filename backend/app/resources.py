@@ -87,6 +87,8 @@ def remove(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_acce
     from .storage_billing import lock_workspace
     from .audit_log import record_audit
     lock_workspace(db, access.workspace_id)
+    from .shared_resources import remove_live
+    remove_live(db, row)
     row.deleted_at = now()
     for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
         attachment.deleted_at = row.deleted_at

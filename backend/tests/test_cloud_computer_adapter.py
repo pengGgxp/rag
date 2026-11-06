@@ -48,13 +48,13 @@ def test_dependencies_use_runtime_tmp_volume_outside_outputs():
     assert DEPENDENCIES.startswith("/tmp/")
 
 
-def test_mount_uses_only_session_prefix_and_does_not_expose_storage_secrets():
+def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
     calls = {}
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
     provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": [],
         "oss_role_arn": "acs:ram::123:role/sandbox", "resource_mount": {
             "bucket": "test-bucket", "region": "cn-beijing",
-            "prefix": "workspaces/workspace-a/cloud-computer/session-a/workspace/"}}
+            "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared"}}
     provider.options = {}
     def create(**kwargs):
         calls.update(kwargs)
@@ -63,7 +63,7 @@ def test_mount_uses_only_session_prefix_and_does_not_expose_storage_secrets():
     provider.create("session-a")
     points = json.loads(calls["metadata"]["fc.sandbox.storage.oss"])["mountPoints"]
     assert points == [{"bucketName": "test-bucket", "mountDir": "/home/user/workspace",
-        "bucketPath": "/workspaces/workspace-a/cloud-computer/session-a/workspace",
+        "bucketPath": "/workspaces/workspace-a/resource-directory",
         "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}]
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
     assert calls["network"]["allow_out"] == ["test-bucket.oss-cn-beijing.aliyuncs.com", "8.8.8.8"]

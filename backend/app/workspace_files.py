@@ -116,6 +116,9 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
     db.add(WorkspaceFileVersion(file_id=row.id, workspace_id=access.workspace_id, version=version,
         object_key=key, content_type=row.content_type, size_bytes=len(data), content_hash=digest,
         created_by=access.user_id))
+    from .shared_resources import publish
+    db.flush()
+    publish(db, row, _current_file_version(db, row))
     from .audit_log import record_audit
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="resource.updated" if active else "resource.created", resource_type="resource",
@@ -186,7 +189,7 @@ def tool_definitions():
         ("write_file","创建或覆盖当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","按版本应用文本文件补丁；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash，同一会话保留文件和依赖。启用资源挂载时自动准备当前工作区资源，inputs 可明确指定固定版本；未挂载时仅准备 inputs。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备。工作目录 /home/user/workspace，Skill 位于 /skills；只将产物写入工作目录。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 直接挂载整个工作区资源库，同工作区所有会话共享当前文件，写入和删除直接生效。inputs 指定当前版本时无需传输；显式历史版本放在 /tmp/zhiku-cloud-computer/inputs/资源ID/版本/原路径，不覆盖当前文件。同一环境保留依赖。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备，位于 /skills；依赖写到工作目录之外。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
     ]]
 
 

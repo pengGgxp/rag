@@ -52,7 +52,7 @@ for directory, dirs, files in os.walk(root, followlinks=False):
         if not stat.S_ISREG(info.st_mode): continue
         if info.st_size>209715200: raise RuntimeError("output file exceeds 200 MiB")
         total+=info.st_size
-        if total>536870912 or len(result)>=2000: raise RuntimeError("output bundle too large")
+        if not os.environ.get("ZHIKU_SHARED_RESOURCES") and (total>536870912 or len(result)>=2000): raise RuntimeError("output bundle too large")
         digest=hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda:handle.read(1048576),b""): digest.update(block)
@@ -175,7 +175,8 @@ class AlibabaSandbox:
             sandbox.commands.kill(process_id)
 
     def manifest(self, sandbox):
-        result = sandbox.commands.run("python3 -c " + shlex.quote(MANIFEST), user="user")
+        result = sandbox.commands.run("python3 -c " + shlex.quote(MANIFEST), user="user",
+            envs={"ZHIKU_SHARED_RESOURCES": "1" if getattr(self, "config", {}).get("resource_mount", {}).get("mode") == "shared" else ""})
         return json.loads(result.stdout)
 
     def read(self, sandbox, path, expected):

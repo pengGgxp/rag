@@ -821,6 +821,7 @@ class WorkspaceFile(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     source: Mapped[str] = mapped_column(String(24), default="model_output", server_default="model_output")
     current_version: Mapped[int] = mapped_column(Integer, default=1)
+    live_etag: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
