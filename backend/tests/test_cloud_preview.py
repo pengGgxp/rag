@@ -144,6 +144,14 @@ def test_gateway_redirect_and_cookie_filter():
         gateway.response_headers(response, target)
 
 
+def test_gateway_renders_html_despite_provider_attachment_header():
+    target = {"host": "8080-synthetic.cn-hangzhou.sandbox.aliyuncs.com", "origin": "https://example.preview.str1ct.top"}
+    response = httpx.Response(200, headers={"content-type": "text/html; charset=utf-8", "content-disposition": "attachment"})
+    assert "content-disposition" not in gateway.response_headers(response, target)
+    response = httpx.Response(200, headers={"content-type": "application/pdf", "content-disposition": "attachment; filename=report.pdf"})
+    assert gateway.response_headers(response, target)["content-disposition"] == "attachment; filename=report.pdf"
+
+
 def test_max_deadline_expired_grant_and_logout(accounts, monkeypatch):
     client, db, conversation, access, fake, factory, command, row, computer, *_ = prepare(accounts, monkeypatch)
     monkeypatch.setattr(gateway, "SessionLocal", factory)

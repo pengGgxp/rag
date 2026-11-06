@@ -97,6 +97,10 @@ def response_headers(response, target):
         | {"set-cookie", "content-length", "content-security-policy", "content-security-policy-report-only",
             "x-frame-options", "access-control-allow-origin", "access-control-allow-credentials", "refresh",
             "report-to", "nel", "alt-svc", "service-worker-allowed"}}
+    # Alibaba's port ingress forces HTML to download. This isolated origin serves pages.
+    media_type = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type in {"text/html", "application/xhtml+xml"}:
+        headers.pop("content-disposition", None)
     location = headers.get("location")
     if location:
         absolute = urlsplit(urljoin("https://" + target["host"] + str(response.request.url.raw_path.decode("ascii")), location))
