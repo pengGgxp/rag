@@ -127,11 +127,8 @@ def snapshot(db, access, storage, entries, before):
                 raise HTTPException(413, "文件不能超过 200 MiB")
             key = prefix(access.workspace_id) + path
             head = storage.head(key)
-            baseline = before.get(path)
-            if not head or (baseline and etag(head) != baseline.get("ETag")):
+            if not head or path not in before or etag(head) != before[path]["ETag"]:
                 raise HTTPException(409, "共享文件正在变化，请稍后重试登记文件")
-            if baseline is None and resource is not None:
-                raise HTTPException(409, "共享文件在命令期间被新增，请重新读取后重试")
             if int(head["Content-Length"]) != entry["size"]:
                 raise HTTPException(409, "文件仍在写入，请稍后重试登记文件")
             resource = db.scalar(select(WorkspaceFile).where(

@@ -371,8 +371,6 @@ def stage_mount(db, row, access, explicit, provider=None, sandbox=None):
         from .workspace_files import resolve_input
         from .cloud_computer_adapter import STATE
         storage = mount_storage(db, row)
-        from .shared_resources import objects
-        live = objects(storage, row.workspace_id)
         if sandbox is not None:
             for reference in explicit:
                 resource, version = resolve_input(db, access, reference)
@@ -383,11 +381,9 @@ def stage_mount(db, row, access, explicit, provider=None, sandbox=None):
                             source.read(), root=f"{STATE}/inputs")
         from .models import WorkspaceFile
         row.manifest = {resource.path: {"id": str(resource.id), "version": resource.current_version,
-            "sha256": resource.content_hash, "live_etag": live.get(resource.path, {}).get("ETag"),
-            "size": live.get(resource.path, {}).get("Size", resource.size_bytes)}
+            "sha256": resource.content_hash}
             for resource in db.scalars(select(WorkspaceFile).where(
                 WorkspaceFile.workspace_id == row.workspace_id, WorkspaceFile.deleted_at.is_(None)))}
-        row.snapshot = {**row.snapshot, "mount_baseline": live}
         db.commit()
         return
     import io
@@ -442,7 +438,7 @@ def synchronize(db, row, provider, sandbox):
     if row.snapshot.get("resource_mount", {}).get("mode") == "shared":
         from .shared_resources import objects, snapshot
         storage = mount_storage(db, row)
-        before = row.snapshot.get("mount_baseline") or objects(storage, row.workspace_id)
+        before = objects(storage, row.workspace_id)
         result = snapshot(db, session_access(db, row), storage, provider.manifest(sandbox), before)
         stage_mount(db, row, session_access(db, row), [])
         return result

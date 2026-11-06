@@ -26,8 +26,9 @@ def test_changes_use_server_copy_without_body_download_or_cache(accounts, monkey
     item = upload(client)
     original_key = db.scalar(select(WorkspaceFileVersion.object_key))
     key = shared.prefix(access.workspace_id) + item["path"]
-    storage.objects[key] = b"cloud modification"
     row = db.get(cloud.Computer, submit(db, access, conversation).session_id)
+    cloud.stage_mount(db, row, access, [])
+    storage.objects[key] = b"cloud modification"
     monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("body downloaded"))
     monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_: pytest.fail("download quota used"))
     provider = SimpleNamespace(manifest=lambda _sandbox: {item["path"]: {
