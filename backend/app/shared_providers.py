@@ -296,7 +296,7 @@ def choices(db, workspace_id):
 @selection_router.get("/models/available")
 def available_models(db=Depends(get_db), access: Access = Depends(get_access)):
     providers = [item for item in choices(db, access.workspace_id)
-                 if item["unavailable_reason"] not in ("model_disabled", "connection_disabled")]
+                 if item["unavailable_reason"] not in ("model_disabled", "connection_disabled", "not_chat_model")]
     settings = db.get(ModelBillingSettings, 1)
     default = str(settings.default_provider_id) if settings and settings.default_provider_id else None
     if not any(item["id"] == default and item["available"] for item in providers):
@@ -314,7 +314,8 @@ def request_binding(db, workspace_id, identifier):
         LLMProviderConfig.site_provider_id == identifier))
     reason = unavailable_reason(db, row, binding, True)
     if reason:
-        messages = {"model_disabled": "模型已停用，请选择其他模型",
+        messages = {"not_chat_model": "此模型不支持对话，请选择其他模型",
+            "model_disabled": "模型已停用，请选择其他模型",
             "connection_disabled": "模型服务已停用，请选择其他模型",
             "pricing_unconfigured": "模型价格尚未配置完整，请联系站点管理员",
             "service_not_ready": "模型服务尚未就绪，请联系站点管理员"}

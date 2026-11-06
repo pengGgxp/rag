@@ -184,7 +184,7 @@ def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
 @pytest.mark.parametrize("mode,reason", [
     ("ready", None), ("zero", None), ("missing", "pricing_unconfigured"),
     ("disabled", "model_disabled"), ("connection", "service_not_ready"),
-    ("legacy_new", None),
+    ("legacy_new", None), ("image_only", "not_chat_model"),
 ])
 def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason):
     owner, db, session = setup_site(accounts, monkeypatch)
@@ -192,6 +192,8 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
     row = db.get(SiteModelProvider, UUID(p["id"]))
     if mode == "missing":
         row.prices = {}
+    elif mode == "image_only":
+        row.supports_chat = False
     elif mode == "disabled":
         row.enabled = False
     elif mode == "connection":
@@ -200,7 +202,7 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
         db.get(ModelBillingSettings, 1).shared_pricing_enabled = False
     db.commit()
     result = owner.get("/models/available").json()
-    if mode == "disabled":
+    if mode in ("disabled", "image_only"):
         assert not any(item["id"] == p["id"] for item in result["providers"])
         assert owner.get(f"/site/admin/llm-providers/{p['id']}").status_code == 200
     else:
