@@ -121,11 +121,11 @@ class OssStorage:
     def read_url(self, key):
         return self._presign(oss.GetObjectRequest(bucket=self.bucket, key=key), 3600)
 
-    def iter_objects(self):
+    def iter_objects(self, prefix=None):
         token = None
         while True:
             result = self._request("list_objects_v2", oss.ListObjectsV2Request(
-                bucket=self.bucket, max_keys=1000, continuation_token=token))
+                bucket=self.bucket, max_keys=1000, continuation_token=token, prefix=prefix))
             for item in result.contents or []:
                 yield {"Key": item.key, "Size": item.size,
                     "LastModified": item.last_modified.isoformat() if item.last_modified else None}

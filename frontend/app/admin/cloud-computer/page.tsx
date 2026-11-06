@@ -11,7 +11,7 @@ import "../../billing.css";
 type Settings = {
   version: number; enabled: boolean; has_api_key: boolean; region: string; template: string;
   specification: string; credits_per_minute: number | null; idle_seconds: number;
-  max_seconds: number; concurrency: number; blocked_hosts: string[];
+  max_seconds: number; concurrency: number; blocked_hosts: string[]; oss_role_arn: string;
 };
 
 export default function CloudComputerSettings() {
@@ -65,6 +65,7 @@ export default function CloudComputerSettings() {
                 <label>地域<input required={form.enabled} value={form.region} placeholder="如 cn-hangzhou" onChange={event => setForm({ ...form, region: event.target.value })} /></label>
                 <label>模板 ID<input required={form.enabled} value={form.template} onChange={event => setForm({ ...form, template: event.target.value })} /></label>
                 <label className="provider-form-wide">模板规格<input required={form.enabled} value={form.specification} placeholder="填写模板实际 CPU 和内存规格" onChange={event => setForm({ ...form, specification: event.target.value })} /></label>
+                <label className="provider-form-wide">OSS 挂载角色 ARN<input value={form.oss_role_arn || ""} placeholder="acs:ram::账号ID:role/角色名称" onChange={event => setForm({ ...form, oss_role_arn: event.target.value })} /></label>
                 <label className="provider-form-wide">API Key<input type="password" autoComplete="new-password" value={key} disabled={clear} placeholder={clear ? "保存后清除" : form.has_api_key ? "已配置，留空保留" : "尚未配置"} onChange={event => setKey(event.target.value)} /></label>
                 {form.has_api_key && <div className="provider-form-wide"><button type="button" data-cloud-clear className="secondary" onClick={() => clear ? setClear(false) : setConfirmClear(true)}>{clear ? "撤销清除" : "清除密钥"}</button></div>}
                 <label className="provider-form-wide">禁止访问的业务域名或 IP<textarea rows={3} value={form.blocked_hosts.join("\n")} onChange={event => setForm({ ...form, blocked_hosts: event.target.value.split("\n") })} /></label>

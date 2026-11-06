@@ -35,6 +35,8 @@ class Configuration(BaseModel):
     max_seconds: int = Field(default=3600, ge=300, le=3600)
     concurrency: int = Field(default=5, ge=1, le=100)
     blocked_hosts: list[str] = Field(default_factory=list, max_length=100)
+    oss_role_arn: str = Field(default="", max_length=256,
+        pattern=r"^(acs:ram::[0-9]+:role/[A-Za-z0-9._/-]+)?$")
 
     @model_validator(mode="after")
     def valid(self):
@@ -301,12 +303,21 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
         if count >= settings.config["concurrency"]:
             raise HTTPException(409, "云电脑繁忙，请稍后重试")
         identifier = uuid4()
+        snapshot = {**settings.config, "version": settings.version}
+        if settings.config.get("oss_role_arn"):
+            from .storage_backend import active_settings
+            storage = active_settings(db)
+            if not storage or storage.provider != "oss":
+                raise HTTPException(503, "资源挂载尚未就绪，请联系管理员")
+            snapshot["resource_mount"] = {"bucket": storage.bucket, "region": storage.region,
+                "prefix": f"workspaces/{access.workspace_id}/cloud-computer/{identifier}/workspace/"}
+            mount_resources(db, access, arguments.get("inputs", []))
         reserve = amount(Decimal(str(settings.config["credits_per_minute"])) * settings.config["idle_seconds"] / 60)
         if reserve:
             authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
         row = Computer(id=identifier, workspace_id=access.workspace_id, user_id=access.user_id,
             conversation_id=conversation_id, session_hash=access.session_hash, status="starting",
-            snapshot={**settings.config, "version": settings.version}, encrypted_api_key=settings.encrypted_api_key,
+            snapshot=snapshot, encrypted_api_key=settings.encrypted_api_key,
             manifest={}, held_credits=reserve, charged_credits=0, billed_seconds=0, billing_sequence=0)
         db.add(row)
         db.flush()
@@ -328,6 +339,79 @@ def dispatch(identifier):
         run_cloud_command.delay(str(identifier))
     except Exception:
         logger.warning("Cloud command dispatch deferred")
+
+
+def mount_resources(db, access, explicit):
+    """Resolve a workspace snapshot, with explicit fixed versions taking precedence."""
+    from .workspace_files import WorkspaceFile, _current_file_version, resolve_input, valid_path
+    selected = {}
+    for resource in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+            WorkspaceFile.deleted_at.is_(None)).order_by(WorkspaceFile.path)):
+        valid_path(resource.path)
+        selected[resource.path] = (resource, _current_file_version(db, resource))
+    for reference in explicit:
+        resource, version = resolve_input(db, access, reference)
+        selected[resource.path] = (resource, version)
+    if len(selected) > 2000 or sum(version.size_bytes for _, version in selected.values()) > 512 * 1024 * 1024:
+        raise HTTPException(413, "资源库超过当前云电脑容量，请联系管理员调整运行环境")
+    return list(selected.values())
+
+
+def mount_storage(db, row):
+    from .storage_backend import current_storage
+    storage = current_storage(db)
+    mount = row.snapshot["resource_mount"]
+    if getattr(storage, "bucket", None) != mount["bucket"] or getattr(storage, "region", None) != mount["region"]:
+        raise HTTPException(409, "文件存储已变化，请先结束当前云电脑")
+    return storage
+
+
+def stage_mount(db, row, access, explicit, provider=None, sandbox=None):
+    """Meter/cache preparation once; never mount immutable resource objects writable."""
+    import io
+    from .resource_cache import read_bytes
+    resources = mount_resources(db, access, explicit)
+    storage = mount_storage(db, row)
+    manifest = dict(row.manifest)
+    visible = {resource.path for resource, _ in resources}
+    for path in list(manifest):
+        if path not in visible:
+            if sandbox is not None:
+                provider.remove(sandbox, path)
+            else:
+                storage.delete(row.snapshot["resource_mount"]["prefix"] + path)
+            manifest.pop(path)
+    for resource, version in resources:
+        prior = manifest.get(resource.path, {})
+        if prior.get("id") == str(resource.id) and prior.get("version") == version.version:
+            continue
+        data = read_bytes(db, access, resource, version)
+        if sandbox is not None:
+            provider.write(sandbox, resource.path, data)
+        else:
+            storage.put(row.snapshot["resource_mount"]["prefix"] + resource.path,
+                io.BytesIO(data), resource.content_type)
+        manifest[resource.path] = {"id": str(resource.id), "version": version.version, "sha256": version.content_hash}
+        row.manifest = dict(manifest)
+        db.commit()
+    row.manifest = manifest
+    db.commit()
+
+
+def cleanup_mount(db, row):
+    if not row.snapshot.get("resource_mount") or row.error:
+        return
+    try:
+        storage = mount_storage(db, row)
+        prefix = row.snapshot["resource_mount"]["prefix"]
+        for item in storage.iter_objects(prefix):
+            if not item["Key"].startswith(prefix):
+                raise RuntimeError("mount object escaped its session prefix")
+            storage.delete(item["Key"])
+        row.snapshot = {**row.snapshot, "mount_cleaned": True}
+        db.commit()
+    except Exception:
+        logger.warning("Cloud mount cleanup deferred: %s", row.id, exc_info=False)
 
 
 def synchronize(db, row, provider, sandbox):
@@ -355,6 +439,47 @@ def synchronize(db, row, provider, sandbox):
         db.commit()
         changed.append(saved)
     return changed
+
+
+def recover_mount(db, row):
+    """A mounted working copy survives VM expiry; recover without re-executing."""
+    from .workspace_files import valid_path
+    storage = mount_storage(db, row)
+    prefix = row.snapshot["resource_mount"]["prefix"]
+    objects = {}
+    total = 0
+    for item in storage.iter_objects(prefix):
+        if not item["Key"].startswith(prefix):
+            raise RuntimeError("mount object escaped its session prefix")
+        path = item["Key"][len(prefix):]
+        if not path or path.endswith("/"):
+            continue
+        valid_path(path)
+        if any(part in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} for part in path.split("/")):
+            continue
+        total += item["Size"]
+        if item["Size"] > 200 * 1024 * 1024 or total > 512 * 1024 * 1024 or len(objects) >= 2000:
+            raise HTTPException(413, "文件超出当前云电脑容量，请联系管理员恢复")
+        with storage.download(item["Key"]) as source:
+            digest, size = hashlib.sha256(), 0
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                size += len(block)
+                if size > item["Size"]:
+                    raise RuntimeError("mount recovery size mismatch")
+                digest.update(block)
+        if size != item["Size"]:
+            raise RuntimeError("mount recovery size mismatch")
+        objects[path] = {"sha256": digest.hexdigest(), "size": size, "key": item["Key"]}
+    class Recovered:
+        def manifest(self, _sandbox):
+            return objects
+        def read(self, _sandbox, path, expected):
+            with storage.download(objects[path]["key"]) as source:
+                data = source.read(objects[path]["size"] + 1)
+            if len(data) != objects[path]["size"] or hashlib.sha256(data).hexdigest() != expected:
+                raise RuntimeError("mount recovery content changed")
+            return data
+    return synchronize(db, row, Recovered(), None)
 
 
 def run(identifier, factory=SessionLocal):
@@ -393,6 +518,8 @@ def _run(identifier, factory=SessionLocal):
             access = session_access(db, row)
             access.editor()
             if not row.provider_id:
+                if row.snapshot.get("resource_mount"):
+                    stage_mount(db, row, access, command.payload["inputs"])
                 try:
                     row.provider_id, row.started_at = provider.create(row.id)
                 except Exception:
@@ -413,7 +540,10 @@ def _run(identifier, factory=SessionLocal):
                 except HTTPException:
                     provider.remove(sandbox, path)
                     manifest.pop(path)
-            for reference in command.payload["inputs"]:
+            if row.snapshot.get("resource_mount"):
+                stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
+                manifest = dict(row.manifest)
+            for reference in ([] if row.snapshot.get("resource_mount") else command.payload["inputs"]):
                 resource, version = resolve_input(db, access, reference)
                 prior = manifest.get(resource.path, {})
                 if prior.get("id") == str(resource.id) and prior.get("version") == version.version:
@@ -477,6 +607,11 @@ def _run(identifier, factory=SessionLocal):
                 elif row.provider_id:
                     row.status = "stopping"
                     row.billing_stopped_at = row.started_at
+                else:
+                    reconcile(db, row, now(), final=True)
+                    row.status, row.ended_at = "failed", now()
+                    db.commit()
+                    cleanup_mount(db, row)
             logger.warning("Cloud command failed: %s", command.id, exc_info=False)
         finally:
             command.finished_at = now()
@@ -519,6 +654,10 @@ def maintenance(factory=SessionLocal):
             maintain_one(identifier, factory)
         except Exception:
             logger.warning("Cloud computer reconciliation deferred: %s", identifier, exc_info=False)
+    with factory() as db:
+        for row in db.scalars(select(Computer).where(Computer.ended_at.is_not(None), Computer.error.is_(None))):
+            if row.snapshot.get("resource_mount") and not row.snapshot.get("mount_cleaned"):
+                cleanup_mount(db, row)
 
 
 def maintain_one(identifier, factory=SessionLocal):
@@ -572,6 +711,13 @@ def _maintain(db, identifier):
         return
     alive = provider.exists(row.provider_id)
     if not alive:
+        if row.snapshot.get("resource_mount"):
+            try:
+                recover_mount(db, row)
+            except Exception:
+                db.rollback()
+                db.refresh(row)
+                row.error = "部分文件未能保存，请联系管理员恢复"
         end = min(now(), aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]))
         # If disappearance was unexpected, charge no unconfirmed interval.
         if row.status != "stopping" and end < aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]):
@@ -582,6 +728,7 @@ def _maintain(db, identifier):
             command.status, command.finished_at = "uncertain", now()
             command.result = {"error": "云电脑已结束，请检查资源库中的输出，勿重复执行", "uncertain": True}
         db.commit()
+        cleanup_mount(db, row)
         return
     recoverable = [command for command in commands if command.status == "save_queued" or
         (command.status != "queued" and command.heartbeat_at and (now()-aware(command.heartbeat_at)).total_seconds() > 45)]
@@ -663,3 +810,4 @@ def _maintain(db, identifier):
     reconcile(db, row, now(), final=True)
     row.status, row.ended_at = "ended", now()
     db.commit()
+    cleanup_mount(db, row)

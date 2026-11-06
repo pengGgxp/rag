@@ -71,9 +71,19 @@ class AlibabaSandbox:
         self.config = config
 
     def create(self, identifier):
+        metadata = {"application": "zhiku", "session": str(identifier)}
+        mount = self.config.get("resource_mount")
+        network = {"deny_out": PRIVATE_NETWORKS + self.config["blocked_hosts"], "allow_public_traffic": False}
+        if mount:
+            network["allow_out"] = [f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com", "8.8.8.8"]
+            metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
+                "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
+                    "bucketName": mount["bucket"], "mountDir": ROOT,
+                    "bucketPath": "/" + mount["prefix"].rstrip("/"),
+                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]})})
         sandbox = self.sdk.create(template=self.config["template"], timeout=self.config["max_seconds"],
-            metadata={"application": "zhiku", "session": str(identifier)}, secure=True,
-            network={"deny_out": PRIVATE_NETWORKS + self.config["blocked_hosts"], "allow_public_traffic": False},
+            metadata=metadata, secure=True,
+            network=network,
             **self.options)
         return sandbox.sandbox_id, sandbox.get_info().started_at
 
