@@ -21,4 +21,13 @@
 - Agent、云电脑生命周期、共享资源目录回归：50 passed。
 - Node 工具活动状态回归：1 passed。
 - Next.js 生产构建通过；git diff --check 通过。
-- 未重跑用户任务，未调用真实模型，未修改线上消息或账单；本次修复尚未部署。
+- 未重跑用户任务，未调用真实模型，未修改线上消息或账单。
+
+## 线上部署（2026-11-06）
+
+- 修复提交：0a9d9f5；API、Worker、Web 均已切换到 cloud-tool-result-0a9d9f5 镜像。
+- 备份：/data1/backups/cloud-tool-result-0a9d9f5，包含数据库自定义格式备份、配置及相关源文件；原镜像另存 pre-cloud-tool-result-0a9d9f5 标签。
+- 服务器候选 API 镜像 Agent 回归：28 passed；新运行容器用原故障记录执行只读序列化验证通过。
+- 公网首页和 API 健康接口均返回 200；Worker 就绪；公网活动组件脚本与本地构建逐字节一致，异常中断映射为结果待确认。
+- 数据库无需新增迁移，当前仍为 0059_shared_resource_mount；未重跑用户模型任务，历史失败消息不改写。
+- 发布文件与覆盖配置位于 /data1/releases/cloud-tool-result-0a9d9f5。回滚使用 current-directory-20261106 发布目录的 compose.yml，恢复其备份的相关源文件；无需数据库回滚。
