@@ -184,9 +184,9 @@ def tool_definitions():
         ("list_files","列出当前工作区资源元信息，不下载正文",{"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":500}},"additionalProperties":False}),
         ("read_file","按资源 ID 或路径读取文字片段；二进制返回可用于命令输入的资源引用",{"type":"object","properties":{"id":{"type":"string"},"version":{"type":"integer","minimum":1},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
         ("write_file","创建或覆盖当前工作区文本文件",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","content"],"additionalProperties":False}),
-        ("apply_patch","按版本应用文本文件补丁",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
+        ("apply_patch","按版本应用文本文件补丁；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"},"expected_version":{"type":"integer"}},"required":["path","patch","expected_version"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在隔离环境执行 Python、Node 或 sh。仅下载 inputs 指定的资源版本；未指定则工作目录为空。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在隔离环境执行 Python（含 Pillow）、Node 或 sh/bash。每次独立临时目录，仅准备 inputs 指定的资源版本，不保留上次输入；未指定则为空。图片嵌入文档应同时指定图片和文档并在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"inputs":{"type":"array","items":resource_input,"maxItems":50}},"required":["command"],"additionalProperties":False}),
     ]]
 
 

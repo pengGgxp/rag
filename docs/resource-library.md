@@ -27,6 +27,8 @@
 
 `run_command` 接收 command 与可选 `inputs: [{id, version}]`。默认为空，只准备指定资源，不要求先列文件或加载 Skill。请求附件向模型提供服务端确认的资源 ID、版本和执行相对路径。单次执行输入最多 512 MiB，单文件最多 200 MiB。Skill 包仍独立只读；执行后输出保存成资源版本，返回固定版本预览与下载链接。
 
+每次调用使用独立临时目录，上次输入不会自动保留。执行镜像提供 Pillow、Node、bash、coreutils、findutils 及 file。图片嵌入 HTML 时同时指定图片与文档，在脚本内编码并保存，不向模型输出大段 Base64。长脚本可先保存为资源，再与输入文件一同指定。`apply_patch` 接收带行号的 unified diff，不接收任意补丁语法。
+
 执行容器看不到缓存根目录、宿主目录或存储凭据。文件缓存位于 API/Worker 共享持久卷，默认 5 GiB、闲置 24 小时清理，可通过 RESOURCE_CACHE_DIR、RESOURCE_CACHE_MAX_BYTES、RESOURCE_CACHE_IDLE_SECONDS 调整。按工作区、资源版本、摘要和范围定位；文件锁合并同版本并发读取，校验失败重取，LRU 淘汰不删除云端资源。
 
 ## 计量与清理

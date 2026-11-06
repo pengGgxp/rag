@@ -118,6 +118,43 @@ def test_command_only_stages_explicit_resources_and_cache_is_free(accounts, reso
     assert owner.get("/storage/allowances").json()["download_usage"]["user_download"] == len(PNG)
 
 
+def test_embed_image_in_document_saves_version_without_binary_in_stdout(accounts, resource_store, monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    (owner, _, _), db = accounts
+    register(owner)
+    image = upload(owner, "photo.png", PNG)
+    unused = upload(owner, "unused.txt", b"not selected")
+    actor = access_for(owner, db)
+    document = workspace_files._save_bytes(actor.workspace_id, actor, db, "resume.html",
+        b'<html><img src="PHOTO"></html>', "text/html")
+    monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://executor.test")
+    def run(*_, **kwargs):
+        payload = kwargs["json"]
+        assert set(payload["files"]) == {image["path"], document["path"]}
+        for path, encoded in payload["files"].items():
+            target = tmp_path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(encoded))
+        script = ("from pathlib import Path; import base64; from PIL import Image; "
+            f"Image.open({image['path']!r}).verify(); p=Path({document['path']!r}); "
+            f"data=base64.b64encode(Path({image['path']!r}).read_bytes()).decode(); "
+            "p.write_text(p.read_text().replace('PHOTO','data:image/png;base64,'+data)); print('saved')")
+        completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, check=True)
+        assert completed.stdout == "saved\n"
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {
+            "status": "completed", "exit_code": 0, "stdout": completed.stdout,
+            "files": {document["path"]: base64.b64encode((tmp_path / document["path"]).read_bytes()).decode()}})
+    monkeypatch.setattr("httpx.post", run)
+    result = workspace_files.execute_tool("run_command", {"command": "python embed.py", "inputs": [
+        {"id": image["id"], "version": 1}, {"id": document["id"], "version": 1}]}, db, actor, actor.workspace_id)
+    assert result["generated_files"][0]["version"] == 2
+    html = owner.get(f"/resources/{document['id']}/download?version=2").content
+    assert b"data:image/png;base64," + base64.b64encode(PNG) in html
+    assert owner.get(f"/resources/{document['id']}/download?version=1").content == b'<html><img src="PHOTO"></html>'
+    assert db.get(WorkspaceFile, UUID(unused["id"])).current_version == 1
+
+
 def test_range_cache_tamper_and_failed_read_settles_actual_bytes(accounts, resource_store, monkeypatch):
     (owner, _, _), db = accounts
     register(owner); item = upload(owner, body=b"0123456789")
