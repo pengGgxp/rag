@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.cloud_computer_adapter import AlibabaSandbox, LAUNCHER, MANIFEST, PRIVATE_NETWORKS
+from app.cloud_computer_adapter import AlibabaSandbox, DEPENDENCIES, LAUNCHER, MANIFEST, PRIVATE_NETWORKS
 
 
 def test_create_requires_network_isolation_and_connect_preserves_deadline():
@@ -31,6 +31,30 @@ def test_create_requires_network_isolation_and_connect_preserves_deadline():
     assert config["network"]["deny_out"] == PRIVATE_NETWORKS+["zk.str1ct.top"]
     provider.connect("synthetic")
     assert 80 <= calls["connect"]["timeout"] <= 85
+
+
+def test_dependencies_use_runtime_tmp_volume_outside_outputs():
+    calls = []
+    sandbox = SimpleNamespace(
+        commands=SimpleNamespace(run=lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(pid=42)),
+        files=SimpleNamespace(write=lambda *args, **kwargs: None))
+    provider = AlibabaSandbox.__new__(AlibabaSandbox)
+    provider.prepare(sandbox)
+    assert DEPENDENCIES in calls[0][0]
+    provider.start(sandbox, "test-command", "python3 -m pip install packaging")
+    environment = calls[-1][1]["envs"]
+    assert environment["PIP_TARGET"] == environment["PYTHONPATH"] == DEPENDENCIES
+    assert DEPENDENCIES.startswith("/tmp/")
+
+
+def test_missing_launcher_result_does_not_wait_until_session_expiry():
+    provider = AlibabaSandbox.__new__(AlibabaSandbox)
+    sandbox = SimpleNamespace(
+        files=SimpleNamespace(exists=lambda path, **kwargs: path.endswith("launcher-pid"),
+            read=lambda *args, **kwargs: "42"),
+        commands=SimpleNamespace(list=lambda: []))
+    with pytest.raises(RuntimeError, match="without a durable result"):
+        provider.poll(sandbox, "synthetic-command")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="launcher requires the Linux bash template")

@@ -17,7 +17,7 @@
 
 一个用户仅一个活跃环境，绑定工作区和会话；默认站点上限 5。默认闲置 600 秒，最长 3600 秒。命令执行中不算空闲，供应商硬期限始终生效。
 
-`run_command(command, inputs, skill_ids)` 保持命令和资源输入接口，增加可选 Skill ID 列表；命令中明确引用 `/skills/{id}/` 时也准备对应包。不要求先读取 Skill，不全量复制个人 Skill。输入按资源固定版本从计量缓存读取；工作目录 `/home/user/workspace`，Skill `/skills`，依赖 `/home/user/.cloud-computer/deps`。只同步工作目录内普通文件，拒绝符号链接，排除 node_modules、虚拟环境和缓存目录，限制单文件 200 MiB、总计 512 MiB、2000 个文件。沙箱删除不删除资源；资源冲突不覆盖。
+`run_command(command, inputs, skill_ids)` 保持命令和资源输入接口，增加可选 Skill ID 列表；命令中明确引用 `/skills/{id}/` 时也准备对应包。不要求先读取 Skill，不全量复制个人 Skill。输入按资源固定版本从计量缓存读取；工作目录 `/home/user/workspace`，Skill `/skills`，依赖 `/tmp/zhiku-cloud-computer/deps`（运行期临时盘，实测 `/home/user/.cloud-computer` 对 pip 解包和文件写入返回 EIO）。只同步工作目录内普通文件，拒绝符号链接，排除 node_modules、虚拟环境和缓存目录，限制单文件 200 MiB、总计 512 MiB、2000 个文件。沙箱删除不删除资源；资源冲突不覆盖。
 
 API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页面独立查询。API 每 15 秒维护活跃环境。创建或命令结果未知不重跑；按元数据查找实例，保留准入槽位直到确认销毁或最大期限经过。供应商硬期限限制 API/Worker 同时离线产生的损失。
 
@@ -46,4 +46,4 @@ API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页�
 
 新增迁移 `0056_cloud_computer`，不改历史账单。先完成模拟和 PostgreSQL 测试，再确认真实云预算、模板、网络策略、销毁及云侧用量。真实模型调用不在当前授权范围内。
 
-上线前备份数据库、配置及镜像；确认旧 Docker 执行没有运行任务。迁移后协调更新 API/Worker/Web，配置真实连接、模板和经确认的售价并完成实际启用验证，再停止旧执行服务。没有真实凭据、模板或售价时不得宣布上线完成，也不自动退回 Docker。
+上线前备份数据库、配置及镜像；确认旧 Docker 执行没有运行任务。管理员在供应商控制台先创建模板并将模板 ID 填入站点后台；平台不构建或自动创建供应商模板。迁移后协调更新 API/Worker/Web，配置真实连接、模板和经确认的售价并完成实际启用验证，再停止旧执行服务。没有真实凭据、模板或售价时不得宣布上线完成，也不自动退回 Docker。

@@ -12,7 +12,8 @@ PRIVATE_NETWORKS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
     "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "198.18.0.0/15",
     "224.0.0.0/4", "240.0.0.0/4", "::1/128", "fc00::/7", "fe80::/10"]
 ROOT = "/home/user/workspace"
-STATE = "/home/user/.cloud-computer"
+STATE = "/tmp/zhiku-cloud-computer"
+DEPENDENCIES = f"{STATE}/deps"
 MAX_FILE = 200 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
 
@@ -104,7 +105,7 @@ class AlibabaSandbox:
         return not self.exists(identifier)
 
     def prepare(self, sandbox):
-        sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {STATE}/deps", user="user")
+        sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {DEPENDENCIES}", user="user")
         sandbox.files.write(f"{STATE}/launcher.py", LAUNCHER, user="user")
 
     def write(self, sandbox, path, data, root=ROOT):
@@ -136,13 +137,23 @@ class AlibabaSandbox:
         sandbox.commands.run(f"mkdir -p {job}", user="user")
         sandbox.files.write(f"{job}/input.json", json.dumps({"command": command, "cwd": ROOT}), user="user")
         handle = sandbox.commands.run(f"python3 {STATE}/launcher.py {job}", background=True, timeout=0,
-            user="user", envs={"PIP_TARGET": f"{STATE}/deps", "PYTHONPATH": f"{STATE}/deps",
+            user="user", envs={"PIP_TARGET": DEPENDENCIES, "PYTHONPATH": DEPENDENCIES,
                               "npm_config_prefix": f"{STATE}/npm"})
+        sandbox.files.write(f"{job}/launcher-pid", str(handle.pid), user="user")
         return handle.pid
 
     def poll(self, sandbox, identifier):
         path = f"{STATE}/jobs/{identifier}/result.json"
-        return json.loads(sandbox.files.read(path, user="user")) if sandbox.files.exists(path, user="user") else None
+        if sandbox.files.exists(path, user="user"):
+            return json.loads(sandbox.files.read(path, user="user"))
+        pid_path = f"{STATE}/jobs/{identifier}/launcher-pid"
+        if sandbox.files.exists(pid_path, user="user"):
+            pid = int(sandbox.files.read(pid_path, user="user"))
+            if pid not in {process.pid for process in sandbox.commands.list()}:
+                if sandbox.files.exists(path, user="user"):
+                    return json.loads(sandbox.files.read(path, user="user"))
+                raise RuntimeError("cloud launcher exited without a durable result")
+        return None
 
     def cancel(self, sandbox, identifier, process_id):
         job = f"{STATE}/jobs/{identifier}"
