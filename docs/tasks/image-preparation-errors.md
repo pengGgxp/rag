@@ -7,3 +7,10 @@
 线上具体失败原因仍需日志核对；不能仅凭泛化提示断定。
 
 本地图片任务测试 12 passed，diff 检查通过。验证解密失败不触发上游、预留退回且错误脱敏。当前 XTerminal MCP 不可用，尚未部署或核对线上任务日志。
+
+## 2026-11-06 部署核对
+
+XTerminal 恢复后部署 71daef3，连同 eb44044 更新 API 与 Worker，无数据库结构变更。备份位于服务器 `/data1/rag-releases/image-fixes-71daef3`，保留旧镜像及源码配置。
+线上最近四个失败任务均记录 MCPError：API 可解密而原 Worker 无法解密，Worker 缺少 MCP_CREDENTIAL_KEY。补齐配置并重建后，Worker 可解密同四个任务，均确认结算为零；未重放失败任务或调用真实模型。
+线上模型列表实际排除两个纯图片模型。公网首页及健康接口正常，Web、数据库、Redis、存储及执行器容器未变。
+部署容器中合成回归 25 passed（独立 SQLite，测试进程 AUTH_COOKIE_SECURE=false，不改变线上安全配置）。SSH 等待超过 60 秒后重新读取日志确认全部完成，无残留测试进程。
