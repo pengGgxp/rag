@@ -62,7 +62,8 @@ export function ImageModelSettings({ state }: { state: (dirty: boolean, busy: bo
     finally { setBusy(false); }
   }
   const selected = models.data?.find(model => model.id === resource.data?.[`${operation}_model_id`]);
-  const spec = selected?.image_config.specs.find(spec => spec.operation === operation && spec.size === selected.image_config.default_size && spec.quality === selected.image_config.default_quality);
+  const defaultSpec = selected?.image_config.defaults?.[operation] ?? { size: selected?.image_config.default_size, quality: selected?.image_config.default_quality };
+  const spec = selected?.image_config.specs.find(spec => spec.operation === operation && spec.size === defaultSpec.size && spec.quality === defaultSpec.quality);
   async function test() {
     setBusy(true); setError(""); setConfirmTest(false);
     const payload = JSON.stringify({ operation, prompt, ...(operation === "edit" ? { references: [{ id: reference, version: referenceVersion }] } : {}) });

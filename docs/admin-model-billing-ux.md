@@ -30,6 +30,8 @@ request routing. No schema migration or activation step is required.
 
 ## Release
 
+Image configuration now uses a backend-owned preset catalog and separate generate/edit defaults. Administrators select allowed sizes and quality/resolution, then explicitly set prices. Switching presets retains matching prices and previews removed specifications; bulk pricing and generation-to-edit copying require confirmation. See [image presets](image-spec-presets.md). Existing custom settings and historical task pricing remain unchanged.
+
 Deploy API/Web after tests and backup. Do not rebuild data services or alter
 environment configuration. Verify online by reading pages and APIs only.
 Keep the issue open until required acceptance checks are complete.

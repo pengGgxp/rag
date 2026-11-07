@@ -5,6 +5,7 @@ import { ThinkingConfigFields, thinkingConfigError } from "./thinking-config-fie
 import { emptyThinking, emptyImageConfig, type ChatProtocol, type ImageConfig, type Policy, type ThinkingConfig } from "./model-types";
 import { useAdminResource } from "./admin/admin-ui";
 import { validCredits } from "./credit-format";
+import { ImageConfigFields } from "./image-config-fields";
 import "./image-tasks.css";
 
 export type ModelDraft = {
@@ -24,6 +25,14 @@ export function draftModel(model = "", prices: Policy[] = []): ModelDraft {
 export function modelError(value: ModelDraft, enabling = false) {
   if (!value.name.trim() || !value.model.trim()) return "请填写显示名称和模型名";
   if (value.image_config.specs.some(s => s.credits_per_image === null || !validCredits(s.credits_per_image))) return "请为图片规格填写每张积分，免费须明确填写 0";
+  const image = value.image_config;
+  const keys = image.specs.map(s => `${s.operation}|${s.size}|${s.quality}`);
+  if (new Set(keys).size !== keys.length) return "图片规格重复，请移除重复项";
+  if (image.specs.some(s => !/^[A-Za-z0-9_:.-]{1,40}$/.test(s.size) || !/^[A-Za-z0-9_.-]{1,40}$/.test(s.quality))) return "请检查图片尺寸及质量或分辨率格式";
+  for (const op of ["generate", "edit"] as const) {
+    const choice = image.defaults?.[op] ?? { size: image.default_size, quality: image.default_quality };
+    if (image[op] && !image.specs.some(s => s.operation === op && s.size === choice.size && s.quality === choice.quality)) return "请为每项启用的图片操作选择已定价的默认规格";
+  }
   const thinking = thinkingConfigError(value.thinking);
   if (thinking) return thinking;
   if ((value.context_capacity === null) !== (value.max_output_tokens === null)) return "请同时填写上下文容量和最大输出";
@@ -91,29 +100,4 @@ export function ModelConfigFields({ value, change, platform, apiProtocol }: { va
   </>;
 }
 
-export function ImageConfigFields({ value, change }: { value: ImageConfig; change: (value: ImageConfig) => void }) {
-  return <section className="model-form-section"><h2>图片能力与价格</h2>
-    <div className="provider-form-grid">{(["generate", "edit"] as const).map(operation => <label className="provider-enabled" key={operation}>
-      <input type="checkbox" checked={value[operation]} onChange={e => change({ ...value, [operation]: e.target.checked })} />{operation === "generate" ? "图片生成" : "图片编辑"}</label>)}</div>
-    {(value.generate || value.edit) && <>
-      <div className="provider-form-grid">
-        <label>图片协议<select value={value.protocol} onChange={e => change({ ...value, protocol: e.target.value as ImageConfig["protocol"], max_count: 1 })}>
-          <option value="openai_images">OpenAI Images</option><option value="gemini">Gemini 原生</option><option value="responses">Responses 原生生图</option>
-        </select></label>
-        {value.protocol === "responses" && <label>图片工具模型<input required maxLength={200} value={value.image_model ?? ""} onChange={e => change({ ...value, image_model: e.target.value })} /></label>}
-        <label>最多生成张数<input type="number" min={1} max={value.protocol === "openai_images" ? 4 : 1} value={value.max_count} onChange={e => change({ ...value, max_count: Number(e.target.value) })} /></label>
-        <label>最多参考图<input type="number" min={1} max={8} value={value.max_references} onChange={e => change({ ...value, max_references: Number(e.target.value) })} /></label>
-        <label>默认尺寸<input required value={value.default_size} maxLength={40} onChange={e => change({ ...value, default_size: e.target.value })} /></label>
-        <label>默认质量<input required value={value.default_quality} maxLength={40} onChange={e => change({ ...value, default_quality: e.target.value })} /></label>
-      </div>
-      {value.specs.map((spec, index) => <div className="provider-form-grid image-spec-row" key={index}>
-        <label>操作<select value={spec.operation} onChange={e => change({ ...value, specs: value.specs.map((s, i) => i === index ? { ...s, operation: e.target.value as "generate" | "edit" } : s) })}><option value="generate">生成</option><option value="edit">编辑</option></select></label>
-        {(["size", "quality", "credits_per_image", "cost_per_image"] as const).map(field => <label key={field}>{({ size: "尺寸", quality: "质量", credits_per_image: "每张积分", cost_per_image: "成本参考（积分/张）" })[field]}
-          <input required={field !== "cost_per_image"} type={field.endsWith("image") ? "number" : "text"} min={0} step={field.endsWith("image") ? "0.0001" : undefined} value={spec[field] ?? ""}
-            onChange={e => change({ ...value, specs: value.specs.map((s, i) => i === index ? { ...s, [field]: field.endsWith("image") ? e.target.value === "" ? null : Number(e.target.value) : e.target.value } : s) })} /></label>)}
-        <button type="button" className="secondary" onClick={() => change({ ...value, specs: value.specs.filter((_, i) => i !== index) })}>移除规格</button>
-      </div>)}
-      <button type="button" className="secondary" disabled={value.specs.length >= 100} onClick={() => change({ ...value, specs: [...value.specs, { operation: value.generate ? "generate" : "edit", size: value.default_size, quality: value.default_quality, credits_per_image: null, cost_per_image: null }] })}>添加规格</button>
-    </>}
-  </section>;
-}
+export { ImageConfigFields } from "./image-config-fields";

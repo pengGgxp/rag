@@ -17,6 +17,8 @@ export type ImageConfig = {
   image_model?: string | null;
   generate: boolean; edit: boolean; max_count: number; max_references: number;
   default_size: string; default_quality: string;
+  preset_id?: string | null; preset_revision?: number | null;
+  defaults?: Partial<Record<"generate" | "edit", { size: string; quality: string }>>;
   specs: { operation: "generate" | "edit"; size: string; quality: string; credits_per_image: number | null; cost_per_image: number | null }[];
 };
 export const emptyImageConfig: ImageConfig = { protocol: "openai_images", generate: false, edit: false,
