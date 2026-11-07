@@ -1,5 +1,7 @@
 # 问答体验验收
 
+2026-11-07：Issue #76 的本地改造及验收记录见 `conversation-management.md` 和 `tasks/conversation-experience.md`。当前已具备用户、工作区及知识库权限；Markdown 导出入口已移除，回答与 HTTP 订阅解耦。以下保留 Issue #13 的历史记录，不代表现行接口。
+
 对应 GitHub Issue #13。问答现在是持久化的知识使用工作流，不再只保留当前
 页面的一次请求。
 
