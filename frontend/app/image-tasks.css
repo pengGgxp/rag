@@ -1,8 +1,15 @@
-.image-task-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-block: 12px; min-width: 0; }
+.image-task-result { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 16px; padding-block: 12px; min-width: 0; }
 .image-task-result > .activity-step-summary { display: flex; align-items: center; gap: 6px; flex-basis: 100%; color: var(--muted); font-size: 13px; }
 .image-task-files { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; max-width: 100%; }
-.generated-image-open { display: block; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--surface); cursor: zoom-in; max-width: 100%; }
-.generated-image-open img { display: block; width: auto; height: auto; max-width: min(320px, 100%); max-height: 360px; object-fit: contain; }
+.image-result-actions { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+.image-result-download, .image-result-library { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; padding: 7px 12px; border-radius: 6px; font-size: 13px; line-height: 20px; text-decoration: none; white-space: nowrap; }
+.image-result-download { background: var(--accent-soft); color: var(--accent); }
+.image-result-download:hover:not(:disabled) { background: var(--accent); color: var(--surface); }
+.image-result-library { color: var(--muted); }
+.image-result-library:hover { background: var(--surface-muted); color: var(--ink); }
+.image-result-actions svg { flex-shrink: 0; }
+.generated-image-open { display: block; flex: none; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface-muted); cursor: zoom-in; max-width: 100%; }
+.generated-image-open img { display: block; width: 100%; height: auto; max-height: 360px; object-fit: contain; }
 .generated-image-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .generated-image-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 320px; max-width: 100%; min-height: 160px; padding: 16px; box-sizing: border-box; color: var(--muted); font-size: 13px; }
 .image-task-result .activity-file-download { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; max-width: 100%; padding: 4px 0; border: 0; background: transparent; color: var(--accent, #2459dc); font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
@@ -10,10 +17,20 @@
 .image-task-result .activity-file-download:hover { text-decoration: underline; }
 .image-task-result .activity-file-download:focus-visible { outline: 2px solid var(--accent, #2459dc); outline-offset: 4px; }
 .image-task-preview { display: block; width: auto; max-width: 100%; height: auto; max-height: 65dvh; object-fit: contain; margin: auto; }
+.generated-image-viewer { display: grid; place-items: center; min-height: 200px; padding: 24px; }
+.generated-image-viewer .generated-image-placeholder { width: 100%; min-height: 200px; }
+.generated-image-loading { position: relative; display: grid; place-items: center; width: 100%; min-height: 200px; }
+.generated-image-loading > span { position: absolute; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); box-shadow: var(--selection-shadow); }
+.modal:has(.generated-image-viewer) .modal-heading h2 { min-width: 0; overflow-wrap: anywhere; }
+.modal:has(.generated-image-viewer) .modal-heading .icon-button { flex-shrink: 0; }
 .image-spec-row { padding-block: 16px; border-top: 1px solid var(--line); }
 .image-review-row { padding-block: 16px; border-bottom: 1px solid var(--line); }
 .image-review-row dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; font-size: 13px; }
 .image-review-row dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
+  .image-result-download, .image-result-library { min-height: 44px; }
   .image-task-result .activity-file-download, .image-model-settings button { min-height: 44px; }
+  .generated-image-viewer { padding: 16px; }
+  .modal:has(.generated-image-viewer) .modal-heading { padding: 12px 16px; gap: 12px; }
+  .modal:has(.generated-image-viewer) .modal-heading .icon-button { width: 44px; height: 44px; }
 }

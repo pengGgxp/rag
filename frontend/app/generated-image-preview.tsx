@@ -6,7 +6,7 @@ import { request } from "./api";
 import { json } from "./admin/admin-ui";
 import { Modal } from "./modal";
 
-type ImageLink = { status: string; url: string | null; revision: string; error?: string };
+type ImageLink = { status: string; url: string | null; revision: string; width?: number; height?: number; error?: string };
 
 export function GeneratedImagePreview({ id, name }: { id: string; name: string }) {
   const [thumbnail, setThumbnail] = useState<ImageLink | null>(null);
@@ -51,14 +51,16 @@ export function GeneratedImagePreview({ id, name }: { id: string; name: string }
 
   return <>
     {error ? <div className="generated-image-placeholder" role="status"><ImageOff size={24} /><span>{error}</span><button type="button" className="secondary" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={15} />重试预览</button></div>
-      : thumbnail?.url ? <button type="button" className="generated-image-open" aria-label={`查看原图 ${name}`} onClick={() => setOpened(true)}><img src={thumbnail.url} alt={name} referrerPolicy="no-referrer" onError={() => setError("预览链接已失效，请重试")} /></button>
+      : thumbnail?.url ? <button type="button" className="generated-image-open" style={{ width: thumbnail.width && thumbnail.height ? Math.min(320, thumbnail.width, 360 * thumbnail.width / thumbnail.height) : 320 }} aria-label={`查看原图 ${name}`} onClick={() => setOpened(true)}><img src={thumbnail.url} alt={name} width={thumbnail.width} height={thumbnail.height} referrerPolicy="no-referrer" onError={() => setError("预览链接已失效，请重试")} /></button>
       : <div className="generated-image-placeholder" role="status"><Loader2 size={22} className="spin" /><span>正在准备预览图</span></div>}
     {opened && <Modal title={name} wide onClose={() => setOpened(false)}>
+      <div className="generated-image-viewer" aria-busy={!originalLoaded && !originalError}>
       {originalError ? <div className="generated-image-placeholder" role="alert"><span>{originalError}</span><button type="button" className="secondary" onClick={() => setOriginalAttempt(value => value + 1)}>重新加载</button></div>
         : <>
-          {!originalLoaded && <div className="generated-image-placeholder" role="status">{thumbnail?.url && <img className="image-task-preview" src={thumbnail.url} alt="" />}<Loader2 size={22} className="spin" /><span>正在加载原图</span></div>}
+          {!originalLoaded && <div className="generated-image-loading" role="status">{thumbnail?.url && <img className="image-task-preview" src={thumbnail.url} alt="" referrerPolicy="no-referrer" />}<span><Loader2 size={18} className="spin" />正在加载原图</span></div>}
           {original && <img className="image-task-preview" style={{ display: originalLoaded ? "block" : "none" }} src={original} alt={name} referrerPolicy="no-referrer" onLoad={() => setOriginalLoaded(true)} onError={() => setOriginalError("图片未能加载，请重试")} />}
         </>}
+      </div>
     </Modal>}
   </>;
 }
