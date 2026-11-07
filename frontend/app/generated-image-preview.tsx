@@ -51,9 +51,9 @@ export function GeneratedImagePreview({ id, name }: { id: string; name: string }
 
   return <>
     {error ? <div className="generated-image-placeholder" role="status"><ImageOff size={24} /><span>{error}</span><button type="button" className="secondary" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={15} />重试预览</button></div>
-      : thumbnail?.url ? <button type="button" className="generated-image-open" style={{ width: thumbnail.width && thumbnail.height ? Math.min(320, thumbnail.width, 360 * thumbnail.width / thumbnail.height) : 320 }} aria-label={`查看原图 ${name}`} onClick={() => setOpened(true)}><img src={thumbnail.url} alt={name} width={thumbnail.width} height={thumbnail.height} referrerPolicy="no-referrer" onError={() => setError("预览链接已失效，请重试")} /></button>
+      : thumbnail?.url ? <button type="button" className="generated-image-open" data-image-resource={id} style={{ width: thumbnail.width && thumbnail.height ? Math.min(320, thumbnail.width, 360 * thumbnail.width / thumbnail.height) : 320 }} aria-label={`查看原图 ${name}`} onClick={() => setOpened(true)}><img src={thumbnail.url} alt={name} width={thumbnail.width} height={thumbnail.height} referrerPolicy="no-referrer" onError={() => setError("预览链接已失效，请重试")} /></button>
       : <div className="generated-image-placeholder" role="status"><Loader2 size={22} className="spin" /><span>正在准备预览图</span></div>}
-    {opened && <Modal title={name} wide onClose={() => setOpened(false)}>
+    {opened && <Modal title={name} wide restoreFocusSelector={`[data-image-resource="${id}"]`} onClose={() => setOpened(false)}>
       <div className="generated-image-viewer" aria-busy={!originalLoaded && !originalError}>
       {originalError ? <div className="generated-image-placeholder" role="alert"><span>{originalError}</span><button type="button" className="secondary" onClick={() => setOriginalAttempt(value => value + 1)}>重新加载</button></div>
         : <>
