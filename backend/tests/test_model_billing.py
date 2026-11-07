@@ -204,6 +204,8 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
     request_id = uuid4()
     response = owner.post(f"/conversations/{created['id']}/messages", json={"provider_id": model_id(owner), "query":"hello", "request_id":str(request_id)})
     assert response.status_code == 200, response.text
+    from auth_helpers import generation_response
+    generation_response(response)
     db.expire_all()
     row = db.get(ModelUsageRequest, request_id)
     expected = Decimal("0.16") if ending == "fail" else Decimal("0.4")
@@ -251,6 +253,8 @@ def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatc
     identifier = uuid4()
     response = owner.post(f"/conversations/{conversation['id']}/messages", json={"provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)})
     assert response.status_code == 200
+    from auth_helpers import generation_response
+    generation_response(response)
     db.expire_all()
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == identifier)).all()
     assert {row.capability for row in events} == set(billing.CAPABILITIES)
@@ -276,36 +280,18 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
     conversation = owner.post("/conversations", json={"knowledge_base_ids": []}).json()
     identifier = uuid4()
-    payload = json.dumps({"provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)}).encode()
-    async def request():
-        disconnected = asyncio.Event()
-        sent = False
-        async def receive():
-            nonlocal sent
-            if not sent:
-                sent = True
-                return {"type": "http.request", "body": payload, "more_body": False}
-            await disconnected.wait()
-            return {"type": "http.disconnect"}
-        async def send(_message):
-            pass
-        path = f"/conversations/{conversation['id']}/messages"
-        scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.0"},
-            "http_version": "1.1", "method": "POST", "scheme": "http", "path": path,
-            "raw_path": path.encode(), "query_string": b"", "server": ("testserver", 80),
-            "client": ("127.0.0.1", 1234), "root_path": "", "headers": [
-                (b"host", b"testserver"), (b"content-type", b"application/json"),
-                (b"x-rag-request", b"1"), (b"x-csrf-token", owner.headers["X-CSRF-Token"].encode()),
-                (b"cookie", f"{auth.COOKIE}={owner.cookies.get(auth.COOKIE)}".encode())]}
-        task = asyncio.create_task(main.app(scope, receive, send))
-        try:
-            assert await asyncio.to_thread(entered.wait, 5)
-            disconnected.set()
-            await asyncio.sleep(0.02)
-        finally:
-            release.set()
-        await asyncio.wait_for(task, 5)
-    asyncio.run(request())
+    from concurrent.futures import ThreadPoolExecutor
+    from app.conversation_jobs import run
+    response = owner.post(f"/conversations/{conversation['id']}/messages", json={
+        "provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)})
+    assert response.status_code == 200
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        execution = pool.submit(run, identifier, factory, main.retrieve_knowledge_base)
+        assert entered.wait(5)
+        # There is no HTTP stream or subscriber, but the billable request continues.
+        release.set()
+        execution.result(timeout=8)
     db.expire_all()
     row = db.get(ModelUsageRequest, identifier)
     assert row.status == "settled" and row.credits == Decimal("2.3")

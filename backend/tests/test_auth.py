@@ -130,7 +130,7 @@ def test_cross_workspace_id_guesses_do_not_expose_any_resource(accounts):
         assert outsider.post(path, json=payload).status_code == 404, path
     assert outsider.delete(f"/documents/{document.id}").status_code == 404
     assert outsider.delete(f"/conversations/{conv}").status_code == 404
-    assert outsider.get("/conversations").json() == []
+    assert outsider.get("/conversations").json()["items"] == []
 
 
 def test_roles_library_grants_and_history_revalidate_after_revocation(accounts):
@@ -161,7 +161,7 @@ def test_roles_library_grants_and_history_revalidate_after_revocation(accounts):
     assert viewer.get(f"/conversations/{conv}/export").status_code == 404
     assert viewer.get(f"/traces/{trace['id']}").status_code == 404
     assert viewer.get(f"/jobs/{job.id}").status_code == 404
-    assert viewer.get("/conversations").json() == []
+    assert viewer.get("/conversations").json()["items"] == []
     assert owner.put(f"/knowledge-bases/{id}/permissions", json={
         "restricted": True, "user_ids": [b["user"]["id"]],
     }).status_code == 200
@@ -216,7 +216,7 @@ def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(account
     assert response.status_code == 200, response.text
     owner.headers["X-CSRF-Token"] = response.json()["csrf_token"]
     assert owner.get("/knowledge-bases").json()[0]["name"] == "Legacy private data"
-    assert owner.get("/conversations").json()[0]["title"] == "Legacy chat"
+    assert owner.get("/conversations").json()["items"][0]["title"] == "Legacy chat"
     assert owner.get("/auth/options").json()["setup_available"] is False
     assert db.get(AuthToken, auth.digest(raw)) is None
     register(outsider, "other@example.com", "Other")
@@ -266,10 +266,10 @@ def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
     response = viewer.post(f"/conversations/{conv}/messages", json={"provider_id": model_id(viewer), "query": "needle", "request_id": str(uuid4())})
     assert response.status_code == 200
     assert "SECRET AFTER REVOKE" not in response.text
-    events = [(event.event, event.json()) for event in EventSource(response).iter_sse()]
-    assert events[-1][0] == "done"
-    assert events[-1][1]["content"] == ""
-    assert events[-1][1]["citations"] == []
+    from auth_helpers import generation_response
+    revoked = generation_response(response)
+    assert revoked.status_code == 403
+    assert "SECRET AFTER REVOKE" not in revoked.text
     db.expire_all()
     assert db.get(Conversation, UUID(conv)).active_request_id is None
 

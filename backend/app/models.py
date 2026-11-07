@@ -714,6 +714,9 @@ class Conversation(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True, default=LEGACY_WORKSPACE_ID)
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
+    title_source: Mapped[str] = mapped_column(String(20), default="temporary", server_default="legacy")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     skill_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     mcp_server_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     extensions_initialized: Mapped[bool] = mapped_column(default=True)
@@ -725,6 +728,37 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True)
     libraries: Mapped[list["ConversationLibrary"]] = relationship(cascade="all, delete-orphan")
     messages: Mapped[list["ChatMessage"]] = relationship(cascade="all, delete-orphan", order_by="ChatMessage.sequence")
+
+
+class ConversationExecution(Base):
+    __tablename__ = "conversation_executions"
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
+    message_id: Mapped[UUID | None] = mapped_column(ForeignKey("chat_messages.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationEvent(Base):
+    __tablename__ = "conversation_events"
+    request_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_executions.request_id"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    encrypted_payload: Mapped[str] = mapped_column(Text)
+
+
+class ConversationTitleTask(Base):
+    __tablename__ = "conversation_title_tasks"
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    request_id: Mapped[UUID] = mapped_column(ForeignKey("conversation_executions.request_id"), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="queued")
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    cost_reference: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class QuestionWorkbenchGrant(Base):

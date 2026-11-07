@@ -13,7 +13,7 @@ from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import ChatMessage, Conversation, CreditAccount, DocumentStatus
 from test_retrieval import add_document, add_library
-from auth_helpers import authenticate, model_id
+from auth_helpers import authenticate, model_id, generation_response
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def turn(http, id, query="needle", **extra):
         **({"query": query} if query is not None else {}), **extra}
     response = http.post(f"/conversations/{id}/messages", json=payload)
     assert response.status_code == 200, response.text
-    events = [(event.event, event.json()) for event in EventSource(response).iter_sse()]
+    events = [(event.event, event.json()) for event in EventSource(generation_response(response)).iter_sse()]
     return events, payload
 
 
@@ -99,7 +99,7 @@ def test_persists_streamed_turn_and_followup_context(client):
     assert [message["sequence"] for message in detail["messages"]] == [0, 1, 2, 3]
     assert detail["active_request_id"] is None
     assert detail["title"] == "needle"
-    assert http.get("/conversations").json()[0]["id"] == detail["id"]
+    assert http.get("/conversations").json()["items"][0]["id"] == detail["id"]
 
 
 def test_multi_library_scope_and_deleted_filtering(client):
@@ -281,7 +281,7 @@ def test_stop_conflict_delete_and_restart_recovery(client):
     assert http.get(f"/conversations/{id}").json()["active_request_id"] is None
     assert http.delete(f"/conversations/{id}").status_code == 204
     assert http.get(f"/conversations/{id}").status_code == 404
-    assert http.get("/conversations").json() == []
+    assert http.get("/conversations").json()["items"] == []
     assert http.post(f"/conversations/{id}/messages", json={"provider_id": model_id(http), "request_id": str(uuid4()), "query": "needle"}).status_code == 404
 
 
@@ -317,7 +317,7 @@ def test_rename_and_validation(client):
     assert http.post("/conversations", json={"knowledge_base_ids": [str(uuid4())]}).status_code == 404
     conversation = create(http, [add_library(db)])
     id = conversation["id"]
-    assert http.patch(f"/conversations/{id}", json={"title": "  产品问题  "}).json()["title"] == "产品问题"
+    assert http.patch(f"/conversations/{id}", json={"title": "  产品问题  ", "revision": conversation["revision"]}).json()["title"] == "产品问题"
     assert http.patch(f"/conversations/{id}", json={"title": "  "}).status_code == 422
     assert http.post(f"/conversations/{id}/messages", json={"request_id": str(uuid4()), "query": "  "}).status_code == 422
     assert http.get(f"/conversations/{id}").json()["messages"] == []

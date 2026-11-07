@@ -55,6 +55,30 @@ def model_id(http):
     return next(item["id"] for item in http.get("/models/available").json()["providers"] if item["available"])
 
 
+def generation_response(response):
+    """Exercise JSON submission, a separate Worker execution, and authenticated SSE."""
+    if "application/json" not in response.headers.get("content-type", "") or response.status_code != 200:
+        return response
+    data = response.json()
+    if "request_id" not in data:
+        return response
+    from app import main
+    from app.conversation_jobs import run
+    from sqlalchemy.orm import sessionmaker
+    from fastapi.testclient import TestClient
+    db = main.app.dependency_overrides[main.get_db]()
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    run(data["request_id"], factory=factory, retrieve=main.retrieve_knowledge_base)
+    path = response.request.url.path.rsplit("/", 1)[0]
+    headers = {key: value for key, value in response.request.headers.items()
+        if key.lower() not in ("content-length", "content-type")}
+    reader = TestClient(main.app, headers=headers)
+    try:
+        return reader.get(f"{path}/requests/{data['request_id']}/events")
+    finally:
+        reader.close()
+
+
 def authenticate(http, db):
     """Seed a real server-side session; do not bypass authorization dependencies."""
     db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="test workspace"))

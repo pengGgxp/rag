@@ -13,14 +13,14 @@ from app.models import (BillingSnapshot, ChatMessage, CreditAccount, CreditLedge
 from test_auth import register, share, switch
 from test_shared_providers import setup_site, provider
 from test_retrieval import add_document
-from auth_helpers import StreamingTestProvider
+from auth_helpers import StreamingTestProvider, generation_response
 
 
 def send(client, conversation, identifier, **changes):
     body = {"request_id": str(uuid4()), "provider_id": identifier, "query": "hello", **changes}
     result = client.post(f"/conversations/{conversation}/messages", json=body)
     assert result.status_code == 200, result.text
-    return list(EventSource(result).iter_sse()), body
+    return list(EventSource(generation_response(result)).iter_sse()), body
 
 
 @pytest.mark.parametrize("settlement", [False, True])

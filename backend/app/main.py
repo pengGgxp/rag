@@ -141,6 +141,15 @@ async def lifespan(_: FastAPI):
                 logging.getLogger(__name__).warning("Resource preview recovery deferred")
             await asyncio.sleep(60)
     preview_recovery = asyncio.create_task(preview_maintenance())
+    async def conversation_maintenance():
+        from .conversation_jobs import recover
+        while True:
+            try:
+                await asyncio.to_thread(recover)
+            except Exception:
+                logging.getLogger(__name__).exception("Conversation recovery deferred")
+            await asyncio.sleep(30)
+    conversation_recovery = asyncio.create_task(conversation_maintenance())
     try:
         yield
     finally:
@@ -148,6 +157,7 @@ async def lifespan(_: FastAPI):
         document_recovery.cancel()
         computer_recovery.cancel()
         preview_recovery.cancel()
+        conversation_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await retention
         with suppress(asyncio.CancelledError):
@@ -156,6 +166,8 @@ async def lifespan(_: FastAPI):
             await computer_recovery
         with suppress(asyncio.CancelledError):
             await preview_recovery
+        with suppress(asyncio.CancelledError):
+            await conversation_recovery
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)

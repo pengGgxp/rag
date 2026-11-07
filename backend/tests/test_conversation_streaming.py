@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from app import conversations as chat, main
 from app.llm import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
 from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, CreditAccount, SiteModelProvider
-from auth_helpers import model_id
+from auth_helpers import model_id, generation_response
 from test_conversations import client, create, turn
 
 
@@ -175,7 +175,7 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
     identifier = model_id(http)
     from app.models import ModelConnection
     selected = db.get(SiteModelProvider, UUID(identifier))
-    db.get(ModelConnection, selected.connection_id).api_protocol = protocol
+    selected.chat_protocol = protocol
     db.commit()
     if after_compaction:
         http, db, conversation_id, identifier = context_fixture(client, length=60)
@@ -209,6 +209,14 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
             sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 4}})
         ended.set()
     factory = sessionmaker(bind=db.get_bind())
+    from app import conversation_jobs
+    workers = []
+    def dispatch(identifier):
+        worker = Thread(target=conversation_jobs.run, args=(identifier,),
+            kwargs={"factory": factory, "retrieve": main.retrieve_knowledge_base}, daemon=True)
+        workers.append(worker)
+        worker.start()
+    monkeypatch.setattr(conversation_jobs, "dispatch", dispatch)
     def database():
         with factory() as session:
             yield session
@@ -226,9 +234,13 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
             while not server.started and time.monotonic() < deadline:
                 time.sleep(.01)
             assert server.started
-            with httpx.stream("POST", f"http://127.0.0.1:{listener.getsockname()[1]}/conversations/{conversation['id']}/messages",
-                headers={**dict(http.headers), "Cookie": f"rag_session={http.cookies.get('rag_session')}"},
-                json={"request_id": str(uuid4()), "provider_id": identifier, "query": "test"}, timeout=10) as response:
+            base = f"http://127.0.0.1:{listener.getsockname()[1]}/conversations/{conversation['id']}"
+            headers = {**dict(http.headers), "Cookie": f"rag_session={http.cookies.get('rag_session')}"}
+            submitted = httpx.post(base + "/messages", headers=headers,
+                json={"request_id": str(uuid4()), "provider_id": identifier, "query": "test"}, timeout=10)
+            assert submitted.status_code == 200, submitted.text
+            with httpx.stream("GET", base + f"/requests/{submitted.json()['request_id']}/events",
+                headers=headers, timeout=10) as response:
                 assert response.status_code == 200
                 stream = EventSource(response).iter_sse()
                 first = next(event for event in stream if event.event == "delta")
@@ -238,7 +250,7 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
                     remaining = list(stream)
                     assert remaining[-1].event == "done" and remaining[-1].json()["status"] == "completed"
             if disconnect:
-                assert stop_signals and stop_signals[0].wait(5)
+                assert stop_signals and not stop_signals[0].is_set()
                 release.set()
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
@@ -249,13 +261,15 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
                         if saved.status != "streaming":
                             break
                     time.sleep(.02)
-                assert saved.status == "cancelled" and saved.content == "首段正文"
+                assert saved.status == "completed" and saved.content == "首段正文后续正文"
                 with factory() as session:
                     snapshots = session.scalars(select(BillingSnapshot).where(
                         BillingSnapshot.request_id == saved.request_id)).all()
                     assert sum(row.context.get("call_usage", {}).get("prompt_tokens") or 0 for row in snapshots) == 8
         finally:
             release.set()
+            for worker in workers:
+                worker.join(timeout=10)
             server.should_exit = True
             thread.join(timeout=10)
             listener.close()
@@ -333,7 +347,7 @@ def compact(http, conversation, provider, request_id=None):
     response = http.post(f"/conversations/{conversation}/compact", json={"request_id": request_id or str(uuid4()),
         "provider_id": provider})
     assert response.status_code == 200, response.text
-    return [(event.event, event.json()) for event in EventSource(response).iter_sse()]
+    return [(event.event, event.json()) for event in EventSource(generation_response(response)).iter_sse()]
 
 
 def test_manual_compaction_preserves_recent_turns_and_repeat_is_free(client, monkeypatch):
@@ -462,8 +476,10 @@ def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(
     main.app.dependency_overrides[main.get_db] = database
     request_id = str(uuid4())
     payload = {"request_id": request_id, "provider_id": model_id(http), "query": "hello"}
+    assert http.post(f"/conversations/{conversation['id']}/messages", json=payload).status_code == 200
     with ThreadPoolExecutor(max_workers=1) as pool:
-        response = pool.submit(http.post, f"/conversations/{conversation['id']}/messages", json=payload)
+        from app.conversation_jobs import run
+        response = pool.submit(run, request_id, factory, main.retrieve_knowledge_base)
         assert entered.wait(5)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -475,7 +491,7 @@ def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(
         stopped = http.post(f"/conversations/{conversation['id']}/stop", json={"request_id": request_id})
         assert stopped.status_code == 200
         release.set()
-        assert response.result(timeout=8).status_code == 200
+        response.result(timeout=8)
     main.app.dependency_overrides[main.get_db] = lambda: db
     detail = http.get(f"/conversations/{conversation['id']}").json()
     assert detail["messages"][-1]["content"] == "已收到的正文"

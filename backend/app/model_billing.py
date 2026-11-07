@@ -175,8 +175,10 @@ def finalize_request(db, request_id, outcome):
 
 
 def recover_requests(db):
+    from .models import ConversationExecution
     identifiers = db.scalars(select(ModelUsageRequest.request_id).where(
-        ModelUsageRequest.status == "running")).all()
+        ModelUsageRequest.status == "running", ~ModelUsageRequest.request_id.in_(
+            select(ConversationExecution.request_id).where(ConversationExecution.status.in_(["queued", "running"]))))).all()
     for identifier in identifiers:
         finalize_request(db, identifier, "interrupted")
     db.commit()

@@ -37,6 +37,18 @@ celery_app.conf.update(task_track_started=True, task_serializer="json", result_s
 
 
 @celery_app.task
+def execute_conversation(identifier):
+    from .conversation_jobs import run
+    run(identifier)
+
+
+@celery_app.task
+def name_conversation(identifier):
+    from .conversation_jobs import title_run
+    title_run(identifier)
+
+
+@celery_app.task
 def run_cloud_command(identifier):
     from .cloud_computer import run
     run(identifier)
