@@ -1,5 +1,7 @@
 # 资源库接口与执行边界
 
+资源库内容浏览、缩略图与 Word/PDF 阅读器见 `resource-content-preview.md`；当前共享目录执行规则以 `tasks/shared-resource-directory.md` 为准，下文早期版本与输入准备记录不适用于新预览功能。
+
 任务与验收记录见 `resource-library-task.md`。本次只进行本地开发，不部署线上。
 
 ## 数据与权限
