@@ -2,6 +2,8 @@
   "name": "rag-platform-web",
   "private": true,
   "scripts": {
+    "predev": "node scripts/prepare-pdf-worker.mjs",
+    "prebuild": "node scripts/prepare-pdf-worker.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start"
@@ -15,6 +17,7 @@
     "lucide-react": "^1.60.0",
     "motion": "^14.4.0",
     "next": "16.4.2",
+    "pdfjs-dist": "5.4.624",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "react-markdown": "^10.1.0",

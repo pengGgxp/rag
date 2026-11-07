@@ -33,6 +33,7 @@ import { AuthFrame } from "./auth-frame";
 import "./auth.css";
 import { useSettingsNavigation } from "./settings/settings-navigation";
 import { DocumentUploadProvider } from "./document-uploads";
+import { clearPreviewCache } from "./resource-preview-cache";
 
 export type Role = "admin" | "editor" | "viewer";
 export type AuthOptions = {
@@ -359,6 +360,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const [resetToken, setResetToken] = useState("");
   const [setupToken, setSetupToken] = useState("");
   const accept = useCallback((value: Session | null) => {
+    if (!value) void clearPreviewCache();
     setSession(value);
     setCsrfToken(value?.csrf_token ?? "");
   }, []);
@@ -420,6 +422,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   }, [accept]);
   const logout = useCallback(() => {
     void request("/auth/logout", { method: "POST" }).then(() => {
+      void clearPreviewCache();
       accept(null);
       setMode("login");
       router.replace("/auth/login");

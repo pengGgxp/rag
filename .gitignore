@@ -6,6 +6,8 @@ node_modules/
 .next/
 .next-qw/
 .next-resource-check/
+.next-resource-preview/
+frontend/public/pdf.worker.min.mjs
 .venv/
 **/.venv/
 __pycache__/
