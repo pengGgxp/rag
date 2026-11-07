@@ -6,8 +6,9 @@ import { Tooltip } from "../components/ui/tooltip";
 import { useUiStore } from "./ui-store";
 import { SiteAnnouncementBanner } from "./site-announcement";
 
-export function WorkspaceHeader({ title, context, actions }: {
+export function WorkspaceHeader({ title, context, actions, titleContent }: {
   title: string;
+  titleContent?: ReactNode;
   context?: ReactNode;
   actions?: ReactNode;
 }) {
@@ -19,7 +20,7 @@ export function WorkspaceHeader({ title, context, actions }: {
         onClick={() => openNavigation(true)}><Menu size={19} /></button>
     </Tooltip>
     <div className="workspace-header-title">
-      <Tooltip content={title}><h1 tabIndex={0}>{title}</h1></Tooltip>
+      {titleContent ?? <Tooltip content={title}><h1 tabIndex={0}>{title}</h1></Tooltip>}
       {context && <span className="workspace-header-context">{context}</span>}
     </div>
     {actions && <div className="workspace-header-actions">{actions}</div>}

@@ -2,7 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Fragment, FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, useCallback, useEffect, useLayoutEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ArrowDown,
@@ -11,13 +11,10 @@ import {
   ChevronRight,
   CircleAlert,
   Copy,
-  Download,
   FileText,
   Globe,
   Loader2,
   Minimize2,
-  MessageSquare,
-  Pencil,
   Plus,
   Puzzle,
   RefreshCw,
@@ -26,7 +23,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { API_URL, ApiError, request, streamRequest } from "./api";
+import { ApiError, request, streamRequest } from "./api";
+import { ConversationHistory, InlineConversationTitle, type HistoryItem } from "./conversation-history";
 import { useAuth } from "./auth";
 import type { ThinkingCapability } from "./model-types";
 import { Modal } from "./modal";
@@ -37,7 +35,7 @@ import { AnswerFeedback, type Feedback } from "./answer-feedback";
 import { TraceInspector } from "./retrieval-panel";
 import { Motion } from "../components/ui/motion";
 import "./chat.css";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { RequestModelPicker } from "./request-model-picker";
 import { ExtensionPicker } from "./extensions/extension-picker";
 import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension-slash-menu";
@@ -127,6 +125,10 @@ function contextState(value: ContextResponse): ConversationContextState {
 type Conversation = {
   id: string;
   title: string;
+  revision: number;
+  title_source?: string;
+  title_task_status?: string | null;
+  pinned_at?: string | null;
   knowledge_bases: { id: string; name: string }[];
   active_request_id: string | null;
   updated_at: string;
@@ -305,7 +307,7 @@ export function ChatWorkspace({
     return () => controller.abort();
   }, [webAttempt, session.workspace_id]);
   useEffect(() => { setWebEnabled(true); }, [session.workspace_id]);
-  const [search, setSearch] = useState("");
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -327,6 +329,7 @@ export function ChatWorkspace({
   const [preview, setPreview] = useState<Citation | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [editing, setEditing] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<HistoryItem | null>(null);
   const [title, setTitle] = useState("");
   const [deleting, setDeleting] = useState<Conversation | null>(null);
   const [modalBusy, setModalBusy] = useState(false);
@@ -336,9 +339,52 @@ export function ChatWorkspace({
   const viewRef = useRef<Conversation | null>(null);
   const sending = useRef(false);
   const scrollArea = useRef<HTMLDivElement>(null);
+  const pendingScroll = useRef<{ id: string; top: number } | null>(null);
   const follow = useRef(true);
   const draftScopeInitialized = useRef(!!initialLibraryId);
   const restoredModelFor = useRef<string | null>(null);
+  const cache = useRef(new Map<string, Conversation>());
+  const draftPrefix = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
+  const draftKey = useRef(draftPrefix + (conversationId ?? "new"));
+  const draftReady = useRef(false);
+  const draftSending = useRef(false);
+  const cacheScope = useRef(draftPrefix);
+  const historyScope = useRef(draftPrefix);
+  historyScope.current = draftPrefix;
+  const historyEpoch = useRef(0);
+  const liveDraft = useRef({ text: question, mentions: documentMentions, attachments: attachments.ready, scroll: 0, follow: true });
+  liveDraft.current = { text: question, mentions: documentMentions,
+    attachments: attachments.ready.filter(item => !!item.resource_id), scroll: scrollArea.current?.scrollTop ?? 0, follow: follow.current };
+  const searchParams = useSearchParams();
+  const targetMessage = searchParams.get("message");
+  const [highlightedMessage, setHighlightedMessage] = useState<string | null>(null);
+  function saveDraft() {
+    if (!draftReady.current) return;
+    liveDraft.current = { ...liveDraft.current, scroll: scrollArea.current?.scrollTop ?? liveDraft.current.scroll,
+      follow: follow.current };
+    if (!draftSending.current) try { sessionStorage.setItem(draftKey.current, JSON.stringify(liveDraft.current)); } catch { /* Full storage must not block chatting. */ }
+    if (viewRef.current) cache.current.set(viewRef.current.id, viewRef.current);
+    if (cache.current.size > 20) cache.current.delete(cache.current.keys().next().value!);
+  }
+  const persistDraft = useRef(saveDraft);
+  persistDraft.current = saveDraft;
+  useEffect(() => {
+    if (draftKey.current === draftPrefix + (conversationId ?? "new")) saveDraft();
+  }, [question, documentMentions, attachments.ready.map(item => item.id).join(",")]);
+  useEffect(() => {
+    const save = () => persistDraft.current();
+    window.addEventListener("pagehide", save);
+    const clear = () => {
+      draftReady.current = false;
+      cache.current.clear();
+      for (let index = sessionStorage.length - 1; index >= 0; index--) {
+        const key = sessionStorage.key(index); if (key?.startsWith("rag-chat-draft:")) sessionStorage.removeItem(key);
+      }
+    };
+    window.addEventListener("rag-session-expired", clear);
+    window.addEventListener("rag-session-ended", clear);
+    return () => { save(); window.removeEventListener("pagehide", save); window.removeEventListener("rag-session-expired", clear); window.removeEventListener("rag-session-ended", clear); };
+  }, []);
   viewRef.current = conversation;
   const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
   const thinking = selectedModel?.thinking;
@@ -395,16 +441,50 @@ export function ChatWorkspace({
       error: true,
     });
   }, []);
-  const refreshList = useCallback(async () => {
+  const refreshList = useCallback(async (cursor?: string | null) => {
+    const currentEpoch = ++historyEpoch.current;
+    const scope = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
     setHistoryError("");
+    setHistoryLoading(true);
     try {
-      setConversations(await request<Conversation[]>("/conversations"));
+      const page = await request<{ items: Conversation[]; next_cursor: string | null }>(`/conversations${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+      if (historyEpoch.current !== currentEpoch || historyScope.current !== scope) return;
+      setConversations(current => cursor ? [...current, ...page.items.filter(item => !current.some(row => row.id === item.id))] : page.items);
+      setHistoryCursor(page.next_cursor);
     } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "对话加载失败");
+      if (historyEpoch.current === currentEpoch && historyScope.current === scope)
+        setHistoryError(error instanceof Error ? error.message : "对话加载失败");
     } finally {
-      setHistoryLoading(false);
+      if (historyEpoch.current === currentEpoch && historyScope.current === scope) setHistoryLoading(false);
     }
-  }, []);
+  }, [session.workspace_id, session.user.id]);
+  useEffect(() => {
+    if (!conversation) return;
+    setConversations(items => items.map(item => item.id === conversation.id ? { ...item,
+      title: conversation.title, title_source: conversation.title_source, revision: conversation.revision,
+      pinned_at: conversation.pinned_at, active_request_id: conversation.active_request_id,
+      updated_at: conversation.updated_at } : item));
+  }, [conversation?.id, conversation?.title, conversation?.revision, conversation?.active_request_id]);
+  const backgroundRequests = conversations.filter(item => item.active_request_id && item.id !== conversation?.id)
+    .map(item => item.id).sort().join(",");
+  useEffect(() => {
+    if (!backgroundRequests) return;
+    const controller = new AbortController();
+    const timer = setInterval(() => {
+      for (const id of backgroundRequests.split(",")) {
+        void request<Conversation>(`/conversations/${id}`, { signal: controller.signal }).then(item => {
+          if (controller.signal.aborted) return;
+          cache.current.set(item.id, item);
+          setConversations(items => items.map(row => row.id === id ? { ...row, ...item } : row));
+        }).catch(error => {
+          if (!controller.signal.aborted && error instanceof ApiError && [403, 404].includes(error.status)) {
+            cache.current.delete(id); setConversations(items => items.filter(row => row.id !== id));
+          }
+        });
+      }
+    }, 3000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [backgroundRequests, session.workspace_id]);
   const stopGeneration = useCallback(async () => {
     const active = generation.current;
     if (!active) return;
@@ -413,13 +493,13 @@ export function ChatWorkspace({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request_id: active.requestId }),
-    }).catch(() => {});
+    });
   }, []);
   useEffect(() => {
     void refreshList();
     return () => {
       epoch.current++;
-      void stopGeneration();
+      generation.current?.controller.abort();
     };
   }, [refreshList, stopGeneration]);
   useEffect(() => {
@@ -442,33 +522,48 @@ export function ChatWorkspace({
     setThinkingId(thinking?.default_option_id ?? "");
     setThinkingVersion(thinking?.version ?? 0);
   }, [modelId, thinking?.version, thinking?.default_option_id]);
-  useEffect(() => {
-    // Creating a conversation replaces the URL while its stream is already active.
-    if (conversationId && viewRef.current?.id === conversationId) return;
+  useLayoutEffect(() => {
+    // Swap the body before paint; a route change must never display another chat.
+    if (conversationId && viewRef.current?.id === conversationId && cacheScope.current === draftPrefix) return;
     const controller = new AbortController();
     const currentEpoch = ++epoch.current;
-    void stopGeneration();
+    saveDraft();
+    if (cacheScope.current !== draftPrefix) { cache.current.clear(); setConversations([]); cacheScope.current = draftPrefix; }
+    draftReady.current = false;
+    draftSending.current = false;
+    generation.current?.controller.abort();
     generation.current = null;
     sending.current = false;
     setAsking(false);
-    setQuestion("");
-    setDocumentMentions([]);
-    attachments.reset();
+    draftKey.current = draftPrefix + (conversationId ?? "new");
+    let draft: typeof liveDraft.current | null = null;
+    try { draft = JSON.parse(sessionStorage.getItem(draftKey.current) ?? "null"); } catch { /* Ignore malformed local drafts. */ }
+    setQuestion(typeof draft?.text === "string" ? draft.text : "");
+    setDocumentMentions(Array.isArray(draft?.mentions) ? draft.mentions : []);
+    attachments.restore(Array.isArray(draft?.attachments) ? draft.attachments : []);
+    draftReady.current = true;
     setPreview(null);
     setTrace(null);
     if (viewRef.current) {
       setScope(viewRef.current.knowledge_bases.map(item => item.id));
     }
-    setConversation(null);
+    const cached = conversationId ? cache.current.get(conversationId) : null;
+    setConversation(cached ?? null);
     setConversationError("");
-    follow.current = true;
-    setLoading(!!conversationId);
+    follow.current = !targetMessage && (draft?.follow ?? !draft);
+    const restoreScroll = draft?.scroll ?? 0;
+    pendingScroll.current = conversationId && !targetMessage ? { id: conversationId, top: restoreScroll } : null;
+    setLoading(!!conversationId && !cached);
+    setEditing(false); setRenameTarget(null);
     if (conversationId) void request<Conversation>(`/conversations/${encodeURIComponent(conversationId)}`, { signal: controller.signal })
       .then(item => {
-        if (!controller.signal.aborted && epoch.current === currentEpoch) setConversation(item);
+        if (!controller.signal.aborted && epoch.current === currentEpoch) {
+          cache.current.set(item.id, item); setConversation(item);
+        }
       })
       .catch(error => {
         if (!controller.signal.aborted && epoch.current === currentEpoch) {
+          cache.current.delete(conversationId!); setConversation(null);
           setConversationError(error instanceof Error ? error.message : "对话加载失败");
         }
       })
@@ -476,7 +571,24 @@ export function ChatWorkspace({
         if (!controller.signal.aborted && epoch.current === currentEpoch) setLoading(false);
       });
     return () => controller.abort();
-  }, [conversationId, reloadAttempt, stopGeneration]);
+  }, [conversationId, reloadAttempt, draftPrefix]);
+  useLayoutEffect(() => {
+    const position = pendingScroll.current;
+    const area = scrollArea.current;
+    if (!position || position.id !== conversation?.id || !area) return;
+    area.scrollTo({ top: position.top || (follow.current ? area.scrollHeight : 0), behavior: "instant" });
+    pendingScroll.current = null;
+  }, [conversation?.id, loading]);
+  useEffect(() => {
+    if (loading || !targetMessage || conversation?.id !== conversationId) return;
+    follow.current = false;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(`chat-message-${targetMessage}`);
+      if (target) { target.scrollIntoView({ block: "center", behavior: "instant" }); setHighlightedMessage(targetMessage); }
+    });
+    const timer = setTimeout(() => setHighlightedMessage(null), 4500);
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
+  }, [targetMessage, conversation?.id, conversationId, loading]);
   useEffect(() => {
     if (!modelOptions || loading || (conversationId && conversation?.id !== conversationId)) return;
     const target = conversationId ?? "new";
@@ -513,26 +625,50 @@ export function ChatWorkspace({
   useEffect(() => {
     if (!conversation?.active_request_id || asking) return;
     const id = conversation.id;
-    const timer = setInterval(() => {
+    const controller = new AbortController();
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    const reload = () => {
       request<Conversation>(`/conversations/${id}`)
         .then((item) => {
-          if (viewRef.current?.id === id && !generation.current)
+          if (!controller.signal.aborted && viewRef.current?.id === id && !generation.current)
             setConversation(item);
         })
-        .catch(() => {});
-    }, 1500);
-    return () => clearInterval(timer);
+        .catch(error => {
+          if (!controller.signal.aborted && viewRef.current?.id === id && error instanceof ApiError && [403, 404].includes(error.status)) {
+            cache.current.delete(id); setConversation(null); setConversationError(error.message);
+          }
+        });
+    };
+    void streamRequest(`/conversations/${id}/requests/${conversation.active_request_id}/events`, undefined, controller.signal, () => {
+      if (!pending) pending = setTimeout(() => { pending = undefined; reload(); }, 250);
+    }).catch(() => { if (!controller.signal.aborted) reload(); });
+    const timer = setInterval(reload, 1500);
+    return () => { controller.abort(); clearInterval(timer); if (pending) clearTimeout(pending); };
   }, [conversation?.id, conversation?.active_request_id, asking]);
+  useEffect(() => {
+    if (!conversation || conversation.title_source !== "temporary" || conversation.active_request_id
+        || !conversation.messages.some(item => item.role === "assistant" && item.status === "completed")
+        || (conversation.title_task_status && !["queued", "running"].includes(conversation.title_task_status))) return;
+    const controller = new AbortController();
+    let count = 0;
+    const timer = setInterval(() => {
+      if (++count > 30) { clearInterval(timer); return; }
+      void request<Conversation>(`/conversations/${conversation.id}`, { signal: controller.signal }).then(item => {
+        if (!controller.signal.aborted && viewRef.current?.id === item.id) {
+          setConversation(current => current && ({ ...current, title: item.title, revision: item.revision,
+            title_source: item.title_source, title_task_status: item.title_task_status }));
+          if (item.title_source !== "temporary") void refreshList();
+        }
+      }).catch(() => {});
+    }, 2000);
+    return () => { controller.abort(); clearInterval(timer); };
+  }, [conversation?.id, conversation?.title_source, conversation?.title_task_status, conversation?.active_request_id, asking, refreshList]);
 
-  function select(item: Conversation) {
-    setSidebar(false);
-    if (item.id !== conversationId)
-      router.push(`/?conversation=${encodeURIComponent(item.id)}`, { scroll: false });
-  }
   function newChat() {
+    saveDraft();
     setDraftExtensions(null);
     ++epoch.current;
-    void stopGeneration();
+    generation.current?.controller.abort();
     generation.current = null;
     sending.current = false;
     attachments.reset();
@@ -543,12 +679,16 @@ export function ChatWorkspace({
     setLoading(false);
     setQuestion("");
     setDocumentMentions([]);
+    draftKey.current = draftPrefix + "new";
+    liveDraft.current = { text: "", mentions: [], attachments: [], scroll: 0, follow: true };
+    try { sessionStorage.removeItem(draftKey.current); } catch { /* Optional persistence. */ }
     setAsking(false);
     setSidebar(false);
     setPreview(null);
     setTrace(null);
     follow.current = true;
     if (conversationId) router.push("/?chat=1", { scroll: false });
+    requestAnimationFrame(() => composerInput.current?.focus());
   }
   async function reloadCurrent(id: string, currentEpoch: number) {
     try {
@@ -565,8 +705,12 @@ export function ChatWorkspace({
   async function stop() {
     if (generation.current) {
       const active = generation.current;
-      await stopGeneration();
-      await reloadCurrent(active.conversationId, active.epoch);
+      try {
+        await stopGeneration();
+        await reloadCurrent(active.conversationId, active.epoch);
+      } catch (error) {
+        report(error);
+      }
     } else if (conversation?.active_request_id) {
       const id = conversation.id;
       try {
@@ -628,6 +772,9 @@ export function ChatWorkspace({
         if (epoch.current !== currentEpoch) return;
         setConversation(current);
         viewRef.current = current;
+        try { sessionStorage.setItem(draftPrefix + current.id, JSON.stringify(liveDraft.current)); } catch { /* Optional persistence. */ }
+        try { sessionStorage.removeItem(draftPrefix + "new"); } catch { /* Optional persistence. */ }
+        draftKey.current = draftPrefix + current.id;
         router.replace(`/?conversation=${encodeURIComponent(current.id)}`, {
           scroll: false,
         });
@@ -639,6 +786,7 @@ export function ChatWorkspace({
         epoch: currentEpoch,
       };
       generation.current = active;
+      draftSending.current = true;
       setQuestion("");
       follow.current = true;
       const pendingUser: Message = {
@@ -685,8 +833,17 @@ export function ChatWorkspace({
         },
         controller.signal,
         (name, data) => {
+          if (name === "submitted") {
+            received = true;
+            try { sessionStorage.removeItem(draftPrefix + current!.id); } catch { /* Optional persistence. */ }
+          }
           if (epoch.current !== currentEpoch || controller.signal.aborted)
             return;
+          if (name === "submitted") {
+            draftSending.current = false;
+            setDocumentMentions([]);
+            if (!retryId) attachments.reset(false);
+          }
           if (name === "phase")
             setPhase(
               (data as { phase: string }).phase === "planning"
@@ -714,6 +871,8 @@ export function ChatWorkspace({
           }
           if (name === "message" || name === "done") {
             received = true;
+            draftSending.current = false;
+            try { sessionStorage.removeItem(draftPrefix + current!.id); } catch { /* Optional persistence. */ }
             setDocumentMentions([]);
             if (!retryId) attachments.reset(false);
           }
@@ -770,7 +929,6 @@ export function ChatWorkspace({
         }
         report(error);
         if (!received && !retryId) { setQuestion(query); setDocumentMentions(turnDraftMentions); }
-        if (active) await stopGeneration();
       }
     } finally {
       if (epoch.current === currentEpoch) {
@@ -783,6 +941,7 @@ export function ChatWorkspace({
           }
         }
         generation.current = null;
+        draftSending.current = false;
         sending.current = false;
         setAsking(false);
         setPhase("");
@@ -830,23 +989,25 @@ export function ChatWorkspace({
       }
     }
   }
-  async function rename(event: FormEvent) {
-    event.preventDefault();
-    if (!conversation) return;
+  async function rename(event?: FormEvent) {
+    event?.preventDefault();
+    const target = renameTarget ?? conversation;
+    if (!target) return;
     setModalBusy(true);
     setModalError("");
     try {
       const updated = await request<Conversation>(
-        `/conversations/${conversation.id}`,
+        `/conversations/${target.id}`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: title.trim() }),
+          body: JSON.stringify({ title: title.trim(), revision: target.revision }),
         },
       );
       setConversation((item) =>
-        item ? { ...item, title: updated.title } : item,
+        item?.id === updated.id ? { ...item, ...updated } : item,
       );
+      cache.current.delete(target.id);
       setEditing(false);
       void refreshList();
     } catch (error) {
@@ -855,12 +1016,25 @@ export function ChatWorkspace({
       setModalBusy(false);
     }
   }
+  async function pin(item: HistoryItem) {
+    try {
+      const updated = await request<Conversation>(`/conversations/${item.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinned: !item.pinned_at, revision: item.revision }),
+      });
+      cache.current.delete(item.id);
+      setConversation(current => current?.id === item.id ? { ...current, ...updated } : current);
+      void refreshList();
+    } catch (error) { report(error); }
+  }
   async function remove() {
     if (!deleting) return;
     setModalBusy(true);
     setModalError("");
     try {
       await request(`/conversations/${deleting.id}`, { method: "DELETE" });
+      cache.current.delete(deleting.id);
+      try { sessionStorage.removeItem(draftPrefix + deleting.id); } catch { /* Optional persistence. */ }
       if (conversation?.id === deleting.id) newChat();
       setDeleting(null);
       void refreshList();
@@ -868,26 +1042,6 @@ export function ChatWorkspace({
       setModalError(error instanceof Error ? error.message : "删除失败");
     } finally {
       setModalBusy(false);
-    }
-  }
-  async function download() {
-    if (!conversation) return;
-    try {
-      const response = await fetch(
-        `${API_URL}/conversations/${conversation.id}/export`,
-        { credentials: "include" },
-      );
-      if (!response.ok) throw new Error("导出失败，请重试");
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${conversation.title.replace(/[<>:"/\\|?*]/g, "_") || "对话"}.md`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      report(error);
     }
   }
   async function copy(text: string) {
@@ -899,9 +1053,6 @@ export function ChatWorkspace({
     }
   }
   const running = asking || !!conversation?.active_request_id;
-  const visibleHistory = conversations.filter((item) =>
-    item.title.toLowerCase().includes(search.toLowerCase()),
-  );
   return (
     <>
       <WorkspaceNavigation>
@@ -909,88 +1060,18 @@ export function ChatWorkspace({
           <Plus size={16} />
           新建对话
         </button>
-        <label className="search-field history-search">
-          <Search size={15} />
-          <input
-            aria-label="搜索对话"
-            placeholder="搜索对话"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-        </label>
-        <div className="history-heading">历史对话</div>
-        <nav className="conversation-list" aria-label="历史对话">
-          {visibleHistory.map((item) => (
-            <div
-              className={`conversation-item ${conversation?.id === item.id ? "selected" : ""}`}
-              key={item.id}
-            >
-              <button
-                onClick={() => void select(item)}
-                aria-current={conversation?.id === item.id ? "page" : undefined}
-                title={item.title}
-              >
-                <MessageSquare size={15} />
-                <span>{item.title}</span>
-              </button>
-              <button
-                className="icon-button"
-                title="删除对话"
-                aria-label={`删除对话 ${item.title}`}
-                onClick={() => {
-                  setDeleting(item);
-                  setModalError("");
-                }}
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-          {historyLoading && <p className="sidebar-empty">正在加载…</p>}
-          {historyError && (
-            <div className="history-error" role="alert">
-              {historyError}
-              <button
-                className="icon-button"
-                title="重新加载对话"
-                aria-label="重新加载对话"
-                onClick={() => void refreshList()}
-              >
-                <RefreshCw size={15} />
-              </button>
-            </div>
-          )}
-          {!historyLoading && !historyError && !visibleHistory.length && (
-            <p className="sidebar-empty">
-              {search ? "没有匹配的对话" : "暂无对话"}
-            </p>
-          )}
-        </nav>
+        <ConversationHistory items={conversations} selected={conversationId ?? undefined} libraries={libraries}
+          onSelect={(id, message) => { saveDraft(); setSidebar(false); router.push(`/?conversation=${encodeURIComponent(id)}${message ? `&message=${encodeURIComponent(message)}` : ""}`, { scroll: false }); }}
+          onRename={item => { setRenameTarget(item); setTitle(item.title); setEditing(true); setModalError(""); }}
+          onDelete={item => { setDeleting(conversations.find(value => value.id === item.id) ?? null); setModalError(""); }}
+          onPin={item => void pin(item)} cursor={historyCursor} onMore={() => void refreshList(historyCursor)}
+          busy={historyLoading} error={historyError} retry={() => void refreshList()} />
       </WorkspaceNavigation>
-        <WorkspaceHeader title={conversation?.title || conversations.find(item => item.id === conversationId)?.title || (conversationId ? "知识问答" : "新对话")} actions={conversation && (
-            <>
-              <button
-                className="icon-button"
-                title="重命名对话"
-                aria-label="重命名对话"
-                onClick={() => {
-                  setTitle(conversation.title);
-                  setEditing(true);
-                  setModalError("");
-                }}
-              >
-                <Pencil size={16} />
-              </button>
-              <button
-                className="icon-button"
-                title="导出 Markdown"
-                aria-label="导出对话"
-                onClick={() => void download()}
-              >
-                <Download size={17} />
-              </button>
-            </>
-          )} />
+      <WorkspaceHeader title={conversation?.title || "新对话"} titleContent={conversation && (!renameTarget || renameTarget.id === conversation.id) ? (
+        <InlineConversationTitle title={conversation.title} busy={modalBusy} error={modalError} value={title}
+          editing={editing} onStart={() => { setRenameTarget(conversation); setTitle(conversation.title); setEditing(true); setModalError(""); }}
+          onChange={setTitle} onSave={() => void rename()} onCancel={() => { setEditing(false); setRenameTarget(null); }} />
+      ) : undefined} />
       <div className="chat-main">
         {conversationError && <div className="workspace-request-error" role="alert">
           <CircleAlert size={16} /><span>{conversationError}</span>
@@ -1071,7 +1152,8 @@ export function ChatWorkspace({
               {conversation.messages.map((message, index) => (
                 <Fragment key={message.id}>
                 <article
-                  className={`chat-message ${message.role}`}
+                  id={`chat-message-${message.id}`}
+                  className={`chat-message ${message.role}${highlightedMessage === message.id ? " message-search-target" : ""}`}
                   aria-label={message.role === "user" ? "你的问题" : "知库回答"}
                 >
                   <span className="message-label">
@@ -1482,7 +1564,7 @@ export function ChatWorkspace({
           />
         </Modal>
       )}
-      {editing && (
+      {editing && renameTarget?.id !== conversation?.id && (
         <Modal
           title="重命名对话"
           busy={modalBusy}

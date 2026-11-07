@@ -125,9 +125,9 @@ export async function streamRequest(
   signal: AbortSignal,
   onEvent: (name: string, data: unknown) => void,
 ) {
-  const response = await fetch(`${API_URL}${path}`, {
+  let response = await fetch(`${API_URL}${path}`, {
     credentials: "include",
-    method: "POST",
+    method: body === undefined ? "GET" : "POST",
     headers: sessionHeaders({
       headers: { "Content-Type": "application/json" },
     }),
@@ -142,13 +142,22 @@ export async function streamRequest(
       errorMessage(error.detail, response.status),
     );
   }
-  if (!response.body) throw new Error("浏览器未提供回答数据流");
+  let eventPath = body === undefined ? path : "";
+  if (response.headers.get("content-type")?.includes("application/json")) {
+    const task = await response.json() as { request_id: string };
+    onEvent("submitted", task);
+    eventPath = `${path.replace(/\/(messages|compact)$/, "")}/requests/${encodeURIComponent(task.request_id)}/events`;
+    response = await fetch(`${API_URL}${eventPath}`, { credentials: "include", headers: sessionHeaders(), signal });
+  }
+  if (!response.ok || !response.body) throw new Error("连接暂时不可用，回答会继续处理，请重新打开对话");
   let done = false;
+  let after = 0;
   const eventIds = new Set<string>();
   const parser = createParser({
     onEvent(event) {
       if (event.id && eventIds.has(event.id)) return;
       if (event.id) eventIds.add(event.id);
+      if (event.id) after = Number(event.id.split(":").at(-1)) || after;
       const data: unknown = JSON.parse(event.data);
       if (event.event === "done") done = true;
       onEvent(event.event || "message", data);
@@ -157,18 +166,27 @@ export async function streamRequest(
       throw error;
     },
   });
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  try {
-    while (true) {
-      const { value, done: ended } = await reader.read();
-      if (ended) break;
-      parser.feed(decoder.decode(value, { stream: true }));
+  for (let attempt = 0; !done; attempt++) {
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done: ended } = await reader.read();
+        if (ended) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+      parser.feed(decoder.decode());
+    } catch (error) {
+      if (signal.aborted || !eventPath || attempt >= 3) throw error;
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
     }
-    parser.feed(decoder.decode());
-    if (!done && !signal.aborted) throw new Error("回答连接已中断，可以重试");
-  } finally {
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    if (done || signal.aborted) return;
+    if (!eventPath || attempt >= 3) throw new Error("连接已中断，回答会继续处理，请重新打开对话");
+    parser.reset();
+    await new Promise(resolve => setTimeout(resolve, 600 * (attempt + 1)));
+    response = await fetch(`${API_URL}${eventPath}?after=${after}`, { credentials: "include", headers: sessionHeaders(), signal });
+    if (!response.ok || !response.body) throw new Error("无法恢复连接，请重新打开对话");
   }
 }

@@ -106,6 +106,15 @@ export function Dialog({
           }}
           onEscapeKeyDown={(event) => {
             if (busy) event.preventDefault();
+            else {
+              const active = document.activeElement;
+              const details = active instanceof HTMLElement ? active.closest("details[open]") : null;
+              if (details instanceof HTMLDetailsElement) {
+                event.preventDefault();
+                details.open = false;
+                details.querySelector("summary")?.focus();
+              }
+            }
           }}
           onPointerDownOutside={(event) => {
             if (busy) event.preventDefault();

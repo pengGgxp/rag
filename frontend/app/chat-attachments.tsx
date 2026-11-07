@@ -96,7 +96,16 @@ export function useChatAttachments() {
     const next: DraftAttachment = { key: crypto.randomUUID(), file, attachment, status: "ready", existing: true };
     current.current = [...current.current, next]; setItems(current.current);
   }
-  return { items, add, selectResource, remove, retry: upload, reset,
+  function restore(references: ChatAttachment[]) {
+    reset(false);
+    const restored = references.filter(item => item.resource_id && item.available !== false).slice(0, 6).map(attachment => {
+      const file = new File([], attachment.filename, { type: attachment.content_type });
+      Object.defineProperty(file, "size", { value: attachment.size_bytes });
+      return { key: crypto.randomUUID(), file, attachment, status: "ready" as const, existing: true };
+    });
+    current.current = restored; setItems(restored);
+  }
+  return { items, add, selectResource, remove, retry: upload, reset, restore,
     ready: items.flatMap(item => item.attachment ? [item.attachment] : []),
     blocked: items.some(item => item.status !== "ready"),
     hasImages: items.some(item => imageFile(item.file)) };

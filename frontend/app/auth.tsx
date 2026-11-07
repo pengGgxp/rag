@@ -422,6 +422,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   }, [accept]);
   const logout = useCallback(() => {
     void request("/auth/logout", { method: "POST" }).then(() => {
+      window.dispatchEvent(new Event("rag-session-ended"));
       void clearPreviewCache();
       accept(null);
       setMode("login");
