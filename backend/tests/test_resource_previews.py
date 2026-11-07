@@ -42,6 +42,43 @@ def resource(db, client, storage, path="photo.png", data=None):
     return row, identity
 
 
+def test_image_direct_links_are_scoped_short_lived_and_not_fake_transfers(accounts, store, monkeypatch):
+    (owner, stranger, member), db = accounts
+    row, identity = resource(db, owner, store)
+    register(stranger, "stranger@example.com"); register(member, "member@example.com")
+    share(owner, "member@example.com", "viewer"); switch(member, identity["workspace_id"])
+    signed = []
+    def sign(key, seconds=3600):
+        signed.append((key, seconds))
+        return f"https://test.oss.example/{key}?expires={seconds}"
+    monkeypatch.setattr(store, "read_url", sign, raising=False)
+    path = f"/resources/{row.id}/image-preview-link"
+    assert stranger.post(path, json={}).status_code == 404
+    queued = owner.post(path, json={}).json()
+    assert queued["status"] == "queued" and queued["url"] is None and not signed
+    preview.run(queued["id"], sessionmaker(bind=db.get_bind(), expire_on_commit=False))
+    thumb = member.post(path, json={}).json()
+    assert thumb["status"] == "ready" and thumb["expires_in"] == 300
+    assert signed[-1][0].startswith(preview.PREFIX)
+    original_key = preview.object_key(row.workspace_id, row.path)
+    assert all(key != original_key for key, _ in signed)
+    original = member.post(path, json={"original": True, "revision": thumb["revision"]}).json()
+    assert original["expires_in"] == 90 and signed[-1] == (original_key, 90)
+    assert not list(db.scalars(select(StorageTransfer)))
+    del store.objects[signed[0][0]]
+    assert owner.post(path, json={}).json()["status"] == "queued"
+    store.objects[original_key] = b"updated"
+    assert member.post(path, json={"original": True, "revision": thumb["revision"]}).status_code == 409
+    row.deleted_at = auth.now(); db.commit()
+    assert owner.post(path, json={}).status_code == 404
+
+
+def test_image_direct_link_rejects_documents(accounts, store):
+    (owner, _, _), db = accounts
+    row, _ = resource(db, owner, store, "report.docx", b"word")
+    assert owner.post(f"/resources/{row.id}/image-preview-link", json={"original": True}).status_code == 415
+
+
 def test_preview_generation_dedup_range_billing_and_no_storage_charge(accounts, store):
     (client, _, _), db = accounts
     row, _ = resource(db, client, store)

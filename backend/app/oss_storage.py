@@ -124,8 +124,8 @@ class OssStorage:
         except Exception:
             raise HTTPException(503, "上传链接生成失败，请稍后重试") from None
 
-    def read_url(self, key):
-        return self._presign(oss.GetObjectRequest(bucket=self.bucket, key=key), 3600)
+    def read_url(self, key, seconds=3600):
+        return self._presign(oss.GetObjectRequest(bucket=self.bucket, key=key), seconds)
 
     def iter_objects(self, prefix=None):
         token = None

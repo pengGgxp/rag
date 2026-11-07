@@ -90,6 +90,39 @@ class Prepare(BaseModel):
     retry: bool = False
 
 
+class ImageLink(BaseModel):
+    original: bool = False
+    revision: str | None = None
+    retry: bool = False
+
+
+@router.post("/{identifier}/image-preview-link")
+def image_link(identifier: UUID, payload: ImageLink, db=Depends(get_db), access: Access=Depends(get_access)):
+    row, storage, revision = current(db, access, identifier)
+    if row.content_type not in {"image/png", "image/jpeg", "image/webp"}:
+        raise HTTPException(415, "此文件暂不支持图片预览")
+    if payload.revision and payload.revision != revision:
+        raise HTTPException(409, "图片已更新，请重新打开预览")
+    if payload.original:
+        return {"status": "ready", "revision": revision, "expires_in": 90,
+            "url": storage.read_url(object_key(row.workspace_id, row.path), seconds=90)}
+    item = db.scalar(select(ResourcePreview).where(ResourcePreview.resource_id == row.id,
+        ResourcePreview.revision == revision, ResourcePreview.kind == "thumbnail"))
+    if item and item.status == "ready" and not storage.head(item.object_key):
+        item.status, item.object_key, item.size_bytes = "expired", None, 0
+        db.commit()
+    if not item or item.status == "expired" or (item.status == "failed" and payload.retry):
+        prepare(identifier, Prepare(kind="thumbnail", retry=True), db, access)
+        item = db.scalar(select(ResourcePreview).where(ResourcePreview.resource_id == row.id,
+            ResourcePreview.revision == revision, ResourcePreview.kind == "thumbnail"))
+    result = {**describe(item), "revision": revision, "url": None}
+    if item.status == "ready":
+        item.accessed_at = now()
+        db.commit()
+        result.update(url=storage.read_url(item.object_key, seconds=300), expires_in=300)
+    return result
+
+
 def dispatch(identifier):
     from .tasks import render_resource_preview
     try:
