@@ -25,6 +25,9 @@ class ImageConfig(BaseModel):
     max_references: int = Field(default=1, ge=1, le=8, strict=True)
     default_size: str = "1024x1024"
     default_quality: str = "standard"
+    preset_id: str | None = Field(default=None, max_length=100)
+    preset_revision: int | None = Field(default=None, ge=1, strict=True)
+    defaults: dict[Literal["generate", "edit"], "ImageDefault"] = Field(default_factory=dict)
     specs: list[ImageSpec] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
@@ -35,8 +38,24 @@ class ImageConfig(BaseModel):
         if len(keys) != len(set(keys)):
             raise ValueError("图片规格重复")
         for operation, enabled in (("generate", self.generate), ("edit", self.edit)):
-            if enabled and (operation, self.default_size, self.default_quality) not in keys:
+            size, quality = self.default_for(operation)
+            if enabled and (operation, size, quality) not in keys:
                 raise ValueError("请为每项启用能力配置默认规格及价格，免费须明确填写 0")
         if self.protocol in ("responses", "gemini") and self.max_count != 1:
             raise ValueError("原生图片任务每次生成一张图片")
+        from .image_presets import validate
+        validate(self)
         return self
+
+    def default_for(self, operation):
+        choice = self.defaults.get(operation)
+        return (choice.size, choice.quality) if choice else (self.default_size, self.default_quality)
+
+
+class ImageDefault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    size: str = Field(min_length=1, max_length=40)
+    quality: str = Field(min_length=1, max_length=40)
+
+
+ImageConfig.model_rebuild()

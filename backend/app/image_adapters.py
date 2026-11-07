@@ -98,8 +98,10 @@ def generate(snapshot, secret, payload, references):
         url = f"{root}/models/{quote(model.removeprefix('models/'), safe='')}:generateContent"
         headers = {"x-goog-api-key": secret}
         parts = [{"text": payload["prompt"]}] + [{"inlineData": {"mimeType": mime, "data": base64.b64encode(raw).decode()}} for raw, mime in references]
+        from .image_presets import resolution_options
         parameters = {"contents": [{"role": "user", "parts": parts}], "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"], "imageConfig": {"aspectRatio": payload["size"], "imageSize": payload["quality"]}}}
+            "responseModalities": ["TEXT", "IMAGE"], "imageConfig": {
+                "aspectRatio": payload["size"], **resolution_options(snapshot, payload["quality"])}}}
     request_id = ""
     try:
         with httpx.stream("POST", url, headers=headers, json=parameters, data=data, files=files,

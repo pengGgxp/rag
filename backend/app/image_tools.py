@@ -30,7 +30,7 @@ def tools(db, access):
                 "items": {"type": "object", "properties": {"id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}},
                           "required": ["id", "version"], "additionalProperties": False}}
         result.append({"type": "function", "function": {"name": name,
-            "description": "Generate/edit images only when explicitly requested by the user. This charges credits. Return task progress, never claim completion before completed. Use defaults when unspecified; valid specifications: " + json.dumps([
+            "description": "Generate/edit images only when explicitly requested by the user. This charges credits. Return task progress, never claim completion before completed. Omit size/quality to use defaults " + json.dumps(dict(zip(("size", "quality"), config.default_for(operation)))) + ". For Gemini size means aspect ratio and quality means resolution. Valid specifications: " + json.dumps([
                 {"size": s.size, "quality": s.quality, "credits_per_image": str(s.credits_per_image)} for s in specs]),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt", *(["references"] if operation == "edit" else [])], "additionalProperties": False}}})
     if result:

@@ -100,6 +100,12 @@ def model_presets(actor=Depends(site_admin)):
         for model in ("deepseek-flash", "deepseek-v4-pro")]
 
 
+@router.get("/image-presets")
+def image_presets(actor=Depends(site_admin)):
+    from .image_presets import catalog
+    return catalog()
+
+
 @router.get("")
 def list_connections(db=Depends(get_db), actor=Depends(site_admin)):
     return [read_connection(db, row) for row in db.scalars(select(ModelConnection).order_by(ModelConnection.created_at))]

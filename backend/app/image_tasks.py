@@ -132,7 +132,8 @@ def create(db, access, payload, key):
     model, connection, config = selected_model(db, payload.operation)
     if payload.count > config.max_count or len(payload.references) > config.max_references:
         raise HTTPException(422, "图片张数或参考图数量超出当前模型限制")
-    size, quality = payload.size or config.default_size, payload.quality or config.default_quality
+    default_size, default_quality = config.default_for(payload.operation)
+    size, quality = payload.size or default_size, payload.quality or default_quality
     spec = next((s for s in config.specs if (s.operation, s.size, s.quality) == (payload.operation, size, quality)), None)
     if spec is None:
         raise HTTPException(422, "当前图片规格不可用，请选择已配置的尺寸与质量")
@@ -153,6 +154,11 @@ def create(db, access, payload, key):
         "connection_version": connection.version, "base_url": connection.base_url, "timeout": connection.timeout_seconds,
         "protocol": config.protocol, "image_model": config.image_model, "rate": str(rate), "cost_per_image": str(spec.cost_per_image) if spec.cost_per_image is not None else None,
         "billing_context": context, "spec": spec.model_dump(mode="json")}
+    from .image_presets import find
+    preset = find(config.preset_id)
+    snapshot["omit_resolution"] = bool(preset and preset["omit_resolution"])
+    snapshot["preset_id"] = config.preset_id
+    snapshot["preset_revision"] = config.preset_revision
     row = ImageTask(id=identifier, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         model_id=model.id, session_hash=access.session_hash, idempotency_key=key, content_hash=digest,
         status="queued", payload={**payload.model_dump(mode="json"), "size": size, "quality": quality},
