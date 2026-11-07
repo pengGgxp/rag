@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     workspace_file_retention_days: int = Field(default=3, ge=1, le=30)
     workspace_file_quota_mb: int = Field(default=500, ge=50, le=5000)
 
+    preview_cache_max_bytes: int = Field(default=5 * 1024**3, ge=1024**2)
+    preview_cache_idle_seconds: int = Field(default=7 * 86400, ge=60)
+
     @property
     def oidc_configured(self) -> bool:
         return bool(self.oidc_metadata_url and self.oidc_client_id and self.oidc_client_secret

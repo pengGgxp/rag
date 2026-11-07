@@ -43,6 +43,18 @@ def run_cloud_command(identifier):
 
 
 @celery_app.task
+def render_resource_preview(identifier):
+    from .resource_previews import run
+    run(identifier)
+
+
+@celery_app.task
+def maintain_resource_previews():
+    from .resource_previews import maintain
+    maintain()
+
+
+@celery_app.task
 def process_image_task(identifier):
     from .image_tasks import run
     run(identifier)

@@ -4,7 +4,7 @@ from enum import Enum
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func, text
+from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1029,6 +1029,25 @@ class CloudComputerSettings(Base):
     enabled: Mapped[bool] = mapped_column(default=False)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ResourcePreview(Base):
+    __tablename__ = "resource_previews"
+    __table_args__ = (UniqueConstraint("resource_id", "revision", "kind", name="uq_resource_preview_content"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    resource_id: Mapped[UUID] = mapped_column(ForeignKey("workspace_files.id"), index=True)
+    revision: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20))
+    object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CloudComputerSession(Base):

@@ -132,18 +132,30 @@ async def lifespan(_: FastAPI):
                 logging.getLogger(__name__).warning("Cloud computer maintenance deferred")
             await asyncio.sleep(15)
     computer_recovery = asyncio.create_task(cloud_maintenance())
+    async def preview_maintenance():
+        from .tasks import maintain_resource_previews
+        while True:
+            try:
+                await asyncio.to_thread(maintain_resource_previews.apply_async, queue="previews", expires=120)
+            except Exception:
+                logging.getLogger(__name__).warning("Resource preview recovery deferred")
+            await asyncio.sleep(60)
+    preview_recovery = asyncio.create_task(preview_maintenance())
     try:
         yield
     finally:
         retention.cancel()
         document_recovery.cancel()
         computer_recovery.cancel()
+        preview_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await retention
         with suppress(asyncio.CancelledError):
             await document_recovery
         with suppress(asyncio.CancelledError):
             await computer_recovery
+        with suppress(asyncio.CancelledError):
+            await preview_recovery
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
@@ -1079,6 +1091,8 @@ app.include_router(search_settings_router)
 app.include_router(workspace_files_router)
 from .resources import router as resources_router
 app.include_router(resources_router)
+from .resource_previews import router as resource_previews_router
+app.include_router(resource_previews_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(payment_settings_router)

@@ -63,7 +63,7 @@ class OssStorage:
         result = self._request("head_object", oss.HeadObjectRequest(bucket=self.bucket, key=key))
         return None if result is None else {"Content-Length": result.content_length,
             "Content-Type": result.content_type, "ETag": result.etag,
-            "CRC64": result.hash_crc64}
+            "CRC64": result.hash_crc64, "Last-Modified": str(result.last_modified)}
 
     def delete(self, key):
         self._request("delete_object", oss.DeleteObjectRequest(bucket=self.bucket, key=key))
