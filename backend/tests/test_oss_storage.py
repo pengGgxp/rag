@@ -219,6 +219,9 @@ def test_sdk_signatures_bind_key_part_size_and_expiry():
     assert options["expires"].total_seconds() == 900
     adapter.read_url("private/file")
     assert isinstance(calls[1][0], oss.GetObjectRequest) and calls[1][1]["expires"].total_seconds() == 3600
+    adapter.read_url("private/file", seconds=90, inline=True)
+    assert calls[2][0].response_content_disposition == "inline"
+    assert calls[2][1]["expires"].total_seconds() == 90
 
 
 def test_sdk_real_presigning_has_no_network_and_signed_upload_parameters(admin):

@@ -48,7 +48,8 @@ def test_image_direct_links_are_scoped_short_lived_and_not_fake_transfers(accoun
     register(stranger, "stranger@example.com"); register(member, "member@example.com")
     share(owner, "member@example.com", "viewer"); switch(member, identity["workspace_id"])
     signed = []
-    def sign(key, seconds=3600):
+    def sign(key, seconds=3600, inline=False):
+        assert inline
         signed.append((key, seconds))
         return f"https://test.oss.example/{key}?expires={seconds}"
     monkeypatch.setattr(store, "read_url", sign, raising=False)

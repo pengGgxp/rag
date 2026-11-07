@@ -105,7 +105,7 @@ def image_link(identifier: UUID, payload: ImageLink, db=Depends(get_db), access:
         raise HTTPException(409, "图片已更新，请重新打开预览")
     if payload.original:
         return {"status": "ready", "revision": revision, "expires_in": 90,
-            "url": storage.read_url(object_key(row.workspace_id, row.path), seconds=90)}
+            "url": storage.read_url(object_key(row.workspace_id, row.path), seconds=90, inline=True)}
     item = db.scalar(select(ResourcePreview).where(ResourcePreview.resource_id == row.id,
         ResourcePreview.revision == revision, ResourcePreview.kind == "thumbnail"))
     if item and item.status == "ready" and not storage.head(item.object_key):
@@ -119,7 +119,7 @@ def image_link(identifier: UUID, payload: ImageLink, db=Depends(get_db), access:
     if item.status == "ready":
         item.accessed_at = now()
         db.commit()
-        result.update(url=storage.read_url(item.object_key, seconds=300), expires_in=300)
+        result.update(url=storage.read_url(item.object_key, seconds=300, inline=True), expires_in=300)
     return result
 
 

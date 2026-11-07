@@ -85,9 +85,10 @@ class CosStorage:
         except Exception:
             raise HTTPException(503, "上传链接生成失败，请稍后重试") from None
 
-    def read_url(self, key, seconds=3600):
+    def read_url(self, key, seconds=3600, inline=False):
         try:
-            return self.sdk.get_presigned_url(Bucket=self.bucket, Key=key, Method="GET", Expired=seconds)
+            return self.sdk.get_presigned_url(Bucket=self.bucket, Key=key, Method="GET", Expired=seconds,
+                **({"Params": {"response-content-disposition": "inline"}} if inline else {}))
         except Exception:
             raise HTTPException(503, "文件读取链接生成失败，请稍后重试") from None
 
