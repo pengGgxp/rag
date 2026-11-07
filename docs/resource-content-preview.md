@@ -1,6 +1,6 @@
 # 资源库内容预览
 
-任务范围与验收记录见 `tasks/resource-content-preview.md`。本次完成本地开发，尚未部署线上。
+任务范围与验收记录见 `tasks/resource-content-preview.md`。2026-11-07 已完成线上部署与隔离账号验收。
 
 ## 用户流程
 
@@ -39,3 +39,13 @@
 镜像包含 LibreOffice Writer、Noto 中文字体、Pillow 和固定版本 PDFium。每次转换使用独立目录和清空的环境变量，Linux 下以非特权 UID 运行，Landlock 只允许读取系统库、字体及必要的 Office 配置，只有本次目录可写；seccomp 拒绝 IPv4/IPv6 socket。禁用宏和链接更新，并限制 CPU、地址空间、文件尺寸、打开文件数及进程时间。Office IPC 仅使用本次临时目录，镜像 `/tmp`、`/var/tmp` 不向转换 UID 开放写入。
 
 预览 Worker 所在内核须支持 Landlock；不可用时拒绝转换，不降低隔离运行。Word 单文件上限 50 MiB，其他源文件 200 MiB，图片解码上限 4000 万像素。加密、损坏、超限或不支持的文件返回下载/重试提示。Word 的精确字体和分页仍取决于模板字体与 LibreOffice 的格式兼容能力，不修改原文档。
+
+## 当前线上发布
+
+发布目录 `/root/rag-releases/resource-preview-20261107` 保存数据库自定义格式备份、源码及配置备份、迁移前后账务核对、候选构建与验收日志。部署代码对应 `8e47173`，数据库为 `0061_resource_previews`。原 API/Web 镜像保留 `before-resource-preview` 标签。
+
+生产 Compose 延续此前 HTTP 网页预览配置，并最后叠加 `/data1/rag-platform/docker-compose.resource-preview.yml`。完整文件顺序为 `docker-compose.yml`、`docker-compose.override.yml`、`docker-compose.deploy.yml`、`/data1/releases/http-preview-20261106/output/http-preview-compose.yml`、`docker-compose.resource-preview.yml`，项目名为 `rag-platform`。该覆盖显式传入专用 Worker 的数据库、Redis、加密密钥和站点地址，避免跨文件 extends 丢失连接环境；不得输出解析后的完整配置以免暴露凭据。
+
+专用 Worker 并发为 1，容器内存 512 MiB、内存加 Swap 上限 768 MiB、进程数上限 128；实际中文 Word 转换已在这些限制下通过。镜像标签分别为 `rag-platform-api:resource-preview-20261107`、`rag-platform-web:resource-preview-20261107` 和 `rag-preview-worker:resource-preview-20261107`。现有云电脑 HTTP 网关同时更新到相同 API 镜像。
+
+回退时停止专用预览 Worker，将 API、普通 Worker、HTTP 网关与 Web 恢复之前的镜像，并移除本次 Compose 覆盖。新增预览缓存表可保留，不能为了代码回退恢复整库而丢失上线后的用户数据。OSS 原文件未搬迁，本次不删除任何用户对象。数据盘发布后剩余约 1.5 GiB；镜像与备份均保留，后续发布前应核对磁盘空间。
