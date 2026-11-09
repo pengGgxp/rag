@@ -71,16 +71,22 @@ def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
 
 
 def imported_files(entries: list[tuple[str, bytes]]) -> tuple[dict[str, bytes], str | None]:
-    paths = [safe_path(path) for path, _ in entries]
+    entries = [(safe_path(path), content) for path, content in entries]
+    paths = [path for path, _ in entries]
     if len(paths) != len(set(path.casefold() for path in paths)):
         raise HTTPException(422, "Skill 存在重复文件路径")
-    folder = None
-    if "SKILL.md" not in paths:
-        roots = {path.split("/")[0] for path in paths}
-        if len(roots) != 1 or not paths or f"{paths[0].split('/')[0]}/SKILL.md" not in paths:
-            raise HTTPException(422, "请选择一个 Skill 目录，其中必须包含 SKILL.md")
-        folder = paths[0].split("/")[0]
-        entries = [(path[len(folder) + 1:], content) for path, content in entries]
+    skill_roots = {
+        path.removesuffix("SKILL.md").rstrip("/") for path in paths
+        if path == "SKILL.md" or path.endswith("/SKILL.md")
+    }
+    if not skill_roots:
+        raise HTTPException(422, "请选择包含 SKILL.md 的 Skill 文件夹或压缩包，或选择其上级目录")
+    if len(skill_roots) != 1:
+        raise HTTPException(422, "检测到多个 Skill 根目录；请选择包含所需 SKILL.md 的文件夹或压缩包")
+    root = skill_roots.pop()
+    prefix = f"{root}/" if root else ""
+    entries = [(path.removeprefix(prefix), content) for path, content in entries if path.startswith(prefix)]
+    folder = root.rsplit("/", 1)[-1] if root else None
     return validate_files(dict(entries)), folder
 
 
