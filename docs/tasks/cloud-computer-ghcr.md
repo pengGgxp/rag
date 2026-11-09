@@ -19,3 +19,11 @@ Do not commit credentials. Supported disk sizes per the ticket are 512, 10240
 and 15360 MB; choose sufficient space for the unpacked image plus working data.
 The package remains private unless explicitly changed; latest is a convenience
 tag, not an immutable deployment reference.
+
+## Build attempt: 2026-11-09
+Commit b31f185 was pushed to codex/resource-library. Actions run 42553789035
+was rejected before any runner steps started: GitHub reported failed account
+payments or an insufficient spending limit. No image was built or published,
+and no cloud template was created or changed. Local Docker Desktop also has
+no running Linux engine. Resolve GitHub Billing and plans, then rerun the job;
+manifest, installed-tool and cloud-startup acceptance remain pending.
