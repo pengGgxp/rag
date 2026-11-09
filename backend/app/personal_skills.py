@@ -117,9 +117,10 @@ async def importing_folder(files: list[UploadFile] = File(...), paths: list[str]
         if len(data) > skill_files.MAX_FILE_BYTES or total > skill_files.MAX_BUNDLE_BYTES:
             raise HTTPException(413, "Skill 文件超过大小限制")
         entries.append((path, data))
-    contents, _ = skill_files.imported_files(entries)
-    packed = skill_files.export_zip("skill", contents)
-    return await importing(UploadFile(filename="skill.zip", file=BytesIO(packed)), access)
+    contents, folder = skill_files.imported_files(entries)
+    name = folder or "skill"
+    packed = skill_files.export_zip(name, contents)
+    return await importing(UploadFile(filename=f"{name}.zip", file=BytesIO(packed)), access)
 
 
 @router.post("/review")

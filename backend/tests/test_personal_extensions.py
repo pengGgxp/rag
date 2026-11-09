@@ -92,6 +92,17 @@ def test_folder_import_is_draft_and_does_not_publish(accounts, monkeypatch):
     assert admin.get("/agent/skills").json() == []
 
 
+def test_folder_import_discovers_nested_skill_root(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    response = admin.post("/agent/skills/import-folder", files=[
+        ("files", ("SKILL.md", b"Instructions")), ("files", ("guide.txt", b"Guide"))],
+        data={"paths": ["project/skills/report/SKILL.md", "project/skills/report/guide.txt"]})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft["name"] == "report"
+    assert draft["files"][0]["path"] == "guide.txt"
+
+
 def test_same_user_other_workspace_cannot_read_select_or_execute(accounts, monkeypatch):
     from dataclasses import replace
     admin, db, _ = setup_site(accounts, monkeypatch)

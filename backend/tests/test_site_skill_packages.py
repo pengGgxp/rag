@@ -49,7 +49,7 @@ def test_package_import_review_require_site_administrator(accounts, monkeypatch)
         assert client.post("/site/admin/skills/review", json={"markdown": "# Test", "files": []}).status_code == status
 
 
-@pytest.mark.parametrize("root", ["", "report/"])
+@pytest.mark.parametrize("root", ["", "report/", "projects/report/"])
 def test_import_package_preserves_review_and_atomic_resources(accounts, monkeypatch, root):
     admin, db, _ = setup_site(accounts, monkeypatch)
     response = import_package(admin, root=root)
@@ -96,6 +96,17 @@ def test_archive_paths_rejected(accounts, monkeypatch, path):
     admin, _, _ = setup_site(accounts, monkeypatch)
     response = import_package(admin, {"SKILL.md": b"# Main", path: b"unsafe"})
     assert response.status_code == 422
+
+
+def test_archive_requires_one_nested_skill_root(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    missing = import_package(admin, {"project/README.md": b"Not a Skill"})
+    assert missing.status_code == 422
+    assert "包含 SKILL.md" in missing.json()["detail"]
+    ambiguous = import_package(admin, {
+        "first/SKILL.md": MAIN, "second/SKILL.md": MAIN})
+    assert ambiguous.status_code == 422
+    assert "多个 Skill 根目录" in ambiguous.json()["detail"]
 
 
 def test_archive_links_duplicates_missing_references_and_limits(accounts, monkeypatch):
