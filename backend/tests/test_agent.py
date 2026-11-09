@@ -356,6 +356,7 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     class Extensions:
         tools = []
         skills = []
+        environment_description = "verified-environment-for-test"
 
         def label(self, *args):
             return "生成文件"
@@ -370,6 +371,7 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
             self.count += 1
             if self.count == 1:
                 assert "点击该次工具活动下方的下载入口" in messages[0]["content"]
+                assert "verified-environment-for-test" in messages[0]["content"]
                 return ToolResponse(content=None, tool_calls=[ToolCall(id="file", name="run_command", arguments={})])
             return ToolResponse(content="已生成 reports/summary.md。", tool_calls=[])
 

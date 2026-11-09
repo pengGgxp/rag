@@ -193,11 +193,11 @@ def _apply_unified_patch(original: str, patch: str) -> str:
 def tool_definitions():
     return [{"type":"function","function":{"name":n,"description":d,"parameters":p}} for n,d,p in [
         ("list_files","在当前会话云电脑列出资源文件，与 run_command 共用文件目录和环境",{"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":False}),
-        ("read_file","在云电脑按资源 ID 或路径读取当前文件；二进制返回可直接使用的文件路径。",{"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
+        ("read_file","在云电脑按资源 ID 或路径读取当前文件；二进制返回可直接用于脚本的路径，不代表已识别图片或解析文档正文。Word/PDF 用 run_command 调用对应解析器。",{"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
         ("write_file","创建或覆盖当前工作区文本文件，内容直接写入资源库。",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","直接修改当前文件；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备，位于 /skills；依赖写到工作目录之外。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。预装软件见环境能力说明，缺少依赖可用 pip/npm 安装到工作目录之外。编辑前检查输入，用对应库处理 Word/PDF；完成后重新打开输出核对内容。方法文件通过 skill_ids 或命令中的 /skills/方法ID/ 路径准备，位于 /skills。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。网页服务用 start_preview 启动，不在此等待服务退出。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
     ]]
 
 

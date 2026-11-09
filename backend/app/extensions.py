@@ -89,6 +89,8 @@ class ExtensionRuntime(SkillRuntime):
         with factory() as db:
             cloud_settings = db.get(CloudSettings, 1)
             self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
+            from .cloud_environment import environment_description
+            self.environment_description = environment_description(cloud_settings) if self.execution_available else ""
         workspace_tools = tool_definitions() if self.execution_available else []
         from .cloud_preview import TOOLS as PREVIEW_TOOLS
         if self.execution_available and get_settings().preview_enabled:

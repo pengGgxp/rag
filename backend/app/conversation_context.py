@@ -80,6 +80,7 @@ def scope_digest(db, conversation, access, skill_versions=None):
 def build_messages(db, conversation, rows, config, extensions, query=None):
     libraries = [{"id": str(scope.knowledge_base_id), "name": scope.library.name} for scope in conversation.libraries]
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT
+        + "\n云电脑环境能力：" + getattr(extensions, "environment_description", "未提供；不要假定具体预装软件或版本。")
         + "\n可用 Skill 摘要（按需加载）：" + json.dumps(extensions.skills, ensure_ascii=False)
         + "\n本会话知识库：" + json.dumps(libraries, ensure_ascii=False)}]
     messages.extend(item for row in rows for item in history_message(row, config,

@@ -34,7 +34,7 @@ class Start(BaseModel):
 
 TOOLS = [
     {"type": "function", "function": {"name": "start_preview",
-        "description": "在云电脑工作目录启动独立 HTTP 网页服务，返回就绪的交互预览。服务须监听 0.0.0.0 和指定端口；关闭 WebSocket/热更新，用户手动刷新。同一会话一个服务；换服务先 stop_preview。前台预览保持云电脑计费，最长时限不变。",
+        "description": "在云电脑工作目录启动独立 HTTP 网页服务，启动命令保持前台运行，由本工具负责后台进程与 HTTP 就绪检查。服务须监听 0.0.0.0 和指定端口；关闭 WebSocket/热更新，用户手动刷新。先创建网页文件，返回就绪后交付真实预览入口；就绪不代表页面所有功能已验证。同一会话一个服务；换服务先 stop_preview。前台预览保持云电脑计费，最长时限不变。",
         "parameters": Start.model_json_schema()}},
     {"type": "function", "function": {"name": "stop_preview",
         "description": "停止本会话预览服务，保留文件；云电脑按原闲置规则运行和收费。",
