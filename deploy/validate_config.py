@@ -88,6 +88,11 @@ def validate(compose_path: Path, env_template: Path) -> list[str]:
         fail("preview must only bind to loopback")
     if services["db"].get("ports") or services["redis"].get("ports") or services["minio"].get("ports"):
         fail("infrastructure services must not publish host ports")
+    db_environment = services["db"].get("environment", {})
+    if not isinstance(db_environment, dict):
+        fail("db environment must be a mapping")
+    if db_environment.get("POSTGRES_PASSWORD") != "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}":
+        fail("db password must be required from the protected environment")
 
     values = {}
     for line in env_template.read_text(encoding="utf-8").splitlines():

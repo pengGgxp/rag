@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+import yaml
+
 from deploy.validate_config import validate
 
 
@@ -11,6 +13,13 @@ class ContractTests(unittest.TestCase):
     def test_production_contract(self):
         keys = validate(ROOT / "compose.production.yml", ROOT / "production.env.example")
         self.assertIn("API_IMAGE", keys)
+
+    def test_database_password_has_no_default(self):
+        compose = yaml.safe_load((ROOT / "compose.production.yml").read_text(encoding="utf-8"))
+        self.assertEqual(
+            compose["services"]["db"]["environment"]["POSTGRES_PASSWORD"],
+            "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}",
+        )
 
     def test_release_images_use_swr_instead_of_legacy_registry(self):
         template = (ROOT / "production.env.example").read_text(encoding="utf-8")

@@ -108,7 +108,8 @@ jobs:
         run: |
           python deploy/validate_config.py --env-template deploy/production.env.example
           python deploy/alembic_head.py backend
-          docker compose -f deploy/compose.production.yml --env-file deploy/production.env.example config --quiet
+          POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
+            docker compose -f deploy/compose.production.yml --env-file deploy/production.env.example config --quiet
       - name: Verify release package manifest
         run: |
           python -m py_compile deploy/deploy_release.py deploy/check_health.py deploy/maintenance.py deploy/release_package.py
