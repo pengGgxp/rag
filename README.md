@@ -97,6 +97,7 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 - [产品功能基线](./RAG_PLATFORM_FEATURE_BASELINE.md)
 - [项目执行规则](./AGENTS.md)
 - [技术决策记录](./docs/adr/0001-technology-baseline.md)
+- [CI/CD 与生产发布唯一流程](./docs/ci-cd.md)
 - [Agent 扩展边界与验收](./docs/agent-extensions-acceptance.md)
 - [多文件 Skill 设计与验收](./docs/skill-bundles-acceptance.md)
 - [支付 FM 积分充值与验收](./docs/recharge-acceptance.md)
