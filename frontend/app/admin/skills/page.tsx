@@ -6,7 +6,7 @@ import { AdminHeading, AdminLoad, date, Pagination, type Page, useAdminResource 
 import "../platform-content.css";
 
 export type SkillFile = { path: string; content: string };
-export type PackageReview = { manifest: { path: string; size: number; text: boolean; readable: boolean; personal_notice?: string }[]; issues: string[]; can_enable: boolean; has_limitations?: boolean };
+export type PackageReview = { manifest: { path: string; size: number; text: boolean; readable: boolean; kind: "text" | "script" | "image" | "archive" | "binary"; media_type: string; resource?: boolean; archive_entries?: { path: string; size: number }[]; archive_error?: string; blocking?: boolean; personal_notice?: string }[]; issues: string[]; can_enable: boolean; has_limitations?: boolean };
 export type Skill = { id: string; name: string; description: string; markdown: string; files: SkillFile[]; review: PackageReview; enabled: boolean; version: number; updated_at: string };
 
 export default function SkillsPage() {

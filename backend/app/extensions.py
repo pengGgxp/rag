@@ -1,5 +1,6 @@
 """Request-pinned platform methods, private methods and authorized remote tools."""
 import json
+import re
 from hashlib import sha256
 from uuid import UUID
 
@@ -12,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from . import mcp_client
-from .models import AgentSkill, MCPServer, RemoteToolExecution
+from .models import AgentSkill, MCPServer, RemoteToolExecution, SiteSkill
 from .personal_skills import router as skills_router, owned, package_review
 from .personal_mcp import router as mcp_router
 from .site_skills import SkillRuntime, LOAD_SKILL, READ_SKILL_RESOURCE
@@ -20,11 +21,11 @@ from .skill_files import text_content
 from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
 from .config import get_settings
 
-SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
-
 router = APIRouter()
 router.include_router(skills_router)
 router.include_router(mcp_router)
+
+SKILL_COMMAND_PATH = re.compile(r"/skills/([^/\s\"'`;|&<>]+)(?:/|(?=$|[\s\"'`;|&<>]))")
 
 
 def defaults(db, access):
@@ -46,6 +47,7 @@ def validate_selection(db, access, skill_ids, server_ids):
 class ExtensionRuntime(SkillRuntime):
     def __init__(self, factory, access, skill_ids=(), server_ids=(), message_id=None, request_id=None, question_workbench=False):
         super().__init__(factory, access)
+        self.platform_ids = set(self.snapshots)
         self.message_id, self.request_id = message_id, request_id
         self.personal_ids, self.bindings, self.calls = set(), {}, 0
         self.uncertain_calls = set()
@@ -53,17 +55,24 @@ class ExtensionRuntime(SkillRuntime):
         self.mcp_tokens = {}
         with factory() as db:
             access = self.access = access.revalidate(db)
+            for row in db.scalars(select(AgentSkill).where(
+                    AgentSkill.owner_id == access.user_id, AgentSkill.workspace_id == access.workspace_id,
+                    AgentSkill.enabled.is_(True))):
+                if str(row.id) in self.snapshots:
+                    raise HTTPException(409, "Skill 标识冲突，请重新加载后再试")
             for row in db.scalars(select(AgentSkill).options(joinedload(AgentSkill.files)).where(
                     AgentSkill.owner_id == access.user_id, AgentSkill.workspace_id == access.workspace_id,
                     AgentSkill.enabled.is_(True))).unique():
                 files = {item.path: item.content for item in row.files}
                 checked = package_review({"SKILL.md": row.markdown.encode("utf-8"), **files})
+                if not checked["can_enable"]:
+                    continue
                 if checked["has_limitations"] and not row.limitations_acknowledged:
                     continue
                 identifier = str(row.id)
                 self.personal_ids.add(identifier)
                 scripts = [item["path"] for item in checked["manifest"]
-                    if item["text"] and item["path"].lower().endswith(SCRIPT_SUFFIXES)]
+                    if item["kind"] == "script"]
                 readable = {item["path"] for item in checked["manifest"] if item["readable"]} | set(scripts)
                 self.snapshots[identifier] = {"id": identifier, "name": row.name, "description": row.description,
                     "version": row.version, "source": "personal", "instructions": row.markdown,
@@ -200,14 +209,21 @@ class ExtensionRuntime(SkillRuntime):
                         access.editor()
                     needed = set(arguments.get("skill_ids", [])) if name == "run_command" else set()
                     if name == "run_command":
-                        needed.update(identifier for identifier in self.personal_ids
-                            if f"/skills/{identifier}/" in arguments["command"])
-                        if needed - self.personal_ids:
+                        needed.update(SKILL_COMMAND_PATH.findall(arguments["command"]))
+                        if len(needed) > 20:
+                            return {"error": "本次使用的 Skill 过多，请减少后再试", "error_code": "skill_limit"}
+                        if needed - set(self.snapshots):
                             return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
                     for identifier in needed:
-                        row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
-                        if row is None or not row.enabled or row.owner_id != self.access.user_id or row.workspace_id != self.access.workspace_id:
-                            continue
+                        if identifier in self.platform_ids:
+                            row = db.get(SiteSkill, UUID(identifier), populate_existing=True)
+                            if row is None or not row.enabled:
+                                return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                        else:
+                            row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
+                            if (row is None or not row.enabled or row.owner_id != self.access.user_id
+                                    or row.workspace_id != self.access.workspace_id):
+                                return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
                         packages[identifier] = self.snapshots[identifier]["package_files"]
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
@@ -316,11 +332,7 @@ class ExtensionRuntime(SkillRuntime):
                 return {"error": "工具参数无效"}
             return {key: snapshot[key] for key in ("id", "name", "version", "instructions", "limitations")} | {
                 "resources": [{"path": path} for path in snapshot["resources"]],
-                "execute_scripts": self.execution_available,
-                "execution": {"tool": "run_command", "directory": f"/skills/{snapshot['id']}",
-                    "working_directory": "/workspace", "scripts": snapshot["scripts"], "read_only": True,
-                    "instructions": "使用解释器和目录中的绝对脚本路径运行；包内相对资料位于同一目录。输出写入 /workspace，不要修改 Skill 包。"}
-                    if self.execution_available else None}
+                **self.execution_metadata(snapshot)}
         if (set(arguments) - {"skill_id", "path", "offset"}
                 or not isinstance(arguments.get("path"), str)):
             return {"error": "资料参数无效，请读取清单内的文字资料"}

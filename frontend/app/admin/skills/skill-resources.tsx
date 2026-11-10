@@ -1,6 +1,6 @@
 "use client";
 import { useMemo, useState } from "react";
-import { FileText, FileWarning, Trash2 } from "lucide-react";
+import { Archive, FileCode2, FileText, FileWarning, Image as ImageIcon, Trash2 } from "lucide-react";
 import type { PackageReview, SkillFile } from "./page";
 
 function decode(file: SkillFile): string | null {
@@ -16,8 +16,12 @@ export function SkillResources({ files, review, path, onSelect, onRemove, person
 }) {
   const [removing, setRemoving] = useState("");
   const selected = files.find(file => file.path === path) ?? files[0];
-  const notice = review?.manifest.find(item => item.path === selected?.path)?.personal_notice;
+  const metadata = review?.manifest.find(item => item.path === selected?.path);
+  const notice = metadata?.personal_notice;
   const text = useMemo(() => selected ? decode(selected) : null, [selected]);
+  const [unavailableImage, setUnavailableImage] = useState("");
+  const image = metadata?.kind === "image" && selected
+    ? `data:${metadata.media_type};base64,${selected.content}` : null;
   if (!files.length) return <p className="admin-empty">没有补充资料。</p>;
   return <div className="skill-resource-layout">
     <nav className="skill-file-list" aria-label="包内文件">
@@ -25,7 +29,9 @@ export function SkillResources({ files, review, path, onSelect, onRemove, person
         const item = review?.manifest.find(entry => entry.path === file.path);
         return <button key={file.path} type="button" aria-current={file.path === selected?.path ? "true" : undefined}
           onClick={() => { onSelect(file.path); setRemoving(""); }}>
-          {item?.readable === false ? <FileWarning size={16} /> : <FileText size={16} />}
+          {item?.kind === "image" ? <ImageIcon size={16} /> : item?.kind === "archive" ? <Archive size={16} />
+            : item?.kind === "script" ? <FileCode2 size={16} />
+            : item?.readable === false || item?.blocking ? <FileWarning size={16} /> : <FileText size={16} />}
           <span>{file.path}</span>
         </button>;
       })}
@@ -44,8 +50,14 @@ export function SkillResources({ files, review, path, onSelect, onRemove, person
           requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".skill-file-list button")?.focus());
         }}>确认移除</button>
       </div>}
-      {personal && notice && <p className="extension-warning">{notice}</p>}
-      {text === null ? <p>{personal ? "此文件无法预览，可导出后查看。" : "此文件可以保存在草稿中，当前无法供模型读取。启用前请移除并调整相关指令。"}</p>
+      {notice && <p className="extension-warning">{notice}</p>}
+      {metadata?.blocking && <p className="admin-error" role="alert">{metadata.archive_error}</p>}
+      {image && unavailableImage !== selected.path ? <img src={image} alt={selected.path} onError={() => setUnavailableImage(selected.path)} />
+        : metadata?.kind === "archive" && metadata.archive_entries ? <div className="skill-archive">
+          <p>包内条目仅用于查看和导出，不会自动解压。</p>
+          <ul>{metadata.archive_entries.map(item => <li key={item.path}><span>{item.path}</span><small>{item.size.toLocaleString("zh-CN")} B</small></li>)}</ul>
+        </div>
+        : text === null ? <p>{personal ? "此文件无法预览，可导出后查看。" : "此文件保存在 Skill 中，模型可在云电脑中按路径使用。"}</p>
         : <pre tabIndex={0}>{text.slice(0, 50000)}{text.length > 50000 ? "\n\n……仅显示前 50000 字，可导出后查看完整文件。" : ""}</pre>}
     </section>}
   </div>;

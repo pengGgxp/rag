@@ -77,7 +77,8 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 - 尚未引入 Rerank；Agent 可以自主多步检索。
 - MCP 支持远程 Streamable HTTP 和 SSE 工具，不支持任意 stdio、MCP OAuth、resources/prompts。
 - Skill 支持 SKILL.md 和 references/scripts/assets 等附属文件，Agent 可按需读取 UTF-8 文本。
-  二进制资源原样保存并可下载；不运行技能包脚本、不安装依赖、不自动解析二进制资源。
+  平台及个人包中的 Linux Python、Node.js、Shell 脚本可由 Agent 在现有云电脑中按只读挂载执行；
+  Windows 脚本和程序仅随包保留，不声明可在 Linux 云电脑执行。图片、二进制和 ZIP/TAR 不自动解析或解压。
 - MCP 授权可能允许外部写入，当前不提供逐次操作审批，也不自动重试外部操作。
 - 充值只处理入账；平台管理员可在账号设置中维护内部计量规则，用户端只看到余额和使用量。
   当前模型按输入/输出 Token 计量，Embedding 按输入 Token 计量，阿里云 DocMind 按解析页数计量；
