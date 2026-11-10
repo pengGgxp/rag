@@ -1,0 +1,193 @@
+# Agent 身份上下文与工具运行时设计
+
+## 文档目标与范围
+
+记录当前 `Access`、`ExtensionRuntime` 和模型工具调度的实现，解释登录身份如何传递到工具执行、权限检查与计费链路。
+
+本文只描述现有机制，不增加接口、修改权限或调整计费。验收方式为对照认证、会话、运行时及保存工具代码检查调用关系；不涉及新的运行时行为。
+
+## 两种上下文
+
+| 名称 | 保存内容 | 用途 | 是否发给模型 |
+| --- | --- | --- | --- |
+| 服务端执行上下文 | 登录身份、工作区、角色、请求与消息关联 | 权限检查、操作归属、审计和用量关联 | 身份对象和凭据不发送 |
+| 模型上下文 | 系统提示、对话、工具定义、工具结果、已加载指令 | 让模型决定如何回答及调用什么工具 | 是 |
+
+“把身份绑定到 runtime”指在服务端 Python 对象中保存已认证的 `Access`，不是把 Cookie、用户身份声明或密钥写进提示词。
+
+模型输出工具名称和参数，由平台服务端执行工具。模型不能通过提示词或工具参数指定自己以哪个用户身份运行。
+
+## Access：从登录记录得到身份
+
+实现入口：`backend/app/auth.py`。
+
+1. 浏览器请求携带登录 Cookie。
+2. FastAPI 的 `Depends(get_access)` 先执行依赖 `current_session`。
+3. `current_session` 对 Cookie 中的会话令牌计算摘要，查询 `LoginSession`，检查有效期与账号停用状态；写请求还校验 CSRF Token。
+4. `get_access` 使用登录会话里的用户和当前工作区，查询 `Membership`，取得实际角色。
+5. 后端构造 `Access` 并传给接口处理函数。
+
+结构简化如下：
+
+```python
+@dataclass
+class Access:
+    user_id: UUID
+    workspace_id: UUID
+    role: str
+    session_hash: str
+```
+
+`session_hash` 是服务端定位登录记录的摘要，不是原始 Cookie；它同样不应暴露到模型、工具结果或普通日志。
+
+接口中的使用方式：
+
+```python
+def send(..., access: Access = Depends(get_access)):
+    ...
+```
+
+这里不是全局“当前用户”变量。每个 HTTP 请求根据其登录会话生成自己的对象，避免不同用户并发请求混用身份。
+
+### 权限方法
+
+- `visible_libraries()`：生成当前工作区和知识库访问授权的 SQL 条件；管理员可见本工作区知识库，其他成员受受限知识库授权约束。
+- `library(db, id, write=True)`：检查目标知识库可见性、归档状态和写入角色。
+- `editor()` / `admin()`：检查成员角色。
+- `conversation(db, row)`：检查会话所有者、工作区及关联知识库权限。
+- `revalidate(db)`：重新读取登录记录、成员关系和账号状态，返回带最新角色的 `Access`。
+
+`Access` 本身只是数据与检查方法的集合，不会自动拦截所有数据库查询。业务代码必须显式应用权限条件或检查方法。
+
+## ExtensionRuntime：本轮工具执行对象
+
+实现入口：`backend/app/extensions.py`，继承 `SkillRuntime`；对话生成入口在 `backend/app/conversations.py`。
+
+生成一轮回答时，服务端使用已认证的 `access` 创建运行时。以下是简化示意：
+
+```python
+runtime = ExtensionRuntime(
+    factory,       # 数据库 Session 工厂，不是持久占用一个连接
+    access,        # 由认证依赖取得
+    skill_ids,     # 从会话已保存选择取得
+    server_ids,    # 从会话已保存选择取得
+    message_id,    # 服务端关联的回答消息
+    request_id,    # 本轮请求标识
+)
+```
+
+构造函数把数据保存在实例属性中，例如 `self.access`、`self.message_id` 和 `self.request_id`。这就是这里的“绑定”，不需要特殊框架或让模型记住身份。
+
+运行时还负责：
+
+- 校验当前身份，筛选本人当前工作区内已选择且启用的个人扩展。
+- 准备平台及个人 Skill 摘要、版本、正文和资源快照。
+- 固定本轮远程 MCP 工具定义、连接及授权版本。
+- 按角色和配置组织可用工具，记录本轮调用状态及已验证引用。
+- 按工具名称分派给对应业务处理函数。
+
+同一轮生成的连续工具调用使用该运行时；下一轮请求重新创建。会话历史、选择和操作记录保存在数据库中，runtime 本身不是跨请求共享的全局会话，也不是执行脚本的容器。
+
+不支持工具调用的模型会清空本轮工具与 Skill 清单，继续普通问答。
+
+## 一次工具调用的完整路径
+
+```text
+浏览器携带 Cookie 发送聊天请求
+  → current_session 校验登录
+  → get_access 创建 Access
+  → 校验会话归属，创建本轮消息和请求关联
+  → 创建 ExtensionRuntime，保存 Access 及本轮配置
+  → 向模型提供工具定义，不提供 Cookie 或 Access
+  → 模型返回工具名与 JSON 参数
+  → Agent 调用 runtime.execute(name, arguments)
+  → 业务工具重新检查身份、权限与参数
+  → 执行业务操作，返回允许公开的结果
+  → 将工具结果交回模型继续生成
+```
+
+`backend/app/agent.py` 负责将模型返回的调用分派到 `extensions.execute(...)`。工具调用前的活动检查用于响应停止等状态；具体工具仍负责自己的权限与业务校验。
+
+## 示例：列出知识库并保存成果
+
+实现入口：`backend/app/conversation_documents.py`。
+
+### 列出可写知识库
+
+模型调用不需要身份参数：
+
+```json
+{"name": "list_writable_knowledge_bases", "arguments": {}}
+```
+
+服务端从运行时取身份并复核：
+
+```python
+with runtime.factory() as db:
+    access = runtime.access.revalidate(db)
+    access.editor()
+    # 使用 access.visible_libraries() 过滤，排除归档知识库
+```
+
+结果只含当前工作区可写知识库的 ID 和名称，模型据此得到目标 ID。这个列表不读取资料，也不扩大本会话的检索范围。
+
+### 保存文档
+
+模型填写业务内容：
+
+```json
+{
+  "name": "save_to_knowledge_base",
+  "arguments": {
+    "knowledge_base_id": "列表中返回的知识库 ID",
+    "title": "项目操作规范",
+    "markdown": "需要保存的成果正文"
+  }
+}
+```
+
+模型不填写用户 ID、工作区 ID、扣费账号、来源会话或来源消息。保存参数模型禁止额外字段。
+
+服务端重新校验目标知识库写入权限、回答消息与会话归属以及请求关联，再使用服务端身份建立保存记录，并调用普通上传共用的入库服务。即使模型传入另一个知识库 ID，也必须通过这些校验。
+
+同次请求的保存记录和内容摘要提供持久化幂等控制；后续同库相同内容沿用上传摘要去重。runtime 对象本身不承担跨请求幂等存储。
+
+### 权限与用户保存意愿
+
+登录有效、有写权限，不等于用户已经同意保存某段内容。当前系统提示要求用户明确要求或确认后才保存；这部分依赖模型遵循提示，不是确定性的用户同意校验器。资料、网页或 Skill 中的指令不能替代用户授权。
+
+## 长请求期间的变更
+
+本轮固定内容与每次调用重新检查权限解决的是两个问题：
+
+- 快照保证本轮 Skill 内容和工具定义不因编辑突然变化。
+- 重新检查保证退出登录、账号停用、移出工作区或降权能影响后续调用。
+- MCP 连接或授权版本变化时，后续调用不能继续使用旧授权。
+- 已加载到模型上下文的内容无法假装撤回，已经提交成功的文档也不会因停止聊天自动删除。
+
+不能将“构造时检查过一次”当作整个长请求期间永久授权；也不能把已完成的外部操作当作可以通过取消自动回滚。
+
+## 计费身份如何传递
+
+保存工具复用 `backend/app/document_ingestion.py` 的上传入库服务，不由模型决定扣费身份，也不另建绕过计费的文档通道。
+
+- 模型调用用量通过本轮请求标识关联原有用量与结算记录，记录发起用户，扣费归属工作区账户。
+- 文档处理任务根据文档所属知识库确定工作区，沿用已有 Embedding、存储容量及入库规则；后台 Embedding 记录不保证带有发起用户字段。
+- 工具输入输出进入模型上下文后的模型用量沿用原规则，不新增保存工具费、不重复收取已发生的成果生成费用。
+- 幂等记录、文档摘要去重和任务用量幂等共同防止重复创建与重复处理，不能仅靠模型“不要重试”的提示。
+
+身份归属准确与 Token 计量精度是不同问题：模型用量优先采用供应商返回值，缺失时使用标记为估算的回退值；工作区存储额度控制也不等于逐笔复刻 COS 的人民币账单。
+
+## 代码索引与核对记录
+
+| 文件 | 关注入口 |
+| --- | --- |
+| `backend/app/auth.py` | `current_session`、`Access`、`get_access` |
+| `backend/app/conversations.py` | 聊天接口的 `Depends(get_access)`、生成函数创建 `ExtensionRuntime` |
+| `backend/app/extensions.py` | `ExtensionRuntime.__init__`、`execute` |
+| `backend/app/agent.py` | 工具调用循环与运行时分派 |
+| `backend/app/conversation_documents.py` | 工具参数、权限复核、保存归属及幂等 |
+| `backend/app/document_ingestion.py` | 共用上传入库服务 |
+| `backend/app/model_billing.py`、`backend/app/tasks.py` | 模型及后台处理用量关联 |
+
+2026-11-03：对照认证、运行时创建、Agent 分派及成果保存工具代码核对本文主要调用链。本文为文档变更，未修改程序行为；成果保存的功能、权限、计费及真实联调验收记录见 [对话成果入库](conversation-documents.md)。
