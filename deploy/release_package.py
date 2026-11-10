@@ -44,6 +44,12 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_text_lf(path: Path, text: str) -> None:
+    """Write release metadata identically on Windows and Linux hosts."""
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+
+
 def build(
     deploy_root: Path,
     backend_root: Path,
@@ -96,10 +102,9 @@ def build(
         "automatic-app-rollback", "restore-backup-required"
     }:
         raise ValueError("invalid database rollback policy")
-    (staging / "release.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
-    (staging / "release-policy.json").write_text(
+    write_text_lf(staging / "release.json", json.dumps(manifest, indent=2) + "\n")
+    write_text_lf(
+        staging / "release-policy.json",
         json.dumps(
             {
                 "schema_version": 1,
@@ -109,7 +114,6 @@ def build(
             indent=2,
         )
         + "\n",
-        encoding="utf-8",
     )
     executable = {name for name in COPIES.values() if name.endswith(".sh")} | {
         "bin/deploy-release",
@@ -127,13 +131,14 @@ def build(
     for path in sorted(p for p in staging.rglob("*") if p.is_file()):
         relative = path.relative_to(staging).as_posix()
         sums.append(f"{sha256(path)}  {relative}")
-    (staging / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
+    write_text_lf(staging / "SHA256SUMS", "\n".join(sums) + "\n")
     archive = output / f"zhiku-{version}.tar.gz"
     with tarfile.open(archive, "w:gz") as handle:
         for path in sorted(staging.rglob("*")):
             handle.add(path, arcname=path.relative_to(staging).as_posix())
-    (output / f"{archive.name}.sha256").write_text(
-        f"{sha256(archive)}  {archive.name}\n", encoding="utf-8"
+    write_text_lf(
+        output / f"{archive.name}.sha256",
+        f"{sha256(archive)}  {archive.name}\n",
     )
     return archive
 

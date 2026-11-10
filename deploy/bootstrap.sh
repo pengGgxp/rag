@@ -29,7 +29,7 @@ if [ -e "$unpacked" ]; then
   echo "bootstrap staging directory already exists" >&2
   exit 2
 fi
-install -d -m 700 "$unpacked"
+mkdir -m 700 "$unpacked"
 tar -xzf "$archive" -C "$unpacked"
 (
   cd "$unpacked"

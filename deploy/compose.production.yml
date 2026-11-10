@@ -228,3 +228,6 @@ volumes:
 networks:
   backend:
     name: rag-platform_default
+    # Adopt the network created by the legacy default network instead of
+    # replacing it (and its running containers) during the first cutover.
+    external: true

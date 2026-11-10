@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 REDIS_HEARTBEAT = "deploy:worker-heartbeat"
+HEALTH_USER_AGENT = "zhiku-deploy-health/1.0"
 
 
 def probe(
@@ -25,7 +26,8 @@ def probe(
     last = None
     for _ in range(attempts):
         try:
-            request = urllib.request.Request(url, headers=headers or {})
+            request_headers = {"User-Agent": HEALTH_USER_AGENT, **(headers or {})}
+            request = urllib.request.Request(url, headers=request_headers)
             with urllib.request.urlopen(request, timeout=8) as response:
                 if response.status != 200:
                     raise RuntimeError(f"HTTP {response.status}")
@@ -87,6 +89,31 @@ def compose_exec(service: str, *args: str) -> str:
     ).strip()
 
 
+def verify_maintenance_control() -> dict:
+    """Read control state through the API container's loopback interface."""
+    script = (
+        "import json,os,urllib.request; "
+        "t=os.environ.get('DEPLOY_CONTROL_TOKEN',''); "
+        "h={'Authorization':'Bearer '+t,'X-RAG-Request':'1'}; "
+        "q=urllib.request.Request("
+        "'http://127.0.0.1:8000/internal/deploy/maintenance',headers=h); "
+        "print(urllib.request.urlopen(q,timeout=10).read().decode())"
+    )
+    try:
+        output = compose_exec("api", "python", "-c", script)
+        status = json.loads(output.splitlines()[-1])
+    except (
+        OSError,
+        ValueError,
+        IndexError,
+        subprocess.CalledProcessError,
+    ) as exc:
+        raise RuntimeError("deployment maintenance status is unavailable") from exc
+    if not isinstance(status, dict) or status.get("active") is not False:
+        raise RuntimeError("deployment maintenance is still active")
+    return status
+
+
 def verify_worker_heartbeat() -> str:
     """Require a fresh broker heartbeat, not just a running container."""
     try:
@@ -121,10 +148,10 @@ def verify_storage() -> str:
                 "from app.db import SessionLocal; "
                 "from app.storage_backend import active_settings, configured_backend; "
                 "db=SessionLocal(); row=active_settings(db); "
-                "db.close(); "
-                "(print('skipped') if row is None else "
-                "(print('unexpected') if configured_backend(row).head('_deploy/health-missing') "
-                "is not None else print('ok')))"
+                "result='skipped' if row is None else ("
+                "'unexpected' if configured_backend(row).head('_deploy/health-missing') "
+                "is not None else 'ok'); "
+                "db.close(); print(result)"
             ),
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -132,9 +159,9 @@ def verify_storage() -> str:
     result = output.splitlines()[-1] if output else ""
     if result == "unexpected":
         raise RuntimeError("object storage health probe unexpectedly found a missing object")
-    if result not in {"skipped", "None"}:
+    if result not in {"skipped", "ok"}:
         raise RuntimeError("configured object storage is unavailable")
-    return "skipped" if result == "skipped" else "ok"
+    return result
 
 
 def verify_question_workbench() -> str:
@@ -157,7 +184,11 @@ def verify_question_workbench() -> str:
         return "skipped"
     command = [
         "python", "-c",
-        "import os,urllib.request; u=os.environ['QUESTION_WORKBENCH_API_URL'].rstrip('/'); print(urllib.request.urlopen(u+'/health', timeout=5).status)"
+        "import os,urllib.request; "
+        "u=os.environ['QUESTION_WORKBENCH_API_URL'].rstrip('/'); "
+        "q=urllib.request.Request("
+        "u+'/api/health',headers={'User-Agent':'zhiku-deploy-health/1.0'}); "
+        "print(urllib.request.urlopen(q,timeout=5).status)"
     ]
     try:
         output = compose_exec("api", *command).strip()
@@ -177,22 +208,9 @@ def check_all(
     public_base_url: str = "https://zk.str1ct.top",
 ) -> dict:
     current = Path("/opt/zhiku/current")
-    control = {}
-    app_env = current / "app.env"
-    if app_env.is_file():
-        for line in app_env.read_text(encoding="utf-8").splitlines():
-            if line.startswith("DEPLOY_CONTROL_TOKEN="):
-                control["Authorization"] = "Bearer " + line.split("=", 1)[1]
-                break
     api = probe(f"{base_url}:8000/ready", expect_json=True, require_status=True)
     version = probe(f"{base_url}:8000/version", expect_json=True)
-    maintenance = probe(
-        f"{base_url}:8000/internal/deploy/maintenance",
-        expect_json=True,
-        headers=control,
-    )
-    if maintenance.get("active") is not False:
-        raise RuntimeError("deployment maintenance is still active")
+    maintenance = verify_maintenance_control()
     if expected_version and version.get("version") != expected_version:
         raise RuntimeError("API version does not match the release")
     if expected_commit and version.get("commit") != expected_commit:

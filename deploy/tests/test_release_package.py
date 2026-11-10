@@ -77,6 +77,11 @@ class ReleasePackageTests(unittest.TestCase):
             )
             sums = (output / "release" / "SHA256SUMS").read_text(encoding="utf-8")
             self.assertIn("release.json", sums)
+            self.assertNotIn("\r", sums)
+            self.assertNotIn(
+                "\r",
+                (output / "zhiku-v1.2.3.tar.gz.sha256").read_text(encoding="utf-8"),
+            )
             self.assertEqual(
                 (output / "zhiku-v1.2.3.tar.gz.sha256").read_text(encoding="utf-8")
                 .split()[0],

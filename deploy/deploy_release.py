@@ -26,6 +26,7 @@ VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 REQUIRED_SERVICES = ("api", "worker", "web")
 ROLLBACK_POLICIES = {"automatic-app-rollback", "restore-backup-required"}
+ALEMBIC_HEAD_SUFFIX = re.compile(r"\s+\(head\)$")
 NGINX_FILES = ("zk.str1ct.top.conf", "http-preview.conf")
 APPLICATION_SERVICES = ("api", "worker", "preview-worker", "preview", "web")
 WORKER_SERVICES = ("worker", "preview-worker")
@@ -504,6 +505,8 @@ def rehearse_migration(release_dir: Path, runner: CommandRunner, values: dict[st
         runner.run(
             [
                 *compose_args(release_dir, extra_env=rehearsal_env),
+                "--profile",
+                "migration",
                 "run",
                 "--rm",
                 "--no-deps",
@@ -548,6 +551,8 @@ def migrate_production(release_dir: Path, runner: CommandRunner) -> None:
         runner.run(
             [
                 *compose_args(release_dir, extra_env=migration_env),
+                "--profile",
+                "migration",
                 "run", "--rm", "--no-deps", "migrate",
             ]
         )
@@ -561,7 +566,7 @@ def migrate_production(release_dir: Path, runner: CommandRunner) -> None:
 def verify_migration_heads(release_dir: Path, runner: CommandRunner) -> None:
     manifest = load_manifest(release_dir)
     actual_heads = {
-        line.strip()
+        ALEMBIC_HEAD_SUFFIX.sub("", line.strip())
         for line in runner.run(
             [
                 *compose_args(release_dir),
@@ -599,9 +604,9 @@ def verify_running_digests(release_dir: Path, runner: CommandRunner) -> None:
             [
                 "docker",
                 "inspect",
-                "--format",
-                "{{index .RepoDigests 0}}",
                 identifier,
+                "--format",
+                "{{.Config.Image}}",
             ]
         ).strip()
         if actual != image:
@@ -686,7 +691,7 @@ def nginx_maintenance_enabled(paths: Paths) -> bool:
 
 
 def set_nginx_maintenance(paths: Paths, runner: CommandRunner, active: bool) -> None:
-    """Fail closed for every public API request during first takeover."""
+    """Fail closed for every public API request without duplicate locations."""
     conf = paths.nginx / NGINX_FILES[0]
     if not conf.is_file():
         raise ReleaseError("system Nginx configuration is missing")
@@ -697,21 +702,36 @@ def set_nginx_maintenance(paths: Paths, runner: CommandRunner, active: bool) -> 
             shutil.copy2(conf, backup)
             backup.chmod(0o600)
         text = conf.read_text(encoding="utf-8")
-        marker = "    # deploy-maintenance\n"
+        marker = "        # deploy-maintenance\n"
         if marker not in text:
-            insert_at = text.find("    location /api/")
+            location = re.search(
+                r"^[ \t]*location(?:\s+\^~)?\s+/api/\s*\{", text, re.MULTILINE
+            )
+            if location is None:
+                raise ReleaseError("Nginx API location is missing")
+            insert_at = text.find("{", location.start()) + 1
             if insert_at < 0:
                 raise ReleaseError("Nginx API location is missing")
-            block = (
-                "    # deploy-maintenance\n"
-                "    location ^~ /api/ {\n"
+            gate = (
+                "\n        # deploy-maintenance\n"
                 "        default_type application/json;\n"
                 "        add_header Retry-After 60 always;\n"
                 "        add_header Cache-Control \"no-store\" always;\n"
                 "        return 503 '{\"detail\":\"系统正在完成版本切换，请稍后刷新\"}';\n"
+            )
+            text = text[:insert_at] + gate + text[insert_at:]
+            health_exception = (
+                "    location = /api/health {\n"
+                "        proxy_cache off;\n"
+                "        proxy_pass http://127.0.0.1:8000/health;\n"
+                "        proxy_http_version 1.1;\n"
+                "        proxy_set_header Host $host;\n"
+                "        proxy_set_header X-Real-IP $remote_addr;\n"
+                "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
+                "        proxy_set_header X-Forwarded-Proto $scheme;\n"
                 "    }\n"
             )
-            text = text[:insert_at] + block + text[insert_at:]
+            text = text[:location.start()] + health_exception + text[location.start():]
             conf.write_text(text, encoding="utf-8")
     elif backup.is_file():
         shutil.copy2(backup, conf)
@@ -724,6 +744,39 @@ def finish_first_takeover_maintenance(paths: Paths) -> None:
     """Drop the temporary Nginx gate without restoring the legacy config."""
     backup = paths.root / "config" / "nginx-first-takeover.conf"
     backup.unlink(missing_ok=True)
+
+
+def recover_first_takeover(paths: Paths, release_dir: Path, runner: CommandRunner) -> None:
+    """Accept a healthy first takeover after an evidence-only failure."""
+    if not paths.current.exists() or not paths.previous.exists():
+        raise ReleaseError("managed current and previous links are required")
+    current = paths.current.resolve()
+    if current != release_dir.resolve():
+        raise ReleaseError("recovery target is not the current release")
+    if paths.previous.resolve() != (current / "legacy-running").resolve():
+        raise ReleaseError("recovery target is not a first takeover")
+    verify_running_digests(release_dir, runner)
+    verify_migration_heads(release_dir, runner)
+    manifest = load_manifest(release_dir)
+    health = health_check(paths)
+    install_nginx(paths, release_dir, runner)
+    write_evidence(
+        release_dir,
+        status="healthy",
+        manifest=manifest,
+        migration=MigrationState(
+            current=expected_alembic_head(release_dir),
+            head=manifest["alembic_head"],
+            has_migration=False,
+        ),
+        backup=next(iter(sorted((release_dir / "backups").glob("*.dump"))), None),
+        nginx={},
+        health=health,
+    )
+    backup = paths.root / "config" / "nginx-first-takeover.conf"
+    backup.unlink(missing_ok=True)
+    for name in ("manual-first-takeover-recovery-required",):
+        (release_dir / name).unlink(missing_ok=True)
 
 
 def celery_active_tasks(paths: Paths, runner: CommandRunner, service: str) -> int:
@@ -889,15 +942,11 @@ def confirm_running_digests(paths: Paths, runner: CommandRunner) -> None:
                 "docker",
                 "inspect",
                 identifier,
-                "--format", "{{json .RepoDigests}}",
+                "--format", "{{.Config.Image}}",
             ]
         ).strip()
-        try:
-            actual = json.loads(inspected)
-        except json.JSONDecodeError as exc:
-            raise ReleaseError(f"could not inspect {service} image digest") from exc
-        if not any(str(item).endswith(image.split("@", 1)[-1]) for item in actual):
-            raise ReleaseError(f"{service} container is not running its pinned digest")
+        if inspected != image:
+            raise ReleaseError(f"{service} container is not running its pinned image")
 
 
 def changed_services(previous: Path | None, release_dir: Path) -> tuple[str, ...]:
@@ -941,7 +990,8 @@ def stop_legacy_producers(runner: CommandRunner) -> None:
     for path in compose_files:
         if path.is_file():
             args.extend(["-f", str(path)])
-    args.extend(["stop", "worker", "preview", "preview-worker"])
+    # The legacy stack did not define a separate preview worker.
+    args.extend(["stop", "worker", "preview"])
     runner.run(args)
 
 
@@ -961,8 +1011,13 @@ def start_legacy_producers(runner: CommandRunner) -> None:
     for path in compose_files:
         if path.is_file():
             args.extend(["-f", str(path)])
-    args.extend(["start", "worker", "preview", "preview-worker"])
+    args.extend(["start", "worker"])
     runner.run(args)
+    # The preview gateway was stopped above but is not a task producer for the
+    # new stack. Restart it independently so a failed pre-switch attempt leaves
+    # the legacy environment as it was.
+    preview_args = list(args[:-1]) + ["start", "preview"]
+    runner.run(preview_args)
 
 
 def rollback(paths: Paths, previous: Path, runner: CommandRunner, health_check) -> None:
@@ -1723,7 +1778,10 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "action",
-        choices=("deploy", "shadow", "stage", "takeover", "bootstrap", "rollback", "retain"),
+        choices=(
+            "deploy", "shadow", "stage", "takeover", "bootstrap", "rollback",
+            "retain", "recover-takeover",
+        ),
         nargs="?",
         default="deploy",
     )
@@ -1759,6 +1817,9 @@ def main(argv: list[str]) -> int:
         elif args.action == "retain":
             retained = retain_releases(paths, incoming)
             print("retained releases: " + ", ".join(path.name for path in retained))
+        elif args.action == "recover-takeover":
+            recover_first_takeover(paths, incoming, runner)
+            print(f"first takeover recovered: {incoming.name}")
         elif args.action in {"deploy", "stage"}:
             if args.action == "stage":
                 target = shadow_release(paths, incoming, runner)

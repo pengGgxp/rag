@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import deploy_release
+import check_health
 
 
 DIGEST = "sha256:" + "a" * 64
@@ -72,6 +73,81 @@ def make_release(root: Path, payload: dict | None = None) -> Path:
 
 
 class ManifestTests(unittest.TestCase):
+    def test_health_probe_sets_stable_user_agent(self):
+        response = Mock()
+        response.status = 200
+        response.read.return_value = b'{"status":"ok"}'
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(check_health.urllib.request, "urlopen", return_value=response) as open_url:
+            result = check_health.probe(
+                "https://example.test/health",
+                attempts=1,
+                delay=0,
+                expect_json=True,
+                require_status=True,
+            )
+        self.assertEqual(result, {"status": "ok"})
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), check_health.HEALTH_USER_AGENT)
+
+    def test_running_image_uses_container_config_image_not_repo_digests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release = make_release(Path(tmp))
+            images = {
+                "api": IMAGE,
+                "preview": IMAGE,
+                "worker": IMAGE,
+                "preview-worker": IMAGE,
+                "web": IMAGE,
+            }
+            calls = iter(
+                item
+                for service in images
+                for item in (f"{service}-container-id\n", images[service] + "\n")
+            )
+            runner = SimpleNamespace(
+                run=Mock(side_effect=lambda _args: next(calls))
+            )
+            with patch.object(
+                deploy_release,
+                "compose_args",
+                return_value=["docker", "compose"],
+            ), patch.object(
+                deploy_release,
+                "load_manifest",
+                return_value=manifest(),
+            ):
+                deploy_release.verify_running_digests(release, runner)
+        inspect_command = runner.run.call_args_list[1].args[0]
+        self.assertEqual(inspect_command[-1], "{{.Config.Image}}")
+
+    def test_running_image_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release = make_release(Path(tmp))
+            calls = iter(
+                item
+                for service in ("api", "preview", "worker", "preview-worker", "web")
+                for item in (
+                    f"{service}-container-id\n",
+                    "registry.example.test/org/zhiku-api:latest\n",
+                )
+            )
+            runner = SimpleNamespace(
+                run=Mock(side_effect=lambda _args: next(calls))
+            )
+            with patch.object(
+                deploy_release,
+                "compose_args",
+                return_value=["docker", "compose"],
+            ), patch.object(
+                deploy_release,
+                "load_manifest",
+                return_value=manifest(),
+            ):
+                with self.assertRaises(deploy_release.ReleaseError):
+                    deploy_release.verify_running_digests(release, runner)
+
     def test_accepts_digest_pinned_release(self):
         with tempfile.TemporaryDirectory() as tmp:
             release = make_release(Path(tmp))
@@ -104,6 +180,28 @@ class ManifestTests(unittest.TestCase):
             payload = manifest(version="v1.2.3-rc1")
             with self.assertRaises(deploy_release.ReleaseError):
                 deploy_release.load_manifest(make_release(Path(tmp), payload))
+
+    def test_accepts_alembic_head_marker_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release = make_release(Path(tmp))
+            runner = SimpleNamespace(
+                run=lambda _args: "0063_deployment_maintenance (head)\n"
+            )
+            with patch.object(
+                deploy_release,
+                "compose_args",
+                return_value=["docker", "compose"],
+            ):
+                deploy_release.verify_migration_heads(release, runner)
+
+    def test_legacy_producer_commands_only_name_existing_services(self):
+        runner = SimpleNamespace(run=Mock())
+        deploy_release.stop_legacy_producers(runner)
+        deploy_release.start_legacy_producers(runner)
+        commands = [call.args[0] for call in runner.run.call_args_list]
+        self.assertEqual(commands[0][-3:], ["stop", "worker", "preview"])
+        self.assertEqual(commands[1][-2:], ["start", "worker"])
+        self.assertEqual(commands[2][-2:], ["start", "preview"])
 
 
 class RollbackTests(unittest.TestCase):
@@ -183,6 +281,27 @@ class RollbackTests(unittest.TestCase):
             self.assertEqual(backup.read_bytes(), payload)
             checksum = backup.with_name(backup.name + ".sha256").read_text(encoding="utf-8")
             self.assertEqual(checksum, hashlib.sha256(payload).hexdigest() + "  " + backup.name + "\n")
+
+    def test_migration_jobs_enable_the_migration_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp)
+            release.mkdir(exist_ok=True)
+            (release / "app.env").write_text("DATABASE_URL=test\n", encoding="utf-8")
+            runner = Mock()
+            runner.run.return_value = "0063_deployment_maintenance\n"
+            with patch.object(
+                deploy_release,
+                "compose_args",
+                return_value=["docker", "compose"],
+            ), patch.object(
+                deploy_release,
+                "load_manifest",
+                return_value=manifest(),
+            ):
+                deploy_release.migrate_production(release, runner)
+            command = runner.run.call_args_list[0].args[0]
+            self.assertIn("--profile", command)
+            self.assertIn("migration", command)
 
     def test_rehearsal_runs_before_production_migration(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,9 +522,51 @@ class RollbackTests(unittest.TestCase):
             with patch.object(deploy_release, "NGINX_FILES", ("zk.str1ct.top.conf",)):
                 deploy_release.set_nginx_maintenance(paths, runner, True)
             text = (nginx / "zk.str1ct.top.conf").read_text(encoding="utf-8")
-            self.assertIn("location ^~ /api/", text)
+            self.assertEqual(text.count("location"), 2)
+            self.assertIn("location = /api/health", text)
+            self.assertIn("location /api/", text)
             self.assertIn("return 503", text)
             self.assertIn('add_header Retry-After 60 always;', text)
+
+    def test_first_takeover_recovery_requires_legacy_previous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "releases" / "v1.2.3"
+            current.mkdir(parents=True)
+            paths = deploy_release.Paths(root=root)
+            paths.current.symlink_to(current.resolve(), target_is_directory=True)
+            paths.previous.symlink_to(current.resolve(), target_is_directory=True)
+            with self.assertRaises(deploy_release.ReleaseError):
+                deploy_release.recover_first_takeover(
+                    paths, current, deploy_release.CommandRunner()
+                )
+
+    def test_first_takeover_recovery_rechecks_runtime_and_rewrites_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = root / "releases" / "v1.2.3"
+            legacy = current / "legacy-running"
+            legacy.mkdir(parents=True)
+            make_release(current)
+            paths = deploy_release.Paths(root=root)
+            paths.current.symlink_to(current.resolve(), target_is_directory=True)
+            paths.previous.symlink_to(legacy.resolve(), target_is_directory=True)
+            runner = deploy_release.CommandRunner()
+            with patch.object(deploy_release, "verify_running_digests") as digests, \
+                 patch.object(deploy_release, "verify_migration_heads") as migration, \
+                 patch.object(
+                     deploy_release,
+                     "health_check",
+                     return_value={"status": "ok"},
+                 ) as health, \
+                 patch.object(deploy_release, "install_nginx") as nginx, \
+                 patch.object(deploy_release, "write_evidence") as evidence:
+                deploy_release.recover_first_takeover(paths, current, runner)
+            digests.assert_called_once_with(current, runner)
+            migration.assert_called_once_with(current, runner)
+            health.assert_called_once_with(paths)
+            nginx.assert_called_once_with(paths, current, runner)
+            self.assertEqual(evidence.call_args.kwargs["status"], "healthy")
 
     def test_retention_keeps_only_current_and_previous_release(self):
         with tempfile.TemporaryDirectory() as tmp:
