@@ -6,7 +6,7 @@ import subprocess
 import tarfile
 from contextlib import nullcontext
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -14,7 +14,8 @@ from fastapi import HTTPException
 from app import extensions, executor_service, workspace_files
 from app.config import get_settings
 from app.extensions import ExtensionRuntime
-from app.models import AgentSkill, AgentSkillFile, Membership, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion
+from app.models import (AgentSkill, AgentSkillFile, ChatMessage, Conversation, Membership, SiteSkill,
+    WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion)
 from test_extensions import access_for
 from test_personal_extensions import skill
 from test_shared_providers import setup_site
@@ -155,6 +156,85 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
     assert error.value.status_code == 403 and len(captured) == 2
     viewer = ExtensionRuntime(lambda: nullcontext(db), access)
     assert "run_command" not in {item["function"]["name"] for item in viewer.tools}
+
+
+def test_platform_package_mounts_by_skill_id_and_command_path_with_pinned_bytes(accounts, monkeypatch):
+    from test_extensions import create
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    access = access_for(admin, db)
+    fake, _ = enable_cloud(db, access, monkeypatch)
+    skill = create(admin, files=[
+        {"path": "scripts/task.py", "content": base64.b64encode(b"print('PLATFORM')").decode()},
+        {"path": "assets/value.bin", "content": base64.b64encode(b"\xff\x00").decode()},
+    ])
+    conversation = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
+    db.add(conversation); db.flush()
+    message = ChatMessage(conversation_id=conversation.id, sequence=1, role="assistant", content="")
+    db.add(message); db.commit()
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access, message_id=message.id, request_id=uuid4())
+    loaded = runtime.execute("load_skill", {"skill_id": skill["id"]})
+    assert loaded["execute_scripts"] and loaded["resources"] == [{"path": "scripts/task.py"}]
+    assert loaded["execution"]["directory"] == f"/skills/{skill['id']}"
+    assert loaded["execution"]["scripts"] == ["scripts/task.py"] and loaded["execution"]["read_only"]
+    written = []
+    monkeypatch.setattr(fake, "write_skill", lambda sandbox, path, data: written.append((path, data)))
+    result = runtime.execute("run_command", {"command": "echo ready", "skill_ids": [skill["id"]]})
+    assert result["exit_code"] == 0
+    assert fake.skill_clears == 1
+    assert dict(written) == {f"{skill['id']}/SKILL.md": skill["markdown"].encode(),
+        f"{skill['id']}/assets/value.bin": b"\xff\x00", f"{skill['id']}/scripts/task.py": b"print('PLATFORM')"}
+    written.clear()
+    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"})["exit_code"] == 0
+    assert fake.skill_clears == 2
+    assert {path for path, _ in written} == {f"{skill['id']}/SKILL.md", f"{skill['id']}/assets/value.bin",
+        f"{skill['id']}/scripts/task.py"}
+    row = db.get(SiteSkill, UUID(skill["id"]))
+    row.files[0].content, row.version = b"CHANGED", 2
+    db.commit()
+    written.clear()
+    runtime.request_id = uuid4()
+    runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py changed"})
+    assert (f"{skill['id']}/scripts/task.py", b"print('PLATFORM')") in written
+    row.enabled = False
+    db.commit()
+    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"})["error_code"] == "skill_missing"
+
+
+def test_platform_and_personal_uuid_collision_is_rejected(accounts, monkeypatch):
+    from test_extensions import create
+    from test_personal_extensions import skill
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    platform = create(admin)
+    personal = skill(admin, limitations_acknowledged=True)
+    private = db.get(AgentSkill, UUID(personal["id"]))
+    private.id = UUID(platform["id"])
+    db.commit()
+    with pytest.raises(HTTPException) as error:
+        ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
+    assert error.value.status_code == 409 and "标识冲突" in str(error.value.detail)
+
+
+@pytest.mark.parametrize("path", ["not-a-skill", str(uuid4()), "scripts"])
+def test_unknown_command_skill_path_is_rejected_before_execution(accounts, monkeypatch, path):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    enable_cloud(db, access_for(admin, db), monkeypatch)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
+    monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: pytest.fail("command submitted"))
+    result = runtime.execute("run_command", {"command": f"python /skills/{path}/task.py"})
+    assert result["error_code"] == "skill_missing"
+
+
+def test_command_skill_limit_includes_ids_and_paths(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    enable_cloud(db, access_for(admin, db), monkeypatch)
+    skills = [scripted(admin, name=f"Skill {index}") for index in range(20)]
+    selected = [item["id"] for item in skills]
+    selected.append(scripted(admin, name="Path only")["id"])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
+    monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: pytest.fail("command submitted"))
+    result = runtime.execute("run_command", {"command": f"python /skills/{selected[-1]}/scripts/task.py",
+        "skill_ids": selected[:-1]})
+    assert result["error_code"] == "skill_limit"
 
 
 def test_script_nonzero_exit_is_failure_and_keeps_completed_outputs(accounts, monkeypatch):

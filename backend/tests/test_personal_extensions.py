@@ -26,10 +26,14 @@ TOOL = {"name": "calculate", "description": "Calculate", "inputSchema": {"type":
 
 
 def skill(client, **changes):
+    files = [{"path": "references/guide.md", "content": base64.b64encode(b"ONLY RESOURCE MARKER").decode()}]
+    files = changes.pop("files", files)
+    markdown = changes.pop("markdown", "Read [guide](references/guide.md).")
+    if not any(item["path"] == "references/guide.md" for item in files):
+        markdown = markdown.replace("Read [guide](references/guide.md).", "Run the bundled script.")
     result = client.post("/agent/skills", json={"name": "Personal", "description": "Write a report",
-        "markdown": "Read [guide](references/guide.md).", "enabled": True,
-        "files": [{"path": "references/guide.md", "content": base64.b64encode(b"ONLY RESOURCE MARKER").decode()}],
-        **changes})
+        "markdown": markdown, "enabled": True,
+        "files": files, **changes})
     assert result.status_code == 201, result.text
     return result.json()
 

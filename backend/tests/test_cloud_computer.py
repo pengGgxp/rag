@@ -21,6 +21,7 @@ class FakeCloud:
     def __init__(self):
         self.instances = {}
         self.creates = self.starts = self.kills = self.writes = 0
+        self.skill_clears = 0
         self.create_uncertain = self.kill_uncertain = False
         self.outputs = {"result.txt": b"synthetic output"}
         self.result = {"exit_code": 0, "stdout": "done", "stderr": ""}
@@ -52,7 +53,12 @@ class FakeCloud:
         self.writes += 1
         sandbox["files"][path] = data
 
-    def write_skill(self, *args): pass
+    def clear_skills(self, sandbox):
+        self.skill_clears += 1
+        sandbox.setdefault("skills", {}).clear()
+
+    def write_skill(self, sandbox, path, data):
+        sandbox.setdefault("skills", {})[path] = data
 
     def remove(self, sandbox, path): sandbox["files"].pop(path, None)
 

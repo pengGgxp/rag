@@ -12,6 +12,7 @@ from .audit_log import record_audit
 from .db import get_db
 from .models import AgentSkill, AgentSkillFile, SiteSkill
 from .site_skill_packages import decode_files, encode_files, review
+from .skill_files import WINDOWS_RESOURCE_SUFFIXES
 from .site_skills import SkillWrite, SkillFileWrite, SkillPackageReview, Version, import_markdown
 
 router = APIRouter(prefix="/agent/skills", tags=["personal-skills"])
@@ -42,23 +43,28 @@ def audit(db, access, request, action, row):
 
 def package_review(files):
     result = review(files)
-    resource_warning = "：暂不支持此资源，请移除并调整相关指令后再启用"
-    issues = [issue.replace("请修改后再启用", "请检查该链接")
-              for issue in result["issues"] if not issue.endswith(resource_warning)]
+    issues = [issue.replace("请修改后再启用", "请检查该链接") for issue in result["issues"]]
     for entry in result["manifest"]:
+        windows_resource = entry["path"].lower().endswith(WINDOWS_RESOURCE_SUFFIXES)
+        if windows_resource:
+            entry["personal_notice"] = "Windows 脚本或程序仅随包保留，不能在 Linux 云电脑执行。"
+            continue
         if entry["readable"]:
             continue
-        suffix = entry["path"].rsplit(".", 1)[-1].lower()
-        if suffix in {"ps1", "cmd", "bat", "exe"}:
-            notice = "暂不支持 Windows 脚本或程序，请改用 Python、Node.js 或 Shell。"
-            issues.append(f"{entry['path']}：{notice}")
-        elif entry["text"] and suffix in {"py", "js", "mjs", "cjs", "sh", "bash"}:
+        if entry["kind"] == "script":
             notice = "脚本可按任务需要运行；所需依赖、文件和权限必须可用。"
+        elif entry["kind"] == "archive":
+            notice = "示例压缩包仅用于查看和导出，不会自动解压或执行其中的文件。"
+        elif entry["kind"] == "image":
+            notice = "图片仅用于查看和导出，不会作为文字资料供模型读取。"
+        elif entry["kind"] == "binary":
+            notice = "二进制文件随包保留，可查看或导出。"
         else:
             notice = "此文件随包保留，可查看或导出。"
         entry["personal_notice"] = notice
-    return {**result, "can_enable": True,
-        "has_limitations": bool(issues) or any(not entry["readable"] for entry in result["manifest"]),
+    return {**result, "can_enable": not issues,
+        "has_limitations": bool(issues) or any(entry["kind"] == "script"
+            for entry in result["manifest"]),
         "issues": list(dict.fromkeys(issues))}
 
 
@@ -131,6 +137,10 @@ def reviewing(payload: SkillPackageReview, access=Depends(get_access)):
 def apply(row, payload):
     files = decode_files(payload.files, payload.markdown)
     checked = package_review(files)
+    if any(entry.get("blocking") for entry in checked["manifest"]):
+        raise HTTPException(422, "Skill 包含无效或不安全的示例压缩包，请修复或移除后再保存")
+    if payload.enabled and not checked["can_enable"]:
+        raise HTTPException(422, "Skill 文件检查未通过，请修复后再启用")
     if payload.enabled and checked["has_limitations"] and not payload.limitations_acknowledged:
         raise HTTPException(422, "请先确认脚本会在当前工作区的临时隔离环境中运行，可能读取或生成资源库文件")
     previous = {item.path: item for item in row.files}

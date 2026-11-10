@@ -428,6 +428,11 @@ def _run(identifier, factory=SessionLocal):
             sandbox = provider.connect(row.provider_id)
             provider.prepare(sandbox)
             stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
+            clear_skills = getattr(provider, "clear_skills", None)
+            if clear_skills:
+                # A session reuses the cloud computer; never leave a package from
+                # an earlier command visible to a later, unselected command.
+                clear_skills(sandbox)
             for skill_id, package in command.payload["skills"].items():
                 for path, encoded in package.items():
                     provider.write_skill(sandbox, f"{skill_id}/{path}", base64.b64decode(encoded))

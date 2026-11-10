@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit
 
 from fastapi import HTTPException
 
-from .skill_files import MAX_BUNDLE_BYTES, manifest, safe_path, text_content, validate_files
+from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, text_content, validate_files
 
 TEXT_SUFFIXES = {"md", "txt", "csv", "json", "yaml", "yml", "xml", "html", "css", "svg"}
 LOCAL_LINK = re.compile(r"!?\[[^\[\]\r\n]*\]\(<?([^\s)<>]+)>?(?:[ \t]+[^()\r\n]*)?\)")
@@ -39,10 +39,17 @@ def review(files):
     entries, issues = manifest(files), []
     for entry in entries:
         path = entry["path"]
-        entry["readable"] = (entry["text"] and path.rsplit(".", 1)[-1].lower() in TEXT_SUFFIXES
+        entry["readable"] = (entry["kind"] == "text" and path.rsplit(".", 1)[-1].lower() in TEXT_SUFFIXES
                              and "scripts" not in path.lower().split("/"))
-        if not entry["readable"]:
-            issues.append(f"{path}：暂不支持此资源，请移除并调整相关指令后再启用")
+        entry["resource"] = (entry["kind"] in {"script", "image", "archive", "binary"}
+                             or path.lower().endswith(WINDOWS_RESOURCE_SUFFIXES))
+        if entry["kind"] == "archive":
+            try:
+                entry["archive_entries"] = archive_entries(path, files[path])
+            except HTTPException as exc:
+                entry["archive_error"] = str(exc.detail)
+                entry["blocking"] = True
+                issues.append(f"{path}：{exc.detail}")
         if path.lower().endswith(".md") and entry["readable"]:
             for match in LOCAL_LINK.finditer(text_content(files[path])):
                 try:

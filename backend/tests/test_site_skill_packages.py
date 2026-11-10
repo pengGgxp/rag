@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import stat
+import tarfile
 import zipfile
 from contextlib import nullcontext
 from uuid import UUID
@@ -77,18 +78,155 @@ def test_import_package_preserves_review_and_atomic_resources(accounts, monkeypa
 
 
 @pytest.mark.parametrize("extra", [{"scripts/run.py": b"print('no')"}, {"assets/image.png": b"\x89PNG\x00"},
-                                  {"references/code.sh": b"echo no"}, {"references/empty.bin": b""}])
-def test_unsupported_resources_retained_as_draft_and_cannot_enable(accounts, monkeypatch, extra):
+                                  {"references/code.sh": b"echo no"}, {"references/empty.bin": b""},
+                                  {"references/windows.ps1": b"Write-Output no"},
+                                  {"references/program.exe": b"MZ"}])
+def test_linux_scripts_images_and_binaries_can_enable(accounts, monkeypatch, extra):
     admin, _, _ = setup_site(accounts, monkeypatch)
     draft = import_package(admin, {"SKILL.md": MAIN, "references/guide.md": b"guide", **extra}).json()
-    assert not draft["package_review"]["can_enable"]
+    assert draft["package_review"]["can_enable"]
     assert len(draft["files"]) == 2
-    assert admin.post("/site/admin/skills", json=write_body(draft, True)).status_code == 422
-    saved = admin.post("/site/admin/skills", json=write_body(draft)).json()
-    assert len(saved["files"]) == 2
-    saved["files"] = [file for file in saved["files"] if file["path"] == "references/guide.md"]
-    updated = admin.put(f"/site/admin/skills/{saved['id']}", json={**write_body(saved, True), "version": 1})
-    assert updated.status_code == 200 and updated.json()["enabled"]
+    assert admin.post("/site/admin/skills", json=write_body(draft, True)).status_code == 201
+
+
+def tarred(files, *, symlink=False):
+    result = io.BytesIO()
+    with tarfile.open(fileobj=result, mode="w:gz") as archive:
+        for path, content in files.items():
+            info = tarfile.TarInfo(path)
+            info.size = 0 if symlink else len(content)
+            if symlink:
+                info.type, info.linkname = tarfile.SYMTYPE, "../../secret"
+            archive.addfile(info, None if symlink else io.BytesIO(content))
+    return result.getvalue()
+
+
+def encrypted_zip(path="samples/secret.zip"):
+    result = io.BytesIO()
+    with zipfile.ZipFile(result, "w") as archive:
+        archive.writestr("secret.txt", b"secret")
+    data = bytearray(result.getvalue())
+    marker = b"PK\x01\x02"
+    central = data.rfind(marker)
+    assert central >= 0
+    flags = int.from_bytes(data[central + 8:central + 10], "little") | 1
+    data[central + 8:central + 10] = flags.to_bytes(2, "little")
+    return {path: bytes(data)}
+
+
+def test_example_archives_render_members_and_unsafe_archives_block_enable(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    draft = import_package(admin, {
+        "SKILL.md": MAIN, "references/guide.md": b"Guide",
+        "samples/input.zip": zipped({"samples/input.csv": b"a,b\n1,2\n"}),
+        "samples/output.tar.gz": tarred({"samples/output.txt": b"Example"}),
+    }).json()
+    assert draft["package_review"]["can_enable"]
+    entries = {item["path"]: item for item in draft["package_review"]["manifest"]}
+    assert entries["samples/input.zip"]["archive_entries"] == [{"path": "samples/input.csv", "size": 8}]
+    assert entries["samples/output.tar.gz"]["archive_entries"] == [{"path": "samples/output.txt", "size": 7}]
+    assert admin.post("/site/admin/skills", json=write_body(draft, True)).status_code == 201
+    unsafe = import_package(admin, {
+        "SKILL.md": MAIN, "samples/link.tar.gz": tarred({"safe.txt": b""}, symlink=True)}).json()
+    assert not unsafe["package_review"]["can_enable"]
+    assert "TAR 不允许链接" in str(unsafe["package_review"]["issues"])
+    assert admin.post("/site/admin/skills", json=write_body(unsafe, True)).status_code == 422
+
+
+def test_example_archive_rejects_encrypted_and_special_members(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    encrypted = import_package(admin, {
+        "SKILL.md": MAIN, "references/guide.md": b"Guide", **encrypted_zip()}).json()
+    entry = next(item for item in encrypted["package_review"]["manifest"]
+        if item["path"] == "samples/secret.zip")
+    assert not encrypted["package_review"]["can_enable"] and entry["blocking"]
+    assert "加密" in entry["archive_error"]
+
+    special_zip = io.BytesIO()
+    with zipfile.ZipFile(special_zip, "w") as archive:
+        info = zipfile.ZipInfo("samples/device")
+        info.external_attr = (stat.S_IFCHR | 0o600) << 16
+        archive.writestr(info, b"")
+    zip_draft = admin.post("/site/admin/skills/import", files={
+        "file": ("special.zip", zipped({
+            "SKILL.md": MAIN, "references/guide.md": b"Guide",
+            "samples/device.zip": special_zip.getvalue()}))}).json()
+    assert not zip_draft["package_review"]["can_enable"]
+    assert any("特殊文件" in issue for issue in zip_draft["package_review"]["issues"])
+
+    special_tar = io.BytesIO()
+    with tarfile.open(fileobj=special_tar, mode="w:gz") as archive:
+        for path, content in (("SKILL.md", MAIN), ("references/guide.md", b"Guide")):
+            info = tarfile.TarInfo(path)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+        info = tarfile.TarInfo("samples/fifo")
+        info.type = tarfile.FIFOTYPE
+        archive.addfile(info)
+    tar_draft = admin.post("/site/admin/skills/import", files={
+        "file": ("special.zip", zipped({
+            "SKILL.md": MAIN, "references/guide.md": b"Guide",
+            "samples/fifo.tar.gz": special_tar.getvalue()}))}).json()
+    assert not tar_draft["package_review"]["can_enable"]
+    assert any("TAR 不允许链接或特殊文件" in issue
+        for issue in tar_draft["package_review"]["issues"])
+
+
+def test_example_archive_expanded_size_limit(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    draft = import_package(admin, {
+        "SKILL.md": MAIN, "references/guide.md": b"Guide",
+        "samples/large.zip": zipped({
+            "one.bin": b"\0" * (5 * 1024 * 1024),
+            "two.bin": b"\0" * (5 * 1024 * 1024),
+            "three.bin": b"\0" * (5 * 1024 * 1024),
+            "four.bin": b"\0" * (5 * 1024 * 1024),
+            "five.bin": b"\0" * (1024 * 1024)})}).json()
+    entry = next(item for item in draft["package_review"]["manifest"]
+        if item["path"] == "samples/large.zip")
+    assert not draft["package_review"]["can_enable"] and entry["blocking"]
+    assert "大小限制" in entry["archive_error"]
+
+
+def test_invalid_personal_example_archive_cannot_be_saved(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    draft = admin.post("/agent/skills/import", files={"file": ("bad.zip", zipped({
+        "SKILL.md": MAIN, "samples/link.tar.gz": tarred({"safe.txt": b""}, symlink=True)}))}).json()
+    assert not draft["review"]["can_enable"]
+    body = {key: draft[key] for key in ("name", "description", "markdown", "files")}
+    assert admin.post("/agent/skills", json={**body, "enabled": False}).status_code == 422
+
+
+def test_personal_missing_reference_saves_as_draft_but_cannot_enable(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    draft = import_package(admin, {"SKILL.md": MAIN}).json()
+    body = {key: draft[key] for key in ("name", "description", "markdown", "files")}
+    assert admin.post("/agent/skills", json={**body, "enabled": False}).status_code == 201
+    assert admin.post("/agent/skills", json={**body, "enabled": True}).status_code == 422
+
+
+def test_platform_unsafe_archive_saves_as_disabled_draft(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    unsafe = import_package(admin, {
+        "SKILL.md": MAIN, "samples/link.tar.gz": tarred({"safe.txt": b""}, symlink=True)}).json()
+    assert admin.post("/site/admin/skills", json=write_body(unsafe)).status_code == 201
+    assert admin.post("/site/admin/skills", json=write_body(unsafe, True)).status_code == 422
+
+
+def test_tar_member_count_limit(accounts, monkeypatch):
+    admin, _, _ = setup_site(accounts, monkeypatch)
+    members = {f"empty-{index}.txt": b"" for index in range(601)}
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+        for path, content in members.items():
+            info = tarfile.TarInfo(path)
+            info.size = len(content)
+            archive.addfile(info, io.BytesIO(content))
+    draft = import_package(admin, {
+        "SKILL.md": MAIN, "references/guide.md": b"Guide",
+        "samples/too-many.tar": output.getvalue()}).json()
+    assert not draft["package_review"]["can_enable"]
+    assert any("too-many.tar" in issue for issue in draft["package_review"]["issues"])
 
 
 @pytest.mark.parametrize("path", ["../secret.md", "/absolute.md", "root/x:secret.md", "references/../x.md", "a//x.md"])

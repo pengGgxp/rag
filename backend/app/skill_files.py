@@ -4,6 +4,7 @@ import io
 import lzma
 import mimetypes
 import stat
+import tarfile
 import unicodedata
 import zipfile
 import zlib
@@ -15,6 +16,11 @@ MAX_FILES = 200
 MAX_FILE_BYTES = 5 * 1024 * 1024
 MAX_BUNDLE_BYTES = 20 * 1024 * 1024
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
+WINDOWS_RESOURCE_SUFFIXES = (".bat", ".cmd", ".com", ".exe", ".msi", ".ps1")
+IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".zip")
 
 
 def safe_path(path: str) -> str:
@@ -36,12 +42,27 @@ def text_content(content: bytes) -> str | None:
     return None if any(ord(c) < 32 and c not in "\t\r\n" for c in text) else text
 
 
+def file_kind(path: str, content: bytes) -> str:
+    name = path.lower()
+    media_type = mimetypes.guess_type(path)[0] or ""
+    if name.endswith(SCRIPT_SUFFIXES) and text_content(content) is not None:
+        return "script"
+    if media_type in IMAGE_MEDIA_TYPES:
+        return "image"
+    if name.endswith(ARCHIVE_SUFFIXES):
+        return "archive"
+    if text_content(content) is not None:
+        return "text"
+    return "binary"
+
+
 def manifest(files: dict[str, bytes]) -> list[dict]:
     return [
         {
             "path": path, "size": len(content),
             "media_type": mimetypes.guess_type(path)[0] or "application/octet-stream",
             "text": text_content(content) is not None, "sha256": sha256(content).hexdigest(),
+            "kind": file_kind(path, content),
         }
         for path, content in sorted(files.items())
     ]
@@ -119,6 +140,60 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
             return imported_files(entries)
     except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, RuntimeError, NotImplementedError, EOFError, ValueError) as exc:
         raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持") from exc
+
+
+def archive_entries(path: str, content: bytes) -> list[dict]:
+    """Inspect archive members in memory without extracting or recursing."""
+    name = path.lower()
+    try:
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                infos = archive.infolist()
+                if len(infos) > MAX_FILES * 3:
+                    raise HTTPException(413, "压缩包条目过多")
+                entries, total = [], 0
+                for info in infos:
+                    member = info.filename.rstrip("/") if info.is_dir() else info.filename
+                    safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
+                    safe_path(member)
+                    mode = info.external_attr >> 16
+                    if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR) or info.flag_bits & 1:
+                        raise HTTPException(422, "压缩包不允许链接、特殊文件或加密条目")
+                    if info.is_dir():
+                        continue
+                    total += info.file_size
+                    if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
+                        raise HTTPException(413, "压缩包超出 Skill 文件数量或大小限制")
+                    with archive.open(info) as source:
+                        data = source.read(MAX_FILE_BYTES + 1)
+                    if len(data) != info.file_size:
+                        raise HTTPException(422, "压缩包文件大小不一致")
+                    entries.append({"path": member, "size": info.file_size})
+                return entries
+        if name.endswith((".tar", ".tar.gz", ".tgz")):
+            entries, total, members = [], 0, 0
+            with tarfile.open(fileobj=io.BytesIO(content), mode="r:*") as archive:
+                for info in archive:
+                    members += 1
+                    if members > MAX_FILES * 3:
+                        raise HTTPException(413, "压缩包条目过多")
+                    safe_path(info.name.rstrip("/") if info.isdir() else info.name)
+                    if not (info.isfile() or info.isdir()):
+                        raise HTTPException(422, "TAR 不允许链接或特殊文件")
+                    if info.isdir():
+                        continue
+                    total += info.size
+                    if info.size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
+                        raise HTTPException(413, "TAR 超出 Skill 文件数量或大小限制")
+                    source = archive.extractfile(info)
+                    if source is None or len(source.read(MAX_FILE_BYTES + 1)) != info.size:
+                        raise HTTPException(422, "压缩包文件大小不一致")
+                    entries.append({"path": info.name, "size": info.size})
+            return entries
+    except (zipfile.BadZipFile, tarfile.TarError, zlib.error, lzma.LZMAError, RuntimeError,
+            NotImplementedError, EOFError, ValueError) as exc:
+        raise HTTPException(422, "示例压缩包无效、损坏或压缩方式不支持") from exc
+    raise HTTPException(422, "该文件不是可检查的示例压缩包")
 
 
 def bundle_files(row) -> dict[str, bytes]:
