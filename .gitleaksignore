@@ -1,0 +1,4 @@
+# Exact historical false positives, scoped to commit, file, rule, and line.
+75b008a1936bb713c4a872298ce809f7caea0df9:backend/tests/test_site_admin.py:generic-api-key:46
+e00142b8f35361f40ee3114d71acf0395f431d72:backend/tests/test_site_admin.py:generic-api-key:46
+1bb95946e97fbec723c6d5aa7aee63696f9cd407:backend/app/llm_providers.py:generic-api-key:146

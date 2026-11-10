@@ -18,10 +18,3 @@ paths = [
   '''(^|/)\.env$''',
   '''(^|/)新建 文本文档\.txt$''',
 ]
-
-[[allowlists]]
-description = "Historic fixtures match the generic rule only on an empty key assignment."
-regexTarget = "secret"
-regexes = [
-  '''^encrypted_api_key=$''',
-]
