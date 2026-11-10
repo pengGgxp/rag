@@ -182,7 +182,8 @@ def history_message(row, config, skill_versions=None):
                 and private.get("adapter") == config.thinking.adapter):
             if (private.get("protocol", "chat_completions") == config.api_protocol
                     and private.get("connection", config.connection_id) == config.connection_id):
-                messages = private["messages"]
+                from .image_reading import persisted_model_images
+                messages = persisted_model_images(private["messages"])
                 allowed_skills = dict(skill_versions) if skill_versions is not None else None
                 for message in messages:
                     for call in message.get("tool_calls") or []:

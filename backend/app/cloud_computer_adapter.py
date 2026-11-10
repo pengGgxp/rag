@@ -294,6 +294,14 @@ class AlibabaSandbox:
     def file_result(self, sandbox, identifier):
         return json.loads(sandbox.files.read(f"{STATE}/jobs/{identifier}/file-result.json", user="user"))
 
+    def read_file(self, sandbox, path, *, max_bytes, owner="user"):
+        """Read at most max_bytes without copying the body into a command result."""
+        with sandbox.files.read(path, format="stream", user=owner) as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise RuntimeError("图片超过 10 MiB")
+        return bytes(data)
+
     def poll(self, sandbox, identifier):
         path = f"{STATE}/jobs/{identifier}/result.json"
         if sandbox.files.exists(path, user="user"):
