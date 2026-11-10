@@ -367,8 +367,11 @@ jobs:
             "sudo test -x /opt/zhiku/bin/deploy-release"; then
             ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
               "sudo install -d -m 700 /opt/zhiku /opt/zhiku/incoming && sudo chown '$PRODUCTION_USER': /opt/zhiku /opt/zhiku/incoming"
+            # The bootstrap script is inside the checksum-verified archive; only
+            # extract that file for installation, then let it verify the whole
+            # package before executing the deployment logic.
             ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
-              "sudo install -m 700 /opt/zhiku/incoming/$VERSION/bootstrap.sh /opt/zhiku/bootstrap.sh && sudo /opt/zhiku/bootstrap.sh /opt/zhiku/incoming/$VERSION"
+              "cd /opt/zhiku/incoming/$VERSION && tar -xzf zhiku-$VERSION.tar.gz bootstrap.sh -O | sudo tee /opt/zhiku/bootstrap.sh >/dev/null && sudo chmod 700 /opt/zhiku/bootstrap.sh && sudo /opt/zhiku/bootstrap.sh /opt/zhiku/incoming/$VERSION"
           fi
           ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
             "sudo /opt/zhiku/bin/deploy-release /opt/zhiku/incoming/$VERSION ${DEPLOY_ACTION:-deploy}"
