@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+umask 077
+if [ "$(id -u)" -ne 0 ]; then
+  echo "rollback must run as root" >&2
+  exit 1
+fi
+exec 9>/opt/zhiku/deploy.lock
+if ! flock -n 9; then
+  echo "another deployment is running" >&2
+  exit 3
+fi
+version=${1:?current failed release version is required}
+case "$version" in
+  v[0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo "invalid version" >&2; exit 2 ;;
+esac
+release=/opt/zhiku/releases/$version
+if [ ! -f "$release/evidence.json" ] || [ ! -f "$release/deploy_release.py" ]; then
+  echo "release evidence is missing" >&2
+  exit 2
+fi
+/usr/bin/python3 "$release/deploy_release.py" rollback "$release"

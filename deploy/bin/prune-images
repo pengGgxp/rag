@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# Only dangling images and build cache are pruned. Current and previous digest
+# images are retained by Docker because they remain referenced.
+docker image prune -f
+docker builder prune -f

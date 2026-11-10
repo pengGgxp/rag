@@ -1,5 +1,7 @@
 from celery import Celery
-from celery.signals import worker_ready
+from celery.signals import worker_ready, worker_shutdown
+import redis
+import threading
 from sqlalchemy import select
 from uuid import UUID
 from datetime import datetime, timezone
@@ -34,6 +36,10 @@ from .workspace_billing import document_snapshot
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
+
+_heartbeat_stop = threading.Event()
+_heartbeat_lock = threading.Lock()
+_heartbeat_thread: threading.Thread | None = None
 
 
 @celery_app.task
@@ -81,6 +87,55 @@ def recover_image_tasks():
 @worker_ready.connect
 def image_tasks_on_worker_ready(**_):
     recover_image_tasks.delay()
+    _start_worker_heartbeat()
+
+
+@worker_shutdown.connect
+def worker_heartbeat_on_shutdown(**_):
+    _stop_worker_heartbeat()
+
+
+def _record_heartbeat():
+    try:
+        redis.Redis.from_url(get_settings().redis_url).set(
+            "deploy:worker-heartbeat",
+            datetime.now(timezone.utc).isoformat(),
+            ex=30,
+        )
+    except redis.RedisError:
+        # Worker processing must continue even when the health marker is unavailable.
+        pass
+
+
+def _heartbeat_loop():
+    while not _heartbeat_stop.wait(10):
+        _record_heartbeat()
+
+
+def _start_worker_heartbeat():
+    """Refresh the health marker for as long as this worker process is alive."""
+    global _heartbeat_thread
+    _record_heartbeat()
+    with _heartbeat_lock:
+        if _heartbeat_thread is not None and _heartbeat_thread.is_alive():
+            return
+        _heartbeat_stop.clear()
+        _heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            name="worker-heartbeat",
+            daemon=True,
+        )
+        _heartbeat_thread.start()
+
+
+def _stop_worker_heartbeat():
+    global _heartbeat_thread
+    _heartbeat_stop.set()
+    with _heartbeat_lock:
+        thread = _heartbeat_thread
+        _heartbeat_thread = None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=2)
 
 
 def ocr_storage(session):

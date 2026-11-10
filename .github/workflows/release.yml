@@ -1,0 +1,492 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version tag to release, for example v1.2.3
+        required: true
+        type: string
+      sha:
+        description: Full commit SHA on main
+        required: true
+        type: string
+      dry_run:
+        description: Build and verify without deploying
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
+      dry_run: ${{ steps.release.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.sha }}
+      - name: Validate release identity
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if test "$EVENT_NAME" = workflow_dispatch; then
+            version="$INPUT_VERSION"
+            expected_sha="$INPUT_SHA"
+            dry_run="$INPUT_DRY_RUN"
+            if test "$dry_run" != true; then
+              echo "workflow_dispatch is verification-only; deploy by pushing a vX.Y.Z tag" >&2
+              exit 1
+            fi
+            test "$(git tag --points-at "$expected_sha" | grep -Ec '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)" -ge 1
+          else
+            version="$TAG_NAME"
+            expected_sha="$GITHUB_SHA"
+            dry_run=false
+          fi
+          printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          test "${#expected_sha}" -eq 40
+          test "$(git rev-parse HEAD)" = "$expected_sha"
+          test "$(git rev-list -n 1 "$version")" = "$expected_sha"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$expected_sha" origin/main
+          test -z "$(git status --porcelain)"
+          {
+            echo "version=$version"
+            echo "sha=$expected_sha"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
+
+  validate-build:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require production Web API URL
+        shell: bash
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$NEXT_PUBLIC_API_URL" || {
+            echo "NEXT_PUBLIC_API_URL is required for production builds" >&2
+            exit 1
+          }
+          python3 - "$NEXT_PUBLIC_API_URL" <<'PY'
+          import sys
+          from urllib.parse import urlsplit
+
+          value = sys.argv[1]
+          parsed = urlsplit(value)
+          if (
+              parsed.scheme != "https"
+              or not parsed.hostname
+              or parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+              or parsed.username
+              or parsed.password
+              or parsed.fragment
+          ):
+              raise SystemExit(
+                  "NEXT_PUBLIC_API_URL must be a production HTTPS URL without credentials or fragments"
+              )
+          if parsed.path.rstrip("/") != "/api":
+              raise SystemExit("NEXT_PUBLIC_API_URL must end with /api")
+          PY
+
+  test:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: rag
+          POSTGRES_USER: rag
+          POSTGRES_PASSWORD: rag
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rag -d rag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://rag:rag@127.0.0.1:5432/rag
+      TEST_DATABASE_URL: postgresql+psycopg://rag:rag@127.0.0.1:5432/rag
+      SITE_CONFIG_ENCRYPTION_KEY: uyq8T_9zj1cVz0w5L1yUDf4qNzN7Zvo7zGvWr3a0X6E= # gitleaks:allow
+      MCP_CREDENTIAL_KEY: kK4tD7q9Xz2hN6pQ8rS1uV3wY5aB0cE7fG9jL2mP4s= # gitleaks:allow
+      AUTH_SECRET_KEY: test-only-auth-secret-key-at-least-32-characters # gitleaks:allow
+      AUTH_COOKIE_SECURE: "false"
+      FRONTEND_URL: http://localhost:3000
+      API_PUBLIC_URL: http://localhost:8000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python -m compileall -q backend/app
+      - working-directory: backend
+        run: alembic upgrade head
+      - working-directory: backend
+        run: pytest -q --tb=short
+      - run: python -m unittest discover -s deploy/tests -p 'test_*.py' -v
+      - run: python deploy/validate_config.py --env-template deploy/production.env.example
+          && docker compose -f deploy/compose.production.yml --env-file deploy/production.env.example config --quiet
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: https://zk.str1ct.top/api
+        run: npm ci && npx tsc --noEmit && npm test && npm run build
+
+  publish:
+    needs:
+      - verify
+      - validate-build
+      - test
+    if: ${{ needs.verify.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - service: api
+            repository: zhiku-api
+            context: backend
+            dockerfile: backend/Dockerfile
+          - service: worker
+            repository: zhiku-worker
+            context: backend
+            dockerfile: backend/Dockerfile
+          - service: web
+            repository: zhiku-web
+            context: frontend
+            dockerfile: frontend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.SWR_REGISTRY }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          outputs: type=registry,oci-mediatypes=false
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+          tags: |
+            ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/${{ matrix.repository }}:${{ needs.verify.outputs.version }}
+            ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/${{ matrix.repository }}:sha-${{ needs.verify.outputs.sha }}
+      - name: Record digest
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          mkdir -p artifacts
+          printf '%s\n' "$DIGEST" > "artifacts/$SERVICE.digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: artifacts/${{ matrix.service }}.digest
+          retention-days: 30
+      - name: Verify published digest
+        shell: bash
+        id: published
+        env:
+          REGISTRY: ${{ vars.SWR_REGISTRY }}
+          ORGANIZATION: ${{ vars.SWR_ORGANIZATION }}
+          REPOSITORY: ${{ matrix.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          SHA: ${{ needs.verify.outputs.sha }}
+        run: |
+          set -euo pipefail
+          image="$REGISTRY/$ORGANIZATION/$REPOSITORY"
+          docker buildx imagetools inspect "$image:$VERSION" --raw > inspect.json
+          test "$(jq -r .mediaType inspect.json)" = "application/vnd.docker.distribution.manifest.v2+json"
+          tag_digest=$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          sha_digest=$(docker buildx imagetools inspect "$image:sha-$SHA" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          test -n "$tag_digest"
+          test "$tag_digest" = "$sha_digest"
+          recorded_digest=$(cat "artifacts/${{ matrix.service }}.digest")
+          test "$tag_digest" = "$recorded_digest"
+          echo "digest=$tag_digest" >> "$GITHUB_OUTPUT"
+          cat inspect.json >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    needs:
+      - verify
+      - publish
+    if: ${{ needs.verify.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - name: Build immutable release package
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          COMMIT_SHA: ${{ needs.verify.outputs.sha }}
+          REGISTRY: ${{ vars.SWR_REGISTRY }}
+          ORGANIZATION: ${{ vars.SWR_ORGANIZATION }}
+        run: |
+          set -euo pipefail
+          for service in api worker web; do test -s "digests/$service.digest"; done
+          alembic_head=$(python deploy/alembic_head.py backend)
+          export ALEMBIC_HEAD="$alembic_head"
+          python deploy/release_package.py \
+            --backend-root backend \
+            --digests digests \
+            --output . \
+            --version "$VERSION" \
+            --commit "$COMMIT_SHA" \
+            --registry "$REGISTRY" \
+            --organization "$ORGANIZATION" \
+            --alembic-head "$ALEMBIC_HEAD"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-release-${{ needs.verify.outputs.version }}
+          path: |
+            zhiku-${{ needs.verify.outputs.version }}.tar.gz
+            zhiku-${{ needs.verify.outputs.version }}.tar.gz.sha256
+          retention-days: 90
+
+  deploy:
+    if: ${{ needs.verify.outputs.dry_run != 'true' }}
+    needs:
+      - verify
+      - package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://zk.str1ct.top
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-release-${{ needs.verify.outputs.version }}
+      - name: Install deployment key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Upload release
+        shell: bash
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_PORT: ${{ vars.PRODUCTION_PORT }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="zhiku-$VERSION.tar.gz"
+          sha256sum -c "$archive.sha256"
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "install -d -m 700 /opt/zhiku/incoming/$VERSION"
+          scp -P "$PRODUCTION_PORT" "$archive" "$archive.sha256" \
+            "$PRODUCTION_USER@$PRODUCTION_HOST:/opt/zhiku/incoming/$VERSION/"
+      - name: Verify uploaded package
+        shell: bash
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_PORT: ${{ vars.PRODUCTION_PORT }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "cd /opt/zhiku/incoming/$VERSION && sha256sum -c zhiku-$VERSION.tar.gz.sha256"
+      - name: Deploy with rollback
+        shell: bash
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_PORT: ${{ vars.PRODUCTION_PORT }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+          VERSION: ${{ needs.verify.outputs.version }}
+          DEPLOY_ACTION: ${{ vars.FIRST_TAKEOVER == 'true' && 'takeover' || 'deploy' }}
+        run: |
+          set -euo pipefail
+          if ! ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "sudo test -x /opt/zhiku/bin/deploy-release"; then
+            ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+              "sudo install -d -m 700 /opt/zhiku /opt/zhiku/incoming && sudo chown '$PRODUCTION_USER': /opt/zhiku /opt/zhiku/incoming"
+            # The bootstrap script is inside the checksum-verified archive; only
+            # extract that file for installation, then let it verify the whole
+            # package before executing the deployment logic.
+            ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+              "cd /opt/zhiku/incoming/$VERSION && tar -xzf zhiku-$VERSION.tar.gz bootstrap.sh -O | sudo tee /opt/zhiku/bootstrap.sh >/dev/null && sudo chmod 700 /opt/zhiku/bootstrap.sh && sudo /opt/zhiku/bootstrap.sh /opt/zhiku/incoming/$VERSION"
+          fi
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "sudo /opt/zhiku/bin/deploy-release /opt/zhiku/incoming/$VERSION ${DEPLOY_ACTION:-deploy}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-evidence-${{ needs.verify.outputs.version }}
+          path: |
+            zhiku-${{ needs.verify.outputs.version }}.tar.gz
+            zhiku-${{ needs.verify.outputs.version }}.tar.gz.sha256
+          retention-days: 90
+
+  cleanup:
+    if: ${{ always() && needs.package.result == 'success' && needs.deploy.result == 'success' }}
+    needs:
+      - verify
+      - package
+      - deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://zk.str1ct.top
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deployment key
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Collect current and previous digests
+        shell: bash
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_PORT: ${{ vars.PRODUCTION_PORT }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          set -euo pipefail
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "sudo cat /opt/zhiku/current/release.json; if sudo test -f /opt/zhiku/previous/release.json; then printf '\n'; sudo cat /opt/zhiku/previous/release.json; fi" \
+            > protected-release-manifests.jsonl
+          python - protected-release-manifests.jsonl protected-digests.txt <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          source, target = map(Path, sys.argv[1:])
+          image = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+          digests = set()
+          for line in source.read_text(encoding="utf-8").splitlines():
+              if not line.strip():
+                  continue
+              document = json.loads(line)
+              images = document.get("images")
+              if (
+                  document.get("schema_version") != 1
+                  or not isinstance(images, dict)
+                  or set(images) != {"api", "worker", "web"}
+              ):
+                  raise SystemExit("release manifest has an invalid image set")
+              for value in images.values():
+                  if not isinstance(value, str) or not image.fullmatch(value):
+                      raise SystemExit("release manifest contains a non-digest image")
+                  digests.add(value.rsplit("@", 1)[1])
+          if not digests or len(digests) > 6:
+              raise SystemExit("current and previous releases must contribute one to six digests")
+          target.write_text("\n".join(sorted(digests)) + "\n", encoding="utf-8")
+          PY
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.SWR_REGISTRY }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked SWR cleanup SDK
+        run: python -m pip install --disable-pip-version-check huaweicloudsdkswr==3.1.221
+      - name: Retain three release tags
+        shell: bash
+        env:
+          REGISTRY: ${{ vars.SWR_REGISTRY }}
+          ORGANIZATION: ${{ vars.SWR_ORGANIZATION }}
+          SWR_DELETE_ENABLED: "true"
+          SWR_ACCESS_KEY: ${{ secrets.SWR_ACCESS_KEY }}
+          SWR_SECRET_KEY: ${{ secrets.SWR_SECRET_KEY }}
+          SWR_PROJECT_ID: ${{ secrets.SWR_PROJECT_ID }}
+          SWR_REGION: ${{ vars.SWR_REGION }}
+        run: |
+          set -euo pipefail
+          test "$(awk 'NF { count++ } END { print count + 0 }' protected-digests.txt)" -ge 1
+          test "$(awk 'NF { count++ } END { print count + 0 }' protected-digests.txt)" -le 6
+          python deploy/prune_registry.py \
+            --registry "$REGISTRY" \
+            --organization "$ORGANIZATION" \
+            --keep 3 \
+            --region "$SWR_REGION" \
+            --protected-file protected-digests.txt
+      - name: Remove unneeded local images
+        shell: bash
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_PORT: ${{ vars.PRODUCTION_PORT }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          set -euo pipefail
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "sudo /opt/zhiku/bin/retain-releases ${{ needs.verify.outputs.version }}"
+          ssh -p "$PRODUCTION_PORT" "$PRODUCTION_USER@$PRODUCTION_HOST" \
+            "sudo /opt/zhiku/bin/prune-images"

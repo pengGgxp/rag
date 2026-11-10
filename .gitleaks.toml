@@ -1,0 +1,20 @@
+title = "zhiku repository credential scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Dependency and generated build output is not source."
+paths = [
+  '''(^|/)\.venv/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next[^/]*/''',
+  '''(^|/)output/''',
+]
+
+[[allowlists]]
+description = "Local protected environment files are not committed."
+paths = [
+  '''(^|/)\.env$''',
+  '''(^|/)新建 文本文档\.txt$''',
+]

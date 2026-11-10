@@ -27,6 +27,11 @@ STRIP_REQUEST = HOP | {"host", "authorization", "cookie", "origin", "referer", "
     "e2b-traffic-access-token", "x-access-token", "x-rag-request", "x-csrf-token"}
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "preview"}
+
+
 def identifier(host):
     domain = re.escape(get_settings().preview_domain)
     match = re.fullmatch(r"([0-9a-f]{32})\." + domain, host.lower())

@@ -81,6 +81,11 @@ class Settings(BaseSettings):
 
     preview_cache_max_bytes: int = Field(default=5 * 1024**3, ge=1024**2)
     preview_cache_idle_seconds: int = Field(default=7 * 86400, ge=60)
+    deploy_control_token: SecretStr | None = None
+    app_version: str = "dev"
+    git_commit: str = "unknown"
+    config_contract: int = 1
+    deployment_rollback: str = "automatic-app-rollback"
 
     @property
     def oidc_configured(self) -> bool:
