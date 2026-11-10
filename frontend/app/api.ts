@@ -1,7 +1,9 @@
 import { createParser } from "eventsource-parser";
 
-const configuredApiUrl =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL;
+if (!configuredApiUrl) {
+  throw new Error("NEXT_PUBLIC_API_URL must be set at build time");
+}
 const REQUEST_TIMEOUT_MS = 15_000;
 
 // Keep same-host deployments on the current page protocol even if a stale

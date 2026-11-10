@@ -1,0 +1,230 @@
+name: rag-platform
+
+services:
+  db:
+    image: pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  redis:
+    image: redis@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  minio:
+    image: rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
+    command: server /data --console-enable --console-address ":9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+      - path: .env.question-workbench
+        required: false
+    environment:
+      RESOURCE_CACHE_DIR: /var/cache/rag-resources
+      APP_VERSION: ${APP_VERSION:-dev}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      CONFIG_CONTRACT: ${CONFIG_CONTRACT:-1}
+      DEPLOYMENT_ROLLBACK: ${DEPLOYMENT_ROLLBACK:-automatic-app-rollback}
+    volumes:
+      - resource_cache:/var/cache/rag-resources
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - backend
+
+  worker:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    environment:
+      RESOURCE_CACHE_DIR: /var/cache/rag-resources
+      APP_VERSION: ${APP_VERSION:-dev}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      CONFIG_CONTRACT: ${CONFIG_CONTRACT:-1}
+      DEPLOYMENT_ROLLBACK: ${DEPLOYMENT_ROLLBACK:-automatic-app-rollback}
+    volumes:
+      - resource_cache:/var/cache/rag-resources
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping --timeout 10 | grep -q 'pong'"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  preview-worker:
+    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--queues=previews", "--concurrency=1", "--max-tasks-per-child=20"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    environment:
+      RESOURCE_CACHE_DIR: /var/cache/rag-resources
+      APP_VERSION: ${APP_VERSION:-dev}
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      CONFIG_CONTRACT: ${CONFIG_CONTRACT:-1}
+      DEPLOYMENT_ROLLBACK: ${DEPLOYMENT_ROLLBACK:-automatic-app-rollback}
+      PREVIEW_CACHE_MAX_BYTES: ${PREVIEW_CACHE_MAX_BYTES:-5368709120}
+      PREVIEW_CACHE_IDLE_SECONDS: ${PREVIEW_CACHE_IDLE_SECONDS:-604800}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q 'pong'"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  preview:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    command: ["uvicorn", "app.preview_gateway:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log", "--no-proxy-headers"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    ports:
+      - "127.0.0.1:8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - backend
+
+  migrate:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    profiles: ["migration"]
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+  migrate-heads:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    profiles: ["migration"]
+    command: ["alembic", "heads"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    restart: "no"
+    networks:
+      - backend
+
+  migrate-rehearsal:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    profiles: ["migration"]
+    command: ["alembic", "-x", "rehearsal=1", "upgrade", "head"]
+    env_file:
+      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
+        required: false
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+volumes:
+  # Existing production volumes are adopted by explicit name so this
+  # Compose file cannot silently create an empty database. Redis is omitted
+  # from persistent state until an administrator deliberately adopts the
+  # existing anonymous broker volume.
+  postgres_data:
+    name: rag-platform_postgres_data
+  minio_data:
+    name: rag-platform_minio_data
+  resource_cache:
+    name: rag-platform_resource_cache
+
+networks:
+  backend:
+    name: rag-platform_default
