@@ -42,6 +42,31 @@ as specified by Alibaba support. Template readiness alone is not acceptance.
   dependency download and destruction acceptance remain unverified pending
   template readiness. Supplier billing has not been reconciled.
 
+## ACR retry on 2026-11-09
+
+- User authorized copying the existing image to the Hangzhou public personal ACR
+  repository, then creating a new template. No rebuild or production cutover.
+- Image repository: `crpi-wt6olxrbvra8q3wg.cn-hangzhou.personal.cr.aliyuncs.com/str1ct/zhiku-cloud-computer`.
+- Standalone image repository commit `6d472f6` adds a manual registry-copy workflow.
+  Actions run `42575585238` succeeded. Credentials are encrypted repository
+  secrets; no credential values appear in source or verification artifacts.
+- Tags `allinone-e8d9d3e` and `latest` retain digest
+  `sha256:73af216889e100745d6637e98f786a1bfe6f8010328509b3f29d0eab48b5d1b6`.
+  Raw source/target manifests match; Docker schema2 and linux/amd64 verified.
+  A separate anonymous registry request verified the same digest and 46 layers.
+- Template `vw3bbghjqjlgsoetjwea`, name `zhiku-allinone-acr-20261109`,
+  submitted using the ACR public address with immutable digest. Request ID
+  `01A1BF15-A47E-53F1-A7AA-BC55CAEC0F7C`. Failed with `IMAGE_NOT_EXIST`
+  during create-function, despite anonymous registry digest verification succeeding.
+  Generation 2, 2 vCPU, 4096 MB memory, 10240 MB disk, storage clients enabled.
+- This verifies image publication and template submission only. Template readiness
+  and real instance acceptance remain pending. Online default and prices unchanged.
+- A second template uses the verified fixed tag instead of the digest address:
+  `l811p6gvbqfbnuy74oqs`, name `zhiku-allinone-acr-tag-20261109`, tag
+  `allinone-e8d9d3e`. Request ID `01A1BF16-38EC-5BAE-ACC9-CFF4396ECFE0`.
+  Latest observed state: `building`. This tests address resolution; it does not
+  establish that digest syntax caused the first failure.
+
 ## Resume and rollback
 
 Query the existing build before submitting or updating anything. Once ready,

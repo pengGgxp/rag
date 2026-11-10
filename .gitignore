@@ -5,6 +5,8 @@
 node_modules/
 .next/
 .next-qw/
+/frontend/.next-*/
+/frontend/tsconfig.tsbuildinfo
 .next-resource-check/
 .next-resource-preview/
 frontend/public/pdf.worker.min.mjs
@@ -21,4 +23,6 @@ coverage/
 *.log
 .playwright-cli/
 output/playwright/
+/output/
+/huaweicloud-*.tgz
 
