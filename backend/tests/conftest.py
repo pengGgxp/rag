@@ -15,3 +15,10 @@ def isolated_conversation_queue(monkeypatch):
         monkeypatch.setattr(mcp_client, "get_settings", lambda: configured)
     monkeypatch.setattr(conversation_jobs, "dispatch", lambda _identifier: None)
     monkeypatch.setattr(tasks.name_conversation, "delay", lambda _identifier: None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_deployment_state(monkeypatch):
+    """Unit tests never query a developer's maintenance database."""
+    from app import deployment
+    monkeypatch.setattr(deployment, "is_active", lambda: False)

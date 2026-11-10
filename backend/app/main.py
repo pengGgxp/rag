@@ -85,6 +85,7 @@ from .site_settings import router as site_settings_router
 from .search_settings import router as search_settings_router
 from .workspace_files import router as workspace_files_router
 from .storage_billing import router as storage_billing_router
+from .deployment import DeploymentMaintenanceMiddleware, router as deployment_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -186,10 +187,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(DeploymentMaintenanceMiddleware)
 
 
-@app.get("/health")
-def health():
+def _service_health(require_worker: bool = False):
     settings = get_settings()
     db_ok = False
     redis_ok = False
@@ -203,13 +204,40 @@ def health():
         redis_ok = bool(redis.Redis.from_url(settings.redis_url).ping())
     except Exception:
         pass
-    overall = db_ok and redis_ok
+    worker_ok = False
+    try:
+        worker_ok = bool(redis.Redis.from_url(settings.redis_url).exists("deploy:worker-heartbeat"))
+    except Exception:
+        pass
+    overall = db_ok and redis_ok and (worker_ok or not require_worker)
     return {
         "status": "ok" if overall else "degraded",
         "database": "ok" if db_ok else "error",
         "redis": "ok" if redis_ok else "error",
+        "worker": "ok" if worker_ok else "error",
         "embedding": OpenAICompatibleEmbeddingProvider().status.__dict__,
         "llm": {"configuration_source": "database"},
+    }
+
+
+@app.get("/health")
+def health():
+    return _service_health()
+
+
+@app.get("/ready")
+def ready():
+    return _service_health(require_worker=True)
+
+
+@app.get("/version")
+def version():
+    settings = get_settings()
+    return {
+        "version": settings.app_version,
+        "commit": settings.git_commit,
+        "config_contract": settings.config_contract,
+        "database_rollback": settings.deployment_rollback,
     }
 
 
@@ -1132,4 +1160,5 @@ app.include_router(thinking_admin_router)
 app.include_router(selection_router)
 from .billing_admin import router as workspace_billing_router
 app.include_router(workspace_billing_router)
+app.include_router(deployment_router)
 
