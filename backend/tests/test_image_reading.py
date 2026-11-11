@@ -114,7 +114,7 @@ def test_model_capability_and_arguments_are_checked_before_io():
     assert unsupported["error_code"] == "image_model_unsupported" and not called
 
 
-def test_model_image_enters_followup_requests_and_summary_keeps_available_bytes():
+def test_model_image_enters_followup_requests_and_summary_drops_tool_image_bytes():
     value = image_reading.workspace_image(
         "/home/user/workspace/chart.png", "image/png", 1, 1,
         hashlib.sha256(PNG).hexdigest(), PNG)
@@ -127,9 +127,10 @@ def test_model_image_enters_followup_requests_and_summary_keeps_available_bytes(
         assert base64.b64decode(part["image_url"]["url"].split(",", 1)[1]) == PNG
         assert messages[0]["content"][0]["data"] == PNG
     summary = summary_content(messages)
-    assert summary[1]["type"] == "model_image" and summary[1]["data"] == PNG
-    assert "按需读取图片 1：chart.png" in summary[0]["text"]
-    assert base64.b64encode(PNG).decode() not in summary[0]["text"]
+    assert isinstance(summary, str)
+    assert "按需读取过图片「chart.png」；需要查看请再次调用 read_image" in summary
+    assert "model_image" not in summary
+    assert base64.b64encode(PNG).decode() not in summary
     persisted = json.dumps(image_reading.persisted_model_images(messages), ensure_ascii=False, default=str)
     assert base64.b64encode(PNG).decode() not in persisted
     assert "按需读取过图片「chart.png」；需要查看请再次调用 read_image" in persisted
@@ -143,9 +144,37 @@ def test_summary_removes_models_images_without_bytes_from_serialized_text():
     ]
     summary = summary_content(messages)
     assert isinstance(summary, str)
-    assert "按需读取图片：chart.png" in summary
-    assert "1200x800" in summary
+    assert "按需读取过图片「chart.png」；需要查看请再次调用 read_image" in summary
     assert base64.b64encode(PNG).decode() not in summary
+
+
+@pytest.mark.parametrize("protocol", [
+    "chat_completions", "responses", "anthropic", "gemini",
+])
+def test_compaction_drops_read_image_tool_payload_for_every_protocol(protocol):
+    value = image_reading.workspace_image(
+        "/home/user/workspace/chart.png", "image/png", 1, 1,
+        hashlib.sha256(PNG).hexdigest(), PNG)
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "image-call",
+            "function": {"name": "read_image", "arguments": '{"path":"chart.png"}'}}]},
+        {"role": "tool", "tool_call_id": "image-call", "content": '{"filename":"chart.png"}'},
+    ]
+    if protocol in ("anthropic", "gemini"):
+        messages[1]["_image_input"] = value.context_part()
+    else:
+        messages.append({"role": "user", "content": [value.context_part()]})
+
+    summary = summary_content(messages)
+    serialized = summary if isinstance(summary, str) else json.dumps(summary, default=str)
+    assert "read_image" in serialized
+    assert "chart.png" in serialized
+    assert base64.b64encode(PNG).decode("ascii") not in serialized
+    assert "model_image" not in serialized
+    persisted = json.dumps(
+        image_reading.persisted_model_images(messages), ensure_ascii=False, default=str)
+    assert base64.b64encode(PNG).decode("ascii") not in persisted
+    assert "/home/user/workspace/chart.png" not in persisted
 
 
 def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):

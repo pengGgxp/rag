@@ -296,7 +296,10 @@ def validate_messages(messages, config):
 
 
 def summary_content(messages):
-    """Keep image inputs multimodal while serializing the surrounding untrusted history."""
+    """Keep uploaded images multimodal while omitting transient read_image bytes."""
+    from .image_reading import persisted_model_images
+
+    messages = persisted_model_images(messages)
     safe, images = [], []
     for message in messages:
         item = {key: value for key, value in message.items()
@@ -307,17 +310,6 @@ def summary_content(messages):
                 if part.get("type") == "chat_image":
                     images.append(part)
                     parts.append({"type": "text", "text": f"附件图片 {len(images)}：{part['filename']}"})
-                elif part.get("type") == "model_image":
-                    if isinstance(part.get("data"), bytes):
-                        images.append(part)
-                        parts.append({"type": "text",
-                            "text": f"按需读取图片 {len(images)}：{part.get('filename', '')}"})
-                        continue
-                    parts.append({"type": "text", "text": (
-                        f"按需读取图片：{part.get('filename', '')}；"
-                        f"内容类型 {part.get('content_type', '')}；"
-                        f"尺寸 {part.get('width', '')}x{part.get('height', '')}"
-                    )})
                 else:
                     parts.append(part)
             item["content"] = parts
