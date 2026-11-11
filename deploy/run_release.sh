@@ -35,11 +35,12 @@ fi
 # Never unpack over the uploaded archive. A staging directory keeps extraction
 # atomic enough for the checksum gate below and avoids stale files from a
 # previous attempt.
-unpacked="$incoming/unpacked"
-if [ -e "$unpacked" ]; then
+staging="$incoming/unpacked"
+if [ -e "$staging" ]; then
   echo "release staging directory already exists; use a new incoming directory" >&2
   exit 2
 fi
+unpacked="$staging/$version"
 install -d -m 700 "$unpacked"
 tar -xzf "$archive" -C "$unpacked"
 if [ ! -f "$unpacked/release.json" ] || [ ! -f "$unpacked/SHA256SUMS" ]; then
@@ -71,4 +72,4 @@ fi
 
 # Use the checked-in release package copied to the immutable incoming
 # directory. During first takeover there is no trusted current release yet.
-exec /usr/bin/python3 "$incoming/deploy_release.py" "$action" "$incoming" 9>&-
+/usr/bin/python3 "$incoming/deploy_release.py" "$action" "$incoming"

@@ -3,4 +3,4 @@ set -eu
 umask 077
 incoming=${1:?incoming release directory is required}
 action=${2:-deploy}
-exec /usr/bin/python3 "$incoming/deploy_release.py" "$action" "$incoming"
+exec /opt/zhiku/bin/run-release "$incoming" "$action"

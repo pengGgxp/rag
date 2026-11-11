@@ -12,6 +12,18 @@ import release_package
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_fixed_release_entrypoint_uses_verified_runner_and_holds_lock(self):
+        deploy_root = Path(__file__).resolve().parents[1]
+        deploy_entrypoint = (deploy_root / "bin" / "deploy-release").read_text(
+            encoding="utf-8"
+        )
+        package_runner = (deploy_root / "run_release.sh").read_text(encoding="utf-8")
+
+        self.assertIn('/opt/zhiku/bin/run-release "$incoming" "$action"', deploy_entrypoint)
+        self.assertIn('unpacked="$staging/$version"', package_runner)
+        self.assertIn('/usr/bin/python3 "$incoming/deploy_release.py" "$action" "$incoming"', package_runner)
+        self.assertNotIn("9>&-", package_runner)
+
     def test_builds_complete_checksummed_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
