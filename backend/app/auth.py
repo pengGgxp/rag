@@ -142,10 +142,9 @@ class Access:
             raise HTTPException(403, "需要工作区管理员权限")
 
     def conversation(self, db: Session, row: Conversation):
+        # Historical library links do not define access to the owner's conversation.
         if row.owner_id != self.user_id or row.workspace_id != self.workspace_id:
             raise HTTPException(404, "会话不存在或无权访问")
-        for scope in row.libraries:
-            self.library(db, scope.knowledge_base_id)
 
     def revalidate(self, db: Session):
         # Fresh sessions are used by streaming generators, so revocation is observed.

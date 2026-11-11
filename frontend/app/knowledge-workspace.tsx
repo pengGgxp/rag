@@ -448,8 +448,7 @@ export default function KnowledgeWorkspace() {
     <>
       <WorkspaceShell screen={screen}>
       {screen === "chat" ? (
-        <ChatWorkspace libraries={libraries} initialLibraryId={selectedId}
-          conversationId={params.get("conversation")} />
+        <ChatWorkspace libraries={libraries} conversationId={params.get("conversation")} />
       ) : <>
       <WorkspaceNavigation>
         <KnowledgeNavigation

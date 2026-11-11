@@ -109,90 +109,6 @@
   flex-direction: column;
   overflow: hidden;
 }
-.chat-scope {
-  padding: 14px var(--workspace-content-padding) 4px;
-  flex-shrink: 0;
-}
-.scope-menu {
-  position: relative;
-  width: fit-content;
-  max-width: 100%;
-  z-index: 4;
-}
-.scope-menu > summary {
-  cursor: pointer;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: #66758b;
-  font-size: 12px;
-  padding: 6px 0;
-  list-style: none;
-}
-.scope-menu > summary::-webkit-details-marker {
-  display: none;
-}
-.scope-menu > summary > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.scope-options {
-  position: absolute;
-  left: 0;
-  top: 37px;
-  width: 290px;
-  max-width: calc(100vw - 48px);
-  max-height: 340px;
-  overflow-y: auto;
-  padding: 8px;
-  border: 1px solid #dfe4ed;
-  border-radius: 7px;
-  box-shadow: 0 8px 28px #263b5617;
-  background: white;
-}
-.scope-options fieldset {
-  border: 0;
-  padding: 0;
-  margin: 0;
-  min-width: 0;
-}
-.scope-options legend {
-  font-size: 11px;
-  color: #8b94a2;
-  padding: 6px 8px;
-}
-.scope-options label {
-  display: flex;
-  gap: 9px;
-  align-items: center;
-  min-height: 39px;
-  padding: 8px;
-  cursor: pointer;
-  border-radius: 4px;
-  color: #4e5e73;
-  font-size: 12px;
-}
-.scope-options label:hover {
-  background: #f5f7fa;
-}
-.scope-options label > span {
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-.scope-options label > small {
-  margin-left: auto;
-  color: #929cab;
-}
-.scope-options input {
-  accent-color: var(--accent);
-  flex-shrink: 0;
-}
-.scope-options fieldset:disabled label {
-  cursor: default;
-  color: #758094;
-}
 .chat-messages {
   /* Keep absolute screen-reader content inside this scroll container. */
   position: relative;
@@ -333,9 +249,6 @@
   border-color: #be514b;
 }
 @media (max-width: 700px) {
-  .chat-scope {
-    padding: 10px var(--workspace-content-padding) 0;
-  }
   .chat-messages {
     padding: 8px var(--workspace-content-padding) 0;
   }
@@ -395,10 +308,6 @@
 .request-choice-empty { color: var(--muted); padding: 20px 10px; font-size: var(--form-font-size); }
 .answer-thinking { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .chat-main .answer-actions { flex-wrap: wrap; }
-.composer-footer .composer-library-count {
-  margin-left: auto;
-  white-space: nowrap;
-}
 .answer-model {
   max-width: 100%;
   overflow: hidden;
@@ -416,7 +325,6 @@
   margin-bottom: 8px;
 }
 @media (max-width: 700px) {
-  .composer-footer .composer-library-count { display: none; }
   .composer-model-controls { flex-wrap: nowrap; gap: 0; }
   .request-model-trigger { max-width: 150px; flex: 0 1 auto; }
   .request-thinking-trigger { flex: 0 0 auto; max-width: 108px; }

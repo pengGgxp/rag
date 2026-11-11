@@ -92,7 +92,7 @@ def test_feedback_remains_private_to_conversation_owner_and_honors_revocation(ac
     id = library(owner)
     share(owner, "viewer@example.com")
     switch(viewer, a["workspace_id"])
-    conversation = viewer.post("/conversations", json={"knowledge_base_ids": [str(id)]}).json()
+    conversation = viewer.post("/conversations", json={}).json()
     message = ChatMessage(
         conversation_id=UUID(conversation["id"]), sequence=1,
         role="assistant", content="Example answer", status="completed",
@@ -105,12 +105,13 @@ def test_feedback_remains_private_to_conversation_owner_and_honors_revocation(ac
     assert owner.post("/feedback", json=payload).status_code == 404
     assert owner.delete(f"/feedback/{message_id}").status_code == 404
     assert viewer.post("/feedback", json=payload).status_code == 200
+    assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 1
     assert owner.get(f"/conversations/{conversation['id']}").status_code == 404
     assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 200
-    assert viewer.post("/feedback", json=payload).status_code == 404
-    assert viewer.delete(f"/feedback/{message_id}").status_code == 404
-    assert viewer.get(f"/conversations/{conversation['id']}").status_code == 404
+    assert viewer.post("/feedback", json=payload).status_code == 200
+    assert viewer.delete(f"/feedback/{message_id}").status_code == 204
+    assert viewer.get(f"/conversations/{conversation['id']}").status_code == 200
     # A different active workspace never grants access even to one's own old messages.
     switch(viewer, b["workspace_id"])
     assert viewer.post("/feedback", json=payload).status_code == 404
-    assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 1
+    assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 0

@@ -316,6 +316,9 @@ def test_search_cursor_filters_and_revoked_library(client):
         identifiers.append(item["id"])
         row = db.get(Conversation, UUID(item["id"]))
         row.title, row.updated_at = f"检索测试 {index}", now - timedelta(days=index)
+        if index < 4:
+            db.add(ChatMessage(conversation_id=row.id, sequence=0, role="user",
+                content="检索测试消息", knowledge_base_mentions=[{"id": str(library.id), "name": library.name}]))
     db.commit()
     first = http.get("/conversations/search", params={"q": "检索测试"}).json()
     second = http.get("/conversations/search", params={"q": "检索测试", "cursor": first["next_cursor"]}).json()
@@ -329,5 +332,7 @@ def test_search_cursor_filters_and_revoked_library(client):
     db.get(Membership, (library.workspace_id, owner)).role = "viewer"
     library.restricted = True
     db.commit()
-    assert http.get("/conversations/search", params={"q": "检索测试", "knowledge_base_id": str(library.id)}).json()["items"] == []
-    assert http.get(f"/conversations/{identifiers[0]}").status_code == 404
+    assert http.get("/conversations/search", params={
+        "q": "检索测试", "knowledge_base_id": str(library.id),
+    }).status_code == 404
+    assert http.get(f"/conversations/{identifiers[0]}").status_code == 200

@@ -4,9 +4,11 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 
 from app.agent import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
 from app.llm import ToolCall, ToolResponse
+from app.models import DocumentStatus, KnowledgeBaseStatus
 
 
 def test_retrieval_agent_only_searches_allowed_knowledge_bases():
@@ -39,6 +41,11 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
     class Access:
         def revalidate(self, db):
             return self
+
+        def library(self, db, identifier):
+            if identifier != allowed:
+                raise HTTPException(404, "not authorized")
+            return SimpleNamespace(id=allowed, name="Allowed", status=KnowledgeBaseStatus.READY)
 
     class DB:
         def get(self, model, identifier):
@@ -116,9 +123,18 @@ def runtime():
         def revalidate(self, db):
             return self
 
+        def library(self, db, identifier):
+            if identifier != allowed:
+                raise HTTPException(404, "not authorized")
+            return SimpleNamespace(id=allowed, name="Allowed", status=KnowledgeBaseStatus.READY)
+
     class DB:
         def get(self, model, identifier):
-            return SimpleNamespace(name="Allowed") if identifier == allowed else None
+            if model.__name__ == "Document":
+                return SimpleNamespace(
+                    id=identifier, knowledge_base_id=allowed, status=DocumentStatus.READY, is_active=True,
+                )
+            return SimpleNamespace(id=allowed, name="Allowed", status=KnowledgeBaseStatus.READY) if identifier == allowed else None
 
     @contextmanager
     def factory():
@@ -251,7 +267,10 @@ def test_history_query_and_tool_candidates_are_not_truncated(runtime):
             if self.count == 1:
                 assert messages[1:-1] == history
                 assert messages[-1]["content"] == long_query
-                assert str(runtime.allowed) in messages[0]["content"]
+                assert any(
+                    tool["function"]["name"] == "discover_knowledge_bases"
+                    for tool in tools
+                )
             if self.count <= 2:
                 return ToolResponse(content=None, tool_calls=[
                     search(runtime.allowed, long_query, top_k=30),

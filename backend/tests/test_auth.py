@@ -22,8 +22,8 @@ from app import auth, conversations as chat, main
 from app.db import Base
 from app.llm import ToolResponse
 from app.models import (
-    AuthToken, Conversation, ExternalIdentity, IngestionJob, KnowledgeBase, LoginSession,
-    Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
+    AuthToken, ChatMessage, Conversation, ConversationLibrary, ExternalIdentity, IngestionJob,
+    KnowledgeBase, LoginSession, Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
 )
 from test_retrieval import add_document
 
@@ -114,7 +114,7 @@ def test_cross_workspace_id_guesses_do_not_expose_any_resource(accounts):
     db.add(job)
     db.commit()
     trace = owner.post(f"/knowledge-bases/{id}/retrieval", json={"query": "needle"}).json()["trace"]
-    conv = owner.post("/conversations", json={"knowledge_base_ids": [str(id)]}).json()["id"]
+    conv = owner.post("/conversations", json={}).json()["id"]
     assert outsider.get("/knowledge-bases").json() == []
     for path in (
         f"/knowledge-bases/{id}/documents", f"/documents/{document.id}/chunks", f"/jobs/{job.id}",
@@ -150,18 +150,36 @@ def test_roles_library_grants_and_history_revalidate_after_revocation(accounts):
         response = viewer.delete(f"/documents/{doc.id}") if not suffix else viewer.post(f"/documents/{doc.id}{suffix}")
         assert response.status_code == 403
     assert viewer.get("/auth/members").status_code == 403
-    conversation = viewer.post("/conversations", json={"knowledge_base_ids": [str(id)]}).json()
+    conversation = viewer.post("/conversations", json={}).json()
     conv = conversation["id"]
+    db.add(ConversationLibrary(conversation_id=UUID(conv), knowledge_base_id=id))
+    db.add(ChatMessage(conversation_id=UUID(conv), sequence=0, role="assistant", status="completed",
+        content="旧结论 [old-chunk]", citations=[{
+            "chunk_id": "old-chunk", "filename": doc.filename, "text": "历史引用原文",
+            "char_start": 0, "char_end": 6,
+            "knowledge_base_name": "retrieval test",
+        }]))
+    db.commit()
     assert owner.get(f"/conversations/{conv}").status_code == 404  # admin cannot read private chats
     trace = viewer.post(f"/knowledge-bases/{id}/retrieval", json={"query": "needle"}).json()["trace"]
     assert owner.get(f"/traces/{trace['id']}").status_code == 404
     assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 200
     assert viewer.get("/knowledge-bases").json() == []
-    assert viewer.get(f"/conversations/{conv}").status_code == 404
-    assert viewer.get(f"/conversations/{conv}/export").status_code == 404
+    old_history = viewer.get(f"/conversations/{conv}")
+    assert old_history.status_code == 200
+    assert old_history.json()["messages"][0]["citations"][0]["text"] == "历史引用原文"
+    assert "历史引用原文" in viewer.get(f"/conversations/{conv}/export").text
     assert viewer.get(f"/traces/{trace['id']}").status_code == 404
     assert viewer.get(f"/jobs/{job.id}").status_code == 404
-    assert viewer.get("/conversations").json()["items"] == []
+    assert any(item["id"] == conv for item in viewer.get("/conversations").json()["items"])
+    assert viewer.get("/conversations/knowledge-catalog").json() == {
+        "knowledge_bases": [], "documents": [],
+    }
+    denied_mention = viewer.post(f"/conversations/{conv}/messages", json={
+        "provider_id": str(uuid4()), "request_id": str(uuid4()), "query": "总结",
+        "document_ids": [str(doc.id)],
+    })
+    assert denied_mention.status_code == 409
     assert owner.put(f"/knowledge-bases/{id}/permissions", json={
         "restricted": True, "user_ids": [b["user"]["id"]],
     }).status_code == 200
@@ -254,7 +272,7 @@ def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
     add_document(db, db.get(KnowledgeBase, id), "needle")
     share(owner, "viewer@example.com")
     switch(viewer, a["workspace_id"])
-    conv = viewer.post("/conversations", json={"knowledge_base_ids": [str(id)]}).json()["id"]
+    conv = viewer.post("/conversations", json={}).json()["id"]
     class RevokingProvider:
         def complete_with_tools(self, _messages, _tools, *, tool_choice):
             with Session(db.get_bind()) as session:

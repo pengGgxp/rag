@@ -5,9 +5,9 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, exists, or_, select
+from sqlalchemy import Text, and_, case, cast, exists, or_, select
 
-from .models import ChatMessage, Conversation, ConversationLibrary, KnowledgeBase, chat_message_resources
+from .models import ChatMessage, Conversation, ConversationLibrary, chat_message_resources
 
 
 def encode_cursor(values):
@@ -32,9 +32,6 @@ def visible(access):
     return (
         Conversation.deleted_at.is_(None), Conversation.owner_id == access.user_id,
         Conversation.workspace_id == access.workspace_id,
-        ~exists(select(ConversationLibrary.conversation_id).where(
-            ConversationLibrary.conversation_id == Conversation.id,
-            ~ConversationLibrary.knowledge_base_id.in_(select(KnowledgeBase.id).where(access.visible_libraries())))),
     )
 
 
@@ -83,7 +80,21 @@ def search_page(db, access, query, cursor, since, until, knowledge_base_id, has_
     if until:
         statement = statement.where(Conversation.updated_at <= until)
     if knowledge_base_id:
-        statement = statement.where(Conversation.libraries.any(ConversationLibrary.knowledge_base_id == knowledge_base_id))
+        access.library(db, knowledge_base_id)
+        library_pattern = f"%{knowledge_base_id}%"
+        mentioned_or_retrieved = exists(select(ChatMessage.id).where(
+            ChatMessage.conversation_id == Conversation.id,
+            or_(
+                cast(ChatMessage.knowledge_base_mentions, Text).ilike(library_pattern),
+                cast(ChatMessage.document_mentions, Text).ilike(library_pattern),
+                cast(ChatMessage.citations, Text).ilike(library_pattern),
+                cast(ChatMessage.traces, Text).ilike(library_pattern),
+            ),
+        ))
+        statement = statement.where(or_(
+            Conversation.libraries.any(ConversationLibrary.knowledge_base_id == knowledge_base_id),
+            mentioned_or_retrieved,
+        ))
     if has_attachments:
         statement = statement.where(exists(select(ChatMessage.id).join(chat_message_resources,
             chat_message_resources.c.message_id == ChatMessage.id).where(ChatMessage.conversation_id == Conversation.id)))

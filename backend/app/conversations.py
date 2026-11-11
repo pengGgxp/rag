@@ -10,7 +10,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session, sessionmaker
 from fastapi.responses import StreamingResponse
@@ -22,7 +22,6 @@ from .auth import Access, get_access
 from .models import (
     ChatMessage,
     Conversation,
-    ConversationLibrary,
     Document,
     DocumentStatus,
     KnowledgeBase,
@@ -54,7 +53,6 @@ class ExtensionSelection(BaseModel):
 
 class ConversationCreate(ExtensionSelection):
     model_config = ConfigDict(str_strip_whitespace=True)
-    knowledge_base_ids: list[UUID] = Field(default_factory=list)
     title: str = Field(default="新对话", min_length=1, max_length=200)
 
 
@@ -78,6 +76,7 @@ class TurnRequest(ContextRequest):
     query: str | None = Field(default=None, min_length=1)
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     document_ids: list[UUID] = Field(default_factory=list, max_length=8)
+    knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=8)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -96,6 +95,7 @@ def message_read(message: ChatMessage) -> dict:
         "id": str(message.id), "sequence": message.sequence, "role": message.role,
         "content": message.content, "status": message.status,
         "document_mentions": message.document_mentions or [],
+        "knowledge_base_mentions": message.knowledge_base_mentions or [],
         "attachments": [attachment_read(row) for row in message.attachments],
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
@@ -119,10 +119,7 @@ def conversation_read(conversation: Conversation, detail=False) -> dict:
         "id": str(conversation.id), "title": conversation.title,
         "title_source": conversation.title_source, "revision": conversation.revision,
         "pinned_at": conversation.pinned_at.isoformat() if conversation.pinned_at else None,
-        "knowledge_bases": [
-            {"id": str(item.knowledge_base_id), "name": item.library.name}
-            for item in conversation.libraries
-        ],
+        "knowledge_bases": [],
         "active_request_id": str(conversation.active_request_id) if conversation.active_request_id else None,
         "skill_ids": conversation.skill_ids if conversation.extensions_initialized else [],
         "mcp_server_ids": conversation.mcp_server_ids if conversation.extensions_initialized else [],
@@ -222,7 +219,6 @@ def chat_router(get_db, retrieve):
     @router.post("", status_code=201)
     def create(payload: ConversationCreate, request: Request,
                db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        ids = list(dict.fromkeys(payload.knowledge_base_ids))
         if not ({"skill_ids", "mcp_server_ids"} & payload.model_fields_set):
             skill_ids, server_ids = extension_defaults(db, access)
             payload.skill_ids, payload.mcp_server_ids = list(map(UUID, skill_ids)), list(map(UUID, server_ids))
@@ -232,24 +228,19 @@ def chat_router(get_db, retrieve):
             workbench = workbench_status(db, access)
             if not (workbench["available"] and workbench["enabled"]):
                 raise HTTPException(403, "请先授权题目工作台")
-        for id in ids:
-            library = access.library(db, id)
-            if library.status == KnowledgeBaseStatus.ARCHIVED:
-                raise HTTPException(409, "归档知识库不能用于新对话")
         conversation = Conversation(
             title=payload.title, title_source="temporary" if payload.title == "新对话" else "manual",
             owner_id=access.user_id, workspace_id=access.workspace_id, extensions_initialized=True,
             skill_ids=list(dict.fromkeys(map(str, payload.skill_ids))),
             question_workbench=payload.question_workbench,
-            mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))), libraries=[
-            ConversationLibrary(knowledge_base_id=id) for id in ids
-        ])
+            mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))),
+        )
         db.add(conversation)
         db.flush()
         record_audit(
             db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
             action="conversation.created", resource_type="conversation",
-            resource_id=conversation.id, metadata={"knowledge_base_count": len(ids)}, request=request,
+            resource_id=conversation.id, metadata={"knowledge_base_count": 0}, request=request,
         )
         db.commit()
         db.refresh(conversation)
@@ -266,6 +257,46 @@ def chat_router(get_db, retrieve):
                has_attachments: bool = False, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         from .conversation_management import search_page
         return search_page(db, access, q, cursor, since, until, knowledge_base_id, has_attachments)
+
+    @router.get("/knowledge-catalog")
+    def knowledge_catalog(q: str = "", db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        query = q.strip()
+        if len(query) > 120:
+            raise HTTPException(422, "搜索内容不能超过 120 个字符")
+        pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        library_filter = [
+            access.visible_libraries(),
+            KnowledgeBase.status != KnowledgeBaseStatus.ARCHIVED,
+        ]
+        document_filter = [
+            access.visible_libraries(),
+            KnowledgeBase.status != KnowledgeBaseStatus.ARCHIVED,
+            Document.status == DocumentStatus.READY,
+            Document.is_active.is_(True),
+        ]
+        if query:
+            library_filter.append(or_(
+                KnowledgeBase.name.ilike(pattern, escape="\\"),
+                KnowledgeBase.description.ilike(pattern, escape="\\"),
+            ))
+            document_filter.append(or_(
+                Document.filename.ilike(pattern, escape="\\"),
+                KnowledgeBase.name.ilike(pattern, escape="\\"),
+            ))
+        libraries = db.scalars(select(KnowledgeBase).where(*library_filter)
+            .order_by(KnowledgeBase.name, KnowledgeBase.id).limit(20)).all()
+        documents = db.execute(select(Document, KnowledgeBase)
+            .join(KnowledgeBase, Document.knowledge_base_id == KnowledgeBase.id)
+            .where(*document_filter)
+            .order_by(Document.updated_at.desc(), Document.id).limit(20)).all()
+        return {
+            "knowledge_bases": [{"id": str(row.id), "name": row.name} for row in libraries],
+            "documents": [{
+                "id": str(document.id), "filename": document.filename,
+                "knowledge_base_id": str(document.knowledge_base_id),
+                "knowledge_base_name": library.name,
+            } for document, library in documents],
+        }
 
     @router.get("/{conversation_id}")
     def detail(conversation_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -404,7 +435,6 @@ def chat_router(get_db, retrieve):
         conversation = live_conversation(db, conversation_id, access)
         lines = [
             f"# {conversation.title}", "",
-            "知识库：" + "、".join(item.library.name for item in conversation.libraries), "",
         ]
         for message in conversation.messages:
             lines.extend([f"## {'你' if message.role == 'user' else '知库'}", "", message.content or "（未生成正文）", ""])
@@ -566,6 +596,7 @@ def chat_router(get_db, retrieve):
             return StreamingResponse(duplicate(), media_type="text/event-stream")
         retry = None
         document_mentions = []
+        knowledge_base_mentions = []
         if payload.retry_message_id:
             retry = db.get(ChatMessage, payload.retry_message_id)
             latest = db.scalar(select(ChatMessage).where(
@@ -580,22 +611,59 @@ def chat_router(get_db, retrieve):
                 ChatMessage.role == "user",
             ))
             document_mentions = list(previous_user.document_mentions or []) if previous_user else []
+            knowledge_base_mentions = list(previous_user.knowledge_base_mentions or []) if previous_user else []
         mention_ids = ([UUID(item["id"]) for item in document_mentions] if retry
             else list(dict.fromkeys(payload.document_ids)))
+        knowledge_base_mention_ids = ([UUID(item["id"]) for item in knowledge_base_mentions] if retry
+            else list(dict.fromkeys(payload.knowledge_base_ids)))
+        if len(mention_ids) + len(knowledge_base_mention_ids) > 8:
+            raise HTTPException(422, "每条消息最多可以提及 8 项资料")
+        checked_access = access.revalidate(db)
+        if knowledge_base_mention_ids:
+            available_knowledge_base_ids = []
+            for identifier in knowledge_base_mention_ids:
+                try:
+                    library = checked_access.library(db, identifier)
+                    if library.status == KnowledgeBaseStatus.ARCHIVED:
+                        raise HTTPException(404, "知识库已归档")
+                except HTTPException:
+                    if not retry:
+                        raise HTTPException(409, "提及的知识库已不可用，请重新选择") from None
+                    continue
+                available_knowledge_base_ids.append(identifier)
+                if not retry:
+                    knowledge_base_mentions.append({"id": str(library.id), "name": library.name})
+            knowledge_base_mention_ids = available_knowledge_base_ids
         if mention_ids:
             rows = db.scalars(select(Document).where(Document.id.in_(mention_ids))).all()
-            allowed_libraries = {item.knowledge_base_id for item in conversation.libraries}
-            if len(rows) != len(mention_ids) or any(
-                row.knowledge_base_id not in allowed_libraries
-                or row.status != DocumentStatus.READY or not row.is_active
-                for row in rows
-            ):
-                raise HTTPException(409, "提及的文档已不可用，请重新选择")
-            if not retry:
+            rows_by_id = {row.id: row for row in rows}
+            available_document_ids = []
+            for identifier in mention_ids:
+                row = rows_by_id.get(identifier)
+                if row is None or row.status != DocumentStatus.READY or not row.is_active:
+                    if not retry:
+                        raise HTTPException(409, "提及的文档已不可用，请重新选择")
+                    continue
+                try:
+                    library = checked_access.library(db, row.knowledge_base_id)
+                    if library.status == KnowledgeBaseStatus.ARCHIVED:
+                        raise HTTPException(404, "知识库已归档")
+                except HTTPException:
+                    if not retry:
+                        raise HTTPException(409, "提及的文档已不可用，请重新选择") from None
+                    continue
+                available_document_ids.append(identifier)
+            mention_ids = available_document_ids
+            if mention_ids and not retry:
                 rows_by_id = {row.id: row for row in rows}
+                libraries_by_id = {}
+                for row in rows:
+                    library = checked_access.library(db, row.knowledge_base_id)
+                    libraries_by_id[row.knowledge_base_id] = library
                 document_mentions = [{
                     "id": str(identifier), "filename": rows_by_id[identifier].filename,
                     "knowledge_base_id": str(rows_by_id[identifier].knowledge_base_id),
+                    "knowledge_base_name": libraries_by_id[rows_by_id[identifier].knowledge_base_id].name,
                 } for identifier in mention_ids]
         try:
             hold_amount = authorization_hold_amount()
@@ -603,6 +671,8 @@ def chat_router(get_db, retrieve):
             search_config = None
             provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
+            if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids):
+                raise HTTPException(422, "当前模型无法使用资料引用，请选择支持工具的模型")
             attachments = select_attachments(db, access, payload.attachment_ids, provider_config)
             # Check retained multimodal history before reserving credits, including retries.
             from .chat_attachments import validate_messages
@@ -612,8 +682,6 @@ def chat_router(get_db, retrieve):
                 ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed",
             ).order_by(ChatMessage.sequence)).all()
             validate_messages(manager.history(db, conversation, prior), provider_config)
-            if not provider_config.thinking.supports_tools and conversation.libraries:
-                raise HTTPException(422, "此模型不支持知识库检索，请选择其他模型")
             if metered:
                 if payload.web_search and provider_config.thinking.supports_tools:
                     from .search_settings import runtime_config
@@ -660,6 +728,7 @@ def chat_router(get_db, retrieve):
                 conversation_id=conversation.id, sequence=next_sequence - 2,
                 role="user", content=payload.query or "", attachments=attachments,
                 document_mentions=document_mentions,
+                knowledge_base_mentions=knowledge_base_mentions,
             )
             db.add(user_message)
             db.flush()
@@ -795,8 +864,9 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
 
     try:
         with factory() as db:
-            conversation = live_conversation(db, conversation_id, access.revalidate(db))
-            scope_ids = [item.knowledge_base_id for item in conversation.libraries]
+            checked_access = access.revalidate(db)
+            conversation = live_conversation(db, conversation_id, checked_access)
+            scope_ids = []
             message = db.get(ChatMessage, message_id) if not manual else None
             user_message = db.scalar(select(ChatMessage).where(
                 ChatMessage.conversation_id == conversation_id,
@@ -804,6 +874,30 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             )) if not manual else None
             query = user_content(user_message.content, user_message.attachments) if user_message else None
             retrieval_query = user_message.content if user_message else None
+            current_knowledge_mentions = []
+            current_document_mentions = []
+            if user_message:
+                for mention in user_message.knowledge_base_mentions or []:
+                    try:
+                        library = checked_access.library(db, UUID(mention["id"]))
+                    except (HTTPException, KeyError, ValueError):
+                        continue
+                    if library.status != KnowledgeBaseStatus.ARCHIVED:
+                        current_knowledge_mentions.append({"id": str(library.id), "name": library.name})
+                for mention in user_message.document_mentions or []:
+                    try:
+                        document = db.get(Document, UUID(mention["id"]))
+                        if document is None or document.status != DocumentStatus.READY or not document.is_active:
+                            continue
+                        library = checked_access.library(db, document.knowledge_base_id)
+                    except (HTTPException, KeyError, ValueError):
+                        continue
+                    if library.status != KnowledgeBaseStatus.ARCHIVED:
+                        current_document_mentions.append({
+                            "id": str(document.id), "filename": document.filename,
+                            "knowledge_base_id": str(library.id),
+                            "knowledge_base_name": library.name,
+                        })
             rows = db.scalars(select(ChatMessage).where(
                 ChatMessage.conversation_id == conversation_id,
                 ChatMessage.sequence < message.sequence - 1 if message else True,
@@ -859,10 +953,11 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             query=query, knowledge_base_ids=scope_ids, history=history,
             factory=factory, access=access, retrieve=retrieve, provider=provider,
             is_active=still_authorized,
+            knowledge_base_mentions=current_knowledge_mentions,
             extensions=extension_runtime,
             meter=meter,
             context_manager=manager,
-            document_mentions=user_message.document_mentions if user_message else [],
+            document_mentions=current_document_mentions,
             search=SearchRuntime(factory, access, request_id, search_config) if search_config else None,
         )
         bridge = stream_events(execution, stopped)
