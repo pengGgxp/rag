@@ -383,6 +383,8 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     assert "不要编造 Markdown、URL 或下载地址" in AGENT_SYSTEM_PROMPT
     assert "同时说明脚本未完成并列出这些文件" in AGENT_SYSTEM_PROMPT
     assert "不要向用户原样展示 queued、processing、ready 等内部状态码" in AGENT_SYSTEM_PROMPT
+    assert "不规定固定工具顺序" in AGENT_SYSTEM_PROMPT
+    assert "远程图片" in AGENT_SYSTEM_PROMPT and "run_command" in AGENT_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("state", ["starting", "ready", "ended"])

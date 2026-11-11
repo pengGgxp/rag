@@ -290,12 +290,16 @@ def validate_images(rows, config):
 def validate_messages(messages, config):
     if not config.supports_images and any(
             isinstance(message.get("content"), list) and any(
-                part.get("type") == "chat_image" for part in message["content"]) for message in messages):
+                part.get("type") in ("chat_image", "model_image")
+                for part in message["content"]) for message in messages):
         raise HTTPException(422, "当前对话包含图片，请选择支持图片的模型，或新建对话")
 
 
 def summary_content(messages):
-    """Keep image inputs multimodal while serializing the surrounding untrusted history."""
+    """Keep uploaded images multimodal while omitting transient read_image bytes."""
+    from .image_reading import persisted_model_images
+
+    messages = persisted_model_images(messages)
     safe, images = [], []
     for message in messages:
         item = {key: value for key, value in message.items()
@@ -346,6 +350,20 @@ def model_messages(messages, config, resource_context=None):
         if not isinstance(message.get("content"), list):
             continue
         for index, part in enumerate(message["content"]):
+            if part.get("type") == "model_image":
+                if not config.supports_images:
+                    raise LLMConfigurationError("本次对话包含图片，请选择支持图片的模型")
+                raw = part.get("data")
+                if not isinstance(raw, bytes) or len(raw) > MAX_IMAGE_BYTES:
+                    raise LLMConfigurationError("按需读取的图片输入无效，请重新读取")
+                if hashlib.sha256(raw).hexdigest() != part.get("sha256"):
+                    raise LLMConfigurationError("按需读取的图片校验失败，请重新读取")
+                content_type = part.get("content_type")
+                if content_type not in ("image/png", "image/jpeg", "image/webp"):
+                    raise LLMConfigurationError("按需读取的图片格式无效，请重新读取")
+                url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+                message["content"][index] = {"type": "image_url", "image_url": {"url": url, "detail": "auto"}}
+                continue
             if part.get("type") != "chat_image":
                 continue
             if not config.supports_images:
@@ -384,7 +402,7 @@ def model_messages(messages, config, resource_context=None):
 def estimate_content(value):
     """Budget descriptors instead of megabytes of base64 or private object keys."""
     if isinstance(value, dict):
-        if value.get("type") == "chat_image":
+        if value.get("type") in ("chat_image", "model_image"):
             # Conservative estimate; actual upstream usage remains authoritative.
             tiles = ((value.get("width") or 512) + 511) // 512 * (((value.get("height") or 512) + 511) // 512)
             return {"image_input_estimate": "x" * min(131072, 4096 + tiles * 2048)}

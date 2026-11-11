@@ -2,7 +2,11 @@
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
+
+
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 def apply_patch(original, patch):
@@ -57,8 +61,48 @@ def write_mounted(path, data):
         handle.write(data)
 
 
+def image_path(value, root=Path("/home/user/workspace")):
+    if not isinstance(value, str) or not value or len(value) > 1024:
+        raise ValueError("图片路径无效")
+    if "\x00" in value:
+        raise ValueError("图片路径无效")
+    path = Path(value)
+    return path if path.is_absolute() else Path(root, path)
+
+
+def inspect_image(value, root=Path("/home/user/workspace")):
+    """Return safe metadata only. Image bytes are streamed by the API adapter."""
+    path = image_path(value, root)
+    try:
+        resolved = path.resolve(strict=True)
+        before = resolved.stat()
+    except FileNotFoundError:
+        raise FileNotFoundError("图片不存在或已删除") from None
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("图片必须是普通文件")
+    if before.st_size <= 0:
+        raise ValueError("图片为空")
+    if before.st_size > MAX_IMAGE_BYTES:
+        raise ValueError("图片超过 10 MiB")
+    digest = hashlib.sha256()
+    read = 0
+    with resolved.open("rb") as handle:
+        for block in iter(lambda: handle.read(1048576), b""):
+            read += len(block)
+            if read > MAX_IMAGE_BYTES:
+                raise ValueError("图片超过 10 MiB")
+            digest.update(block)
+    after = resolved.stat()
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise RuntimeError("图片在读取过程中发生变化，请重试")
+    return {"size_bytes": read, "sha256": digest.hexdigest()}
+
+
 def perform(operation, root=Path("/home/user/workspace")):
     name = operation["name"]
+    if name == "inspect_image":
+        return inspect_image(operation["path"], root)
     if name == "list_files":
         items = []
         for directory, dirs, files in os.walk(root, followlinks=False):

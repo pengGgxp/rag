@@ -451,7 +451,8 @@ def chat_router(get_db, retrieve):
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         runtime = ExtensionRuntime(factory, access,
             conversation.skill_ids if conversation.extensions_initialized else [],
-            conversation.mcp_server_ids if conversation.extensions_initialized else [], question_workbench=conversation.question_workbench)
+            conversation.mcp_server_ids if conversation.extensions_initialized else [],
+            question_workbench=conversation.question_workbench, provider_config=config)
         if not config.thinking.supports_tools:
             runtime.skills, runtime.tools = [], []
         manager = ContextManager(factory, access, conversation_id, config, None, None, None,
@@ -501,7 +502,8 @@ def chat_router(get_db, retrieve):
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         runtime = ExtensionRuntime(factory, access,
             conversation.skill_ids if conversation.extensions_initialized else [],
-            conversation.mcp_server_ids if conversation.extensions_initialized else [], question_workbench=conversation.question_workbench)
+            conversation.mcp_server_ids if conversation.extensions_initialized else [],
+            question_workbench=conversation.question_workbench, provider_config=config)
         manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True,
             skill_versions=runtime.versions if config.thinking.supports_tools else [])
         history = manager.history(db, conversation, rows)
@@ -821,6 +823,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             conversation.mcp_server_ids if conversation.extensions_initialized else [],
             message_id, request_id,
             conversation.question_workbench,
+            provider_config,
         )
         if not provider_config.thinking.supports_tools:
             extension_runtime.skills, extension_runtime.tools = [], []
@@ -942,7 +945,9 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             return
         citations, traces = agent_run.citations, agent_run.traces
         web_sources = agent_run.web_sources
-        continuation = encrypt_continuation(provider_config, agent_run.protocol_messages)
+        from .image_reading import persisted_model_images
+        continuation = encrypt_continuation(provider_config,
+            persisted_model_images(agent_run.protocol_messages))
         _, active = await run_in_threadpool(save)
         if not active:
             return

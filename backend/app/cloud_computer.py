@@ -264,7 +264,7 @@ def cancel_command(identifier: UUID, db=Depends(get_db), access=Depends(get_acce
 def submit(db, access, conversation_id, request_id, arguments, skill_packages=None):
     access = owner(db, access, conversation_id)
     file_operation = arguments.get("file_operation")
-    if not file_operation or file_operation.get("name") not in {"list_files", "read_file"}:
+    if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image"}:
         access.editor()
         if not file_operation or file_operation.get("name") != "delete_file":
             from .storage_billing import check_capacity
@@ -553,6 +553,54 @@ def execute(db, access, conversation_id, request_id, arguments, skill_packages, 
         db.refresh(command)
     row = db.get(Computer, command.session_id, populate_existing=True)
     return {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
+
+
+def execute_image(db, access, conversation_id, request_id, path, check_active):
+    """Inspect a mounted image durably, then read its bytes outside command results."""
+    from .chat_attachments import MAX_IMAGE_BYTES
+    from .image_reading import local_path, workspace_image
+    import hashlib
+
+    try:
+        sandbox_path = local_path(path)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    command = submit(db, access, conversation_id, request_id,
+        {"command": "inspect_image",
+         "file_operation": {"name": "inspect_image", "path": sandbox_path}}, None)
+    try:
+        while command.status in BUSY:
+            if check_active:
+                check_active()
+            import time
+            time.sleep(.5)
+            db.refresh(command)
+        row = db.get(Computer, command.session_id, populate_existing=True)
+        result = {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
+        file_result = result.get("file_result", {})
+        if file_result.get("error"):
+            raise HTTPException(file_result.get("status_code", 422), file_result["error"])
+        if result.get("status") != "completed":
+            raise HTTPException(503, "图片未能读取，请稍后重试")
+        metadata = file_result.get("value") or {}
+        if (not isinstance(metadata.get("size_bytes"), int)
+                or metadata["size_bytes"] <= 0 or metadata["size_bytes"] > MAX_IMAGE_BYTES
+                or not isinstance(metadata.get("sha256"), str)):
+            raise HTTPException(503, "图片读取结果无效，请重试")
+        provider = adapter(row.snapshot, row.encrypted_api_key)
+        sandbox = provider.connect(row.provider_id)
+        data = provider.read_file(sandbox, sandbox_path, max_bytes=MAX_IMAGE_BYTES)
+        digest = hashlib.sha256(data).hexdigest()
+        if len(data) != metadata["size_bytes"] or digest != metadata["sha256"]:
+            raise HTTPException(409, "图片在读取过程中发生变化，请重新读取")
+        from .image_reading import image_type
+        content_type, width, height = image_type(data)
+        return workspace_image(sandbox_path, content_type, width, height, digest, data), result
+    except BaseException:
+        if command.status in BUSY:
+            command.cancel_requested = True
+            db.commit()
+        raise
 
 
 def maintenance(factory=SessionLocal):

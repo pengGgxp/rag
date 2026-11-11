@@ -1,6 +1,7 @@
 """Request-pinned platform methods, private methods and authorized remote tools."""
 import json
 import re
+from dataclasses import dataclass
 from hashlib import sha256
 from uuid import UUID
 
@@ -19,6 +20,7 @@ from .personal_mcp import router as mcp_router
 from .site_skills import SkillRuntime, LOAD_SKILL, READ_SKILL_RESOURCE
 from .skill_files import text_content
 from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
+from .image_reading import read_image
 from .config import get_settings
 
 router = APIRouter()
@@ -44,11 +46,19 @@ def validate_selection(db, access, skill_ids, server_ids):
                 raise HTTPException(409, "选中的扩展已停用或尚未授权")
 
 
+@dataclass(frozen=True)
+class ImageToolResult:
+    image: object
+    result: dict
+
+
 class ExtensionRuntime(SkillRuntime):
-    def __init__(self, factory, access, skill_ids=(), server_ids=(), message_id=None, request_id=None, question_workbench=False):
+    def __init__(self, factory, access, skill_ids=(), server_ids=(), message_id=None, request_id=None,
+                 question_workbench=False, provider_config=None):
         super().__init__(factory, access)
         self.platform_ids = set(self.snapshots)
         self.message_id, self.request_id = message_id, request_id
+        self.provider_config = provider_config
         self.personal_ids, self.bindings, self.calls = set(), {}, 0
         self.uncertain_calls = set()
         self.verified_citations = []
@@ -100,7 +110,11 @@ class ExtensionRuntime(SkillRuntime):
             self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
             from .cloud_environment import environment_description
             self.environment_description = environment_description(cloud_settings) if self.execution_available else ""
-        workspace_tools = tool_definitions() if self.execution_available else []
+        definitions = tool_definitions()
+        workspace_tools = [item for item in definitions
+            if (self.execution_available and item["function"]["name"] != "read_image")
+            or (item["function"]["name"] == "read_image" and provider_config
+                and provider_config.supports_images)]
         from .cloud_preview import TOOLS as PREVIEW_TOOLS
         if self.execution_available and get_settings().preview_enabled:
             workspace_tools = workspace_tools + PREVIEW_TOOLS
@@ -129,6 +143,16 @@ class ExtensionRuntime(SkillRuntime):
             self.versions.append(("question-workbench", self.question_workbench.version))
             self.versions.sort()
 
+    def _image_local_loader(self, path, check_active):
+        from .cloud_computer import execute_image
+        from .models import ChatMessage
+        with self.factory() as db:
+            access = self.access.revalidate(db)
+            message = db.get(ChatMessage, self.message_id) if self.message_id else None
+            image, _ = execute_image(db, access, message.conversation_id if message else None,
+                self.request_id, path, check_active)
+            return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"]}
+
     def label(self, name, arguments=None):
         from .image_tools import LABELS as IMAGE_LABELS
         if name in IMAGE_LABELS:
@@ -143,7 +167,7 @@ class ExtensionRuntime(SkillRuntime):
             return "使用「教师出题」"
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
-            return {"list_files": "查看资源库", "read_file": "读取文件", "write_file": "生成文件",
+            return {"list_files": "查看资源库", "read_file": "读取文件", "read_image": "查看图片", "write_file": "生成文件",
                 "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行",
                 "start_preview": "启动成果预览", "stop_preview": "停止成果预览"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
@@ -195,6 +219,10 @@ class ExtensionRuntime(SkillRuntime):
             return self._personal_read(name, arguments)
         if name not in self.bindings:
             if name in {item["function"]["name"] for item in tool_definitions()}:
+                if name == "read_image" and not (
+                        self.provider_config and self.provider_config.supports_images):
+                    return {"error": "当前模型不支持图片输入，请选择支持图片的模型",
+                            "error_code": "image_model_unsupported"}
                 if name not in self.workspace_tool_names:
                     return {"error": "当前请求没有提供该文件工具", "error_code": "file_tool_unavailable"}
                 definition = next(item["function"] for item in self.tools if item["function"]["name"] == name)
@@ -202,6 +230,14 @@ class ExtensionRuntime(SkillRuntime):
                     Draft202012Validator(definition["parameters"]).validate(arguments)
                 except ValidationError:
                     return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
+                if name == "read_image":
+                    result = read_image(arguments, config=self.provider_config,
+                        local_loader=lambda path: self._image_local_loader(path, check_active),
+                        check_active=check_active)
+                    if hasattr(result, "public"):
+                        return ImageToolResult(result, {**result.public,
+                            "summary": f"已读取图片「{result.public['filename']}」"})
+                    return result
                 packages = {}
                 with self.factory() as db:
                     access = self.access.revalidate(db)
