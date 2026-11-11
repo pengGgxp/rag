@@ -916,9 +916,6 @@ def compose_up(
             "up",
             "-d",
             "--remove-orphans",
-            "--wait",
-            "--wait-timeout",
-            "300",
             *targets,
         ]
     )
@@ -1026,16 +1023,11 @@ def start_legacy_producers(runner: CommandRunner) -> None:
     runner.run(preview_args)
 
 
-def rollback(paths: Paths, previous: Path, runner: CommandRunner, health_check) -> None:
+def rollback(paths: Paths, previous: Path, runner: CommandRunner) -> None:
     if not previous.exists():
         raise ReleaseError("no previous release is available")
     restore_current(paths, previous)
-    try:
-        compose_up(paths, runner)
-        health_check(paths)
-    except Exception:
-        # The managed previous release remains current for manual diagnosis.
-        raise
+    compose_up(paths, runner)
 
 
 def backup_nginx(paths: Paths, release_dir: Path, runner: CommandRunner) -> dict[str, str]:
@@ -1391,9 +1383,12 @@ def transactional_deploy(
             None if takeover else release_services,
             force_workers=maintenance_active,
         )
-        health = health_check(paths)
         verify_migration_heads(release_dir, runner)
         install_nginx(paths, release_dir, runner)
+        if maintenance_active:
+            maintenance_off(manifest, failed=False)
+            maintenance_active = False
+        health = health_check(paths)
         evidence_error = None
         try:
             write_evidence(
@@ -1416,30 +1411,6 @@ def transactional_deploy(
                 )
             except OSError:
                 pass
-        if maintenance_active:
-            try:
-                maintenance_off(manifest, failed=False)
-                maintenance_active = False
-            except Exception as exc:
-                try:
-                    (release_dir / "maintenance-release-pending").write_text(
-                        "Release is healthy, but maintenance could not be cleared. "
-                        "Use the fixed maintenance command only after checking evidence.\n",
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
-                # The new stack is healthy and should absorb safe reads. The
-                # middleware remains active, so no new writes are admitted.
-                try:
-                    (release_dir / "manual-maintenance-release-required").write_text(
-                        "Release health passed but maintenance could not be cleared. "
-                        "Do not retry the release; clear maintenance explicitly after "
-                        "checking the deployment evidence.\n",
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
         if nginx_maintenance:
             finish_first_takeover_maintenance(paths)
             nginx_maintenance = False
@@ -1453,6 +1424,23 @@ def transactional_deploy(
                 start_legacy_producers(runner)
             except Exception:
                 pass
+        maintenance_reenable_failed = False
+        if switched and not takeover:
+            try:
+                # A failed control request may have applied server-side even
+                # when its response was lost. Reassert the gate before any
+                # rollback or further recovery work.
+                maintenance_on(manifest)
+                maintenance_active = True
+            except Exception as maintenance_failure:
+                maintenance_reenable_failed = True
+                try:
+                    (release_dir / "maintenance-reenable-failure.txt").write_text(
+                        f"{type(maintenance_failure).__name__}: {maintenance_failure}\n",
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
         if nginx and not takeover:
             try:
                 restore_nginx(paths, release_dir, runner)
@@ -1468,11 +1456,22 @@ def transactional_deploy(
             )
         )
         rollback_failed = False
-        if can_rollback:
+        if maintenance_reenable_failed:
+            rollback_failed = True
+        elif can_rollback:
             try:
-                rollback(paths, previous, runner, health_check)
+                rollback(paths, previous, runner)
+                previous_manifest = load_manifest(previous)
+                maintenance_off(previous_manifest, failed=True)
+                maintenance_active = False
+                health_check(paths)
             except Exception as rollback_failure:
                 rollback_failed = True
+                try:
+                    maintenance_on(load_manifest(previous))
+                    maintenance_active = True
+                except Exception:
+                    pass
                 (release_dir / "rollback-failure.json").write_text(
                     json.dumps(
                         {
@@ -1559,17 +1558,10 @@ def transactional_deploy(
                 pass
         if rollback_failed:
             raise ReleaseError(
-                "deployment and automatic rollback both failed; maintenance remains active"
+                "deployment or rollback verification failed; maintenance remains active"
             ) from failure
         if can_rollback:
-            # A health-check failure may have written data under the new
-            # schema. Keep maintenance on until an operator confirms the
-            # rollback is safe and re-enables writes explicitly.
-            (release_dir / "manual-maintenance-release-required").write_text(
-                "Application rollback completed. Maintenance remains active; verify "
-                "data and release maintenance before accepting writes.\n",
-                encoding="utf-8",
-            )
+            (release_dir / "manual-maintenance-release-required").unlink(missing_ok=True)
         elif maintenance_active:
             (release_dir / "manual-recovery-required").write_text(
                 "The database rollback policy requires restoring the verified backup "
@@ -1696,8 +1688,12 @@ def deploy_release(paths: Paths, incoming: Path, runner: CommandRunner) -> Path:
         release_dir,
         runner,
         health_check=health_check,
-        maintenance_on=lambda manifest: maintenance_request(release_dir, True, manifest),
-        maintenance_off=lambda manifest, failed=False: maintenance_request(release_dir, False, manifest),
+        maintenance_on=lambda manifest: maintenance_request(
+            paths.releases / manifest["version"], True, manifest
+        ),
+        maintenance_off=lambda manifest, failed=False: maintenance_request(
+            paths.releases / manifest["version"], False, manifest
+        ),
         migrate=lambda release: (verify_migration_heads(release, runner), migrate_production(release, runner)),
         has_migration=True,
     )
@@ -1816,9 +1812,21 @@ def main(argv: list[str]) -> int:
                 raise ReleaseError("this release requires database restore before application rollback")
             if not paths.current.resolve().is_relative_to(paths.releases.resolve()):
                 raise ReleaseError("current release is not managed by this deployment contract")
+            current = paths.current.resolve()
+            current_manifest = load_manifest(current)
+            previous_manifest = load_manifest(previous)
+            maintenance_request(current, True, current_manifest)
             restore_current(paths, previous)
             compose_up(paths, runner)
-            health_check(paths)
+            try:
+                maintenance_request(previous, False, previous_manifest)
+                health_check(paths)
+            except Exception:
+                try:
+                    maintenance_request(previous, True, previous_manifest)
+                except Exception:
+                    pass
+                raise
             print(f"application rolled back to: {previous.name}")
         elif args.action == "retain":
             retained = retain_releases(paths, incoming)

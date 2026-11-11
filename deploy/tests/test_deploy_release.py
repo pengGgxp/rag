@@ -308,7 +308,22 @@ class RollbackTests(unittest.TestCase):
             root = Path(tmp)
             events = self._transaction(root)
             self.assertLess(events.index("rehearse"), events.index("migrate"))
-            self.assertLess(events.index("health"), events.index("nginx-install"))
+            self.assertLess(events.index("nginx-install"), events.index("maintenance-off"))
+            self.assertLess(events.index("maintenance-off"), events.index("health"))
+
+    def test_compose_start_does_not_wait_for_health_checks(self):
+        runner = Mock()
+        paths = deploy_release.Paths(root=Path("/tmp/zhiku-test"))
+        with patch.object(
+            deploy_release,
+            "current_compose_args",
+            return_value=["docker", "compose"],
+        ), patch.object(deploy_release, "confirm_running_digests"):
+            deploy_release.compose_up(paths, runner)
+        start_command = runner.run.call_args_list[1].args[0]
+        self.assertIn("up", start_command)
+        self.assertNotIn("--wait", start_command)
+        self.assertNotIn("--wait-timeout", start_command)
 
     def test_successful_compatible_deployment_turns_maintenance_off(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -719,15 +734,24 @@ class RollbackTests(unittest.TestCase):
             switch.assert_not_called()
             compose.assert_not_called()
 
-    def test_compatible_health_failure_rolls_back_but_keeps_maintenance(self):
+    def test_compatible_health_failure_reopens_maintenance_and_checks_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
             release, previous, paths, payload = self._deploy_harness(Path(tmp))
             events = []
+            health_calls = 0
 
             def switch(_paths, target):
                 (root / "current").unlink()
                 (root / "current").symlink_to(target.resolve(), target_is_directory=True)
                 return previous
+
+            def health(_paths):
+                nonlocal health_calls
+                health_calls += 1
+                events.append(f"health-{health_calls}")
+                if health_calls == 1:
+                    raise deploy_release.ReleaseError("new release health failed")
+                return {"status": "ok"}
 
             root = Path(tmp)
             with patch.object(deploy_release, "load_manifest", return_value=payload), \
@@ -742,6 +766,8 @@ class RollbackTests(unittest.TestCase):
                  patch.object(deploy_release, "switch_links", side_effect=switch), \
                  patch.object(deploy_release, "changed_services", return_value=("web",)), \
                  patch.object(deploy_release, "compose_up"), \
+                 patch.object(deploy_release, "verify_migration_heads"), \
+                 patch.object(deploy_release, "install_nginx"), \
                  patch.object(deploy_release, "rollback", side_effect=lambda *_args: events.append("rollback")), \
                  patch.object(deploy_release, "write_evidence") as evidence:
                 with self.assertRaises(deploy_release.ReleaseError):
@@ -749,17 +775,27 @@ class RollbackTests(unittest.TestCase):
                         paths,
                         release,
                         deploy_release.CommandRunner(),
-                        health_check=lambda _: (_ for _ in ()).throw(
-                            deploy_release.ReleaseError("health failed")
-                        ),
-                        maintenance_on=lambda _: events.append("maintenance-on"),
+                        health_check=health,
+                        maintenance_on=lambda *_args: events.append("maintenance-on"),
                         maintenance_off=lambda *_args, **_kwargs: events.append("maintenance-off"),
                         migrate=lambda _: events.append("migrate"),
                         has_migration=True,
                     )
             self.assertIn("rollback", events)
-            self.assertNotIn("maintenance-off", events)
-            self.assertTrue((release / "manual-maintenance-release-required").is_file())
+            self.assertEqual(
+                events,
+                [
+                    "maintenance-on",
+                    "migrate",
+                    "maintenance-off",
+                    "health-1",
+                    "maintenance-on",
+                    "rollback",
+                    "maintenance-off",
+                    "health-2",
+                ],
+            )
+            self.assertFalse((release / "manual-maintenance-release-required").exists())
             self.assertEqual(evidence.call_args_list[-1].kwargs["status"], "failed")
 
     def test_restore_backup_policy_health_failure_keeps_new_release_link(self):
