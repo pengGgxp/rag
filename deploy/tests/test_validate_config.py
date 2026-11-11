@@ -1,10 +1,13 @@
 import unittest
 import tempfile
+import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
 
-from deploy.validate_config import audit_server_env, validate
+from deploy.validate_config import APP_KEYS, audit_server_env, validate
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +22,35 @@ class ContractTests(unittest.TestCase):
         )
         self.assertIn("API_IMAGE", keys)
         self.assertIn("AUTH_SECRET_KEY", keys)
-        self.assertNotIn("NEXT_PUBLIC_API_URL", keys)
+        self.assertIn("NEXT_PUBLIC_API_URL", keys)
+
+    def test_catalog_matches_backend_settings(self):
+        tree = ast.parse(
+            (ROOT.parent / "backend/app/config.py").read_text(encoding="utf-8")
+        )
+        settings = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "Settings"
+        )
+        fields = {
+            node.target.id.upper() for node in settings.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        self.assertEqual(APP_KEYS, fields)
+
+    def test_template_covers_optional_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_env = Path(tmp) / "app.env"
+            app_env.write_text(
+                (ROOT / "app.env.example").read_text(encoding="utf-8")
+                .replace("S3_REGION=us-east-1\n", ""),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "S3_REGION"):
+                validate(
+                    ROOT / "compose.production.yml", app_env,
+                    ROOT / "deployment.env.example",
+                )
 
     def test_database_password_has_no_default(self):
         compose = yaml.safe_load((ROOT / "compose.production.yml").read_text(encoding="utf-8"))
@@ -88,6 +119,24 @@ class ContractTests(unittest.TestCase):
             self.assertIn("AUTH_SECRET_KEY", report["missing_required"])
             self.assertNotIn("secret", str(report))
             self.assertNotIn("do-not-print", str(report))
+
+    def test_audit_rejects_empty_required_and_incomplete_compose(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app_env = Path(tmp) / "app.env"
+            deployment = Path(tmp) / ".env.release"
+            app_env.write_text("AUTH_SECRET_KEY=\n", encoding="utf-8")
+            deployment.write_text("POSTGRES_PASSWORD=private\n", encoding="utf-8")
+            report = audit_server_env(app_env, deployment)
+            self.assertEqual(report["empty_required"], ["AUTH_SECRET_KEY"])
+            self.assertIn("API_IMAGE", report["deployment_missing"])
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "validate_config.py"),
+                 "--audit-app-env", str(app_env),
+                 "--audit-deployment-env", str(deployment)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("private", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

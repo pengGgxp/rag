@@ -137,11 +137,16 @@ REQUIRED_APP_KEYS = {
 }
 
 GENERATED_APP_KEYS = {
+    "DEPLOY_CONTROL_TOKEN",
     "APP_VERSION",
     "GIT_COMMIT",
     "CONFIG_CONTRACT",
     "DEPLOYMENT_ROLLBACK",
 }
+
+# Kept in the server file for release validation, not read by backend Settings.
+BUILD_METADATA_KEYS = {"NEXT_PUBLIC_API_URL"}
+SEPARATE_APP_KEYS = {"QUESTION_WORKBENCH_SECRET"}
 
 DEPLOYMENT_KEYS = {
     "POSTGRES_PASSWORD",
@@ -179,13 +184,13 @@ def fail(message: str) -> None:
 def parse_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line or line.lstrip().startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
         if "=" not in line:
             fail(f"{path.name}:{number}: expected KEY=VALUE")
         key, value = line.split("=", 1)
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
-            fail(f"{path.name}:{number}: invalid env key: {key}")
+            fail(f"{path.name}:{number}: invalid env key")
         if key in values:
             fail(f"{path.name}:{number}: duplicate env key: {key}")
         values[key] = value
@@ -249,17 +254,17 @@ def validate(
         fail(f"Compose uses undocumented variables: {sorted(undocumented)}")
 
     app_values = parse_env(app_template)
-    unknown_app = set(app_values) - APP_KEYS
+    unknown_app = set(app_values) - APP_KEYS - BUILD_METADATA_KEYS
     if unknown_app:
         fail(f"application env table contains undocumented keys: {sorted(unknown_app)}")
-    missing_app = REQUIRED_APP_KEYS - set(app_values)
+    missing_app = (APP_KEYS - SEPARATE_APP_KEYS | BUILD_METADATA_KEYS) - set(app_values)
     if missing_app:
         fail(f"application env table is missing required keys: {sorted(missing_app)}")
 
     if deployment_template is None:
         fail("a separate deployment env table is required")
     deployment_values = parse_env(deployment_template)
-    application_keys = set(deployment_values) - DEPLOYMENT_KEYS
+    application_keys = set(deployment_values) - DEPLOYMENT_KEYS - GENERATED_COMPOSE_KEYS
     if application_keys:
         fail(
             "deployment env table must not contain application keys: "
@@ -280,7 +285,7 @@ def validate(
     missing_compose = COMPOSE_KEYS - set(effective_compose_values) - GENERATED_COMPOSE_KEYS
     if missing_compose:
         fail(f"deployment env table does not cover Compose: {sorted(missing_compose)}")
-    return sorted(APP_KEYS | COMPOSE_KEYS)
+    return sorted(APP_KEYS | COMPOSE_KEYS | BUILD_METADATA_KEYS)
 
 
 def audit_server_env(app_path: Path, deployment_path: Path | None = None) -> dict:
@@ -288,22 +293,34 @@ def audit_server_env(app_path: Path, deployment_path: Path | None = None) -> dic
     values = parse_env(app_path)
     result = {
         "app_keys": len(values),
-        "unknown": sorted(set(values) - APP_KEYS),
+        "unknown": sorted(set(values) - APP_KEYS - BUILD_METADATA_KEYS),
         "missing_required": sorted(
-            REQUIRED_APP_KEYS - GENERATED_APP_KEYS - set(values)
+            (REQUIRED_APP_KEYS - GENERATED_APP_KEYS | BUILD_METADATA_KEYS) - set(values)
         ),
-        "missing_optional": sorted(set(APP_KEYS) - REQUIRED_APP_KEYS - set(values)),
+        "empty_required": sorted(
+            key for key in (REQUIRED_APP_KEYS - GENERATED_APP_KEYS | BUILD_METADATA_KEYS)
+            if key in values and not values[key].strip()
+        ),
+        "missing_optional": sorted(
+            APP_KEYS - REQUIRED_APP_KEYS - SEPARATE_APP_KEYS - set(values)
+        ),
     }
-    if deployment_path is not None and deployment_path.is_file():
+    if deployment_path is not None:
         deployment_values = parse_env(deployment_path)
         result.update(
             {
                 "deployment_keys": len(deployment_values),
                 "deployment_unknown": sorted(
-                    set(deployment_values) - (DEPLOYMENT_KEYS | GENERATED_COMPOSE_KEYS)
+                    set(deployment_values) - COMPOSE_KEYS
                 ),
                 "deployment_missing": sorted(
-                    DEPLOYMENT_KEYS - set(deployment_values)
+                    (COMPOSE_KEYS - {"MIGRATION_DATABASE_URL"}) - set(deployment_values)
+                ),
+                "deployment_empty": sorted(
+                    key for key in (
+                        COMPOSE_KEYS - {"MIGRATION_DATABASE_URL"}
+                    )
+                    if key in deployment_values and not deployment_values[key].strip()
                 ),
             }
         )
@@ -333,7 +350,11 @@ def main() -> int:
         if args.audit_app_env:
             report = audit_server_env(args.audit_app_env, args.audit_deployment_env)
             print(json.dumps(report, indent=2, sort_keys=True))
-            return 1 if report["unknown"] or report["missing_required"] else 0
+            failed = any(report.get(key) for key in (
+                "unknown", "missing_required", "empty_required",
+                "deployment_unknown", "deployment_missing", "deployment_empty",
+            ))
+            return 1 if failed else 0
         keys = validate(
             args.compose,
             args.app_template or ROOT / "app.env.example",

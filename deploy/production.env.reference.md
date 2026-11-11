@@ -1,250 +1,167 @@
-# Production environment variable reference
+# 生产环境变量总表
 
-This is the authoritative index of production environment variables. It does
-not replace `app.env.example` and `deployment.env.example`: those are the
-copyable templates that deployment validation checks. Keep all three files in
-sync when a setting is added, renamed or removed.
+本文件是运维查阅入口。可复制模板分别是 `app.env.example` 和
+`deployment.env.example`，值受代码校验约束。服务器运行配置由服务器持有，
+不依赖 GitHub Environment。
 
-## Where values live
+## 配置放在哪里
 
-There are three separate configuration layers:
-
-| Layer | Location | Purpose | Contains secrets |
+| 配置层 | 位置 | 谁维护 | 用途 |
 | --- | --- | --- | --- |
-| Application runtime | `/opt/zhiku/config/app.env` | Database, Redis, auth, preview, parser, cache and legacy bootstrap settings used by API, Worker, preview Worker and preview gateway. | Yes |
-| Compose deployment | Generated `/opt/zhiku/current/.env.release` | Image digests, database container password, internal RustFS keys and Compose-only cache/deployment values. | Yes; mode `600` |
-| Question workbench bridge | `/opt/zhiku/config/.env.question-workbench` | Separate shared secret for the question-workbench integration. | Yes |
+| 后端运行变量 | `/opt/zhiku/config/app.env` | 服务器运维 | API、Worker、预览 Worker 和预览网关读取 |
+| 题库桥接密钥 | `/opt/zhiku/config/.env.question-workbench` | 服务器运维 | 题库工作台与知库服务之间认证；与 `app.env` 分开 |
+| Compose 发布变量 | 每个 release 的 `.env.release` | 发布器自动生成 | 镜像 digest、PostgreSQL/RustFS 启动参数、版本与迁移参数 |
+| Web 构建参数 | 构建 Web 镜像时的 `NEXT_PUBLIC_API_URL` | 本地构建命令或 CI | 编译进前端 bundle 的 API 地址；不是后端功能开关 |
+| 产品后台配置 | PostgreSQL 中的版本化站点配置 | 站点管理员 | 模型、存储、云电脑、搜索和商业价格等动态配置 |
 
-`deployment.env.example` documents Compose keys but is not a second copy of
-application configuration. Normally `deploy_release.py` derives
-`.env.release` from the verified release manifest, `app.env` and the database
-URL. An operator must not copy application secrets into Compose.
+`app.env`、`.env.question-workbench` 和 `.env.release` 均为受保护文件，
+权限应为 `600`。真实值不应提交 Git、发在聊天或写入发布记录。
+`deployment.env.example` 只供 Compose 静态解析和配置契约验证，不能拿来
+替代线上 `.env.release`，也不能把它复制成第二份人工维护的密钥文件。
 
-The Web API address is a build-time input named `NEXT_PUBLIC_API_URL`. CI and
-manual image builds must set it to `https://zk.str1ct.top/api`. It is not a
-backend runtime setting and is deliberately not part of `app.env`.
+## 后端服务器变量
 
-GitHub is not required to run production. GitHub Actions may build images and
-upload a release when enabled, but production configuration and releases are
-server-owned. GitHub Settings are therefore not part of this table.
+状态说明：
 
-## Application runtime: `app.env`
+- **必需**：部署校验要求显式填写；密钥类不得留空。
+- **按功能启用**：相关功能启用时才需要配置；留空表示该功能未配置。
+- **可选**：代码有默认值，省略不应导致发布失败。
+- **历史兼容**：由 `Settings` 读取，但当前正式入口可能已改为后台数据库配置；
+  不要仅因模板中存在就误认为线上功能依赖它。
+- **派生**：发布器按 release 信息写入，不应由运维手动设置。
 
-### Core and release metadata
-
-| Variable | Required | Function |
+| 变量 | 状态 | 对应功能 / 用途 |
 | --- | --- | --- |
-| `DATABASE_URL` | Yes | PostgreSQL DSN used by API, Workers, preview gateway and migration jobs. Must include user, password and host. |
-| `REDIS_URL` | Yes | Celery broker and shared transient state. |
-| `AUTH_SECRET_KEY` | Yes | Session/token signing secret. At least 32 random characters. |
-| `SITE_CONFIG_ENCRYPTION_KEY` | Yes | Fernet key encrypting site-managed credentials such as SMTP, storage providers and payment secrets. Back it up separately. |
-| `MCP_CREDENTIAL_KEY` | Yes | Independent Fernet key for encrypted MCP authentication headers. Back it up separately. |
-| `DEPLOY_CONTROL_TOKEN` | Yes | Server-only token for the loopback maintenance endpoint. Never expose it to browsers or GitHub. |
-| `APP_VERSION` | Generated | Release version shown by the API; `deploy_release.py` replaces it from `release.json`. |
-| `GIT_COMMIT` | Generated | Full release commit shown by the API; replaced from `release.json`. |
-| `CONFIG_CONTRACT` | Generated | Compatibility contract number checked by the release tool. |
-| `DEPLOYMENT_ROLLBACK` | Generated | Migration rollback policy: `automatic-app-rollback` or `restore-backup-required`. |
+| `DATABASE_URL` | 必需 | PostgreSQL 连接；包含用户名、密码、主机、端口和库名。Compose 中 PostgreSQL 的密码也由此解析生成。 |
+| `REDIS_URL` | 必需 | Celery 任务队列和共享短期状态。 |
+| `AUTH_SECRET_KEY` | 必需 | 登录会话及认证签名；生产需使用随机强密钥，至少 32 字符。 |
+| `SITE_CONFIG_ENCRYPTION_KEY` | 必需 | 加密后台保存的存储、支付、邮件等站点凭据；必须单独备份，丢失会导致已存凭据无法解密。 |
+| `MCP_CREDENTIAL_KEY` | 必需 | 加密 MCP 认证信息的独立密钥；与站点配置密钥分开保管。 |
+| `FRONTEND_URL` | 必需 | 正式 Web 来源，用于回调、链接与来源校验。 |
+| `API_PUBLIC_URL` | 必需 | 正式 API 地址，用于对外链接及来源校验。 |
+| `AUTH_COOKIE_SECURE` | 必需 | HTTPS 站点设为 `true`，登录 Cookie 仅通过安全连接发送。 |
+| `PREVIEW_ENABLED` | 必需 | 明确决定是否开启云电脑 HTTP 预览，填写 `true` 或 `false`。 |
+| `PREVIEW_DOMAIN` | 必需 | 预览子域名后缀，例如 `preview.str1ct.top`。 |
+| `NEXT_PUBLIC_API_URL` | 构建校验 | Web 镜像构建输入，必须指向生产 API；部署校验也检查它与发布包是否一致。它不会让后端自动切换 API 地址。 |
+| `DEPLOY_CONTROL_TOKEN` | 发布器生成 | API loopback 部署维护接口使用。发布器会在服务器生成并跨 release 保留，不要手动发给浏览器或写入 GitHub。 |
+| `APP_VERSION` | 发布器生成 | 当前发布版本，来自 `release.json`。 |
+| `GIT_COMMIT` | 发布器生成 | 当前镜像对应的提交 SHA，来自 `release.json`。 |
+| `CONFIG_CONTRACT` | 发布器生成 | 发布配置契约版本。 |
+| `DEPLOYMENT_ROLLBACK` | 发布器生成 | 数据库迁移失败时的回滚策略，来自发布清单。 |
+| `AUTH_SESSION_HOURS` | 可选 | 登录会话时长，默认 168 小时。 |
+| `EMBEDDING_BASE_URL` | 按功能启用 | Embedding 服务接口地址；填入后还需要 API Key 和模型名，三项组成有效配置。 |
+| `EMBEDDING_API_KEY` | 按功能启用 | Embedding 服务凭据。 |
+| `EMBEDDING_MODEL` | 按功能启用 | Embedding 模型 ID；维度须与数据库向量列匹配。 |
+| `EMBEDDING_DIMENSION` | 可选 | Embedding 向量维度，默认 1024；只有更换模型维度并完成索引兼容时才调整。 |
+| `EMBEDDING_TIMEOUT_SECONDS` | 可选 | Embedding 请求超时秒数，默认 30。 |
+| `LLM_BASE_URL` | 历史兼容 | 单一 LLM 备用连接；标准模型连接现由站点后台管理，不是多供应商配置入口。 |
+| `LLM_API_KEY` | 历史兼容 | 上述备用 LLM 的凭据。 |
+| `LLM_MODEL` | 历史兼容 | 上述备用 LLM 的模型 ID。 |
+| `LLM_TIMEOUT_SECONDS` | 可选 | 备用 LLM 请求超时，默认 60 秒。 |
+| `PDF_PARSER` | 可选 | PDF 解析方式：`local` 使用本地解析，`aliyun` 使用 DocMind；默认 `local`。 |
+| `ALIYUN_ACCESS_KEY_ID` | 按功能启用 | 仅当 `PDF_PARSER=aliyun` 时使用的阿里云解析凭据。 |
+| `ALIYUN_ACCESS_KEY_SECRET` | 按功能启用 | 仅当 `PDF_PARSER=aliyun` 时使用的阿里云解析凭据。 |
+| `DOCMIND_TIMEOUT_SECONDS` | 可选 | DocMind 最长等待时间，默认 300 秒。 |
+| `DOCMIND_POLL_SECONDS` | 可选 | DocMind 任务状态轮询间隔，默认 3 秒。 |
+| `MCP_ALLOWED_PRIVATE_HOSTS` | 安全策略 | 允许 MCP 访问的私网精确主机名列表，逗号分隔；默认留空，不扩大私网访问面。 |
+| `MCP_TIMEOUT_SECONDS` | 可选 | MCP 请求超时，默认 60 秒。 |
+| `OIDC_NAME` | 可选 | OIDC 登录入口展示名称，默认“企业账号”。 |
+| `OIDC_METADATA_URL` | 按功能启用 | OIDC discovery 地址；还需 Client ID、Secret 和认证密钥。 |
+| `OIDC_CLIENT_ID` | 按功能启用 | OIDC 客户端 ID。 |
+| `OIDC_CLIENT_SECRET` | 按功能启用 | OIDC 客户端密钥。 |
+| `SMTP_HOST` | 按功能启用 | SMTP 服务器地址；后台邮件设置保存后，以后台版本化配置为准。 |
+| `SMTP_PORT` | 可选 | SMTP 端口，默认 587。 |
+| `SMTP_USERNAME` | 按功能启用 | SMTP 用户名。 |
+| `SMTP_PASSWORD` | 按功能启用 | SMTP 密码或应用专用密码。 |
+| `SMTP_FROM` | 按功能启用 | SMTP 发件地址。 |
+| `SMTP_STARTTLS` | 可选 | 是否使用 STARTTLS，默认 `true`。 |
+| `ZHIFUX_ENABLED` | 历史兼容 | 知付宝旧版配置迁移草稿；保存后台支付设置后数据库配置生效。 |
+| `ZHIFUX_API_BASE_URL` | 历史兼容 | 知付宝旧版 API 地址。 |
+| `ZHIFUX_MERCHANT_NUM` | 历史兼容 | 知付宝商户号。 |
+| `ZHIFUX_SECRET` | 历史兼容 | 知付宝旧版商户密钥。 |
+| `ZHIFUX_PAY_TYPE` | 历史兼容 | 知付宝旧版支付方式代码。 |
+| `ZHIFUX_PAYMENT_METHODS_JSON` | 历史兼容 | 知付宝支付方式草稿 JSON。 |
+| `ZHIFUX_CUSTOM_RECHARGE_ENABLED` | 历史兼容 | 知付宝旧版自定义充值开关。 |
+| `ZHIFUX_CUSTOM_CREDITS_PER_YUAN` | 历史兼容 | 知付宝旧版每元积分数，默认 100。 |
+| `RECHARGE_PACKAGES_JSON` | 历史兼容 | 旧版充值套餐 JSON 草稿；后台保存后数据库配置生效。 |
+| `EZFP_ENABLED` | 历史兼容 | 易支付旧版配置迁移草稿。 |
+| `EZFP_API_BASE_URL` | 历史兼容 | 易支付 API 地址，默认 `https://www.ezfp.cn/api/pay/create`。 |
+| `EZFP_PID` | 历史兼容 | 易支付商户 ID。 |
+| `EZFP_PAY_TYPE` | 历史兼容 | 易支付旧版方式代码，默认 `wxpay`。 |
+| `EZFP_PAYMENT_METHODS_JSON` | 历史兼容 | 易支付方式草稿 JSON。 |
+| `EZFP_PRIVATE_KEY` | 历史兼容 | 易支付签名私钥，仅旧版启动配置使用。 |
+| `EZFP_PUBLIC_KEY` | 历史兼容 | 易支付验签公钥，仅旧版启动配置使用。 |
+| `EZFP_RECHARGE_PACKAGES_JSON` | 历史兼容 | 易支付旧版套餐 JSON。 |
+| `EZFP_CUSTOM_RECHARGE_ENABLED` | 历史兼容 | 易支付旧版自定义充值开关。 |
+| `EZFP_CUSTOM_CREDITS_PER_YUAN` | 历史兼容 | 易支付旧版每元积分数，默认 100。 |
+| `USAGE_AUTHORIZATION_HOLD_CREDITS` | 可选 | 模型计量请求最低预留积分，默认 1；不是图片价格或沙箱单价。 |
+| `RESOURCE_CACHE_DIR` | 可选 | API/Worker 读取资源时使用的临时缓存目录，默认 `/tmp/rag-resource-cache`；不是云电脑工作目录。 |
+| `RESOURCE_CACHE_MAX_BYTES` | 可选 | 资源缓存容量上限，默认 5 GiB。 |
+| `RESOURCE_CACHE_IDLE_SECONDS` | 可选 | 资源缓存闲置清理时间，默认 24 小时。 |
+| `PREVIEW_CACHE_MAX_BYTES` | 可选 | 资源预览 Worker 缓存上限，默认 5 GiB；发布器派生为 Compose 参数。 |
+| `PREVIEW_CACHE_IDLE_SECONDS` | 可选 | 资源预览缓存闲置清理时间，默认 7 天；发布器派生为 Compose 参数。 |
+| `WORKSPACE_EXECUTOR_URL` | 历史兼容 | 旧执行器 URL，默认不配置；不是阿里云沙箱连接配置。 |
+| `WORKSPACE_RUNNER_IMAGE` | 历史兼容 | 本地 Docker 执行器镜像默认值；当前云电脑模板由后台配置。 |
+| `WORKSPACE_FILE_RETENTION_DAYS` | 历史兼容 | 旧执行器文件保留期，默认 3 天。 |
+| `WORKSPACE_FILE_QUOTA_MB` | 历史兼容 | 旧执行器文件配额，默认 500 MB。 |
+| `QUESTION_WORKBENCH_URL` | 可选 | 题库工作台公网地址，默认 `https://q.str1ct.top`。 |
+| `QUESTION_WORKBENCH_API_URL` | 可选 | 题库服务内网 API 地址，默认 `http://question-workbench-api:8100`。 |
+| `QUESTION_WORKBENCH_SECRET` | 独立文件 | 题库桥接 Bearer 密钥，放在 `.env.question-workbench`，不得复制到 `app.env`。 |
+| `S3_ENDPOINT` | 历史兼容 | 本地 RustFS/S3 兼容连接地址，默认 `http://localhost:9000`；正式存储连接由后台配置。 |
+| `S3_ACCESS_KEY` | 历史兼容 | 本地 RustFS/S3 兼容访问密钥。 |
+| `S3_SECRET_KEY` | 历史兼容 | 本地 RustFS/S3 兼容密钥。 |
+| `S3_BUCKET` | 历史兼容 | 本地对象存储桶名，默认 `rag-documents`。 |
+| `S3_REGION` | 历史兼容 | 本地对象存储区域，默认 `us-east-1`。 |
 
-### Public URLs, authentication and previews
+模板包含全部后端 `Settings` 字段，是可审计目录；**不是所有键都必须新增到
+线上文件**。运行期采用代码默认值的可选键可以省略，已保存到数据库的后台
+配置不应再复制进环境文件。
 
-| Variable | Required | Function |
+## Compose 发布器变量
+
+这些变量由发布器在每个 release 中生成，运维不需要把它们填进 `app.env`。
+`deployment.env.example` 为 Compose 校验提供占位值：
+
+| 变量 | 生成来源 | 对应功能 |
 | --- | --- | --- |
-| `FRONTEND_URL` | Yes | Public Web origin used for links, callbacks and CORS/origin checks. |
-| `API_PUBLIC_URL` | Yes | Public API origin used in externally visible links. |
-| `AUTH_COOKIE_SECURE` | Yes | Must be `true` in production so auth cookies are HTTPS-only. |
-| `AUTH_SESSION_HOURS` | No | Session lifetime in hours; default `168`. |
-| `PREVIEW_ENABLED` | Yes | Enables the HTTP cloud-computer preview gateway. |
-| `PREVIEW_DOMAIN` | Yes | Parent preview domain, normally `preview.str1ct.top`. |
-| `OIDC_NAME` | No | Display name of the optional enterprise login provider. |
-| `OIDC_METADATA_URL` | No | OIDC discovery document URL; required only when OIDC is enabled. |
-| `OIDC_CLIENT_ID` | No | OIDC client ID; required only when OIDC is enabled. |
-| `OIDC_CLIENT_SECRET` | No | OIDC client secret; required only when OIDC is enabled. |
+| `API_IMAGE` | Release manifest | API digest 固定镜像。 |
+| `WORKER_IMAGE` | Release manifest | Celery Worker 固定镜像。 |
+| `WEB_IMAGE` | Release manifest | Web 固定镜像。 |
+| `APP_VERSION` | Release manifest | 运行版本标识。 |
+| `GIT_COMMIT` | Release manifest | 代码提交 SHA。 |
+| `CONFIG_CONTRACT` | Release manifest | 配置契约版本。 |
+| `DEPLOYMENT_ROLLBACK` | Release manifest | 数据库迁移失败后的应用回滚规则。 |
+| `MIGRATION_DATABASE_URL` | 发布时临时生成 | 隔离演练迁移的临时数据库地址。 |
+| `POSTGRES_PASSWORD` | 从 `DATABASE_URL` 解析 | Compose PostgreSQL 容器初始化密码。 |
+| `RUSTFS_ACCESS_KEY` | 从 `S3_ACCESS_KEY` 解析 | Compose 内置 RustFS 启动密钥。 |
+| `RUSTFS_SECRET_KEY` | 从 `S3_SECRET_KEY` 解析 | Compose 内置 RustFS 启动密钥。 |
+| `ZHIKU_APP_ENV_FILE` | 发布器固定值 | Compose 所加载的应用 env 文件名。 |
 
-### RAG embedding and legacy LLM fallback
+Release 入口还要求 `NEXT_PUBLIC_API_URL` 已在服务器 `app.env` 中配置，并与
+Web 镜像构建时的值匹配。该变量在这里用于发布一致性校验，前端实际连接地址
+已在构建时编入镜像。
 
-| Variable | Required | Function |
-| --- | --- | --- |
-| `EMBEDDING_BASE_URL` | Capability | Embedding provider base URL. Required for ingestion and semantic retrieval. |
-| `EMBEDDING_API_KEY` | Capability | Embedding provider key. Required with the base URL. |
-| `EMBEDDING_MODEL` | Capability | Embedding model name. Required with the base URL. |
-| `EMBEDDING_DIMENSION` | No | Embedding vector dimension; default `1024`. Must match the embedding model and index. |
-| `EMBEDDING_TIMEOUT_SECONDS` | No | Embedding request timeout; default `30`. |
-| `LLM_BASE_URL` | Legacy fallback | Single-model fallback URL. Normal chat providers and models are configured in site admin. |
-| `LLM_API_KEY` | Legacy fallback | Single-model fallback key. |
-| `LLM_MODEL` | Legacy fallback | Single-model fallback model name. |
-| `LLM_TIMEOUT_SECONDS` | No | Legacy LLM timeout; default `60`. |
+## 不属于环境变量的后台配置
 
-### Parsing, OCR and MCP
+这些配置保存在 PostgreSQL 的站点管理配置中，不应在本表填第二份：
 
-| Variable | Required | Function |
-| --- | --- | --- |
-| `PDF_PARSER` | No | `local` for local PDF parsing or `aliyun` for Alibaba DocMind. Default `local`. |
-| `ALIYUN_ACCESS_KEY_ID` | Capability | Alibaba credential for DocMind when `PDF_PARSER=aliyun`. |
-| `ALIYUN_ACCESS_KEY_SECRET` | Capability | Alibaba credential for DocMind when `PDF_PARSER=aliyun`. |
-| `DOCMIND_TIMEOUT_SECONDS` | No | Maximum DocMind job wait; default `300`. |
-| `DOCMIND_POLL_SECONDS` | No | DocMind polling interval; default `3`. |
-| `MCP_ALLOWED_PRIVATE_HOSTS` | No | Comma-separated exact private hosts administrators explicitly trust for MCP. Keep empty by default. |
-| `MCP_TIMEOUT_SECONDS` | No | MCP request timeout; default `60`. |
+- 模型供应商、模型协议、对话和图片模型、图片规格与积分价格。
+- 主对象存储供应商、COS/OSS 凭据、Bucket、地域及测试状态。
+- 云电脑启停、沙箱凭据、地域、模板、角色 ARN、单价和生命周期。
+- 网页搜索供应商与价格、存储/下载额度及超额处理规则。
+- 管理员保存后的 SMTP、站点支付渠道、套餐和商业价格。
 
-### SMTP and legacy payment bootstrap
+## 线上核对与审计
 
-These settings seed configuration only while no database-backed site setting
-exists. After an administrator saves the corresponding settings page, the
-versioned database configuration is authoritative.
+2026-11-11 通过服务器只读查询确认：基础 `app.env` 有 35 个键，权限为
+`600`；题库桥接密钥在独立 `600` 文件中。部分模板键未显式出现在基础文件
+里，但其中包括有代码默认值的可选配置和发布派生配置；不能据此断言对应功能
+缺失。没有修改线上配置。
 
-| Variable | Required | Function |
-| --- | --- | --- |
-| `SMTP_HOST` | Capability | SMTP server host. |
-| `SMTP_PORT` | No | SMTP port; default `587`. |
-| `SMTP_USERNAME` | Capability | SMTP username when required by the provider. |
-| `SMTP_PASSWORD` | Capability | SMTP password or app password. |
-| `SMTP_FROM` | Capability | Sender address; SMTP is enabled when host and sender are present. |
-| `SMTP_STARTTLS` | No | Enables STARTTLS; default `true`. |
-| `ZHIFUX_ENABLED` | Legacy | Initial Chinese payment provider enablement draft. |
-| `ZHIFUX_API_BASE_URL` | Legacy | Initial payment API endpoint. |
-| `ZHIFUX_MERCHANT_NUM` | Legacy | Initial payment merchant number. |
-| `ZHIFUX_SECRET` | Legacy | Initial payment signing secret. |
-| `ZHIFUX_PAY_TYPE` | Legacy | Legacy single payment method code. |
-| `ZHIFUX_PAYMENT_METHODS_JSON` | Legacy | Initial ordered payment-method list as JSON. |
-| `ZHIFUX_CUSTOM_RECHARGE_ENABLED` | Legacy | Initial custom-amount enablement. |
-| `ZHIFUX_CUSTOM_CREDITS_PER_YUAN` | Legacy | Initial credits-per-yuan rate for custom amounts. |
-| `RECHARGE_PACKAGES_JSON` | Legacy | Initial recharge package array as JSON. |
-| `EZFP_ENABLED` | Legacy | Initial Ezfp payment enablement draft. |
-| `EZFP_API_BASE_URL` | Legacy | Ezfp payment API endpoint. |
-| `EZFP_PID` | Legacy | Ezfp merchant ID. |
-| `EZFP_PAY_TYPE` | Legacy | Legacy Ezfp method code. |
-| `EZFP_PAYMENT_METHODS_JSON` | Legacy | Initial Ezfp method list as JSON. |
-| `EZFP_PRIVATE_KEY` | Legacy | Ezfp signing private key. |
-| `EZFP_PUBLIC_KEY` | Legacy | Ezfp verification public key. |
-| `EZFP_RECHARGE_PACKAGES_JSON` | Legacy | Initial Ezfp package array. |
-| `EZFP_CUSTOM_RECHARGE_ENABLED` | Legacy | Initial Ezfp custom-amount enablement. |
-| `EZFP_CUSTOM_CREDITS_PER_YUAN` | Legacy | Initial Ezfp credits-per-yuan rate. |
-| `USAGE_AUTHORIZATION_HOLD_CREDITS` | No | Minimum authorization hold for metered model use; default `1`. |
-
-### Resource and preview caches
-
-| Variable | Required | Function |
-| --- | --- | --- |
-| `RESOURCE_CACHE_DIR` | No | Shared API/Worker cache for authorized temporary resource reads. Not cloud-computer OSS storage. |
-| `RESOURCE_CACHE_MAX_BYTES` | No | Maximum resource cache size; default 5 GiB. |
-| `RESOURCE_CACHE_IDLE_SECONDS` | No | Idle eviction threshold for the resource cache; default 24 hours. |
-| `PREVIEW_CACHE_MAX_BYTES` | No | Preview Worker cache limit; the release generator derives the Compose value from this setting; default 5 GiB. |
-| `PREVIEW_CACHE_IDLE_SECONDS` | No | Preview cache idle retention; the release generator derives the Compose value from this setting; default 7 days. |
-
-### Legacy local executor and workbench bridge
-
-| Variable | Required | Function |
-| --- | --- | --- |
-| `WORKSPACE_RUNNER_IMAGE` | Legacy | Local Docker executor image fallback retained for compatibility; production file work uses cloud computers. |
-| `WORKSPACE_FILE_RETENTION_DAYS` | Legacy | Local workspace file retention fallback, default `3`. |
-| `WORKSPACE_FILE_QUOTA_MB` | Legacy | Local workspace file quota fallback, default `500`. |
-| `QUESTION_WORKBENCH_URL` | Capability | Public question-workbench URL for integration buttons and redirects. |
-| `QUESTION_WORKBENCH_API_URL` | Capability | Internal question-workbench API base URL. |
-| `QUESTION_WORKBENCH_SECRET` | Separate file | Shared bridge secret. It belongs in `.env.question-workbench`, not `app.env`. |
-
-### Legacy S3/RustFS bootstrap
-
-Production object storage is selected in `/admin/storage`; normal resource,
-knowledge-base, chat and image files use that configured provider.
-
-| Variable | Required | Function |
-| --- | --- | --- |
-| `S3_ENDPOINT` | Legacy bootstrap | Internal S3-compatible endpoint used by legacy storage migration/bootstrap paths. |
-| `S3_ACCESS_KEY` | Legacy bootstrap | Internal S3/RustFS access key; may also seed the local object-store container. |
-| `S3_SECRET_KEY` | Legacy bootstrap | Internal S3/RustFS secret key. |
-| `S3_BUCKET` | Legacy bootstrap | Legacy local object-store bucket name. |
-| `S3_REGION` | Legacy bootstrap | Legacy local object-store region. |
-
-## Compose deployment: generated `.env.release`
-
-| Variable | Source | Function |
-| --- | --- | --- |
-| `API_IMAGE` | Release manifest | Digest-pinned API image, also used for preview gateway and migration jobs. |
-| `WORKER_IMAGE` | Release manifest | Digest-pinned Worker image, used by normal and preview Workers. |
-| `WEB_IMAGE` | Release manifest | Digest-pinned Web image. |
-| `APP_VERSION` | Release manifest | Version metadata passed to containers. |
-| `GIT_COMMIT` | Release manifest | Commit metadata passed to containers. |
-| `CONFIG_CONTRACT` | Release manifest | Configuration compatibility number. |
-| `DEPLOYMENT_ROLLBACK` | Release manifest | Migration recovery policy used during deployment. |
-| `POSTGRES_PASSWORD` | `DATABASE_URL` | Password for the production PostgreSQL container. |
-| `RUSTFS_ACCESS_KEY` | `S3_ACCESS_KEY` | Internal RustFS access key for the Compose object-store container. |
-| `RUSTFS_SECRET_KEY` | `S3_SECRET_KEY` | Internal RustFS secret key. |
-| `ZHIKU_APP_ENV_FILE` | Release generator | Filename that Compose mounts as the application env file; normally `app.env`. |
-| `PREVIEW_CACHE_MAX_BYTES` | `app.env` | Passed to the preview Worker container. |
-| `PREVIEW_CACHE_IDLE_SECONDS` | `app.env` | Passed to the preview Worker container. |
-| `MIGRATION_DATABASE_URL` | Release generator | Temporary isolated database URL used only by the migration rehearsal container. |
-
-`deployment.env.example` only lists the Compose values an operator may need to
-provide. Image digests, release metadata and the migration rehearsal URL are
-generated by the release tool. The actual `.env.release` is mode `600` and must
-not be edited by hand.
-
-## Current production state before this change
-
-At the time this table was introduced, the server
-`/opt/zhiku/config/app.env` had 35 keys and the question-workbench file had its
-bridge secret. Most settings absent from `app.env` fell back to code defaults;
-that kept existing services running but was not an explicit, auditable
-contract. The new templates make those defaults visible. Adding a fallback
-value is not a commercial configuration decision and does not enable a paid
-capability by itself.
-
-The audit command lists missing and unknown keys without printing values:
+新 release 部署后可以只输出变量名与缺失项，不输出值：
 
 ```bash
-sudo /usr/bin/python3 \
-  /opt/zhiku/current/validate_config.py \
+sudo /usr/bin/python3 /opt/zhiku/current/validate_config.py \
   --audit-app-env /opt/zhiku/config/app.env \
   --audit-deployment-env /opt/zhiku/current/.env.release
 ```
-
-## Minimum operational checklist
-
-For a backend deployment, these are the values that should be explicitly
-present and verified. Do not paste their values into tickets or chat.
-
-| Variable | Consequence when absent |
-| --- | --- |
-| `DATABASE_URL` | Release validation stops; API and Worker cannot use PostgreSQL. |
-| `REDIS_URL` | API and Workers cannot use the task broker. |
-| `AUTH_SECRET_KEY` | Authentication cannot be considered production-ready. |
-| `SITE_CONFIG_ENCRYPTION_KEY` | Admin-managed secrets cannot be safely encrypted or decrypted. |
-| `MCP_CREDENTIAL_KEY` | Encrypted MCP authentication headers cannot be read. |
-| `FRONTEND_URL` | External links and origin checks lose their production address. |
-| `API_PUBLIC_URL` | Public API links lose their production address. |
-| `AUTH_COOKIE_SECURE` | Must be `true`; release validation rejects an insecure production cookie. |
-| `PREVIEW_ENABLED` | Release validation needs an explicit preview decision (`true` or `false`). |
-| `PREVIEW_DOMAIN` | HTTP preview routing has no domain. |
-| `DEPLOY_CONTROL_TOKEN` | Maintenance control during release cannot work. |
-
-`APP_VERSION`, `GIT_COMMIT`, `CONFIG_CONTRACT` and `DEPLOYMENT_ROLLBACK` are
-normally generated from the release manifest.
-
-These do not need to be present before the related feature is used:
-
-- `EMBEDDING_*` until embeddings and retrieval are enabled.
-- `ALIYUN_*`/`DOCMIND_*` when local PDF parsing is used.
-- `OIDC_*` until enterprise login is enabled.
-- `SMTP_*` until mail is configured in the admin site.
-- Legacy `ZHIFUX_*`, `EZFP_*` and recharge bootstrap values once database
-  payment settings are the source of truth.
-- Cache tuning, local-executor compatibility and workbench URL overrides,
-  which have code defaults.
-
-## Managed in the database, not environment variables
-
-Do not solve these by adding variables to `app.env`:
-
-- Model providers, provider credentials, model protocols, model capabilities,
-  default chat/image models, image presets and image prices.
-- Primary object storage provider, COS/OSS credentials, bucket, region and
-  connection-test state.
-- Cloud-computer enablement, Alibaba credentials, region, template, resource
-  mount role ARN, price, idle/max lifetime and concurrency limits.
-- Web search provider configuration and pricing.
-- Knowledge-base storage quotas, download quotas and overage cleanup policy.
-- SMTP, WeChat/OIDC after the first save, payment providers after the first
-  save, recharge packages and commercial prices.
-
-These are versioned administrator settings in PostgreSQL and can change
-without rewriting the server env file.

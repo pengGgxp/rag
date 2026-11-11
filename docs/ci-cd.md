@@ -116,8 +116,9 @@ and rollback result together.
 ```
 
 `app.env` is the original production application environment. The complete
-field-by-field index is `deploy/production.env.reference.md`; the copyable
-template is `deploy/app.env.example`. It must contain at least:
+field-by-field Chinese index is `deploy/production.env.reference.md`; the
+copyable template is `deploy/app.env.example`. The index marks which settings
+are required, capability-specific, optional, legacy or generated.
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://...
@@ -125,6 +126,7 @@ REDIS_URL=redis://...
 AUTH_SECRET_KEY=...
 SITE_CONFIG_ENCRYPTION_KEY=...
 MCP_CREDENTIAL_KEY=...
+NEXT_PUBLIC_API_URL=https://zk.str1ct.top/api
 FRONTEND_URL=https://zk.str1ct.top
 API_PUBLIC_URL=https://zk.str1ct.top/api
 AUTH_COOKIE_SECURE=true
@@ -136,6 +138,8 @@ DEPLOY_CONTROL_TOKEN=...
 `DEPLOY_CONTROL_TOKEN` must be at least 32 characters. It is used only by
 server-side processes calling the loopback maintenance endpoint. Never send it
 to the browser, print it, put it in GitHub, or pass it in a command argument.
+`NEXT_PUBLIC_API_URL` is checked against the Web build input for release
+consistency; changing it does not rebuild an existing Web image.
 During first takeover the release script preserves the token in the protected
 server environment so the running API and later releases use the same value.
 
