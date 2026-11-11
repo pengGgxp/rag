@@ -1680,6 +1680,7 @@ def deploy_release(paths: Paths, incoming: Path, runner: CommandRunner) -> Path:
     manifest = load_manifest(incoming)
     if incoming.name != manifest["version"]:
         raise ReleaseError("incoming directory must match the release version")
+    render_environment(incoming, paths)
     verify_migration_heads(incoming, runner)
     paths.releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     shutil.copytree(incoming, release_dir)

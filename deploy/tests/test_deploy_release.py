@@ -208,6 +208,36 @@ class RollbackTests(unittest.TestCase):
     def setUp(self):
         self.runner = deploy_release.CommandRunner()
 
+    def test_deploy_renders_release_environment_before_migration_head_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = deploy_release.Paths(root=root)
+            incoming = paths.incoming / "v1.2.3"
+            incoming.mkdir(parents=True)
+            make_release(incoming)
+            current = paths.releases / "v1.2.2"
+            current.mkdir(parents=True)
+            paths.current.symlink_to(current.resolve(), target_is_directory=True)
+            events = []
+
+            def render(release, _paths):
+                events.append("render")
+                (release / ".env.release").write_text("API_IMAGE=test\n", encoding="utf-8")
+
+            def verify(release, _runner):
+                self.assertTrue((release / ".env.release").is_file())
+                events.append("migration-head")
+
+            with patch.object(deploy_release, "verify_checksums"), \
+                 patch.object(deploy_release, "load_manifest", return_value=manifest()), \
+                 patch.object(deploy_release, "render_environment", side_effect=render), \
+                 patch.object(deploy_release, "verify_migration_heads", side_effect=verify), \
+                 patch.object(deploy_release, "transactional_deploy") as transaction:
+                deploy_release.deploy_release(paths, incoming, self.runner)
+
+            self.assertEqual(events, ["render", "migration-head"])
+            transaction.assert_called_once()
+
     def _transaction(self, root, *, policy="automatic-app-rollback", takeover=False, migration=True):
         release = root / "releases" / "v1.2.3"
         release.mkdir(parents=True)
