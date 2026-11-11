@@ -264,7 +264,8 @@ def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):
     messages = [
         {"role": "assistant", "content": None, "tool_calls": [{"id": "image",
             "function": {"name": "read_image", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "image", "content": '{"filename": "chart.png"}'},
+        {"role": "tool", "tool_call_id": "image", "content": '{"filename": "chart.png"}',
+         "_image_input": value.context_part()},
         {"role": "user", "content": [value.context_part()]},
     ]
     persisted = image_reading.persisted_model_images(messages)
@@ -272,6 +273,8 @@ def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):
     assert base64.b64encode(PNG).decode() not in serialized
     assert "按需读取过图片「chart.png」；需要查看请再次调用 read_image" in serialized
     assert "/home/user/workspace/chart.png" not in serialized
+    assert persisted[1]["_image_input"] == {"type": "text", "text":
+        "按需读取过图片「chart.png」；需要查看请再次调用 read_image"}
     config = ChatProviderConfig("https://example.test/v1", "test", "vision",
         provider_id="provider", site_provider_id="provider",
         connection_id="connection", supports_images=True, api_protocol="responses",
@@ -283,6 +286,7 @@ def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):
     row = SimpleNamespace(role="assistant", content="回答", encrypted_continuation="encrypted")
     restored = thinking.history_message(row, config)
     assert restored[-1]["content"][0]["type"] == "text"
+    assert restored[1]["_image_input"]["type"] == "text"
     assert base64.b64encode(PNG).decode() not in json.dumps(restored, default=str)
     assert "/home/user/workspace/chart.png" not in json.dumps(restored)
 
@@ -371,7 +375,8 @@ def test_remote_image_read_does_not_require_cloud_computer_execution(accounts, m
     assert base64.b64encode(PNG).decode() not in json.dumps(result.result)
 
 
-def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime):
+@pytest.mark.parametrize("protocol", ["chat_completions", "anthropic", "gemini"])
+def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol):
     seen = []
     image = image_reading.workspace_image(
         "/home/user/workspace/chart.png", "image/png", 1, 1,
@@ -391,6 +396,7 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime):
                 "summary": "已读取图片「chart.png」"})
 
     class Provider:
+        config = SimpleNamespace(api_protocol=protocol)
         count = 0
 
         def complete_with_tools(self, messages, tools, *, tool_choice):
@@ -406,9 +412,17 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime):
 
     events = list(stream_retrieval_agent(**agent_runtime.arguments, provider=Provider(),
         extensions=Extensions()))
-    image_parts = [part for message in seen if isinstance(message.get("content"), list)
-        for part in message["content"] if part.get("type") == "model_image"]
-    assert len(image_parts) == 1 and image_parts[0]["data"] == PNG
+    if protocol in ("anthropic", "gemini"):
+        tool_message = next(message for message in seen if message.get("role") == "tool")
+        assert tool_message["_image_input"]["type"] == "model_image"
+        assert tool_message["_image_input"]["data"] == PNG
+        assert not any(part.get("type") == "model_image"
+            for message in seen if isinstance(message.get("content"), list)
+            for part in message["content"])
+    else:
+        image_parts = [part for message in seen if isinstance(message.get("content"), list)
+            for part in message["content"] if part.get("type") == "model_image"]
+        assert len(image_parts) == 1 and image_parts[0]["data"] == PNG
     activity = next(data for name, data in events if name == "tool_result")
     assert activity["summary"] == "已读取图片「chart.png」"
     started = next(data for name, data in events if name == "tool_started")

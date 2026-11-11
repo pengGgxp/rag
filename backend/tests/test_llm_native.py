@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import json
 from dataclasses import replace
 
@@ -6,6 +8,7 @@ import pytest
 from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from app.llm_native import NativeStream, request, result
 from app.thinking import select_thinking
+from test_chat_attachments import PNG
 
 
 def provider(protocol):
@@ -30,6 +33,55 @@ def test_tool_continuation_preserves_native_signatures(protocol):
     assert "private-key" not in json.dumps(outbound)
     assert p.last_usage.measured()["input_tokens"] == 10
     assert p.last_usage.completion_tokens == 3
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "gemini"])
+def test_read_image_is_embedded_in_the_matching_native_tool_result(protocol):
+    p = provider(protocol)
+    p.config = replace(p.config, supports_images=True)
+    identifier = "image-call"
+    native = ([{"type": "thinking", "thinking": "private", "signature": "signed"},
+               {"type": "tool_use", "id": identifier, "name": "read_image", "input": {"path": "chart.png"}}]
+              if protocol == "anthropic" else [{"functionCall": {"name": "read_image", "args": {"path": "chart.png"}},
+                  "thoughtSignature": "signed"}])
+    image = {"type": "model_image", "content_type": "image/png",
+        "sha256": hashlib.sha256(PNG).hexdigest(), "data": PNG}
+    messages = [
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": identifier, "function": {"name": "read_image", "arguments": '{"path":"chart.png"}'}}],
+         "_native_content": native},
+        {"role": "tool", "tool_call_id": identifier, "content": '{"filename":"chart.png"}',
+         "_image_input": image},
+    ]
+
+    _, _, outbound = request(p, messages, tools=[])
+    encoded = base64.b64encode(PNG).decode("ascii")
+    serialized = json.dumps(outbound)
+    assert "signed" in serialized
+    assert encoded in serialized
+    assert "private-key" not in serialized
+    if protocol == "anthropic":
+        tool_result = outbound["messages"][-1]["content"][0]
+        assert tool_result["type"] == "tool_result" and tool_result["tool_use_id"] == identifier
+        assert tool_result["content"][-1] == {"type": "image", "source": {
+            "type": "base64", "media_type": "image/png", "data": encoded}}
+    else:
+        parts = outbound["contents"][-1]["parts"]
+        assert parts[0]["functionResponse"]["name"] == "read_image"
+        assert parts[1] == {"inlineData": {"mimeType": "image/png", "data": encoded}}
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "gemini"])
+def test_native_tool_image_payload_rejects_tampered_bytes(protocol):
+    p = provider(protocol)
+    image = {"type": "model_image", "content_type": "image/png", "sha256": "0" * 64, "data": PNG}
+    messages = [{"role": "assistant", "content": None,
+        "tool_calls": [{"id": "image", "function": {"name": "read_image", "arguments": "{}"}}],
+        "_native_content": ([{"type": "tool_use", "id": "image", "name": "read_image", "input": {}}]
+            if protocol == "anthropic" else [{"functionCall": {"name": "read_image", "args": {}}}])},
+        {"role": "tool", "tool_call_id": "image", "content": "{}", "_image_input": image}]
+    with pytest.raises(Exception, match="校验"):
+        request(p, messages, tools=[])
 
 
 def test_anthropic_stream_assembles_fragmented_json_and_signature():

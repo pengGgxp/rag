@@ -370,9 +370,17 @@ def stream_retrieval_agent(
                     )
                     image_result = executable.image if hasattr(executable, "image") else None
                     result = executable.result if image_result is not None else executable
-                    messages.append(_tool_message(call, result))
                     if image_result is not None:
-                        image_inputs.append(image_result)
+                        protocol = getattr(getattr(provider, "config", None), "api_protocol", "chat_completions")
+                        if protocol in ("anthropic", "gemini"):
+                            tool_message = _tool_message(call, result)
+                            tool_message["_image_input"] = image_result.context_part()
+                            messages.append(tool_message)
+                        else:
+                            messages.append(_tool_message(call, result))
+                            image_inputs.append(image_result)
+                    else:
+                        messages.append(_tool_message(call, result))
                     candidates = result.get("generated_files", []) if call.name == "run_command" else (
                         [result] if call.name in ("write_file", "apply_patch") else [])
                     output_files = [{key: file[key] for key in ("id", "path", "size_bytes", "version") if key in file}

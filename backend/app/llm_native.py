@@ -1,5 +1,6 @@
 """Native Messages/GenerateContent adapters for the Agent's normalized contract."""
 import base64
+import hashlib
 import json
 from copy import deepcopy
 from uuid import uuid4
@@ -9,6 +10,24 @@ import httpx
 from httpx_sse import EventSource
 
 from .llm import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
+
+
+def _tool_result_image(image, native):
+    from .chat_attachments import MAX_IMAGE_BYTES
+
+    if not isinstance(image, dict) or image.get("type") != "model_image":
+        return None
+    data = image.get("data")
+    content_type = image.get("content_type")
+    if (not isinstance(data, bytes) or len(data) > MAX_IMAGE_BYTES
+            or content_type not in ("image/png", "image/jpeg", "image/webp")
+            or hashlib.sha256(data).hexdigest() != image.get("sha256")):
+        raise LLMConfigurationError("按需读取的图片校验失败，请重新读取")
+    encoded = base64.b64encode(data).decode("ascii")
+    if native == "anthropic":
+        return {"type": "image", "source": {
+            "type": "base64", "media_type": content_type, "data": encoded}}
+    return {"inlineData": {"mimeType": content_type, "data": encoded}}
 
 
 def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0, streaming=False):
@@ -31,12 +50,18 @@ def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0,
                 names[call["id"]] = call["function"]["name"]
         elif role == "tool":
             identifier = message["tool_call_id"]
+            image_part = _tool_result_image(message.get("_image_input"), native)
             if native == "anthropic":
-                parts = [{"type": "tool_result", "tool_use_id": identifier, "content": message.get("content") or ""}]
+                content = message.get("content") or ""
+                if image_part:
+                    content = [{"type": "text", "text": content}, image_part]
+                parts = [{"type": "tool_result", "tool_use_id": identifier, "content": content}]
             else:
                 if identifier not in names:
                     raise LLMConfigurationError("工具续接缺少原始调用，请新建对话")
                 parts = [{"functionResponse": {"name": names[identifier], "response": {"result": message.get("content") or ""}}}]
+                if image_part:
+                    parts.append(image_part)
         else:
             parts = []
             raw = message.get("content")
