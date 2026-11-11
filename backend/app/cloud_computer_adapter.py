@@ -160,6 +160,8 @@ class AlibabaSandbox:
         mount = self.config.get("resource_mount")
         network = {"deny_out": PRIVATE_NETWORKS + self.config["blocked_hosts"], "allow_public_traffic": False}
         if mount:
+            network["allow_out"] = [
+                f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
             metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
                 "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
                     "bucketName": mount["bucket"], "mountDir": ROOT,

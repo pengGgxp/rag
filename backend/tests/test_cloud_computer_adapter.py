@@ -30,6 +30,7 @@ def test_create_requires_network_isolation_and_connect_preserves_deadline():
     assert config["network"]["allow_public_traffic"] is False
     assert calls["create"]["allow_internet_access"] is True
     assert config["network"]["deny_out"] == PRIVATE_NETWORKS
+    assert "allow_out" not in config["network"]
     assert "10.0.0.0/8" in config["network"]["deny_out"]
     assert not {"zk.str1ct.top", "q.str1ct.top"}.intersection(config["network"]["deny_out"])
     provider.connect("synthetic")
@@ -53,7 +54,7 @@ def test_dependencies_use_runtime_tmp_volume_outside_outputs():
 def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
     calls = {}
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
-    provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": [],
+    provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": ["blocked.example"],
         "oss_role_arn": "acs:ram::123:role/sandbox", "resource_mount": {
             "bucket": "test-bucket", "region": "cn-beijing",
             "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared", "file_tools": True}}
@@ -69,7 +70,8 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
         "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}]
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
     assert calls["allow_internet_access"] is True
-    assert "allow_out" not in calls["network"]
+    assert calls["network"]["allow_out"] == ["test-bucket.oss-cn-beijing.aliyuncs.com"]
+    assert calls["network"]["deny_out"] == PRIVATE_NETWORKS + ["blocked.example"]
     assert "10.0.0.0/8" in calls["network"]["deny_out"]
     assert "access_key" not in json.dumps(calls)
 

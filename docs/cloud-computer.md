@@ -27,7 +27,7 @@ API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页�
 
 ### OSS 资源挂载
 
-主存储为 OSS 时，在后台填写可由 `fc.aliyuncs.com` 扮演的 `oss_role_arn`。同一工作区所有环境使用固定前缀 `workspaces/{workspace_id}/resource-directory/`，挂载到 `/home/user/workspace`。通过动态挂载 metadata 指定 Bucket、Endpoint、前缀和角色；云电脑公网出站开放，挂载访问仍由供应商角色及挂载路径限制。
+主存储为 OSS 时，在后台填写可由 `fc.aliyuncs.com` 扮演的 `oss_role_arn`。同一工作区所有环境使用固定前缀 `workspaces/{workspace_id}/resource-directory/`，挂载到 `/home/user/workspace`。通过动态挂载 metadata 指定 Bucket、Endpoint、前缀和角色；创建时只将当前 Bucket 对应的 `{bucket}.oss-{region}.aliyuncs.com` 加入沙箱出站允许规则，私网与元数据地址拒绝规则仍生效。挂载访问继续受供应商角色和挂载路径限制。
 
 上传、图片生成和文件写入直接使用该目录；云电脑启动不创建会话副本。同工作区不同会话可见同一份当前文件，按共享文件语义处理并发写入。索引登记通过工作区锁串行。一次性迁移预检缺失、路径冲突及内容摘要，事务提交当前索引；原对象仅作为离线发布回滚备份，不作为可访问历史版本。
 
