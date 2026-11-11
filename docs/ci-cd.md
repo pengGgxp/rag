@@ -186,6 +186,246 @@ Subsequent releases use the normal managed-release path.
 Never manually edit a production Compose file, append a temporary override or
 replace a service image on the server. Fix the release and produce a new tag.
 
+## Manual release runbook
+
+This runbook is the controlled fallback while GitHub Actions is not used for
+production builds. It does not turn an unverified working tree into a release
+and it does not replace the tag-based release contract. A manually built
+release must still use a clean commit from `main`, pinned image digests,
+checksums, a protected backup and the same health and rollback gates.
+
+### Roles and boundaries
+
+- The local workstation may run tests, build images, push immutable tags to
+  SWR, assemble the release package and upload it.
+- The production server may verify and extract that package, pull the pinned
+  images, run the one-off migration job and execute fixed release entrypoints.
+- Do not build application images on the production server. Do not place
+  source-code bind mounts, credentials or database dumps in Git.
+- Do not deploy from an uncommitted working tree. Record the commit SHA even
+  when the image tag contains a human-readable release name.
+
+### Before building
+
+1. Fetch and fast-forward `main`; verify the commit that will be released.
+2. Confirm there are no repository-local images, Compose overrides or
+   environment files that would silently change the build.
+3. Run the backend, PostgreSQL, frontend and deployment-contract checks that
+   apply to the change. Record skipped checks and the reason.
+4. Confirm the target SWR registry, organization and three repositories.
+5. Create a release version that cannot be reused and record it together with
+   the commit SHA.
+
+The release version must identify one immutable attempt. Never move or reuse a
+version after upload. If a build or upload fails, use a new version.
+
+### Images and registry evidence
+
+Build API, Worker and Web as `linux/amd64` images. Web must receive the public
+API URL at build time; do not rely on a server-side default. Tag each image
+with both the release version and the commit SHA, push them, then inspect the
+registry manifests.
+
+- Verify the registry media type is Docker schema 2.
+- Verify the platform is `linux/amd64`.
+- Resolve each pushed tag to its immutable digest.
+- Record the three digests in `release.json` and use only
+  `image@sha256:...` in the production Compose file.
+
+The image tags are convenient pointers; the digests are the release identity.
+A failed or interrupted push can leave a tag, so do not treat tag existence as
+proof of a complete image.
+
+### Release package
+
+Use `deploy/release_package.py` to assemble the production package from the
+selected commit, the three digests, the deployment files and the current
+Alembic head. The package must contain:
+
+- `release.json` with version, commit, build time, digests, Alembic head,
+  configuration contract and database rollback policy.
+- The digest-pinned production Compose file and fixed release entrypoints.
+- Health, maintenance, migration, Nginx and rollback helpers.
+- `SHA256SUMS` covering every packaged file except itself.
+
+Validate the manifest, migration head and Compose rendering before upload.
+Generate an outer SHA-256 checksum for the archive and retain both checksums.
+Upload the archive into a new `/opt/zhiku/incoming/<version>/` directory.
+
+### Command templates
+
+Run these locally from the repository root. Substitute the release version,
+commit, registry and digests explicitly. Never substitute a `latest` tag in
+the release manifest.
+
+```sh
+# Verify the exact source revision.
+git fetch origin
+git switch main
+git merge --ff-only origin/main
+test -z "$(git status --porcelain)"
+release_commit=$(git rev-parse HEAD)
+release_version=vX.Y.Z
+
+# Build linux/amd64 images locally.
+docker buildx build --platform linux/amd64 --file backend/Dockerfile \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-api:$release_version" \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-api:sha-$release_commit" \
+  --push backend
+docker buildx build --platform linux/amd64 --file backend/Dockerfile \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-worker:$release_version" \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-worker:sha-$release_commit" \
+  --push backend
+docker buildx build --platform linux/amd64 --file frontend/Dockerfile \
+  --build-arg NEXT_PUBLIC_API_URL=https://zk.str1ct.top/api \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:$release_version" \
+  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:sha-$release_commit" \
+  --push frontend
+```
+
+API and Worker currently share `backend/Dockerfile`; their difference is the
+Compose `command`, which starts Uvicorn for API and Celery for Worker. Do not
+add a server-only override to make one image behave as the other. Verify each
+container's actual command and require both API readiness and a fresh Worker
+heartbeat.
+
+```sh
+# Record the immutable digests.
+mkdir -p digests
+for service in api worker web; do
+  docker buildx imagetools inspect \
+    "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-$service:$release_version" \
+    --format '{{json .Manifest.Digest}}' | tr -d '"' \
+    > "digests/$service.digest"
+  test -s "digests/$service.digest"
+done
+
+# Build the release package and its outer checksum.
+alembic_head=$(python deploy/alembic_head.py backend)
+python deploy/release_package.py \
+  --deploy-root deploy --backend-root backend --digests digests \
+  --output "release-$release_version" --version "$release_version" \
+  --commit "$release_commit" --registry "$SWR_REGISTRY" \
+  --organization "$SWR_ORGANIZATION" --alembic-head "$alembic_head"
+```
+
+Upload `release-$release_version/zhiku-$release_version.tar.gz` and its
+`.sha256` file to a new `/opt/zhiku/incoming/$release_version/` directory.
+The incoming directory is single-use.
+
+```sh
+# Server preflight and controlled release.
+sudo mkdir -p "/opt/zhiku/incoming/$release_version"
+sudo sha256sum -c "/opt/zhiku/incoming/$release_version/zhiku-$release_version.tar.gz.sha256"
+sudo /opt/zhiku/bin/deploy-release \
+  "/opt/zhiku/incoming/$release_version" deploy
+```
+
+Run the health command using the version and Alembic values from the release
+manifest; do not copy them from an older release log:
+
+```sh
+sudo /opt/zhiku/bin/health \
+  --expected-version "$release_version" \
+  --expected-commit "$release_commit" \
+  --expected-alembic "$alembic_head"
+```
+
+### Server preflight
+
+Before allowing the server to execute anything:
+
+1. Confirm the archive and outer checksum match.
+2. Confirm the inner `SHA256SUMS` match and the extracted scripts are present.
+3. Read the current release manifest and record its version, commit, digests
+   and Alembic revision.
+4. Confirm the protected application environment files exist with mode `600`
+   and that their configuration contract still matches.
+5. Confirm the deployment lock is not held and inspect active Worker work.
+6. Confirm the current and previous release directories and images are
+   retained as rollback candidates.
+
+The server must not seed a release from an empty database, a new volume or an
+unexpected Compose project. If the current runtime does not match the recorded
+release, stop and reconcile it manually before changing anything.
+
+### Migration decision
+
+Read the release manifest before deployment. If the current Alembic revision
+already equals its head, the release has no pending migration and may use the
+normal rolling replacement path. If they differ:
+
+1. Turn maintenance on through the currently running API.
+2. Stop the Workers from accepting new finite work and drain them.
+3. Create a custom-format PostgreSQL backup.
+4. Verify the backup checksum and a copy of the backup.
+5. Restore the backup into an isolated rehearsal database.
+6. Run `alembic upgrade head` there and require the exact release head.
+7. Only then migrate production with the one-off API-image job.
+
+Never run a production migration merely because the rehearsal failed to start;
+never auto-downgrade. For `restore-backup-required`, stop after any failed
+health check and keep maintenance active until the verified backup is
+restored.
+
+### Switch and health
+
+1. Stop new producers and wait for finite Worker tasks to drain.
+2. Switch `current` to the immutable release directory.
+3. Start only the services whose image or configuration changed, plus the
+   required one-off migration job.
+4. Verify running container images contain the expected digests.
+5. Run the packaged health checker with the expected version, commit and
+   Alembic revision.
+6. Verify the public API and Web page, resource library, checkout page,
+   preview gateway and configured question-workbench bridge.
+7. Run `nginx -t` before reload and confirm the active Nginx configuration.
+8. Write release evidence, including maintenance changes, backup checksum,
+   Nginx backup and the final health result.
+9. Clear maintenance only after the release is healthy; a healthy process
+   does not justify skipping an unresolved migration or data check.
+
+Do not use browser cookies from a real user to test a controlled deployment.
+Use a test account, unauthenticated status endpoints or an isolated test
+workspace, and never put user content or credentials in release evidence.
+
+### Failure handling
+
+- Build or registry failure: retain the failed logs, use a new version, and
+  do not alter the running release.
+- Package or checksum failure: stop before switching and upload a new package.
+- Rehearsal failure: leave production unchanged, keep maintenance active and
+  inspect the rehearsal database and migration output.
+- Compatible application failure: switch back to the previous release and
+  digests, repeat health checks, then clear maintenance deliberately.
+- `restore-backup-required` failure: keep maintenance active, restore the
+  verified database backup and reconcile balances, ledgers, orders, documents,
+  resource indexes and object references before switching application code.
+- Interrupted release: inspect the lock, current link, running digests,
+  maintenance marker and evidence file. Do not assume the process completed
+  because containers are running.
+
+### Current production state and legacy evidence
+
+The managed release root is `/opt/zhiku`; `current` and `previous` point to
+immutable release directories. Historical releases created before the managed
+root were stored under `/data1/rag-releases/<release-name>` and remain useful
+as migration and rollback evidence. Do not treat every historical directory
+as a currently deployed release.
+
+As of 2026-11-11, the active managed release is `/opt/zhiku/releases/v0.1.0`
+at commit `d74f50e62995bb57225f0fd946f651cc5d3a2134`, with Alembic head
+`0063_deployment_maintenance`. Its API and Worker digests are identical and
+its Web digest is distinct. The release manifest is the authority for the
+digests; any later document or dashboard must not infer them from a container
+name.
+
+GitHub Actions tag-based production deployment is the target contract, but it
+has not been used as the sole production release path in this environment.
+Until a tag release has been demonstrated end to end, manual releases must
+follow this runbook and be recorded with the same evidence. Code push, a tag
+push or a successful image build alone is not deployment acceptance.
+
 ## Migration rules
 
 Application images never run `alembic upgrade head` at startup. A one-off
