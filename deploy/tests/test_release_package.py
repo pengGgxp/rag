@@ -76,6 +76,8 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertTrue((output / "zhiku-v1.2.3.tar.gz.sha256").is_file())
             with tarfile.open(archive, "r:gz") as handle:
                 names = set(handle.getnames())
+                for name in ("bin/deploy-release", "run_release.sh", "bootstrap.sh"):
+                    self.assertNotIn(b"\r", handle.extractfile(name).read())
             self.assertTrue(
                 {"release.json", "SHA256SUMS", "compose.yml", "nginx/http-preview.conf"}
                 <= names

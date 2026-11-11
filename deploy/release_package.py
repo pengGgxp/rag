@@ -84,7 +84,7 @@ def build(
         source = deploy_root / source_name
         target = staging / target_name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        write_text_lf(target, source.read_text(encoding="utf-8"))
     shutil.copy2(backend_root / "alembic.ini", staging / "alembic.ini")
     shutil.copytree(backend_root / "alembic", staging / "alembic")
     manifest = {
