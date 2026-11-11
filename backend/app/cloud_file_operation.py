@@ -6,17 +6,6 @@ import stat
 from pathlib import Path
 
 
-BLOCKED_PREFIXES = (
-    "/proc", "/sys", "/dev", "/run", "/root", "/skills",
-    "/tmp/zhiku-cloud-computer", "/home/user/.ssh", "/home/user/.config",
-    "/home/user/.aws", "/home/user/.azure", "/home/user/.gcloud", "/home/oai/share",
-)
-BLOCKED_NAMES = {
-    ".env", ".netrc", ".npmrc", ".pypirc", ".git-credentials", "credentials",
-    "credentials.json", "service-account.json", "id_rsa", "id_ed25519",
-    "id_ecdsa", "authorized_keys", "known_hosts",
-}
-BLOCKED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
@@ -75,36 +64,22 @@ def write_mounted(path, data):
 def image_path(value, root=Path("/home/user/workspace")):
     if not isinstance(value, str) or not value or len(value) > 1024:
         raise ValueError("图片路径无效")
-    if "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+    if "\x00" in value:
         raise ValueError("图片路径无效")
-    path = (Path(value) if value.startswith("/") else Path(str(root), value)).absolute()
-    normalized = path.as_posix()
-    parts = normalized.split("/")
-    if any(part in ("", ".", "..") for part in parts[1:]):
-        raise ValueError("图片路径包含不允许的目录片段")
-    for prefix in BLOCKED_PREFIXES:
-        if normalized == prefix or normalized.startswith(prefix + "/"):
-            raise ValueError("该路径不允许读取")
-    name = path.name.lower()
-    if name in BLOCKED_NAMES or name.startswith(".env.") or name.endswith(BLOCKED_SUFFIXES):
-        raise ValueError("该文件类型不允许读取")
-    return path
+    path = Path(value)
+    return path if path.is_absolute() else Path(root, path)
 
 
 def inspect_image(value, root=Path("/home/user/workspace")):
     """Return safe metadata only. Image bytes are streamed by the API adapter."""
     path = image_path(value, root)
     try:
-        before = path.lstat()
         resolved = path.resolve(strict=True)
+        before = resolved.stat()
     except FileNotFoundError:
         raise FileNotFoundError("图片不存在或已删除") from None
-    if stat.S_ISLNK(before.st_mode):
-        raise ValueError("图片路径不能为符号链接")
     if not stat.S_ISREG(before.st_mode):
         raise ValueError("图片必须是普通文件")
-    if any(item.is_symlink() for item in (path, *path.parents)):
-        raise ValueError("图片路径不能为符号链接")
     if before.st_size <= 0:
         raise ValueError("图片为空")
     if before.st_size > MAX_IMAGE_BYTES:

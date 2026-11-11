@@ -38,11 +38,6 @@ WEBP = bytes.fromhex(
 )
 
 
-def public_dns(host, port):
-    assert port is None
-    return [(2, 1, 6, "", ("93.184.216.34", 0))]
-
-
 def test_formats_are_identified_from_content_and_validated(monkeypatch):
     assert image_reading.image_type(PNG)[0] == "image/png"
     assert image_reading.image_type(JPEG)[0] == "image/jpeg"
@@ -60,21 +55,23 @@ def test_formats_are_identified_from_content_and_validated(monkeypatch):
         image_reading.image_type(fake_width)
 
 
-def test_local_path_rules_reject_sensitive_and_special_paths(tmp_path):
+def test_local_image_paths_follow_filesystem_resolution(tmp_path):
     root = tmp_path/"workspace"
     root.mkdir()
     (root/"relative.png").write_bytes(PNG)
+    (tmp_path/"outside.png").write_bytes(PNG)
+    (root/".ssh").mkdir()
+    (root/".ssh"/"credentials.png").write_bytes(PNG)
     (root/"link.png").symlink_to(root/"relative.png")
     (root/"directory").mkdir()
     assert inspect_image("relative.png", root)["size_bytes"] == len(PNG)
-    for path in ("../private.png", "a/../b.png", "a\\b.png", "line\nbreak.png",
-                 "/proc/self/status", "/sys/kernel", "/dev/null", "/root/a.png",
-                 "/skills/a.png", "/home/user/.ssh/id_rsa", "credentials.json", ".env.production",
-                 "private.pem", "directory"):
-        with pytest.raises((ValueError, FileNotFoundError)):
-            inspect_image(path, root)
-    with pytest.raises(ValueError, match="符号链接"):
-        inspect_image("link.png", root)
+    assert inspect_image("link.png", root)["size_bytes"] == len(PNG)
+    assert inspect_image(".ssh/credentials.png", root)["size_bytes"] == len(PNG)
+    assert inspect_image("../outside.png", root)["size_bytes"] == len(PNG)
+    assert image_reading.local_path("../outside.png") == "/home/user/workspace/../outside.png"
+    assert image_reading.local_path("/tmp/private.pem") == "/tmp/private.pem"
+    with pytest.raises(ValueError, match="普通文件"):
+        inspect_image("directory", root)
     with pytest.raises(FileNotFoundError):
         inspect_image("missing.png", root)
 
@@ -95,126 +92,23 @@ def test_local_image_change_is_detected(monkeypatch, tmp_path):
         perform({"name": "inspect_image", "path": path.name}, tmp_path)
 
 
-class RemoteResponse:
-    def __init__(self, status, headers=None, data=b""):
-        self.status_code = status
-        self.headers = headers or {}
-        self.data = data
-
-    def iter_bytes(self, size):
-        for index in range(0, len(self.data), size):
-            yield self.data[index:index + size]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-
-class RemoteClient:
-    def __init__(self, responses, requested):
-        self.responses = responses
-        self.requested = requested
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def stream(self, method, url, headers):
-        self.requested.append((method, url, headers))
-        return self.responses.pop(0)
-
-
-def install_remote(monkeypatch, responses, requested):
-    monkeypatch.setattr(image_reading.socket, "getaddrinfo", public_dns)
-    monkeypatch.setattr(image_reading.httpx, "Client",
-        lambda *args, **kwargs: RemoteClient(responses, requested))
-
-
-def test_remote_image_follows_revalidated_redirect_and_hides_query(monkeypatch):
-    requested = []
-    install_remote(monkeypatch, [
-        RemoteResponse(302, {"location": "/final.png?secret=value"}),
-        RemoteResponse(200, {"content-length": str(len(PNG))}, PNG),
-    ], requested)
-    result = image_reading.read_image({"url": "https://public.example/start.png?token=secret"},
-        config=ChatProviderConfig("https://example.test/v1", "test", "vision", supports_images=True),
-        local_loader=lambda _: pytest.fail("unexpected local read"))
-    assert result.data == PNG
-    assert result.public["filename"] == "final.png"
-    assert len(requested) == 2
-    assert result.image["source"] == "url"
-    assert "secret" not in json.dumps(result.public)
-
-
-@pytest.mark.parametrize("url", [
-    "http://127.0.0.1/a.png", "http://localhost/a.png", "http://[::1]/a.png",
-    "http://10.0.0.1/a.png", "http://169.254.169.254/a.png", "https://example.com:8443/a.png",
-    "file:///tmp/a.png", "https://user:secret@example.com/a.png", "https:///missing.png",
-])
-def test_remote_url_boundaries(url, monkeypatch):
-    monkeypatch.setattr(image_reading.socket, "getaddrinfo", public_dns)
-    assert image_reading.read_image({"url": url}, config=ChatProviderConfig(
-        "https://example.test/v1", "test", "vision", supports_images=True),
-        local_loader=lambda _: None)["error_code"] == "image_unavailable"
-
-
-def test_remote_dns_private_and_redirect_boundaries(monkeypatch):
-    requested = []
-    install_remote(monkeypatch, [
-        RemoteResponse(302, {"location": "http://private.example/a.png"}),
-    ], requested)
-    monkeypatch.setattr(image_reading.socket, "getaddrinfo", lambda host, port: [
-        (2, 1, 6, "", ("10.0.0.1" if host == "private.example" else "93.184.216.34", 0))])
-    with pytest.raises(ValueError, match="内网"):
-        image_reading.remote_url("http://private.example/a.png")
-    assert image_reading.read_image({"url": "https://public.example/a.png"},
-        config=ChatProviderConfig("https://example.test/v1", "test", "vision", supports_images=True),
-        local_loader=lambda _: None)["error_code"] == "image_unavailable"
-    requested = []
-    install_remote(monkeypatch, [RemoteResponse(302, {"location": "/again.png"})
-        for _ in range(4)], requested)
-    with pytest.raises(ValueError, match="跳转次数"):
-        image_reading.fetch_remote_image("https://public.example/a.png")
-
-
-@pytest.mark.parametrize("headers,data,message", [
-    ({"content-length": "invalid"}, b"", "10 MiB"),
-    ({"content-length": str(10 * 1024 * 1024 + 1)}, b"", "10 MiB"),
-    ({}, "oversize", "10 MiB"),
-    ({}, b"", "空"),
-])
-def test_remote_response_is_bounded(monkeypatch, headers, data, message):
-    requested = []
-    if data == "oversize":
-        class OversizeResponse(RemoteResponse):
-            def iter_bytes(self, size):
-                yield b"x" * (10 * 1024 * 1024)
-                yield b"x"
-        response = OversizeResponse(200, headers)
-        install_remote(monkeypatch, [response], requested)
-        with pytest.raises(ValueError, match=message):
-            image_reading.fetch_remote_image("https://public.example/a.png")
-        return
-    install_remote(monkeypatch, [RemoteResponse(200, headers, data)], requested)
-    with pytest.raises(ValueError, match=message):
-        image_reading.fetch_remote_image("https://public.example/a.png")
-
-
 def test_model_capability_and_arguments_are_checked_before_io():
     called = []
-    arguments = ({"path": "chart.png"}, {"url": "https://example.com/chart.png"},
-                 {}, {"path": "a.png", "url": "https://example.com/a.png"},
+    arguments = ({"url": "https://example.com/chart.png"}, {},
+                 {"path": "a.png", "url": "https://example.com/a.png"},
                  {"path": "a.png", "extra": True})
     config = ChatProviderConfig("https://example.test/v1", "test", "vision", supports_images=True)
-    for value in arguments[2:]:
+    for value in arguments:
         assert image_reading.read_image(value, config=config,
             local_loader=lambda path: called.append(path)).get("error")
     assert not called
-    unsupported = image_reading.read_image(arguments[0], config=ChatProviderConfig(
+    accepted = []
+    result = image_reading.read_image({"path": "../.ssh/credentials.png"}, config=config,
+        local_loader=lambda path: (accepted.append(path) or PNG, {
+            "size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}))
+    assert result.data == PNG
+    assert accepted == ["/home/user/workspace/../.ssh/credentials.png"]
+    unsupported = image_reading.read_image({"path": "chart.png"}, config=ChatProviderConfig(
         "https://example.test/v1", "test", "text", supports_images=False),
         local_loader=lambda path: called.append(path))
     assert unsupported["error_code"] == "image_model_unsupported" and not called
@@ -356,23 +250,13 @@ def test_runtime_exposes_read_image_only_for_supported_models(accounts, monkeypa
     unsupported = ChatProviderConfig("https://example.test/v1", "test", "text", supports_images=False)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, provider_config=supported)
     assert "read_image" in {item["function"]["name"] for item in runtime.tools}
+    image_tool = next(item["function"] for item in runtime.tools
+        if item["function"]["name"] == "read_image")
+    assert image_tool["parameters"]["required"] == ["path"]
+    assert set(image_tool["parameters"]["properties"]) == {"path"}
     text_runtime = ExtensionRuntime(lambda: nullcontext(db), access, provider_config=unsupported)
     assert "read_image" not in {item["function"]["name"] for item in text_runtime.tools}
     assert text_runtime.execute("read_image", {"path": "chart.png"})["error_code"] == "image_model_unsupported"
-
-
-def test_remote_image_read_does_not_require_cloud_computer_execution(accounts, monkeypatch):
-    admin, db, _ = setup_site(accounts, monkeypatch)
-    access = load_access(admin, db)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, provider_config=ChatProviderConfig(
-        "https://example.test/v1", "test", "vision", supports_images=True))
-    install_remote(monkeypatch, [RemoteResponse(200, {}, PNG)], [])
-
-    result = runtime.execute("read_image", {"url": "https://public.example/chart.png"})
-
-    assert result.image.data == PNG
-    assert result.result["filename"] == "chart.png"
-    assert base64.b64encode(PNG).decode() not in json.dumps(result.result)
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "anthropic", "gemini"])
@@ -513,7 +397,7 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     assert second.data == PNG and fake.creates == 1 and fake.starts == 2
 
 
-def test_workspace_image_rejects_sensitive_paths_before_start(accounts, monkeypatch):
+def test_workspace_image_passes_paths_to_sandbox_for_access_checks(accounts, monkeypatch):
     from test_cloud_computer import enable_execution
     from test_cloud_computer_mount import MemoryMount
     from app import storage_backend
@@ -530,4 +414,4 @@ def test_workspace_image_rejects_sensitive_paths_before_start(accounts, monkeypa
     db.commit()
     with pytest.raises(Exception):
         cloud.execute_image(db, user_access, conversation.id, uuid4(), "/home/user/.ssh/id_rsa", None)
-    assert fake.creates == 0
+    assert fake.creates == 1

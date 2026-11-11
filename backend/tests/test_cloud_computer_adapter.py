@@ -28,7 +28,9 @@ def test_create_requires_network_isolation_and_connect_preserves_deadline():
     config = calls["create"]
     assert config["secure"] is True and config["timeout"] == 3600
     assert config["network"]["allow_public_traffic"] is False
+    assert calls["create"]["allow_internet_access"] is True
     assert config["network"]["deny_out"] == PRIVATE_NETWORKS
+    assert "10.0.0.0/8" in config["network"]["deny_out"]
     assert not {"zk.str1ct.top", "q.str1ct.top"}.intersection(config["network"]["deny_out"])
     provider.connect("synthetic")
     assert 80 <= calls["connect"]["timeout"] <= 85
@@ -66,7 +68,9 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
         "bucketPath": "/workspaces/workspace-a/resource-directory",
         "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}]
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
-    assert calls["network"]["allow_out"] == ["test-bucket.oss-cn-beijing.aliyuncs.com", "8.8.8.8"]
+    assert calls["allow_internet_access"] is True
+    assert "allow_out" not in calls["network"]
+    assert "10.0.0.0/8" in calls["network"]["deny_out"]
     assert "access_key" not in json.dumps(calls)
 
 
