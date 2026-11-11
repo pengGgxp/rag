@@ -106,10 +106,10 @@ jobs:
           python-version: "3.12"
       - name: Validate production compose
         run: |
-          python deploy/validate_config.py --env-template deploy/production.env.example
+          python deploy/validate_config.py --app-template deploy/app.env.example --deployment-template deploy/deployment.env.example
           python deploy/alembic_head.py backend
           POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
-            docker compose -f deploy/compose.production.yml --env-file deploy/production.env.example config --quiet
+            docker compose -f deploy/compose.production.yml --env-file deploy/deployment.env.example --env-file deploy/app.env.example config --quiet
       - name: Verify release package manifest
         run: |
           python -m py_compile deploy/deploy_release.py deploy/check_health.py deploy/maintenance.py deploy/release_package.py

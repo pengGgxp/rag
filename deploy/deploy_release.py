@@ -358,6 +358,12 @@ def render_environment(release_dir: Path, paths: Paths | None = None) -> dict[st
         "POSTGRES_PASSWORD": urllib.parse.unquote(database.password),
         "RUSTFS_ACCESS_KEY": values.get("S3_ACCESS_KEY", "minioadmin"),
         "RUSTFS_SECRET_KEY": values.get("S3_SECRET_KEY", "minioadmin"),
+        "PREVIEW_CACHE_MAX_BYTES": values.get(
+            "PREVIEW_CACHE_MAX_BYTES", str(5 * 1024**3)
+        ),
+        "PREVIEW_CACHE_IDLE_SECONDS": values.get(
+            "PREVIEW_CACHE_IDLE_SECONDS", str(7 * 86400)
+        ),
         "ZHIKU_APP_ENV_FILE": "app.env",
     }
     release_env = release_dir / ".env.release"

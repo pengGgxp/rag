@@ -6,22 +6,26 @@ instead of describing their own deployment procedure.
 
 ## Release contract
 
-- Pull requests and pushes to `main` run CI only.
-- Production can be released only by pushing an annotated `vX.Y.Z` tag whose
-  commit is already on `main`.
-- Manual release workflow runs are verification-only. They never deploy.
-- The `production` GitHub Environment must require a repository administrator
-  approval. Branch protection on `main` must require the CI checks.
+- Production configuration is server-owned. The authoritative files are
+  `/opt/zhiku/config/app.env`, the protected question-workbench env file and
+  the generated release `.env.release`.
+- GitHub is an optional image-build/release automation layer, not a production
+  configuration store and not the source of truth for running services.
 - Every production service runs a `linux/amd64` image pinned by
   `image@sha256:...`. The server never builds application images and never
   bind-mounts source code.
-- Server-specific secrets stay in protected server files. GitHub stores only
-  the SWR credentials, the dedicated deployment SSH key and non-secret values.
+- The machine-readable variable contract is maintained in
+  `deploy/app.env.example`, `deploy/deployment.env.example` and
+  `deploy/production.env.reference.md`. CI runs
+  `python deploy/validate_config.py` before packaging.
+- Branch protection on `main` should require CI checks. If GitHub Actions is
+  enabled for publishing, use its production environment only as an optional
+  approval gate for that automation; no running service reads its variables.
 
-## Required GitHub configuration
+## Optional GitHub automation settings
 
-Repository-level configuration, visible to the tag build before any production
-approval:
+These values are needed only when GitHub Actions is used to publish images and
+upload a release. They are not application runtime configuration:
 
 | Kind | Name | Value |
 | --- | --- | --- |
@@ -35,8 +39,8 @@ approval:
 | Secret | `SWR_SECRET_KEY` | Huawei Cloud AccessKey secret used only by the SWR cleanup API |
 | Secret | `SWR_PROJECT_ID` | Huawei Cloud project ID for the SWR region |
 
-Environment `production`, approved before any server access or registry
-cleanup:
+If the GitHub release workflow is enabled, its optional `production`
+environment can additionally provide:
 
 | Kind | Name | Value |
 | --- | --- | --- |
@@ -48,9 +52,11 @@ cleanup:
 | Secret | `PRODUCTION_SSH_KNOWN_HOSTS` | Pinned host key entry for the production host |
 
 The three SWR repositories are `zhiku-api`, `zhiku-worker` and `zhiku-web`.
-Repository permissions should allow CI to push but not delete. The deployment
-account needs permission only to run the fixed `sudo` entrypoints and read the
-incoming release directory. Do not reuse an administrator's personal SSH key.
+Repository permissions should allow CI to push but not delete. If server
+deployment is automated, the deployment account needs permission only to run
+the fixed `sudo` entrypoints and read the incoming release directory. Do not
+reuse an administrator's personal SSH key. Manual local build/upload remains a
+supported release path and does not require GitHub Environment configuration.
 
 ## CI gates
 
@@ -109,8 +115,9 @@ and rollback result together.
   deploy.lock
 ```
 
-`app.env` is the original production application environment. It must contain
-at least:
+`app.env` is the original production application environment. The complete
+field-by-field index is `deploy/production.env.reference.md`; the copyable
+template is `deploy/app.env.example`. It must contain at least:
 
 ```dotenv
 DATABASE_URL=postgresql+psycopg://...
@@ -118,7 +125,6 @@ REDIS_URL=redis://...
 AUTH_SECRET_KEY=...
 SITE_CONFIG_ENCRYPTION_KEY=...
 MCP_CREDENTIAL_KEY=...
-NEXT_PUBLIC_API_URL=https://zk.str1ct.top/api
 FRONTEND_URL=https://zk.str1ct.top
 API_PUBLIC_URL=https://zk.str1ct.top/api
 AUTH_COOKIE_SECURE=true
@@ -136,7 +142,9 @@ server environment so the running API and later releases use the same value.
 `.env.question-workbench` remains a separate protected file. The release
 process copies both protected files into each immutable release with mode
 `600`. `.env.release` contains only Compose interpolation values; it is not an
-application secret file.
+application secret file. `deploy/deployment.env.example` documents that layer,
+but the actual `.env.release` is generated from `app.env` and the release
+manifest rather than entered twice.
 
 ## First production takeover
 
@@ -152,8 +160,9 @@ Do not treat a deployed release as a completed takeover. Follow these stages:
    does not start containers, alter Nginx or change the database.
 5. The shadow stage verifies package checksums, renders Compose and checks the
    packaged migration heads without switching `current`.
-6. Obtain the production Environment approval and perform one controlled
-   `takeover` action.
+6. If GitHub release automation is used, approve its optional production gate;
+   otherwise invoke the checksum-verified fixed server entrypoint directly.
+   Perform one controlled `takeover` action.
 7. A temporary Nginx gate blocks new writes before legacy producers are
    stopped. The script backs up the database, verifies the backup copy, restores
    it into an isolated rehearsal database and runs the migration there.
@@ -172,16 +181,19 @@ Subsequent releases use the normal managed-release path.
    checkout.
 4. CI tests must pass. The release workflow builds and pushes the API, Worker
    and Web images, records digests and creates the release package.
-5. Approve the `production` Environment deployment.
+5. If GitHub publishing is enabled, approve its optional `production`
+   deployment gate. Otherwise run the fixed server entrypoint from the local
+   manual release path.
 6. The server verifies the uploaded archive, obtains the deployment lock, turns
    maintenance on through the currently running API, stops Workers, drains
    finite work, backs up and validates the database, rehearses migrations in an
    isolated database and then follows the migration path below.
 7. If the release is healthy, evidence is written and maintenance is cleared.
-8. Only after a successful release, and after the `production` Environment
-   approval, may cleanup remove unneeded SWR tags and local images. During
-   first takeover, the archived legacy `previous` directory may not contain a
-   `release.json`; only the current release manifest is mandatory.
+8. Only after a successful release may cleanup remove unneeded SWR tags and
+   local images. If GitHub automation owns cleanup, its optional approval gate
+   must pass first. During first takeover, the archived legacy `previous`
+   directory may not contain a `release.json`; only the current release
+   manifest is mandatory.
 
 Never manually edit a production Compose file, append a temporary override or
 replace a service image on the server. Fix the release and produce a new tag.
@@ -420,11 +432,11 @@ its Web digest is distinct. The release manifest is the authority for the
 digests; any later document or dashboard must not infer them from a container
 name.
 
-GitHub Actions tag-based production deployment is the target contract, but it
-has not been used as the sole production release path in this environment.
-Until a tag release has been demonstrated end to end, manual releases must
-follow this runbook and be recorded with the same evidence. Code push, a tag
-push or a successful image build alone is not deployment acceptance.
+GitHub Actions tag-based deployment is optional automation, not the production
+configuration contract. This environment currently uses the manual release
+path. A manual release must follow this runbook and be recorded with the same
+evidence. Code push, a tag push or a successful image build alone is not
+deployment acceptance.
 
 ## Migration rules
 

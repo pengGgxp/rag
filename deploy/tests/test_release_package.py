@@ -27,7 +27,8 @@ class ReleasePackageTests(unittest.TestCase):
             for name in (
                 "compose.production.yml", "check_health.py", "deploy_release.py",
                 "alembic_head.py", "run_release.sh", "bootstrap.sh", "maintenance.py",
-                "prune_registry.py", "validate_config.py", "production.env.example",
+                "prune_registry.py", "validate_config.py", "app.env.example",
+                "deployment.env.example", "production.env.reference.md",
             ):
                 (deploy / name).write_text("# test\n", encoding="utf-8")
             for name in ("zk.str1ct.top.conf", "http-preview.conf"):

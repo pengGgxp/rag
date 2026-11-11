@@ -37,8 +37,8 @@ def make_release(root: Path, payload: dict | None = None) -> Path:
     payload = payload or manifest()
     source = Path(__file__).resolve().parents[1]
     for name in ("check_health.py", "deploy_release.py", "maintenance.py", "alembic_head.py",
-                 "run_release.sh", "bootstrap.sh", "validate_config.py", "production.env.example",
-                 "prune_registry.py"):
+                 "run_release.sh", "bootstrap.sh", "validate_config.py", "app.env.example",
+                 "deployment.env.example", "production.env.reference.md", "prune_registry.py"):
         shutil.copy2(source / name, root / name)
     (root / "release.json").write_text(json.dumps(payload), encoding="utf-8")
     (root / "compose.yml").write_text("services: {}\n", encoding="utf-8")
@@ -485,6 +485,8 @@ class RollbackTests(unittest.TestCase):
                         "AUTH_COOKIE_SECURE=true",
                         "PREVIEW_ENABLED=true",
                         "PREVIEW_DOMAIN=preview.str1ct.top",
+                        "PREVIEW_CACHE_MAX_BYTES=67108864",
+                        "PREVIEW_CACHE_IDLE_SECONDS=3600",
                         "S3_ACCESS_KEY=rustfs",
                         "S3_SECRET_KEY=rustfs-secret",
                         "",
@@ -501,6 +503,8 @@ class RollbackTests(unittest.TestCase):
             self.assertNotIn("postgresql+psycopg", compose_env)
             self.assertIn("DEPLOY_CONTROL_TOKEN", values)
             self.assertEqual(values["DATABASE_URL"], "postgresql+psycopg://rag:secret@db:5432/rag")
+            self.assertIn("PREVIEW_CACHE_MAX_BYTES=67108864", compose_env)
+            self.assertIn("PREVIEW_CACHE_IDLE_SECONDS=3600", compose_env)
 
     def test_nginx_gate_blocks_all_public_api_writes(self):
         with tempfile.TemporaryDirectory() as tmp:
