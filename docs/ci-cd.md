@@ -381,7 +381,7 @@ normal rolling replacement path. If they differ:
 
 Never run a production migration merely because the rehearsal failed to start;
 never auto-downgrade. For `restore-backup-required`, stop after any failed
-health check and keep maintenance active until the verified backup is
+release check and keep maintenance active until the verified backup is
 restored.
 
 ### Switch and health
@@ -389,17 +389,19 @@ restored.
 1. Stop new producers and wait for finite Worker tasks to drain.
 2. Switch `current` to the immutable release directory.
 3. Start only the services whose image or configuration changed, plus the
-   required one-off migration job.
+   required one-off migration job. Compose does not wait for container health.
 4. Verify running container images contain the expected digests.
-5. Run the packaged health checker with the expected version, commit and
-   Alembic revision.
-6. Verify the public API and Web page, resource library, checkout page,
-   preview gateway and configured question-workbench bridge.
-7. Run `nginx -t` before reload and confirm the active Nginx configuration.
+5. Verify the database Alembic revision and run `nginx -t` before reloading
+   the active configuration. These are deployment-integrity checks, not the
+   application health suite.
+6. Clear application maintenance. On first takeover, install the canonical
+   Nginx configuration to remove its temporary maintenance gate.
+7. Only after maintenance is clear, run the packaged health checker with the
+   expected version, commit and Alembic revision. It verifies the API, Web,
+   resource library, checkout page, preview gateway, Worker heartbeat and
+   configured question-workbench bridge.
 8. Write release evidence, including maintenance changes, backup checksum,
    Nginx backup and the final health result.
-9. Clear maintenance only after the release is healthy; a healthy process
-   does not justify skipping an unresolved migration or data check.
 
 Do not use browser cookies from a real user to test a controlled deployment.
 Use a test account, unauthenticated status endpoints or an isolated test
@@ -412,8 +414,10 @@ workspace, and never put user content or credentials in release evidence.
 - Package or checksum failure: stop before switching and upload a new package.
 - Rehearsal failure: leave production unchanged, keep maintenance active and
   inspect the rehearsal database and migration output.
-- Compatible application failure: switch back to the previous release and
-  digests, repeat health checks, then clear maintenance deliberately.
+- Compatible application failure: re-enable maintenance, switch back to the
+  previous release and digests, clear maintenance on that release, then run
+  its health checks. If rollback verification fails, re-enable maintenance
+  and leave the previous release available for diagnosis.
 - `restore-backup-required` failure: keep maintenance active, restore the
   verified database backup and reconcile balances, ledgers, orders, documents,
   resource indexes and object references before switching application code.
