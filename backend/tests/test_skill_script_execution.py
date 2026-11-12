@@ -46,13 +46,13 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     # Even within the same workspace, another member's private package stays private.
     db.get(AgentSkill, UUID(foreign["id"])).workspace_id = access_for(admin, db).workspace_id
     db.commit()
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), request_id=uuid4())
     assert "run_command" in {item["function"]["name"] for item in runtime.tools}
     captured = []
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
-    assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": "echo ready"}, call_id="tool-1-ready")["exit_code"] == 0
     assert captured.pop()["skill_packages"] == {}
-    assert runtime.execute("run_command", {"command": f"python /skills/{first['id']}/scripts/task.py"})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": f"python /skills/{first['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
     assert set(captured.pop()["skill_packages"]) == {first["id"]}
     loaded = runtime.execute("load_skill", {"skill_id": first["id"]})
     assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/skills/{first['id']}"
@@ -61,14 +61,14 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     row.files[0].content = b"CHANGED AFTER REQUEST"
     row.version += 1
     db.commit()
-    assert runtime.execute("run_command", {"command": "python script.py", "skill_ids": [first["id"]]})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": "python script.py", "skill_ids": [first["id"]]}, call_id="tool-3-pinned")["exit_code"] == 0
     package = captured[0]["skill_packages"]
     assert set(package) == {first["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
     assert package[first["id"]]["assets/value.bin"] == b"\xff\x00"
     assert runtime.execute("run_command", {"command": "x", "skill_files": {}}).get("error")
     row.enabled = False
     db.commit()
-    assert runtime.execute("run_command", {"command": "echo unrelated task"})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": "echo unrelated task"}, call_id="tool-4-unrelated")["exit_code"] == 0
     assert captured[-1]["skill_packages"] == {}
     assert len(captured) == 2
 
@@ -91,19 +91,19 @@ def test_output_tools_require_cloud_and_recheck_role(accounts, monkeypatch):
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: io.BytesIO(stored[key]))
     monkeypatch.setattr("app.resource_cache.download_range_fileobj", lambda key, start, end: io.BytesIO(stored[key][start:end+1]))
     access = access_for(admin, db)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [], request_id=uuid4())
     assert "write_file" not in {item["function"]["name"] for item in runtime.tools}
     assert runtime.execute("list_files", {})["error_code"] == "file_tool_unavailable"
     assert not stored
     assert runtime.execute("run_command", {"command": "echo no"})["error_code"] == "file_tool_unavailable"
     enable_cloud(db, access, monkeypatch)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [], request_id=uuid4())
     assert "write_file" in {item["function"]["name"] for item in runtime.tools}
     member = db.get(Membership, (access.workspace_id, access.user_id))
     member.role = "viewer"
     db.commit()
     with pytest.raises(HTTPException) as error:
-        runtime.execute("write_file", {"path": "second.txt", "content": "forbidden"})
+        runtime.execute("write_file", {"path": "second.txt", "content": "forbidden"}, call_id="tool-1-forbidden")
     assert error.value.status_code == 403 and not stored
 
 
@@ -112,16 +112,16 @@ def test_output_before_skill_load_and_safe_failure_recovery(accounts, monkeypatc
     enable_cloud(db, access_for(admin, db), monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "http://runner.test")
     selected = scripted(admin)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [selected["id"]], request_id=uuid4())
     captured = []
     with monkeypatch.context() as patch:
         patch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
-        assert runtime.execute("run_command", {"command": "echo ready", "skill_ids": [selected["id"]]})["exit_code"] == 0
+        assert runtime.execute("run_command", {"command": "echo ready", "skill_ids": [selected["id"]]}, call_id="tool-1-ready")["exit_code"] == 0
         assert set(captured[0]["skill_packages"]) == {selected["id"]}
     def unavailable(*args, **kwargs):
         raise HTTPException(503, "云电脑尚未开放，请联系管理员")
     monkeypatch.setattr("app.cloud_computer.execute", unavailable)
-    result = runtime.execute("write_file", {"path": "report.txt", "content": "hello"})
+    result = runtime.execute("write_file", {"path": "report.txt", "content": "hello"}, call_id="tool-2-write")
     assert result["error_code"] == "cloud_computer_unavailable"
     assert db.query(WorkspaceFile).count() == 0
     assert runtime.execute("write_file", {"path": "report.txt", "content": "changed", "expected_version": 9})["error_code"] == "file_arguments"
@@ -143,16 +143,16 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
     for platform in (False, True):
         if platform:
             method = create(admin)
-        runtime = ExtensionRuntime(lambda: nullcontext(db), access)
+        runtime = ExtensionRuntime(lambda: nullcontext(db), access, request_id=uuid4())
         if platform:
             assert "instructions" in runtime.execute("load_skill", {"skill_id": method["id"]})
-        assert runtime.execute("run_command", {"command": "echo ready"})["exit_code"] == 0
+        assert runtime.execute("run_command", {"command": "echo ready"}, call_id="tool-1-ready")["exit_code"] == 0
         assert captured[-1]["skill_packages"] == {}
     member = db.get(Membership, (access.workspace_id, access.user_id))
     member.role = "viewer"
     db.commit()
     with pytest.raises(HTTPException) as error:
-        runtime.execute("run_command", {"command": "echo forbidden"})
+        runtime.execute("run_command", {"command": "echo forbidden"}, call_id="tool-2-forbidden")
     assert error.value.status_code == 403 and len(captured) == 2
     viewer = ExtensionRuntime(lambda: nullcontext(db), access)
     assert "run_command" not in {item["function"]["name"] for item in viewer.tools}
@@ -178,13 +178,13 @@ def test_platform_package_mounts_by_skill_id_and_command_path_with_pinned_bytes(
     assert loaded["execution"]["scripts"] == ["scripts/task.py"] and loaded["execution"]["read_only"]
     written = []
     monkeypatch.setattr(fake, "write_skill", lambda sandbox, path, data: written.append((path, data)))
-    result = runtime.execute("run_command", {"command": "echo ready", "skill_ids": [skill["id"]]})
+    result = runtime.execute("run_command", {"command": "echo ready", "skill_ids": [skill["id"]]}, call_id="tool-1-ready")
     assert result["exit_code"] == 0
     assert fake.skill_clears == 1
     assert dict(written) == {f"{skill['id']}/SKILL.md": skill["markdown"].encode(),
         f"{skill['id']}/assets/value.bin": b"\xff\x00", f"{skill['id']}/scripts/task.py": b"print('PLATFORM')"}
     written.clear()
-    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"})["exit_code"] == 0
+    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
     assert fake.skill_clears == 2
     assert {path for path, _ in written} == {f"{skill['id']}/SKILL.md", f"{skill['id']}/assets/value.bin",
         f"{skill['id']}/scripts/task.py"}
@@ -193,7 +193,7 @@ def test_platform_package_mounts_by_skill_id_and_command_path_with_pinned_bytes(
     db.commit()
     written.clear()
     runtime.request_id = uuid4()
-    runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py changed"})
+    runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py changed"}, call_id="tool-1-changed")
     assert (f"{skill['id']}/scripts/task.py", b"print('PLATFORM')") in written
     row.enabled = False
     db.commit()

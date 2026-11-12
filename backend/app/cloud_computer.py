@@ -261,6 +261,13 @@ def cancel_command(identifier: UUID, db=Depends(get_db), access=Depends(get_acce
     return command_read(command)
 
 
+def tool_request_id(request_id, call_id):
+    """Namespace the stable Agent activity key by answer ID for Command.request_id."""
+    if not request_id or not isinstance(call_id, str) or not call_id.strip():
+        raise HTTPException(422, "本次文件操作无法确认，请重新发送消息")
+    return uuid5(UUID(str(request_id)), "cloud-tool:" + call_id)
+
+
 def submit(db, access, conversation_id, request_id, arguments, skill_packages=None):
     access = owner(db, access, conversation_id)
     file_operation = arguments.get("file_operation")
@@ -282,8 +289,10 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     existing = db.scalar(select(Command).join(Computer).where(Computer.workspace_id == access.workspace_id,
         Computer.user_id == access.user_id, Computer.conversation_id == conversation_id,
-        Command.request_id == request_id, Command.digest == digest))
+        Command.request_id == request_id))
     if existing:
+        if existing.digest != digest:
+            raise HTTPException(409, "同一次操作的内容已变化，请先核对执行记录，再重新发起")
         if existing.status == "queued":
             dispatch(existing.id)
         return existing

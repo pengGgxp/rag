@@ -211,7 +211,7 @@ def idle_anchor(db, computer):
     return max(aware(computer.last_activity_at), aware(lease)) if lease else aware(computer.last_activity_at)
 
 
-def execute(runtime, name, arguments, check_active):
+def execute(runtime, name, arguments, check_active, *, call_id=None):
     with runtime.factory() as db:
         access = runtime.access.revalidate(db)
         message = db.get(ChatMessage, runtime.message_id)
@@ -227,5 +227,5 @@ def execute(runtime, name, arguments, check_active):
         if not get_settings().preview_enabled:
             raise HTTPException(503, "成果预览尚未开放，请联系管理员")
         payload = Start.model_validate(arguments).model_dump()
-        return cloud.execute(db, access, message.conversation_id, runtime.request_id,
+        return cloud.execute(db, access, message.conversation_id, cloud.tool_request_id(runtime.request_id, call_id),
             {"command": payload["command"], "preview": payload}, {}, check_active)
