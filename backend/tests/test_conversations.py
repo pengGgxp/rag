@@ -5,13 +5,16 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from httpx_sse import EventSource
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app import main, conversations as chat
 from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
-from app.models import ChatMessage, Conversation, CreditAccount, DocumentStatus
+from app.models import (
+    ChatMessage, Conversation, ConversationLibrary, CreditAccount, DocumentStatus,
+    Document, KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, Membership, User, Workspace,
+)
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate, model_id, generation_response
 
@@ -28,13 +31,16 @@ def client(monkeypatch, tmp_path):
             assert tool_choice == "auto"
             captured.append(messages)
             if messages[-1]["role"] == "user":
-                libraries = json.loads(messages[0]["content"].split("\n本会话知识库：")[1])
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                libraries = catalog["knowledge_bases"]
+                if not libraries:
+                    return ToolResponse(content="我暂时没有可用的资料依据。", tool_calls=[])
                 return ToolResponse(content=None, tool_calls=[ToolCall(
                     id="search", name="search_knowledge_base",
-                    arguments={
-                        "query": "needle",
-                        "knowledge_base_ids": [item["id"] for item in libraries],
-                    },
+                    arguments={"query": "needle", "knowledge_base_ids": [libraries[0]["id"]]},
                 )])
             sources = json.loads(messages[-1]["content"])["evidence"]
             text = (
@@ -62,8 +68,8 @@ def client(monkeypatch, tmp_path):
         engine.dispose()
 
 
-def create(http, libraries):
-    response = http.post("/conversations", json={"knowledge_base_ids": [str(item.id) for item in libraries]})
+def create(http, libraries=()):
+    response = http.post("/conversations", json={})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -90,9 +96,9 @@ def test_persists_streamed_turn_and_followup_context(client):
     assert events[-1][1]["citations"]
     second, _ = turn(http, conversation["id"], "需要多长时间？")
     assert second[-1][1]["status"] == "completed"
-    assert captured[2][1]["content"] == "needle"
-    assert captured[2][2]["role"] == "assistant"
-    assert captured[2][-1]["content"] == "需要多长时间？"
+    assert captured[3][1]["content"] == "needle"
+    assert captured[3][2]["role"] == "assistant"
+    assert captured[3][-1]["content"] == "需要多长时间？"
     assert [name for name, _ in events].index("tool_call") < [name for name, _ in events].index("tool_result")
     detail = http.get(f"/conversations/{conversation['id']}").json()
     assert [message["role"] for message in detail["messages"]] == ["user", "assistant"] * 2
@@ -102,26 +108,26 @@ def test_persists_streamed_turn_and_followup_context(client):
     assert http.get("/conversations").json()["items"][0]["id"] == detail["id"]
 
 
-def test_multi_library_scope_and_deleted_filtering(client):
+def test_agent_searches_selected_authorized_library_and_excludes_deleted_documents(client):
     http, db, _ = client
     a, b, outside = [add_library(db) for _ in range(3)]
-    first = add_document(db, a, "needle a")
-    second = add_document(db, b, "needle b")
+    add_document(db, a, "needle a")
+    add_document(db, b, "needle b")
     add_document(db, outside, "needle outside")
-    add_document(db, a, "needle deleted", status=DocumentStatus.DELETED)
+    deleted = add_document(db, a, "needle deleted", status=DocumentStatus.DELETED)
     conversation = create(http, [a, b, a])
-    assert len(conversation["knowledge_bases"]) == 2
+    assert conversation["knowledge_bases"] == []
     events, _ = turn(http, conversation["id"])
     answer = events[-1][1]
-    assert {source["chunk_id"] for source in answer["citations"]} == {
-        str(first.chunks[0].id), str(second.chunks[0].id),
+    assert len(answer["traces"]) == 1
+    assert {source["knowledge_base_id"] for source in answer["citations"]} == {
+        answer["traces"][0]["knowledge_base_id"],
     }
-    assert {trace["knowledge_base_id"] for trace in answer["traces"]} == {str(a.id), str(b.id)}
+    assert str(deleted.chunks[0].id) not in {source["chunk_id"] for source in answer["citations"]}
     exported = http.get(f"/conversations/{conversation['id']}/export")
     assert "text/markdown" in exported.headers["content-type"]
     assert "测试回答" in exported.text
-    assert str(first.chunks[0].id) in exported.text
-    assert "needle outside" not in exported.text
+    assert "needle deleted" not in exported.text
 
 
 def test_document_mentions_persist_by_id_without_forcing_retrieval_scope(client):
@@ -138,14 +144,59 @@ def test_document_mentions_persist_by_id_without_forcing_retrieval_scope(client)
     assert str(selected.id) in captured[0][0]["content"]
     saved = http.get(f"/conversations/{conversation['id']}").json()["messages"][0]
     assert saved["document_mentions"] == [{"id": str(selected.id), "filename": selected.filename,
-        "knowledge_base_id": str(library.id)}]
+        "knowledge_base_id": str(library.id), "knowledge_base_name": library.name}]
 
 
-@pytest.mark.parametrize("state", ["outside", "deleted", "inactive", "missing"])
+def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(client):
+    http, db, _ = client
+    from app.models import LEGACY_WORKSPACE_ID
+
+    library = add_library(db)
+    document = add_document(db, library, "needle private historical evidence")
+    conversation = create(http)
+    db.add(ConversationLibrary(
+        conversation_id=UUID(conversation["id"]), knowledge_base_id=library.id,
+    ))
+    db.commit()
+    events, _ = turn(http, conversation["id"])
+    answer = events[-1][1]
+    assert answer["citations"][0]["text"] == "needle private historical evidence"
+
+    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
+    membership = db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id))
+    membership.role = "viewer"
+    library.restricted = True
+    db.commit()
+
+    listed = http.get("/conversations").json()["items"]
+    assert any(item["id"] == conversation["id"] for item in listed)
+    detail = http.get(f"/conversations/{conversation['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["messages"][-1]["citations"][0]["text"] == "needle private historical evidence"
+    assert "needle private historical evidence" in http.get(
+        f"/conversations/{conversation['id']}/export").text
+
+    catalog = http.get("/conversations/knowledge-catalog").json()
+    assert catalog == {"knowledge_bases": [], "documents": [], "resources": []}
+    assert http.get("/conversations/search", params={
+        "q": "needle", "knowledge_base_id": str(library.id),
+    }).status_code == 404
+
+    next_turn, _ = turn(http, conversation["id"], "查找被撤权的资料")
+    assert next_turn[-1][1]["citations"] == []
+    assert next_turn[-1][1]["traces"] == []
+    denied = http.post(f"/conversations/{conversation['id']}/messages", json={
+        "provider_id": model_id(http), "request_id": str(uuid4()), "query": "总结",
+        "document_ids": [str(document.id)],
+    })
+    assert denied.status_code == 409
+
+
+@pytest.mark.parametrize("state", ["deleted", "inactive", "missing"])
 def test_unavailable_mentions_are_rejected_before_message_or_billing_creation(client, state):
     http, db, _ = client
     library = add_library(db)
-    document = add_document(db, add_library(db) if state == "outside" else library, "needle")
+    document = add_document(db, library, "needle")
     if state == "deleted":
         document.status = DocumentStatus.DELETED
     if state == "inactive":
@@ -160,6 +211,234 @@ def test_unavailable_mentions_are_rejected_before_message_or_billing_creation(cl
     assert http.get(f"/conversations/{conversation['id']}").json()["messages"] == []
 
 
+def test_document_mention_is_not_limited_by_conversation_knowledge_bases(client, monkeypatch):
+    http, db, captured = client
+    conversation_library = add_library(db)
+    mentioned_library = add_library(db)
+    document = add_document(db, mentioned_library, "needle")
+    conversation = create(http, [conversation_library])
+
+    class MentionProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            captured.append(messages)
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases",
+                    arguments={"query": mentioned_library.name})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base", arguments={
+                        "query": "needle",
+                        "knowledge_base_ids": [str(mentioned_library.id)],
+                        "document_ids": [str(document.id)],
+                    })])
+            evidence = json.loads(messages[-1]["content"])["evidence"]
+            return ToolResponse(content=f"资料依据 [{evidence[0]['chunk_id']}]", tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: MentionProvider())
+    events, _ = turn(http, conversation["id"], "needle", document_ids=[str(document.id)])
+
+    message = http.get(f"/conversations/{conversation['id']}").json()["messages"][0]
+    assert message["document_mentions"][0]["id"] == str(document.id)
+    assert [item["chunk_id"] for item in events[-1][1]["citations"]] == [str(document.chunks[0].id)]
+    assert [item["knowledge_base_id"] for item in events[-1][1]["traces"]] == [str(mentioned_library.id)]
+
+
+def test_agent_discovery_filters_catalog_and_searches_only_selected_library(client, monkeypatch):
+    http, db, captured = client
+    selected_library, unrelated_library = add_library(db), add_library(db)
+    selected_library.name = "needle reference"
+    unrelated_library.name = "unrelated reference"
+    selected_document = add_document(db, selected_library, "needle evidence")
+    add_document(db, unrelated_library, "needle unrelated evidence")
+    db.commit()
+
+    class SelectiveProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            captured.append(messages)
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={"query": "needle"})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                assert [item["id"] for item in catalog["knowledge_bases"]] == [str(selected_library.id)]
+                assert [item["id"] for item in catalog["documents"]] == [str(selected_document.id)]
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base",
+                    arguments={"query": "needle", "knowledge_base_ids": [str(selected_library.id)]})])
+            evidence = json.loads(messages[-1]["content"])["evidence"]
+            assert {item["knowledge_base_id"] for item in evidence} == {str(selected_library.id)}
+            return ToolResponse(content="找到资料。", tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: SelectiveProvider())
+    conversation = create(http)
+    events, _ = turn(http, conversation["id"], "needle")
+
+    assert {item["knowledge_base_id"] for item in events[-1][1]["citations"]} == {str(selected_library.id)}
+    assert all(item["knowledge_base_id"] != str(unrelated_library.id) for item in events[-1][1]["traces"])
+
+
+def test_empty_catalog_match_allows_model_to_refine_without_silent_scope_change(client, monkeypatch):
+    http, db, _ = client
+    library = add_library(db)
+    library.name = "Willow support"
+    document = add_document(db, library, "needle support evidence")
+    db.commit()
+
+    class RefiningProvider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="narrow", name="discover_knowledge_bases",
+                    arguments={"query": "Willow delivery support hours"})])
+            if self.step == 2:
+                result = json.loads(messages[-1]["content"])
+                assert result["knowledge_bases"] == result["documents"] == []
+                assert "query=''" in result["search_hint"]
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="list", name="discover_knowledge_bases", arguments={"query": ""})])
+            if self.step == 3:
+                result = json.loads(messages[-1]["content"])
+                assert [row["id"] for row in result["knowledge_bases"]] == [str(library.id)]
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base",
+                    arguments={"query": "needle", "knowledge_base_ids": [str(library.id)]})])
+            result = json.loads(messages[-1]["content"])
+            assert {row["version_id"] for row in result["evidence"]} == {str(document.id)}
+            return ToolResponse(content="Found support evidence.", tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: RefiningProvider())
+    events, _ = turn(http, create(http)["id"], "Find support hours.")
+    assert events[-1][1]["content"] == "Found support evidence."
+
+
+def test_agent_discovers_and_searches_documents_without_mentions(client, monkeypatch):
+    http, db, _ = client
+    libraries = [add_library(db), add_library(db)]
+    selected = [add_document(db, library, "needle selected") for library in libraries]
+    for library in libraries:
+        library.name = "needle references"
+        add_document(db, library, "needle unselected")
+    db.commit()
+    selected_ids = {str(document.id) for document in selected}
+    library_ids = [str(library.id) for library in libraries]
+    chunk_ids = {str(document.chunks[0].id) for document in selected}
+
+    class DiscoveryProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={"query": "needle"})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                documents = [row for row in catalog["documents"] if row["id"] in selected_ids]
+                assert len(documents) == 2
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base", arguments={
+                        "query": "needle", "knowledge_base_ids": library_ids,
+                        "document_ids": [row["id"] for row in documents] + [documents[0]["id"]],
+                    })])
+            evidence = json.loads(messages[-1]["content"])["evidence"]
+            assert {row["chunk_id"] for row in evidence} == chunk_ids
+            return ToolResponse(content="资料依据 " + " ".join(
+                f"[{row['chunk_id']}]" for row in evidence), tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: DiscoveryProvider())
+    conversation = create(http)
+    events, _ = turn(http, conversation["id"])
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    assert {row["chunk_id"] for row in answer["citations"]} == chunk_ids
+    assert {row["version_id"] for row in answer["citations"]} == selected_ids
+    assert {row["knowledge_base_id"] for row in answer["traces"]} == set(library_ids)
+    history = http.get(f"/conversations/{conversation['id']}").json()["messages"]
+    assert history[0]["document_mentions"] == history[0]["knowledge_base_mentions"] == []
+    assert {row["chunk_id"] for row in history[1]["citations"]} == chunk_ids
+
+
+@pytest.mark.parametrize("change", [
+    "revoked", "deleted", "inactive", "processing", "archived", "moved", "workspace_moved",
+    "missing", "foreign_document", "foreign_library",
+])
+def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, change):
+    http, db, _ = client
+    from app.models import LEGACY_WORKSPACE_ID
+
+    library = add_library(db)
+    library.name = "needle authorized"
+    document = add_document(db, library, "needle authorized evidence")
+    other_library = add_library(db)
+    foreign_workspace = Workspace(name="Other workspace")
+    db.add(foreign_workspace); db.flush()
+    foreign_library = KnowledgeBase(workspace_id=foreign_workspace.id, name="needle foreign")
+    db.add(foreign_library); db.flush()
+    foreign_document = add_document(db, foreign_library, "needle forbidden evidence")
+    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
+    db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
+    library.restricted = True
+    db.add(LibraryGrant(knowledge_base_id=library.id, user_id=owner.id))
+    db.commit()
+    library_id, document_id = library.id, document.id
+    other_id, foreign_workspace_id = other_library.id, foreign_workspace.id
+    foreign_library_id, foreign_document_id = foreign_library.id, foreign_document.id
+    owner_id = owner.id
+    original_retrieve = main.retrieve_knowledge_base
+    retrieval_calls = []
+
+    def retrieve(*args, **kwargs):
+        retrieval_calls.append(args[0])
+        return original_retrieve(*args, **kwargs)
+
+    class StaleDiscoveryProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={"query": "needle"})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                assert {row["id"] for row in catalog["documents"]} == {str(document_id)}
+                with Session(db.get_bind()) as changed:
+                    if change == "revoked":
+                        changed.execute(delete(LibraryGrant).where(
+                            LibraryGrant.knowledge_base_id == library_id, LibraryGrant.user_id == owner_id))
+                    elif change == "deleted":
+                        changed.get(Document, document_id).status = DocumentStatus.DELETED
+                    elif change == "inactive":
+                        changed.get(Document, document_id).is_active = False
+                    elif change == "processing":
+                        changed.get(Document, document_id).status = DocumentStatus.PROCESSING
+                    elif change == "archived":
+                        changed.get(KnowledgeBase, library_id).status = KnowledgeBaseStatus.ARCHIVED
+                    elif change == "moved":
+                        changed.get(Document, document_id).knowledge_base_id = other_id
+                    elif change == "workspace_moved":
+                        changed.get(KnowledgeBase, library_id).workspace_id = foreign_workspace_id
+                    changed.commit()
+                requested_document = (uuid4() if change == "missing" else foreign_document_id
+                    if change in ("foreign_document", "foreign_library") else document_id)
+                requested_library = foreign_library_id if change == "foreign_library" else library_id
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base", arguments={
+                        "query": "needle", "knowledge_base_ids": [str(requested_library)],
+                        "document_ids": [str(requested_document)],
+                    })])
+            result = json.loads(messages[-1]["content"])
+            assert "error" in result and "evidence" not in result
+            return ToolResponse(content="资料当前不可用，请重新选择。", tool_calls=[])
+
+    monkeypatch.setattr(main, "retrieve_knowledge_base", retrieve)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: StaleDiscoveryProvider())
+    conversation = create(http)
+    events, _ = turn(http, conversation["id"])
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    assert answer["citations"] == answer["traces"] == retrieval_calls == []
+    assert answer["tool_events"][-1]["status"] == "error"
+
+
 def test_empty_retrieval_keeps_agent_clarification_instead_of_fixed_refusal(client):
     http, db, captured = client
     library = add_library(db)
@@ -169,7 +448,7 @@ def test_empty_retrieval_keeps_agent_clarification_instead_of_fixed_refusal(clie
     assert events[-1][1]["content"] == "没有找到相关资料。你能补充一下资料名称或问题背景吗？"
     assert events[-1][1]["citations"] == []
     assert events[-1][1]["traces"]
-    assert len(captured) == 2
+    assert len(captured) == 3
     assert captured[-1][-1]["role"] == "tool"
     assert "has_sufficient_evidence" not in json.loads(captured[-1][-1]["content"])
     assert http.get(f"/conversations/{conversation['id']}").json()["messages"][-1]["content"] == events[-1][1]["content"]
@@ -249,6 +528,41 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
     assert invalid.status_code == 409
 
 
+def test_failed_retry_keeps_history_but_drops_revoked_mentions(client, monkeypatch):
+    http, db, captured = client
+    library = add_library(db)
+    document = add_document(db, library, "needle")
+    conversation = create(http)
+
+    class Failing:
+        def complete_with_tools(self, _messages, _tools, *, tool_choice):
+            raise LLMProviderError("upstream failed")
+
+        def complete(self, _messages):
+            raise AssertionError("must not fall back to fixed RAG")
+
+    original = chat.OpenAICompatibleChatProvider
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Failing())
+    events, _ = turn(http, conversation["id"], document_ids=[str(document.id)])
+    failed = events[-1][1]
+    assert failed["status"] == "failed"
+
+    from app.models import LEGACY_WORKSPACE_ID
+    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
+    db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
+    library.restricted = True
+    db.commit()
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", original)
+    retried, _ = turn(http, conversation["id"], None, retry_message_id=failed["id"])
+    assert retried[-1][1]["status"] == "completed"
+    assert retried[-1][1]["citations"] == []
+    assert retried[-1][1]["traces"] == []
+    assert str(document.id) not in captured[0][0]["content"]
+    history = http.get(f"/conversations/{conversation['id']}").json()["messages"]
+    assert history[0]["document_mentions"][0]["id"] == str(document.id)
+
+
 def test_stop_conflict_delete_and_restart_recovery(client):
     http, db, _ = client
     library = add_library(db)
@@ -313,9 +627,9 @@ def test_cancelled_answer_cannot_be_overwritten_by_a_late_completion(client, mon
 
 def test_rename_and_validation(client):
     http, db, _ = client
-    assert http.post("/conversations", json={"knowledge_base_ids": []}).status_code == 201
-    assert http.post("/conversations", json={"knowledge_base_ids": [str(uuid4())]}).status_code == 404
-    conversation = create(http, [add_library(db)])
+    assert http.post("/conversations", json={}).status_code == 201
+    assert http.post("/conversations", json={"knowledge_base_ids": [str(uuid4())]}).status_code == 422
+    conversation = create(http)
     id = conversation["id"]
     assert http.patch(f"/conversations/{id}", json={"title": "  产品问题  ", "revision": conversation["revision"]}).json()["title"] == "产品问题"
     assert http.patch(f"/conversations/{id}", json={"title": "  "}).status_code == 422

@@ -7,7 +7,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import select
 from fastapi import HTTPException
 
-from .agent import AGENT_SYSTEM_PROMPT, SEARCH_TOOL, AgentCancelled
+from .agent import AGENT_SYSTEM_PROMPT, DISCOVER_TOOL, SEARCH_TOOL, AgentCancelled
 from .llm import LLMConfigurationError, LLMProviderError
 from .models import ChatMessage, ContextCheckpoint, Conversation, Document, KnowledgeBase, SiteSkill
 from .thinking import history_message
@@ -66,7 +66,8 @@ def scope_digest(db, conversation, access, skill_versions=None):
         raise HTTPException(404, "会话不存在或已删除")
     checked = access.revalidate(db)
     checked.conversation(db, conversation)
-    ids = [scope.knowledge_base_id for scope in conversation.libraries]
+    ids = list(db.scalars(select(KnowledgeBase.id).where(
+        checked.visible_libraries()).order_by(KnowledgeBase.id)))
     libraries = [(str(row.id), row.updated_at, row.status, row.restricted)
         for row in db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(ids)).order_by(KnowledgeBase.id))]
     documents = list(db.execute(select(Document.id, Document.version_number, Document.is_active,
@@ -78,16 +79,15 @@ def scope_digest(db, conversation, access, skill_versions=None):
 
 
 def build_messages(db, conversation, rows, config, extensions, query=None):
-    libraries = [{"id": str(scope.knowledge_base_id), "name": scope.library.name} for scope in conversation.libraries]
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT
         + "\n云电脑环境能力：" + getattr(extensions, "environment_description", "未提供；不要假定具体预装软件或版本。")
         + "\n可用 Skill 摘要（按需加载）：" + json.dumps(extensions.skills, ensure_ascii=False)
-        + "\n本会话知识库：" + json.dumps(libraries, ensure_ascii=False)}]
+        + "\n本轮明确提及的资料优先作为检索线索；按需发现当前工作区可访问的知识库，不因会话历史固定检索范围。"}]
     messages.extend(item for row in rows for item in history_message(row, config,
         getattr(extensions, "versions", sorted((skill["id"], skill["version"]) for skill in extensions.skills))))
     if query is not None:
         messages.append({"role": "user", "content": query})
-    tools = ([SEARCH_TOOL] if libraries else []) + extensions.tools
+    tools = ([DISCOVER_TOOL, SEARCH_TOOL] if config and config.thinking.supports_tools else []) + extensions.tools
     return messages, tools
 
 

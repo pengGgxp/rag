@@ -6,7 +6,6 @@ import { Fragment, FormEvent, useCallback, useEffect, useLayoutEffect, useId, us
 import {
   ArrowUp,
   ArrowDown,
-  BookOpen,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -40,7 +39,7 @@ import { RequestModelPicker } from "./request-model-picker";
 import { ExtensionPicker } from "./extensions/extension-picker";
 import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension-slash-menu";
 import type { ExtensionSelection } from "./extensions/extension-data";
-import { DocumentMentionMenu, type MentionDocument, type MentionMenuHandle } from "./document-mention-menu";
+import { DocumentMentionMenu, type MentionDocument, type MentionKnowledgeBase, type MentionResource, type MentionMenuHandle, type MentionReference } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
 import { CloudComputerPanel } from "./cloud-computer";
 import { ConversationThinking } from "./conversation-thinking";
@@ -83,6 +82,8 @@ type Message = {
   content: string;
   attachments?: ChatAttachment[];
   document_mentions?: MentionDocument[];
+  knowledge_base_mentions?: MentionKnowledgeBase[];
+  resource_mentions?: MentionResource[];
   status: string;
   request_id?: string | null;
   citations: Citation[];
@@ -158,10 +159,27 @@ function upsert(messages: Message[], message: Message) {
     (a, b) => a.sequence - b.sequence,
   );
 }
-type DraftMention = MentionDocument & { start: number; end: number };
-function mentionRanges(text: string, mentions: (MentionDocument & { start?: number; end?: number })[]) {
+type DraftMention = MentionReference & { start: number; end: number };
+type PositionedMention = MentionReference & { start?: number; end?: number };
+function storedMentions(message: Pick<Message, "document_mentions" | "knowledge_base_mentions" | "resource_mentions">): PositionedMention[] {
+  return [
+    ...(message.knowledge_base_mentions ?? []).map(item => ({ ...item, kind: "knowledge_base" as const })),
+    ...(message.document_mentions ?? []).map(item => ({ ...item, kind: "document" as const })),
+    ...(message.resource_mentions ?? []).map(item => ({ ...item, kind: "resource" as const })),
+  ];
+}
+function mentionToken(item: MentionReference) {
+  return item.kind === "knowledge_base" ? `@知识库/${item.name}`
+    : item.kind === "resource" ? `@资源/${item.path}`
+    : `@${item.filename}（${item.knowledge_base_name ?? "知识库"}）`;
+}
+function mentionTokens(item: MentionReference) {
+  return item.kind !== "document" ? [mentionToken(item)]
+    : [...new Set([mentionToken(item), `@${item.filename}`])];
+}
+function mentionRanges(text: string, mentions: PositionedMention[]) {
   if (mentions.length && mentions.every(item => item.start !== undefined && item.end !== undefined)) {
-    const parts: { text: string; mention?: MentionDocument }[] = [];
+    const parts: { text: string; mention?: MentionReference }[] = [];
     let cursor = 0;
     for (const mention of [...mentions].sort((a, b) => a.start! - b.start!)) {
       if (mention.start! > cursor) parts.push({ text: text.slice(cursor, mention.start) });
@@ -172,19 +190,23 @@ function mentionRanges(text: string, mentions: (MentionDocument & { start?: numb
     return parts;
   }
   const remaining = [...mentions];
-  const parts: { text: string; mention?: MentionDocument }[] = [];
+  const parts: { text: string; mention?: MentionReference }[] = [];
   let cursor = 0;
   while (cursor < text.length) {
-    let found: { index: number; mention: MentionDocument } | undefined;
+    let found: { index: number; mention: MentionReference; marker: string } | undefined;
     for (const mention of remaining) {
-      const index = text.indexOf(`@${mention.filename}`, cursor);
-      if (index >= 0 && (!found || index < found.index)) found = { index, mention };
+      for (const marker of mentionTokens(mention)) {
+        const index = text.indexOf(marker, cursor);
+        if (index >= 0 && (!found || index < found.index
+            || (index === found.index && marker.length > found.marker.length))) {
+          found = { index, mention, marker };
+        }
+      }
     }
     if (!found) break;
     if (found.index > cursor) parts.push({ text: text.slice(cursor, found.index) });
-    const marker = `@${found.mention.filename}`;
-    parts.push({ text: marker, mention: found.mention });
-    cursor = found.index + marker.length;
+    parts.push({ text: found.marker, mention: found.mention });
+    cursor = found.index + found.marker.length;
     remaining.splice(remaining.indexOf(found.mention), 1);
   }
   if (cursor < text.length || !parts.length) parts.push({ text: text.slice(cursor) });
@@ -203,7 +225,8 @@ function pruneMentions(previous: string, text: string, caret: number, mentions: 
     if (mention.end <= start) return [mention];
     if (mention.start >= oldEnd) return [{ ...mention, start: mention.start + shift, end: mention.end + shift }];
     return [];
-  }).filter(mention => text.slice(mention.start, mention.end) === `@${mention.filename}`);
+  }).filter(mention => mentionTokens(mention).some(token =>
+    text.slice(mention.start, mention.end) === token));
 }
 function AnswerMarkdown({
   message,
@@ -256,11 +279,9 @@ function AnswerMarkdown({
 
 export function ChatWorkspace({
   libraries,
-  initialLibraryId,
   conversationId,
 }: {
   libraries: Library[];
-  initialLibraryId: string;
   conversationId: string | null;
 }) {
   const router = useRouter();
@@ -268,9 +289,6 @@ export function ChatWorkspace({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [draftExtensions, setDraftExtensions] = useState<ExtensionSelection | null>(null);
-  const [scope, setScope] = useState<string[]>(
-    initialLibraryId ? [initialLibraryId] : [],
-  );
   const [question, setQuestion] = useState("");
   const [documentMentions, setDocumentMentions] = useState<DraftMention[]>([]);
   const [caret, setCaret] = useState(0);
@@ -341,7 +359,6 @@ export function ChatWorkspace({
   const scrollArea = useRef<HTMLDivElement>(null);
   const pendingScroll = useRef<{ id: string; top: number } | null>(null);
   const follow = useRef(true);
-  const draftScopeInitialized = useRef(!!initialLibraryId);
   const restoredModelFor = useRef<string | null>(null);
   const cache = useRef(new Map<string, Conversation>());
   const draftPrefix = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
@@ -388,9 +405,6 @@ export function ChatWorkspace({
   viewRef.current = conversation;
   const selectedModel = modelOptions?.providers.find(item => item.id === modelId);
   const thinking = selectedModel?.thinking;
-  const mentionLibraries = useMemo(() => conversation ? conversation.knowledge_bases
-    : libraries.filter(item => scope.includes(item.id)).map(({ id, name }) => ({ id, name })),
-  [conversation?.id, conversation?.knowledge_bases, libraries, scope]);
   const activeComposerMenu = mentionState.open ? mentionState : slashState;
   useEffect(() => {
     const input = composerInput.current;
@@ -429,11 +443,6 @@ export function ChatWorkspace({
       }).finally(() => { if (!controller.signal.aborted) setContextLoading(false); });
     return () => controller.abort();
   }, [conversation?.id, modelId, selectedModel, thinkingId, thinkingVersion, contextAttempt, webEnabled, webAvailable]);
-  const selectedNames = conversation
-    ? conversation.knowledge_bases.map((item) => item.name)
-    : libraries
-        .filter((item) => scope.includes(item.id))
-        .map((item) => item.name);
 
   const report = useCallback((error: unknown) => {
     setNotice({
@@ -538,15 +547,17 @@ export function ChatWorkspace({
     draftKey.current = draftPrefix + (conversationId ?? "new");
     let draft: typeof liveDraft.current | null = null;
     try { draft = JSON.parse(sessionStorage.getItem(draftKey.current) ?? "null"); } catch { /* Ignore malformed local drafts. */ }
+    // Persist the restored snapshot while React applies the matching input state.
+    liveDraft.current = { text: typeof draft?.text === "string" ? draft.text : "",
+      mentions: Array.isArray(draft?.mentions) ? draft.mentions : [],
+      attachments: Array.isArray(draft?.attachments) ? draft.attachments : [],
+      scroll: draft?.scroll ?? 0, follow: draft?.follow ?? true };
     setQuestion(typeof draft?.text === "string" ? draft.text : "");
     setDocumentMentions(Array.isArray(draft?.mentions) ? draft.mentions : []);
     attachments.restore(Array.isArray(draft?.attachments) ? draft.attachments : []);
     draftReady.current = true;
     setPreview(null);
     setTrace(null);
-    if (viewRef.current) {
-      setScope(viewRef.current.knowledge_bases.map(item => item.id));
-    }
     const cached = conversationId ? cache.current.get(conversationId) : null;
     setConversation(cached ?? null);
     setConversationError("");
@@ -606,12 +617,6 @@ export function ChatWorkspace({
       setNotice({ text: available.length ? "之前的模型暂不可用，已选择其他可用模型" : "之前的模型暂不可用，请稍后重试" });
     }
   }, [conversationId, conversation, loading, modelOptions]);
-  useEffect(() => {
-    if (!draftScopeInitialized.current && libraries.length) {
-      setScope([initialLibraryId || libraries[0].id]);
-      draftScopeInitialized.current = true;
-    }
-  }, [libraries, initialLibraryId]);
   useEffect(() => {
     const area = scrollArea.current;
     if (area && follow.current) area.scrollTop = area.scrollHeight;
@@ -674,8 +679,6 @@ export function ChatWorkspace({
     attachments.reset();
     setConversation(null);
     setConversationError("");
-    if (conversation)
-      setScope(conversation.knowledge_bases.map((item) => item.id));
     setLoading(false);
     setQuestion("");
     setDocumentMentions([]);
@@ -756,7 +759,10 @@ export function ChatWorkspace({
     const turnDraftMentions = documentMentions.map(item => ({ ...item,
       start: item.start - leading, end: item.end - leading }));
     const turnMentions = [...turnDraftMentions].sort((a, b) => a.start - b.start)
-      .map(({ id, filename, knowledge_base_id }) => ({ id, filename, knowledge_base_id }));
+      .map(({ start: _start, end: _end, ...item }) => item);
+    const turnDocumentMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "document" }> => item.kind === "document");
+    const turnKnowledgeBaseMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "knowledge_base" }> => item.kind === "knowledge_base");
+    const turnResourceMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "resource" }> => item.kind === "resource");
     const controller = new AbortController();
     let current = conversation;
     let active: Generation | null = null;
@@ -766,7 +772,7 @@ export function ChatWorkspace({
         current = await request<Conversation>("/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ knowledge_base_ids: scope, ...(draftExtensions ?? {}) }),
+          body: JSON.stringify({ ...(draftExtensions ?? {}) }),
           signal: controller.signal,
         });
         if (epoch.current !== currentEpoch) return;
@@ -795,7 +801,9 @@ export function ChatWorkspace({
         role: "user",
         content: query,
         attachments: attachments.ready,
-        document_mentions: turnMentions,
+        document_mentions: turnDocumentMentions,
+        knowledge_base_mentions: turnKnowledgeBaseMentions,
+        resource_mentions: turnResourceMentions,
         status: "completed",
         citations: [],
         traces: [],
@@ -825,7 +833,9 @@ export function ChatWorkspace({
           provider_id: modelId,
           web_search: webEnabled && webAvailable,
           thinking_config_version: thinkingVersion,
-          document_ids: turnMentions.map(item => item.id),
+          document_ids: turnDocumentMentions.map(item => item.id),
+          knowledge_base_ids: turnKnowledgeBaseMentions.map(item => item.id),
+          resource_ids: turnResourceMentions.map(item => item.id),
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
           ...(retryId ? { retry_message_id: retryId } : {
             ...(query ? { query } : {}), attachment_ids: attachments.ready.map(item => item.id),
@@ -1078,48 +1088,6 @@ export function ChatWorkspace({
           <button className="secondary" onClick={() => setReloadAttempt(value => value + 1)}><RefreshCw size={15} />重试</button>
           <button className="secondary" onClick={newChat}><Plus size={15} />新建对话</button>
         </div>}
-        <div className="chat-scope">
-          <details className="scope-menu">
-            <summary>
-              <BookOpen size={15} />
-              <span>
-                {selectedNames.length ? selectedNames.join("、") : "知识库（可选）"}
-              </span>
-              <ChevronDown size={14} />
-            </summary>
-            <div className="scope-options">
-              <fieldset disabled={!!conversation || asking}>
-                <legend>知识库</legend>
-                {libraries.map((item) => (
-                  <label
-                    key={item.id}
-                    title={conversation ? "会话资料范围已固定" : item.name}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={
-                        conversation
-                          ? conversation.knowledge_bases.some(
-                              (library) => library.id === item.id,
-                            )
-                          : scope.includes(item.id)
-                      }
-                      onChange={() =>
-                        setScope((ids) =>
-                          ids.includes(item.id)
-                            ? ids.filter((id) => id !== item.id)
-                            : [...ids, item.id],
-                        )
-                      }
-                    />
-                    <span>{item.name}</span>
-                    <small>{item.document_count}</small>
-                  </label>
-                ))}
-              </fieldset>
-            </div>
-          </details>
-        </div>
         <section
           className="chat-messages"
           aria-label="对话内容"
@@ -1171,8 +1139,11 @@ export function ChatWorkspace({
                   </span>
                   {message.role === "user" ? (
                     <><MessageAttachments items={message.attachments} />
-                      {message.content && <p className="chat-question">{mentionRanges(message.content, message.document_mentions ?? []).map((part, partIndex) => part.mention
-                        ? <span key={`${part.mention.id}-${partIndex}`} className="chat-document-mention" title={part.mention.filename}>{part.text}</span>
+                      {message.content && <p className="chat-question">{mentionRanges(message.content, storedMentions(message)).map((part, partIndex) => part.mention
+                        ? <span key={`${part.mention.kind}-${part.mention.id}-${partIndex}`} className="chat-document-mention"
+                          title={part.mention.kind === "knowledge_base" ? part.mention.name
+                            : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
+                            : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
                         : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
                   ) : (
                     <>
@@ -1246,10 +1217,7 @@ export function ChatWorkspace({
                                 <span>{number + 1}</span>
                                 <FileText size={14} />
                                 <strong>
-                                  {conversation.knowledge_bases.length > 1
-                                    ? `${citation.knowledge_base_name} · `
-                                    : ""}
-                                  {citation.filename} · v{citation.version_number ?? 1}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
+                                  {citation.knowledge_base_name} · {citation.filename} · v{citation.version_number ?? 1}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
                                   {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />
@@ -1392,10 +1360,10 @@ export function ChatWorkspace({
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
             <DocumentMentionMenu key={`mentions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
               draft={question} caret={caret} disabled={running || loading || extensionBusy}
-              supportsTools={selectedModel?.supports_tools !== false} libraries={mentionLibraries}
+              supportsTools={selectedModel?.supports_tools !== false}
               selected={documentMentions} input={composerInput} onActive={updateMentionState}
               onChoose={(item, start, end) => {
-                const token = `@${item.filename}`;
+                const token = mentionToken(item);
                 const tail = question.slice(end);
                 const inserted = `${token} `;
                 const value = question.slice(0, start) + inserted + tail;
@@ -1425,11 +1393,11 @@ export function ChatWorkspace({
               </div>}
             <textarea
               ref={composerInput}
-              aria-label="向知识库提问"
+              aria-label="发送消息"
               aria-autocomplete={activeComposerMenu.open ? "list" : undefined}
               aria-controls={activeComposerMenu.open ? (mentionState.open ? "composer-document-options" : "composer-extension-options") : undefined}
               aria-activedescendant={activeComposerMenu.option}
-              placeholder="输入消息，@ 引用文档，/ 命令与扩展"
+              placeholder="输入消息，@ 引用资料，/ 命令与扩展"
               rows={2}
               value={question}
               disabled={running || loading || extensionBusy}
@@ -1479,10 +1447,6 @@ export function ChatWorkspace({
                   else if (conversationError) setReloadAttempt(value => value + 1);
                   else setContextAttempt(value => value + 1);
                 }} onCompact={() => void compact()} />
-              <span className="composer-library-count">
-                <BookOpen size={14} />
-                {selectedNames.length} 个知识库
-              </span>
               {running ? (
                 <button
                   key="stop"

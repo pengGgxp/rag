@@ -1,54 +1,103 @@
 "use client";
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { FileText, Loader2, RefreshCw } from "lucide-react";
+import { BookOpen, FileBox, FileText, Loader2, RefreshCw } from "lucide-react";
 import { request } from "./api";
 
-export type MentionDocument = { id: string; filename: string; knowledge_base_id: string };
+export type MentionDocument = {
+  id: string;
+  filename: string;
+  knowledge_base_id: string;
+  knowledge_base_name?: string;
+};
+export type MentionKnowledgeBase = { id: string; name: string };
+export type MentionResource = { id: string; filename: string; path: string; content_type: string; size_bytes: number };
+export type MentionReference =
+  | (MentionDocument & { kind: "document"; knowledge_base_name?: string })
+  | (MentionKnowledgeBase & { kind: "knowledge_base" })
+  | (MentionResource & { kind: "resource" });
 export type MentionMenuHandle = { keyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean };
-type DocumentItem = MentionDocument & { status: string; is_active: boolean };
+type Catalog = {
+  knowledge_bases: MentionKnowledgeBase[];
+  documents: (MentionDocument & { knowledge_base_name: string })[];
+  resources: MentionResource[];
+};
+
+function referenceName(item: MentionReference) {
+  return item.kind === "knowledge_base" ? item.name : item.filename;
+}
+
+function referenceTokens(item: MentionReference) {
+  if (item.kind === "knowledge_base") return [`@知识库/${item.name}`];
+  if (item.kind === "resource") return [`@资源/${item.path}`];
+  return [...new Set([
+    `@${item.filename}（${item.knowledge_base_name ?? "知识库"}）`,
+    `@${item.filename}`,
+  ])];
+}
 
 export const DocumentMentionMenu = forwardRef<MentionMenuHandle, {
   draft: string;
   caret: number;
   disabled: boolean;
   supportsTools: boolean;
-  libraries: { id: string; name: string }[];
-  selected: MentionDocument[];
+  selected: MentionReference[];
   input: RefObject<HTMLTextAreaElement | null>;
-  onChoose: (item: MentionDocument, start: number, end: number) => void;
+  onChoose: (item: MentionReference, start: number, end: number) => void;
   onActive: (open: boolean, option: string | undefined) => void;
-}>(function DocumentMentionMenu({ draft, caret, disabled, supportsTools, libraries, selected, input, onChoose, onActive }, ref) {
+}>(function DocumentMentionMenu({ draft, caret, disabled, supportsTools, selected, input, onChoose, onActive }, ref) {
   const [dismissed, setDismissed] = useState(false);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [catalog, setCatalog] = useState<Catalog>({ knowledge_bases: [], documents: [], resources: [] });
   const menu = useRef<HTMLDivElement>(null);
   const candidate = draft.slice(0, caret).match(/(?:^|\s)@([^@\n]*)$/u);
-  const match = candidate && !selected.some(item => candidate[1] === item.filename
-    || candidate[1].startsWith(`${item.filename} `)) ? candidate : null;
-  const query = match?.[1] ?? "";
+  const query = candidate?.[1] ?? "";
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const selectedToken = selected.some(item => referenceTokens(item).some(token =>
+    query === token.slice(1) || query.startsWith(`${token.slice(1)} `)));
+  const match = candidate && !selectedToken ? candidate : null;
   const start = match ? caret - query.length - 1 : -1;
   const open = !!match && !disabled && !dismissed;
 
   useEffect(() => { setDismissed(false); setIndex(0); setError(""); }, [draft, caret]);
   useEffect(() => {
     if (!open) return;
-    let active = true;
+    const controller = new AbortController();
     setLoading(true);
     setError("");
-    Promise.all(libraries.map(item => request<DocumentItem[]>(`/knowledge-bases/${encodeURIComponent(item.id)}/documents`)))
-      .then(groups => { if (active) setDocuments(groups.flat()); })
-      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "文档加载失败"); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [open, libraries, attempt]);
+    const timer = window.setTimeout(() => {
+      request<Catalog>(`/conversations/knowledge-catalog?q=${encodeURIComponent(query.trim())}`,
+        { signal: controller.signal })
+        .then(value => {
+          if (!controller.signal.aborted) setCatalog(value);
+        })
+        .catch(reason => {
+          if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "资料加载失败");
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
+    }, normalizedQuery ? 140 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [open, query, normalizedQuery, attempt]);
 
-  const selectedIds = new Set(selected.map(item => item.id));
-  const options = documents.filter(item => item.status === "ready" && item.is_active && !selectedIds.has(item.id)
-    && item.filename.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0, 30);
+  const selectedIds = new Set(selected.map(item => `${item.kind}:${item.id}`));
+  const knowledgeBases: MentionReference[] = catalog.knowledge_bases
+    .filter(item => item.name.toLocaleLowerCase().includes(normalizedQuery)
+      && !selectedIds.has(`knowledge_base:${item.id}`))
+    .map(item => ({ ...item, kind: "knowledge_base" as const }));
+  const documents: MentionReference[] = catalog.documents
+    .filter(item => (`${item.filename} ${item.knowledge_base_name}`).toLocaleLowerCase().includes(normalizedQuery)
+      && !selectedIds.has(`document:${item.id}`))
+    .map(item => ({ ...item, kind: "document" as const }));
+  const resources: MentionReference[] = catalog.resources
+    .filter(item => item.path.toLocaleLowerCase().includes(normalizedQuery)
+      && !selectedIds.has(`resource:${item.id}`))
+    .map(item => ({ ...item, kind: "resource" as const }));
+  const options = [...knowledgeBases, ...documents, ...resources];
   const activeIndex = Math.min(index, Math.max(0, options.length - 1));
   const ready = open && !loading && !error && supportsTools;
 
@@ -80,29 +129,49 @@ export const DocumentMentionMenu = forwardRef<MentionMenuHandle, {
       if (event.key === "Tab" && (!ready || !options.length)) return false;
       event.preventDefault();
       const item = options[activeIndex];
-      if (item && ready && selected.length < 8) onChoose({ id: item.id, filename: item.filename, knowledge_base_id: item.knowledge_base_id }, start, caret);
+      if (item && ready && selected.length < 8) onChoose(item, start, caret);
       return true;
     }
     return false;
   } }));
 
   if (!open) return null;
+  const renderOption = (item: MentionReference, optionIndex: number) => {
+    const isLibrary = item.kind === "knowledge_base";
+    const name = referenceName(item);
+    const description = item.kind === "resource" ? item.path : item.kind === "knowledge_base" ? "" : item.knowledge_base_name
+      ?? catalog.knowledge_bases.find(library => library.id === item.knowledge_base_id)?.name
+      ?? "知识库";
+    return <button key={`${item.kind}:${item.id}`} id={`document-mention-${optionIndex}`} type="button" role="option"
+      aria-selected={optionIndex === activeIndex} tabIndex={-1}
+      onMouseDown={event => event.preventDefault()} onMouseEnter={() => setIndex(optionIndex)}
+      onClick={() => onChoose(item, start, caret)}>
+      {isLibrary ? <BookOpen size={17} /> : item.kind === "resource" ? <FileBox size={17} /> : <FileText size={17} />}
+      <span className="extension-slash-copy"><strong>{name}</strong>
+        {!isLibrary && <small title={description}>{description}</small>}</span>
+      <span className="extension-slash-source">{isLibrary ? "知识库" : item.kind === "resource" ? "资源文件" : "文档"}</span>
+    </button>;
+  };
   return <div className="extension-slash-menu document-mention-menu" ref={menu}>
-    <div className="extension-slash-heading"><span>文档</span><kbd>@</kbd></div>
-    {selected.length >= 8 ? <p role="status">每次最多选择 8 篇文档</p>
-      : !supportsTools ? <p role="status">当前模型无法检索文档，请选择支持工具的模型。</p>
-      : loading ? <p role="status"><Loader2 size={14} className="spin" />正在查找文档…</p>
+    <div className="extension-slash-heading"><span>提及资料</span><kbd>@</kbd></div>
+    {selected.length >= 8 ? <p role="status">每条消息最多提及 8 项资料</p>
+      : !supportsTools ? <p role="status">当前模型无法使用资料引用，请先更换模型。</p>
+      : loading ? <p role="status"><Loader2 size={14} className="spin" />正在查找资料…</p>
       : error ? <div role="alert"><p>{error}</p><button type="button" className="text-button" onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} />重试</button></div>
-      : <div id="composer-document-options" role="listbox" aria-label="提及文档" className="extension-slash-options">
-        {options.map((item, i) => <button key={item.id} id={`document-mention-${i}`} type="button" role="option"
-          aria-selected={i === activeIndex} tabIndex={-1}
-          onMouseDown={event => event.preventDefault()} onMouseEnter={() => setIndex(i)}
-          onClick={() => onChoose({ id: item.id, filename: item.filename, knowledge_base_id: item.knowledge_base_id }, start, caret)}>
-          <FileText size={17} />
-          <span className="extension-slash-copy"><strong>{item.filename}</strong><small>{libraries.find(library => library.id === item.knowledge_base_id)?.name ?? "知识库"}</small></span>
-          <span className="extension-slash-source">文档</span>
-        </button>)}
-        {!options.length && <p role="status">{query ? "没有匹配的可用文档" : libraries.length ? "这些知识库暂无可用文档" : "请先选择知识库"}</p>}
+      : <div id="composer-document-options" role="listbox" aria-label="提及知识库、文档或资源文件" className="extension-slash-options">
+        {!!knowledgeBases.length && <>
+          <div className="document-mention-group">知识库</div>
+          {knowledgeBases.map(item => renderOption(item, options.indexOf(item)))}
+        </>}
+        {!!documents.length && <>
+          <div className="document-mention-group">文档</div>
+          {documents.map(item => renderOption(item, options.indexOf(item)))}
+        </>}
+        {!!resources.length && <>
+          <div className="document-mention-group">资源文件</div>
+          {resources.map(item => renderOption(item, options.indexOf(item)))}
+        </>}
+        {!options.length && <p role="status">{normalizedQuery ? "没有匹配的资料" : "暂无可用资料"}</p>}
       </div>}
   </div>;
 });
