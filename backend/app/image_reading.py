@@ -15,6 +15,10 @@ WORKSPACE_ROOT = "/home/user/workspace"
 MAX_PATH_LENGTH = 1024
 
 
+class ImageReadError(OSError):
+    """An expected failure while transferring image bytes from the sandbox."""
+
+
 @dataclass(frozen=True)
 class ImageInput:
     image: dict
@@ -91,10 +95,17 @@ def read_image(arguments, *, config: ChatProviderConfig, local_loader, check_act
             return {"error": "图片在读取过程中发生变化，请重试",
                     "error_code": "image_changed"}
         return workspace_image(path, content_type, width, height, digest, data)
+    except ImageReadError:
+        return {"error": "图片传输未完成；请确认文件仍存在，并重新调用 read_image",
+                "error_code": "image_transfer_failed"}
+    except PermissionError:
+        raise
     except (OSError, ValueError):
         return {"error": "图片无法读取；请检查路径、图片格式、大小和沙箱访问权限后重试",
                 "error_code": "image_unavailable"}
-    except HTTPException:
+    except HTTPException as error:
+        if error.status_code in (401, 403):
+            raise
         return {"error": "图片无法读取；请检查路径、图片格式、大小和沙箱访问权限后重试",
                 "error_code": "image_unavailable"}
 
