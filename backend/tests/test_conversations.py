@@ -278,6 +278,43 @@ def test_agent_discovery_filters_catalog_and_searches_only_selected_library(clie
     assert all(item["knowledge_base_id"] != str(unrelated_library.id) for item in events[-1][1]["traces"])
 
 
+def test_empty_catalog_match_allows_model_to_refine_without_silent_scope_change(client, monkeypatch):
+    http, db, _ = client
+    library = add_library(db)
+    library.name = "Willow support"
+    document = add_document(db, library, "needle support evidence")
+    db.commit()
+
+    class RefiningProvider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="narrow", name="discover_knowledge_bases",
+                    arguments={"query": "Willow delivery support hours"})])
+            if self.step == 2:
+                result = json.loads(messages[-1]["content"])
+                assert result["knowledge_bases"] == result["documents"] == []
+                assert "query=''" in result["search_hint"]
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="list", name="discover_knowledge_bases", arguments={"query": ""})])
+            if self.step == 3:
+                result = json.loads(messages[-1]["content"])
+                assert [row["id"] for row in result["knowledge_bases"]] == [str(library.id)]
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base",
+                    arguments={"query": "needle", "knowledge_base_ids": [str(library.id)]})])
+            result = json.loads(messages[-1]["content"])
+            assert {row["version_id"] for row in result["evidence"]} == {str(document.id)}
+            return ToolResponse(content="Found support evidence.", tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: RefiningProvider())
+    events, _ = turn(http, create(http)["id"], "Find support hours.")
+    assert events[-1][1]["content"] == "Found support evidence."
+
+
 def test_agent_discovers_and_searches_documents_without_mentions(client, monkeypatch):
     http, db, _ = client
     libraries = [add_library(db), add_library(db)]
