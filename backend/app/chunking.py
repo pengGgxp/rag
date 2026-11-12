@@ -19,7 +19,8 @@ def _token_estimate(text: str) -> int:
 
 
 def chunk_text(text: str, max_tokens: int = 600, overlap_tokens: int = 80) -> list[ChunkDraft]:
-    paragraphs = [match for match in re.finditer(r"\S(?:.*?\S)?(?=\n\s*\n|\Z)", text, re.S)]
+    # A terminal newline must not prevent the last paragraph from matching \Z.
+    paragraphs = [match for match in re.finditer(r"\S(?:.*?\S)?(?=\n\s*\n|\Z)", text.rstrip(), re.S)]
     if not paragraphs and text.strip():
         paragraphs = [re.match(r"[\s\S]+", text)]
     drafts: list[ChunkDraft] = []
