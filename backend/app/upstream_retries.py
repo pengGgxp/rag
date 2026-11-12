@@ -192,6 +192,17 @@ def _model_decision(budget, response=None, error=None, provider=None):
     return True, delay, failure
 
 
+def _model_timeout(budget, configured):
+    # Retry admission expires separately from a normal model response's read timeout.
+    if budget.hooks.deadline is None:
+        return configured
+    remaining = budget.hooks.deadline - time.monotonic()
+    if remaining <= 0:
+        from .llm import LLMProviderError
+        raise LLMProviderError("模型请求已超过任务截止时间")
+    return min(configured, remaining)
+
+
 def model_post(provider, url, **kwargs):
     budget = RetryBudget("model")
     failure = model_failure()
@@ -200,8 +211,8 @@ def model_post(provider, url, **kwargs):
         provider.request_observation = {"attempts": budget.attempt, "accepted_response": False}
         response = None
         try:
-            response = httpx.post(url, **{**kwargs, "timeout": min(
-                kwargs.get("timeout", provider.timeout_seconds), budget.remaining())})
+            response = httpx.post(url, **{**kwargs, "timeout": _model_timeout(
+                budget, kwargs.get("timeout", provider.timeout_seconds))})
         except httpx.TransportError as error:
             _, delay, failure = _model_decision(budget, error=error, provider=provider)
         else:
@@ -225,8 +236,8 @@ def model_stream(provider, method, url, **kwargs):
     while budget.begin():
         provider.check_available()
         provider.request_observation = {"attempts": budget.attempt, "accepted_response": False}
-        manager = httpx.stream(method, url, **{**kwargs, "timeout": min(
-            kwargs.get("timeout", provider.timeout_seconds), budget.remaining())})
+        manager = httpx.stream(method, url, **{**kwargs, "timeout": _model_timeout(
+            budget, kwargs.get("timeout", provider.timeout_seconds))})
         try:
             response = manager.__enter__()
         except httpx.TransportError as error:
@@ -257,8 +268,8 @@ async def model_astream(provider, client, method, url, **kwargs):
     while budget.begin():
         provider.check_available()
         provider.request_observation = {"attempts": budget.attempt, "accepted_response": False}
-        manager = client.stream(method, url, **{**kwargs, "timeout": min(
-            provider.timeout_seconds, budget.remaining())})
+        manager = client.stream(method, url, **{**kwargs, "timeout": _model_timeout(
+            budget, kwargs.get("timeout", provider.timeout_seconds))})
         try:
             response = await manager.__aenter__()
         except httpx.TransportError as error:

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -311,6 +312,85 @@ def test_retry_after_over_budget_stops_without_waiting(clock, monkeypatch):
     with pytest.raises(LLMProviderError, match="HTTP 429"):
         provider().complete([])
     assert len(calls) == 1 and not clock.waits
+
+
+@pytest.mark.parametrize("mode", ["post", "stream", "async_stream"])
+@pytest.mark.parametrize("reject_first", [False, True])
+def test_slow_success_preserves_configured_timeout_past_retry_window(monkeypatch, mode, reject_first):
+    # Scale down the window, not the configured timeout: exercise real socket reads.
+    policy = retry.RetryPolicy(seconds=.15, base_delay=.01, max_delay=.02)
+    monkeypatch.setattr(retry, "RetryPolicy", lambda: policy)
+    calls = []
+    def respond(handler, payload):
+        calls.append(payload)
+        if reject_first and len(calls) == 1:
+            handler.send_response(503)
+            handler.end_headers()
+            return
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.end_headers()
+        handler.wfile.flush()
+        time.sleep(.3)
+        try:
+            handler.wfile.write(b"completed")
+            handler.wfile.flush()
+        except BrokenPipeError:
+            pass
+    value = SimpleNamespace(timeout_seconds=2, check_available=lambda: None)
+    with upstream(respond) as url:
+        if mode == "post":
+            response = retry.model_post(value, url, json={}, timeout=2)
+            try:
+                assert response.text == "completed"
+            finally:
+                response.close()
+        elif mode == "stream":
+            with retry.model_stream(value, "POST", url, json={}, timeout=2) as response:
+                assert response.read() == b"completed"
+        else:
+            async def collect():
+                async with httpx.AsyncClient() as client:
+                    async with retry.model_astream(value, client, "POST", url, json={}, timeout=2) as response:
+                        return await response.aread()
+            assert asyncio.run(collect()) == b"completed"
+    assert len(calls) == (2 if reject_first else 1)
+    assert value.request_observation["accepted_response"]
+
+
+@pytest.mark.parametrize("mode", ["post", "stream", "async_stream"])
+@pytest.mark.parametrize("configured,expected", [(60, 40), (5, 5)])
+def test_explicit_task_deadline_still_bounds_model_timeout(clock, monkeypatch, mode, configured, expected):
+    captured = []
+    value = SimpleNamespace(timeout_seconds=60, check_available=lambda: None)
+    def response(**kwargs):
+        captured.append(kwargs["timeout"])
+        return httpx.Response(200)
+    if mode == "post":
+        monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: response(**kwargs))
+    elif mode == "stream":
+        @contextmanager
+        def stream(*args, **kwargs):
+            yield response(**kwargs)
+        monkeypatch.setattr(httpx, "stream", stream)
+    else:
+        from contextlib import asynccontextmanager
+        @asynccontextmanager
+        async def stream(*args, **kwargs):
+            yield response(**kwargs)
+        client = SimpleNamespace(stream=stream)
+    with retry.retry_scope(deadline=clock.now + 40):
+        if mode == "post":
+            retry.model_post(value, "https://test", timeout=configured).close()
+        elif mode == "stream":
+            with retry.model_stream(value, "POST", "https://test", timeout=configured):
+                pass
+        else:
+            async def collect():
+                async with retry.model_astream(value, client, "POST", "https://test", timeout=configured):
+                    pass
+            asyncio.run(collect())
+    assert captured == [expected]
 
 
 def test_retry_transport_disables_sdk_inner_connection_retries(monkeypatch):
