@@ -12,6 +12,8 @@ export type ConversationContextState = {
   eligible: boolean;
   status: "idle" | "running" | "completed" | "failed";
   error?: string;
+  windowId?: string | null;
+  contextRevision?: number;
 };
 
 const formatK = (value: number) => `${(value / 1000).toLocaleString("zh-CN", {
@@ -40,7 +42,7 @@ export function ConversationContextControl({ state, disabled, onCompact, loading
     if (compactRequest) { setOpen(true); setConfirm(true); }
   }, [compactRequest]);
   const busy = state.status === "running";
-  const over = percent !== null && percent >= 75;
+  const over = percent !== null && percent >= 90;
   const close = () => { setOpen(false); setConfirm(false); };
   return <>
     <Tooltip content={busy ? "正在整理上下文" : loading ? "正在读取上下文状态" : loadError ? "上下文状态读取失败"

@@ -63,7 +63,14 @@ def estimate_request(config, messages, tools=()):
         if message.get("_image_input"):
             marker = estimate_content(message.pop("_image_input"))["image_input_estimate"]
             message["content"] = str(message.get("content") or "") + marker
-    body = OpenAICompatibleChatProvider(config=config)._payload(projected, tools=list(tools), stream=True)
+    provider = OpenAICompatibleChatProvider(config=config)
+    if hasattr(provider, "_payload"):
+        body = provider._payload(projected, tools=list(tools), stream=True)
+    else:
+        # Tests and lightweight adapters may replace the concrete provider. Keep
+        # budgeting provider-neutral when no protocol serializer is available.
+        body = {"model": getattr(config, "model", ""), "messages": projected,
+                "tools": list(tools), "stream": True}
     return estimate_input([{"role": "user", "content": body}])
 
 

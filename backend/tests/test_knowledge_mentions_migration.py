@@ -87,7 +87,7 @@ def test_postgres_upgrade_preserves_messages_and_billing():
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
             length = next(column["type"].length for column in inspect(connection).get_columns(
                 "alembic_version") if column["name"] == "version_num")
-            assert version == "0065_resource_mentions" and len(version) <= length == 32
+            assert version == "0066_context_windows" and len(version) <= length == 32
             assert connection.scalar(text("SELECT knowledge_base_mentions FROM chat_messages")) == []
             assert connection.scalar(text("SELECT resource_mentions FROM chat_messages")) == []
         current_messages = tables()["chat_messages"]

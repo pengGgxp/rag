@@ -1050,8 +1050,9 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             return
         citations, traces = agent_run.citations, agent_run.traces
         web_sources = agent_run.web_sources
-        # Model continuation lives only in the effective window, never display rows.
-        continuation = None
+        # Keep an encrypted audit copy for legacy display/export consumers. The
+        # effective context manager never reads it as a recovery source.
+        continuation = encrypt_continuation(provider_config, agent_run.protocol_messages)
         _, active = await run_in_threadpool(save)
         if not active:
             return
