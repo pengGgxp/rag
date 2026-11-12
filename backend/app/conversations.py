@@ -491,9 +491,8 @@ def chat_router(get_db, retrieve):
             runtime.skills, runtime.tools = [], []
         manager = ContextManager(factory, access, conversation_id, config, None, None, None,
             skill_versions=runtime.versions if config.thinking.supports_tools else [])
-        rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
-            ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
-        history = manager.history(db, conversation, rows)
+        history = manager.history(db, conversation)
+        db.commit()
         messages, tools = build_messages(db, conversation, [], config, runtime)
         messages.extend(history)
         if web_search and config.thinking.supports_tools and model_billing.enabled(db):
@@ -530,9 +529,6 @@ def chat_router(get_db, retrieve):
             payload.thinking_option_id, payload.thinking_config_version)
         if not config.context_capacity or not config.max_output_tokens:
             raise HTTPException(409, "上下文保护未就绪，请联系管理员配置模型容量")
-        from .conversation_context import eligible_rows
-        rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation_id,
-            ChatMessage.status == "completed").order_by(ChatMessage.sequence)).all()
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         runtime = ExtensionRuntime(factory, access,
             conversation.skill_ids if conversation.extensions_initialized else [],
@@ -540,15 +536,14 @@ def chat_router(get_db, retrieve):
             question_workbench=conversation.question_workbench, provider_config=config)
         manager = ContextManager(factory, access, conversation_id, config, None, None, payload.request_id, manual=True,
             skill_versions=runtime.versions if config.thinking.supports_tools else [])
-        history = manager.history(db, conversation, rows)
+        history = manager.history(db, conversation)
         from .chat_attachments import validate_messages
         validate_messages(history, config)
         # A checkpoint already covering the eligible prefix makes this a free no-op.
-        candidates = eligible_rows(rows)
-        if not candidates or candidates[-1].sequence <= manager.covered:
+        if not manager.eligible():
             async def nothing():
                 yield event_text(event("done", {"status": "idle", "eligible": False, "no_op": True}))
-            db.rollback()
+            db.commit()
             return StreamingResponse(nothing(), media_type="text/event-stream")
         hold = authorization_hold_amount()
         if model_billing.enabled(db):
@@ -691,10 +686,7 @@ def chat_router(get_db, retrieve):
             from .chat_attachments import validate_messages
             factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
             manager = ContextManager(factory, access, conversation.id, provider_config, None, None, None)
-            prior = db.scalars(select(ChatMessage).where(
-                ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed",
-            ).order_by(ChatMessage.sequence)).all()
-            validate_messages(manager.history(db, conversation, prior), provider_config)
+            validate_messages(manager.history(db, conversation), provider_config)
             if metered:
                 if payload.web_search and provider_config.thinking.supports_tools:
                     from .search_settings import runtime_config
@@ -815,10 +807,11 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             ).with_for_update())
             if manual:
                 operation = db.get(ContextOperation, request_id)
-                if status != "streaming" and operation.status == "running":
-                    operation.status = status
-                    operation.result = {"status": "completed" if status == "completed" else "failed",
-                        "error": error_detail, "eligible": False if status == "completed" else True}
+                if status != "streaming":
+                    if operation.status == "running":
+                        operation.status = status
+                        operation.result = {"status": "completed" if status == "completed" else "failed",
+                            "error": error_detail, "eligible": False if status == "completed" else True}
                     if conversation.active_request_id == request_id:
                         conversation.active_request_id = None
                     db.commit()
@@ -915,11 +908,6 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                             "knowledge_base_id": str(library.id),
                             "knowledge_base_name": library.name,
                         })
-            rows = db.scalars(select(ChatMessage).where(
-                ChatMessage.conversation_id == conversation_id,
-                ChatMessage.sequence < message.sequence - 1 if message else True,
-                ChatMessage.status == "completed",
-            ).order_by(ChatMessage.sequence)).all()
         if not manual:
             yield emit("message", message_read(message))
         yield emit("phase", {"phase": "planning"})
@@ -943,10 +931,14 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             skill_versions=extension_runtime.versions if provider_config.thinking.supports_tools else [])
         with factory() as db:
             conversation = live_conversation(db, conversation_id, access.revalidate(db))
-            history = manager.history(db, conversation, rows)
+            history = manager.history(db, conversation)
+            db.commit()
             initial_messages, context_tools = build_messages(db, conversation, [], provider_config, extension_runtime, query)
             initial_messages = initial_messages[:1] + history + initial_messages[1:]
+        manager.current_message_id = user_message.id if user_message else None
+        manager.current_sequence = user_message.sequence if user_message else None
         if manual:
+            initial_messages = manager.start(initial_messages[0])
             from queue import SimpleQueue
             def manual_execution():
                 from concurrent.futures import ThreadPoolExecutor
@@ -1058,9 +1050,8 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             return
         citations, traces = agent_run.citations, agent_run.traces
         web_sources = agent_run.web_sources
-        from .image_reading import persisted_model_images
-        continuation = encrypt_continuation(provider_config,
-            persisted_model_images(agent_run.protocol_messages))
+        # Model continuation lives only in the effective window, never display rows.
+        continuation = None
         _, active = await run_in_threadpool(save)
         if not active:
             return
@@ -1074,6 +1065,8 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
     except (LLMProviderError, LLMConfigurationError) as exc:
         final_status = "failed"
         error_detail = str(exc)
+        if getattr(exc, "code", None):
+            yield emit("context_error", {"error_code": exc.code, "message": str(exc)})
     except (asyncio.CancelledError, GeneratorExit):
         disconnected = True
         raise

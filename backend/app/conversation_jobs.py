@@ -241,6 +241,8 @@ def interrupt_execution(db, row):
         message.tool_events = [{**item, "status": "interrupted"}
             if item.get("status") in ("waiting", "running") else item for item in message.tool_events]
     operation = db.get(ContextOperation, row.request_id) if not row.message_id else None
+    if operation and operation.status == "completed":
+        row.status = "completed"
     if operation and operation.status == "running":
         operation.status, operation.result = "interrupted", {"status": "failed", "error": "整理已中断，原始记录已保留"}
     db.execute(update(Conversation).where(Conversation.id == row.conversation_id,
@@ -248,7 +250,7 @@ def interrupt_execution(db, row):
     from . import model_billing
     from .models import ModelUsageRequest
     if db.get(ModelUsageRequest, row.request_id):
-        model_billing.finalize_request(db, row.request_id, "interrupted")
+        model_billing.finalize_request(db, row.request_id, row.status)
     else:
         access, hold, _, _ = unpack(row)
         from .credits import settle_model_usage

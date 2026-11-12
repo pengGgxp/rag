@@ -248,9 +248,10 @@ def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(c
         "q": "needle", "knowledge_base_id": str(library.id),
     }).status_code == 404
 
-    next_turn, _ = turn(http, conversation["id"], "查找被撤权的资料")
-    assert next_turn[-1][1]["citations"] == []
-    assert next_turn[-1][1]["traces"] == []
+    next_turn = http.post(f"/conversations/{conversation['id']}/messages", json={
+        "request_id": str(uuid4()), "provider_id": model_id(http), "query": "查找被撤权的资料"})
+    assert next_turn.status_code == 409
+    assert next_turn.json()["error_code"] == "context_window_unrecoverable"
     denied = http.post(f"/conversations/{conversation['id']}/messages", json={
         "provider_id": model_id(http), "request_id": str(uuid4()), "query": "总结",
         "document_ids": [str(document.id)],
@@ -551,10 +552,12 @@ def test_followup_does_not_reuse_deleted_document_as_evidence(client):
     conversation = create(http, [library])
     turn(http, conversation["id"])
     assert http.delete(f"/documents/{document.id}").status_code == 200
-    events, _ = turn(http, conversation["id"], "需要多久？")
-    assert events[-1][1]["content"] == "没有找到相关资料。你能补充一下资料名称或问题背景吗？"
-    assert events[-1][1]["citations"] == []
-    assert json.loads(captured[-1][-1]["content"])["evidence"] == []
+    request_count = len(captured)
+    response = http.post(f"/conversations/{conversation['id']}/messages", json={
+        "request_id": str(uuid4()), "provider_id": model_id(http), "query": "需要多久？"})
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "context_window_unrecoverable"
+    assert len(captured) == request_count
 
 
 def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, monkeypatch):

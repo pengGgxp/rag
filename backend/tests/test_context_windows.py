@@ -112,3 +112,48 @@ def test_legacy_unknown_same_turn_checkpoint_blocks_without_erasing_chat(client)
     db.commit()
     assert db.get(ConversationContext, store.conversation_id).blocked_reason
     assert db.scalar(select(ChatMessage)).content == "original"
+
+
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
+def test_encrypted_image_snapshot_recovers_and_projects_to_every_protocol(client, protocol):
+    import base64
+    import hashlib
+    from app.context_windows import encrypt_items
+    from app.llm import OpenAICompatibleChatProvider
+    from test_chat_attachments import PNG
+    db, store, request = setup_store(client)
+    store.config = replace(store.config, supports_images=True, max_output_tokens=2048)
+    image = {"type": "model_image", "data": PNG, "sha256": hashlib.sha256(PNG).hexdigest(),
+             "content_type": "image/png", "width": 1, "height": 1, "filename": "snapshot.png"}
+    item = make_item(uuid4(), {"role": "user", "content": [image]}, "user", request)
+    state, _ = store.load(db); db.commit()
+    install(store, db, request, state, [item]); db.commit(); db.expunge_all()
+    state, restored = store.load(db)
+    config = replace(store.config, api_protocol=protocol)
+    body = OpenAICompatibleChatProvider(config=config)._payload(project(restored, config))
+    assert base64.b64encode(PNG).decode() in str(body)
+    assert restored[0]["message"]["content"][0]["snapshot_id"]
+    restored[0]["message"]["content"][0]["data"] = b"missing bytes"
+    db.get(ContextCheckpoint, state.checkpoint_id).encrypted_replacement = encrypt_items(restored)
+    db.commit()
+    with pytest.raises(ContextWindowError):
+        store.load(db)
+
+
+def test_proven_legacy_checkpoint_converts_once_and_cannot_roll_back(client):
+    from app.conversation_context import source_digest, scope_digest
+    db, store, request = setup_store(client)
+    rows = [ChatMessage(conversation_id=store.conversation_id, sequence=n,
+        role="user" if n % 2 == 0 else "assistant", content=f"legacy-{n}") for n in range(4)]
+    db.add_all(rows); db.commit()
+    conversation = db.get(Conversation, store.conversation_id)
+    db.add(ContextCheckpoint(conversation_id=conversation.id, request_id=request,
+        through_sequence=1, source_digest=source_digest(rows[:2]),
+        scope_digest=scope_digest(db, conversation, store.access, legacy=True),
+        summary="legacy summary", provider_id=UUID(store.config.provider_id), model=store.config.model,
+        estimated_before=1000, estimated_after=100)); db.commit()
+    _, items = store.load(db); db.commit()
+    assert items[0]["source"] == "handoff"
+    assert "legacy-0" not in str(items) and "legacy-2" in str(items)
+    rows[0].content = "edited removed history"; db.commit()
+    assert store.load(db)[1] == items

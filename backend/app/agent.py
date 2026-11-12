@@ -196,7 +196,6 @@ class AgentState(TypedDict, total=False):
     all_tool_calls: list[ToolCall]
     tool_results: list[dict[str, Any]]
     usage_events: list[dict[str, Any]]
-    protocol_messages: list[dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -266,6 +265,8 @@ def stream_retrieval_agent(
         *history,
         {"role": "user", "content": query},
     ]
+    if context_manager:
+        initial = context_manager.start(initial[0], query)
 
     graph = StateGraph(AgentState)
 
@@ -358,14 +359,15 @@ def stream_retrieval_agent(
             ]
         if response.protocol_fields:
             assistant_message.update(response.protocol_fields)
+        next_messages = (context_manager.record([assistant_message], "model", f"model:{state.get('steps', 0) + 1}")
+            if context_manager else messages + [assistant_message])
         return {
-            "messages": messages + [assistant_message],
+            "messages": next_messages,
             "tool_calls": calls,
             "steps": state.get("steps", 0) + 1,
             "answer": response.content if not calls else None,
             "all_tool_calls": state.get("all_tool_calls", []) + calls,
             "usage_events": usage_events,
-            "protocol_messages": state.get("protocol_messages", []) + [assistant_message],
         }
 
     def execute(state: AgentState) -> AgentState:
@@ -677,14 +679,15 @@ def stream_retrieval_agent(
                 write(("sources", {"citations": list(citations.values()), "traces": traces}))
         if image_inputs:
             messages.append(model_image_message(image_inputs))
+        next_messages = (context_manager.record(messages, "tool", f"tools:{state['steps']}")
+            if context_manager else state["messages"] + messages)
         return {
-            "messages": state["messages"] + messages,
+            "messages": next_messages,
             "tool_messages": messages,
             "citations": list(citations.values()),
             "web_sources": list(web_sources.values()),
             "traces": traces,
             "tool_results": tool_results,
-            "protocol_messages": state.get("protocol_messages", []) + messages,
         }
 
     def route(state: AgentState) -> str:
@@ -732,7 +735,7 @@ def stream_retrieval_agent(
         steps=result.get("steps", 0),
         answer=result.get("answer"),
         usage_events=result.get("usage_events", []),
-        protocol_messages=result.get("protocol_messages", []),
+        protocol_messages=[item for item in result["messages"] if item.get("role") != "system"],
         web_sources=result.get("web_sources", []),
     )
 
