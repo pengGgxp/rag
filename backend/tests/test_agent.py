@@ -48,7 +48,7 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
             return SimpleNamespace(id=allowed, name="Allowed", status=KnowledgeBaseStatus.READY)
 
     class DB:
-        def get(self, model, identifier):
+        def get(self, model, identifier, **kwargs):
             return SimpleNamespace(name="Allowed") if identifier == allowed else None
 
         def __enter__(self):
@@ -129,7 +129,7 @@ def runtime():
             return SimpleNamespace(id=allowed, name="Allowed", status=KnowledgeBaseStatus.READY)
 
     class DB:
-        def get(self, model, identifier):
+        def get(self, model, identifier, **kwargs):
             if model.__name__ == "Document":
                 return SimpleNamespace(
                     id=identifier, knowledge_base_id=allowed, status=DocumentStatus.READY, is_active=True,
@@ -192,8 +192,8 @@ def test_mention_is_optional_and_only_applies_when_model_selects_document(runtim
     assert calls == [None, [document_id]]
 
 
-@pytest.mark.parametrize("document_ids", [[], ["invalid"], [str(uuid4())], "invalid"])
-def test_unmentioned_or_invalid_documents_cannot_be_used_as_tool_scope(runtime, document_ids):
+@pytest.mark.parametrize("document_ids", [[], ["invalid"], "invalid", [str(uuid4())] * 9])
+def test_invalid_documents_cannot_be_used_as_tool_scope(runtime, document_ids):
     class Provider:
         count = 0
 

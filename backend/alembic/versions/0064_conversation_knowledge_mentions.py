@@ -2,7 +2,7 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0064_conversation_knowledge_mentions"
+revision = "0064_knowledge_mentions"
 down_revision = "0063_deployment_maintenance"
 branch_labels = depends_on = None
 

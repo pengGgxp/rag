@@ -71,7 +71,8 @@ def test_upgrade_keeps_legacy_titles_messages_and_money(auth_postgres):
     admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
     with admin.connect() as connection:
         connection.execute(text(f'CREATE DATABASE "{name}"'))
-    env = {**os.environ, "DATABASE_URL": url.set(database=name).render_as_string(hide_password=False)}
+    database_url = url.set(database=name).render_as_string(hide_password=False)
+    env = {**os.environ, "DATABASE_URL": database_url, "MIGRATION_DATABASE_URL": database_url}
     engine = create_engine(env["DATABASE_URL"])
     root = Path(__file__).resolve().parents[1]
     def migrate(target):
@@ -91,7 +92,11 @@ def test_upgrade_keeps_legacy_titles_messages_and_money(auth_postgres):
             db.execute(text("""INSERT INTO conversations (id,workspace_id,owner_id,title,skill_ids,mcp_server_ids,
                 extensions_initialized,question_workbench,next_sequence) VALUES (:id,:workspace,:owner,
                 '保留旧标题','[]','[]',true,false,0)"""), {"id": conversation_id, "workspace": workspace_id, "owner": user.id})
-            db.add(ChatMessage(conversation_id=conversation_id, sequence=0, role="user", content="历史正文"))
+            # Seed the old schema without columns added by later migrations.
+            db.execute(text("""INSERT INTO chat_messages (id,conversation_id,sequence,role,content,
+                status,citations,traces,refused) VALUES (:id,:conversation,0,'user',:content,
+                'completed','[]','[]',false)"""),
+                {"id": uuid4(), "conversation": conversation_id, "content": "历史正文"})
             db.commit()
         migrate("head")
         migrate("head")
@@ -99,6 +104,7 @@ def test_upgrade_keeps_legacy_titles_messages_and_money(auth_postgres):
             row = db.get(Conversation, conversation_id)
             assert row.title == "保留旧标题" and row.title_source == "legacy" and row.revision == 1 and row.pinned_at is None
             assert row.messages[0].content == "历史正文"
+            assert row.messages[0].knowledge_base_mentions == []
             assert db.get(CreditAccount, workspace_id).balance == Decimal("18.2345")
             assert db.scalar(select(CreditLedgerEntry.amount).where(CreditLedgerEntry.workspace_id == workspace_id)) == Decimal("18.2345")
             assert not list(db.scalars(select(ConversationExecution)))

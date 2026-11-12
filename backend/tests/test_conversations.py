@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from httpx_sse import EventSource
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app import main, conversations as chat
@@ -13,7 +13,7 @@ from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
     ChatMessage, Conversation, ConversationLibrary, CreditAccount, DocumentStatus,
-    Membership, User,
+    Document, KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, Membership, User, Workspace,
 )
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate, model_id, generation_response
@@ -276,6 +276,130 @@ def test_agent_discovery_filters_catalog_and_searches_only_selected_library(clie
 
     assert {item["knowledge_base_id"] for item in events[-1][1]["citations"]} == {str(selected_library.id)}
     assert all(item["knowledge_base_id"] != str(unrelated_library.id) for item in events[-1][1]["traces"])
+
+
+def test_agent_discovers_and_searches_documents_without_mentions(client, monkeypatch):
+    http, db, _ = client
+    libraries = [add_library(db), add_library(db)]
+    selected = [add_document(db, library, "needle selected") for library in libraries]
+    for library in libraries:
+        library.name = "needle references"
+        add_document(db, library, "needle unselected")
+    db.commit()
+    selected_ids = {str(document.id) for document in selected}
+    library_ids = [str(library.id) for library in libraries]
+    chunk_ids = {str(document.chunks[0].id) for document in selected}
+
+    class DiscoveryProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={"query": "needle"})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                documents = [row for row in catalog["documents"] if row["id"] in selected_ids]
+                assert len(documents) == 2
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base", arguments={
+                        "query": "needle", "knowledge_base_ids": library_ids,
+                        "document_ids": [row["id"] for row in documents] + [documents[0]["id"]],
+                    })])
+            evidence = json.loads(messages[-1]["content"])["evidence"]
+            assert {row["chunk_id"] for row in evidence} == chunk_ids
+            return ToolResponse(content="资料依据 " + " ".join(
+                f"[{row['chunk_id']}]" for row in evidence), tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: DiscoveryProvider())
+    conversation = create(http)
+    events, _ = turn(http, conversation["id"])
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    assert {row["chunk_id"] for row in answer["citations"]} == chunk_ids
+    assert {row["version_id"] for row in answer["citations"]} == selected_ids
+    assert {row["knowledge_base_id"] for row in answer["traces"]} == set(library_ids)
+    history = http.get(f"/conversations/{conversation['id']}").json()["messages"]
+    assert history[0]["document_mentions"] == history[0]["knowledge_base_mentions"] == []
+    assert {row["chunk_id"] for row in history[1]["citations"]} == chunk_ids
+
+
+@pytest.mark.parametrize("change", [
+    "revoked", "deleted", "inactive", "processing", "archived", "moved", "workspace_moved",
+    "missing", "foreign_document", "foreign_library",
+])
+def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, change):
+    http, db, _ = client
+    from app.models import LEGACY_WORKSPACE_ID
+
+    library = add_library(db)
+    library.name = "needle authorized"
+    document = add_document(db, library, "needle authorized evidence")
+    other_library = add_library(db)
+    foreign_workspace = Workspace(name="Other workspace")
+    db.add(foreign_workspace); db.flush()
+    foreign_library = KnowledgeBase(workspace_id=foreign_workspace.id, name="needle foreign")
+    db.add(foreign_library); db.flush()
+    foreign_document = add_document(db, foreign_library, "needle forbidden evidence")
+    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
+    db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
+    library.restricted = True
+    db.add(LibraryGrant(knowledge_base_id=library.id, user_id=owner.id))
+    db.commit()
+    library_id, document_id = library.id, document.id
+    other_id, foreign_workspace_id = other_library.id, foreign_workspace.id
+    foreign_library_id, foreign_document_id = foreign_library.id, foreign_document.id
+    owner_id = owner.id
+    original_retrieve = main.retrieve_knowledge_base
+    retrieval_calls = []
+
+    def retrieve(*args, **kwargs):
+        retrieval_calls.append(args[0])
+        return original_retrieve(*args, **kwargs)
+
+    class StaleDiscoveryProvider:
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            if messages[-1]["role"] == "user":
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="discover", name="discover_knowledge_bases", arguments={"query": "needle"})])
+            if messages[-1].get("name") == "discover_knowledge_bases":
+                catalog = json.loads(messages[-1]["content"])
+                assert {row["id"] for row in catalog["documents"]} == {str(document_id)}
+                with Session(db.get_bind()) as changed:
+                    if change == "revoked":
+                        changed.execute(delete(LibraryGrant).where(
+                            LibraryGrant.knowledge_base_id == library_id, LibraryGrant.user_id == owner_id))
+                    elif change == "deleted":
+                        changed.get(Document, document_id).status = DocumentStatus.DELETED
+                    elif change == "inactive":
+                        changed.get(Document, document_id).is_active = False
+                    elif change == "processing":
+                        changed.get(Document, document_id).status = DocumentStatus.PROCESSING
+                    elif change == "archived":
+                        changed.get(KnowledgeBase, library_id).status = KnowledgeBaseStatus.ARCHIVED
+                    elif change == "moved":
+                        changed.get(Document, document_id).knowledge_base_id = other_id
+                    elif change == "workspace_moved":
+                        changed.get(KnowledgeBase, library_id).workspace_id = foreign_workspace_id
+                    changed.commit()
+                requested_document = (uuid4() if change == "missing" else foreign_document_id
+                    if change in ("foreign_document", "foreign_library") else document_id)
+                requested_library = foreign_library_id if change == "foreign_library" else library_id
+                return ToolResponse(content=None, tool_calls=[ToolCall(
+                    id="search", name="search_knowledge_base", arguments={
+                        "query": "needle", "knowledge_base_ids": [str(requested_library)],
+                        "document_ids": [str(requested_document)],
+                    })])
+            result = json.loads(messages[-1]["content"])
+            assert "error" in result and "evidence" not in result
+            return ToolResponse(content="资料当前不可用，请重新选择。", tool_calls=[])
+
+    monkeypatch.setattr(main, "retrieve_knowledge_base", retrieve)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: StaleDiscoveryProvider())
+    conversation = create(http)
+    events, _ = turn(http, conversation["id"])
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    assert answer["citations"] == answer["traces"] == retrieval_calls == []
+    assert answer["tool_events"][-1]["status"] == "error"
 
 
 def test_empty_retrieval_keeps_agent_clarification_instead_of_fixed_refusal(client):
