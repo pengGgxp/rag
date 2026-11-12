@@ -87,14 +87,21 @@ def test_postgres_upgrade_preserves_messages_and_billing():
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
             length = next(column["type"].length for column in inspect(connection).get_columns(
                 "alembic_version") if column["name"] == "version_num")
-            assert version == "0064_knowledge_mentions" and len(version) <= length == 32
+            assert version == "0065_resource_mentions" and len(version) <= length == 32
             assert connection.scalar(text("SELECT knowledge_base_mentions FROM chat_messages")) == []
+            assert connection.scalar(text("SELECT resource_mentions FROM chat_messages")) == []
         current_messages = tables()["chat_messages"]
         with engine.begin() as connection:
             connection.execute(current_messages.insert().values(id=uuid4(), conversation_id=conversation_id,
                 sequence=1, role="assistant", content="New message", status="completed",
                 citations=[], traces=[], tool_events=[], refused=False))
             assert list(connection.scalars(select(current_messages.c.knowledge_base_mentions))) == [[], []]
+            assert list(connection.scalars(select(current_messages.c.resource_mentions))) == [[], []]
+            value = [{"id": str(uuid4()), "filename": "sample.txt", "path": "data/sample.txt"}]
+            connection.execute(current_messages.update().where(current_messages.c.id != message_id)
+                .values(resource_mentions=value))
+            assert connection.scalar(select(current_messages.c.resource_mentions).where(
+                current_messages.c.id != message_id)) == value
             connection.execute(current_messages.delete().where(current_messages.c.id != message_id))
         migrate("downgrade", "0063_deployment_maintenance")
         assert snapshot(schema) == before

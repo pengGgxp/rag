@@ -173,7 +173,7 @@ def test_roles_library_grants_and_history_revalidate_after_revocation(accounts):
     assert viewer.get(f"/jobs/{job.id}").status_code == 404
     assert any(item["id"] == conv for item in viewer.get("/conversations").json()["items"])
     assert viewer.get("/conversations/knowledge-catalog").json() == {
-        "knowledge_bases": [], "documents": [],
+        "knowledge_bases": [], "documents": [], "resources": [],
     }
     denied_mention = viewer.post(f"/conversations/{conv}/messages", json={
         "provider_id": str(uuid4()), "request_id": str(uuid4()), "query": "总结",

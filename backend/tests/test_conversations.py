@@ -177,7 +177,7 @@ def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(c
         f"/conversations/{conversation['id']}/export").text
 
     catalog = http.get("/conversations/knowledge-catalog").json()
-    assert catalog == {"knowledge_bases": [], "documents": []}
+    assert catalog == {"knowledge_bases": [], "documents": [], "resources": []}
     assert http.get("/conversations/search", params={
         "q": "needle", "knowledge_base_id": str(library.id),
     }).status_code == 404

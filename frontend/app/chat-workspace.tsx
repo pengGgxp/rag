@@ -39,7 +39,7 @@ import { RequestModelPicker } from "./request-model-picker";
 import { ExtensionPicker } from "./extensions/extension-picker";
 import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension-slash-menu";
 import type { ExtensionSelection } from "./extensions/extension-data";
-import { DocumentMentionMenu, type MentionDocument, type MentionKnowledgeBase, type MentionMenuHandle, type MentionReference } from "./document-mention-menu";
+import { DocumentMentionMenu, type MentionDocument, type MentionKnowledgeBase, type MentionResource, type MentionMenuHandle, type MentionReference } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
 import { CloudComputerPanel } from "./cloud-computer";
 import { ConversationThinking } from "./conversation-thinking";
@@ -83,6 +83,7 @@ type Message = {
   attachments?: ChatAttachment[];
   document_mentions?: MentionDocument[];
   knowledge_base_mentions?: MentionKnowledgeBase[];
+  resource_mentions?: MentionResource[];
   status: string;
   request_id?: string | null;
   citations: Citation[];
@@ -160,18 +161,20 @@ function upsert(messages: Message[], message: Message) {
 }
 type DraftMention = MentionReference & { start: number; end: number };
 type PositionedMention = MentionReference & { start?: number; end?: number };
-function storedMentions(message: Pick<Message, "document_mentions" | "knowledge_base_mentions">): PositionedMention[] {
+function storedMentions(message: Pick<Message, "document_mentions" | "knowledge_base_mentions" | "resource_mentions">): PositionedMention[] {
   return [
     ...(message.knowledge_base_mentions ?? []).map(item => ({ ...item, kind: "knowledge_base" as const })),
     ...(message.document_mentions ?? []).map(item => ({ ...item, kind: "document" as const })),
+    ...(message.resource_mentions ?? []).map(item => ({ ...item, kind: "resource" as const })),
   ];
 }
 function mentionToken(item: MentionReference) {
   return item.kind === "knowledge_base" ? `@知识库/${item.name}`
+    : item.kind === "resource" ? `@资源/${item.path}`
     : `@${item.filename}（${item.knowledge_base_name ?? "知识库"}）`;
 }
 function mentionTokens(item: MentionReference) {
-  return item.kind === "knowledge_base" ? [mentionToken(item)]
+  return item.kind !== "document" ? [mentionToken(item)]
     : [...new Set([mentionToken(item), `@${item.filename}`])];
 }
 function mentionRanges(text: string, mentions: PositionedMention[]) {
@@ -544,6 +547,11 @@ export function ChatWorkspace({
     draftKey.current = draftPrefix + (conversationId ?? "new");
     let draft: typeof liveDraft.current | null = null;
     try { draft = JSON.parse(sessionStorage.getItem(draftKey.current) ?? "null"); } catch { /* Ignore malformed local drafts. */ }
+    // Persist the restored snapshot while React applies the matching input state.
+    liveDraft.current = { text: typeof draft?.text === "string" ? draft.text : "",
+      mentions: Array.isArray(draft?.mentions) ? draft.mentions : [],
+      attachments: Array.isArray(draft?.attachments) ? draft.attachments : [],
+      scroll: draft?.scroll ?? 0, follow: draft?.follow ?? true };
     setQuestion(typeof draft?.text === "string" ? draft.text : "");
     setDocumentMentions(Array.isArray(draft?.mentions) ? draft.mentions : []);
     attachments.restore(Array.isArray(draft?.attachments) ? draft.attachments : []);
@@ -754,6 +762,7 @@ export function ChatWorkspace({
       .map(({ start: _start, end: _end, ...item }) => item);
     const turnDocumentMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "document" }> => item.kind === "document");
     const turnKnowledgeBaseMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "knowledge_base" }> => item.kind === "knowledge_base");
+    const turnResourceMentions = turnMentions.filter((item): item is Extract<MentionReference, { kind: "resource" }> => item.kind === "resource");
     const controller = new AbortController();
     let current = conversation;
     let active: Generation | null = null;
@@ -794,6 +803,7 @@ export function ChatWorkspace({
         attachments: attachments.ready,
         document_mentions: turnDocumentMentions,
         knowledge_base_mentions: turnKnowledgeBaseMentions,
+        resource_mentions: turnResourceMentions,
         status: "completed",
         citations: [],
         traces: [],
@@ -825,6 +835,7 @@ export function ChatWorkspace({
           thinking_config_version: thinkingVersion,
           document_ids: turnDocumentMentions.map(item => item.id),
           knowledge_base_ids: turnKnowledgeBaseMentions.map(item => item.id),
+          resource_ids: turnResourceMentions.map(item => item.id),
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
           ...(retryId ? { retry_message_id: retryId } : {
             ...(query ? { query } : {}), attachment_ids: attachments.ready.map(item => item.id),
@@ -1131,6 +1142,7 @@ export function ChatWorkspace({
                       {message.content && <p className="chat-question">{mentionRanges(message.content, storedMentions(message)).map((part, partIndex) => part.mention
                         ? <span key={`${part.mention.kind}-${part.mention.id}-${partIndex}`} className="chat-document-mention"
                           title={part.mention.kind === "knowledge_base" ? part.mention.name
+                            : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
                             : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
                         : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
                   ) : (
@@ -1385,7 +1397,7 @@ export function ChatWorkspace({
               aria-autocomplete={activeComposerMenu.open ? "list" : undefined}
               aria-controls={activeComposerMenu.open ? (mentionState.open ? "composer-document-options" : "composer-extension-options") : undefined}
               aria-activedescendant={activeComposerMenu.option}
-              placeholder="输入消息，@ 引用知识库或文档，/ 命令与扩展"
+              placeholder="输入消息，@ 引用资料，/ 命令与扩展"
               rows={2}
               value={question}
               disabled={running || loading || extensionBusy}

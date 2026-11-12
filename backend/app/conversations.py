@@ -36,6 +36,7 @@ from .credits import (
 from .extensions import ExtensionRuntime, validate_selection, defaults as extension_defaults
 from .llm_providers import request_provider_config
 from . import model_billing
+from . import resource_mentions as resource_references
 from .models import ModelUsageRequest
 from .thinking import encrypt_continuation, encrypt_display_thinking, decrypt_display_thinking
 from .conversation_stream import events as stream_events
@@ -77,6 +78,7 @@ class TurnRequest(ContextRequest):
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     document_ids: list[UUID] = Field(default_factory=list, max_length=8)
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=8)
+    resource_ids: list[UUID] = Field(default_factory=list, max_length=8)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -96,6 +98,7 @@ def message_read(message: ChatMessage) -> dict:
         "content": message.content, "status": message.status,
         "document_mentions": message.document_mentions or [],
         "knowledge_base_mentions": message.knowledge_base_mentions or [],
+        "resource_mentions": message.resource_mentions or [],
         "attachments": [attachment_read(row) for row in message.attachments],
         "request_id": str(message.request_id) if message.request_id else None,
         "provider_id": str(message.provider_id) if message.provider_id else None,
@@ -296,6 +299,7 @@ def chat_router(get_db, retrieve):
                 "knowledge_base_id": str(document.knowledge_base_id),
                 "knowledge_base_name": library.name,
             } for document, library in documents],
+            "resources": resource_references.catalog(db, access, query),
         }
 
     @router.get("/{conversation_id}")
@@ -597,6 +601,7 @@ def chat_router(get_db, retrieve):
         retry = None
         document_mentions = []
         knowledge_base_mentions = []
+        resource_mentions = []
         if payload.retry_message_id:
             retry = db.get(ChatMessage, payload.retry_message_id)
             latest = db.scalar(select(ChatMessage).where(
@@ -612,11 +617,14 @@ def chat_router(get_db, retrieve):
             ))
             document_mentions = list(previous_user.document_mentions or []) if previous_user else []
             knowledge_base_mentions = list(previous_user.knowledge_base_mentions or []) if previous_user else []
+            resource_mentions = list(previous_user.resource_mentions or []) if previous_user else []
         mention_ids = ([UUID(item["id"]) for item in document_mentions] if retry
             else list(dict.fromkeys(payload.document_ids)))
         knowledge_base_mention_ids = ([UUID(item["id"]) for item in knowledge_base_mentions] if retry
             else list(dict.fromkeys(payload.knowledge_base_ids)))
-        if len(mention_ids) + len(knowledge_base_mention_ids) > 8:
+        resource_ids = ([UUID(item["id"]) for item in resource_mentions] if retry
+            else list(dict.fromkeys(payload.resource_ids)))
+        if len(mention_ids) + len(knowledge_base_mention_ids) + len(resource_ids) > 8:
             raise HTTPException(422, "每条消息最多可以提及 8 项资料")
         checked_access = access.revalidate(db)
         if knowledge_base_mention_ids:
@@ -665,13 +673,18 @@ def chat_router(get_db, retrieve):
                     "knowledge_base_id": str(rows_by_id[identifier].knowledge_base_id),
                     "knowledge_base_name": libraries_by_id[rows_by_id[identifier].knowledge_base_id].name,
                 } for identifier in mention_ids]
+        current_resource_mentions = resource_references.resolve(
+            db, checked_access, resource_ids, skip_unavailable=bool(retry)) if resource_ids else []
+        if not retry:
+            resource_mentions = current_resource_mentions
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
             search_config = None
             provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
-            if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids):
+            if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids
+                    or current_resource_mentions):
                 raise HTTPException(422, "当前模型无法使用资料引用，请选择支持工具的模型")
             attachments = select_attachments(db, access, payload.attachment_ids, provider_config)
             # Check retained multimodal history before reserving credits, including retries.
@@ -729,6 +742,7 @@ def chat_router(get_db, retrieve):
                 role="user", content=payload.query or "", attachments=attachments,
                 document_mentions=document_mentions,
                 knowledge_base_mentions=knowledge_base_mentions,
+                resource_mentions=resource_mentions,
             )
             db.add(user_message)
             db.flush()
@@ -876,7 +890,10 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             retrieval_query = user_message.content if user_message else None
             current_knowledge_mentions = []
             current_document_mentions = []
+            current_resource_mentions = []
             if user_message:
+                current_resource_mentions = resource_references.resolve(db, checked_access,
+                    [item["id"] for item in user_message.resource_mentions or []], skip_unavailable=True)
                 for mention in user_message.knowledge_base_mentions or []:
                     try:
                         library = checked_access.library(db, UUID(mention["id"]))
@@ -958,6 +975,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             meter=meter,
             context_manager=manager,
             document_mentions=current_document_mentions,
+            resource_mentions=current_resource_mentions,
             search=SearchRuntime(factory, access, request_id, search_config) if search_config else None,
         )
         bridge = stream_events(execution, stopped)

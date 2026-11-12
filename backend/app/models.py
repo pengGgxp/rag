@@ -788,6 +788,7 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     document_mentions: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     knowledge_base_mentions: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
+    resource_mentions: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default="[]")
     status: Mapped[str] = mapped_column(String(20), default="completed")
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
     provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("llm_provider_configs.id"), nullable=True)
