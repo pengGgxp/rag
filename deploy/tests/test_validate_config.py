@@ -59,6 +59,19 @@ class ContractTests(unittest.TestCase):
             "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}",
         )
 
+    def test_chat_services_require_the_protected_workbench_environment(self):
+        for service in ("api", "worker"):
+            with self.subTest(service=service), tempfile.TemporaryDirectory() as tmp:
+                compose = yaml.safe_load((ROOT / "compose.production.yml").read_text(encoding="utf-8"))
+                compose["services"][service]["env_file"] = [
+                    entry for entry in compose["services"][service]["env_file"]
+                    if entry["path"] != ".env.question-workbench"
+                ]
+                target = Path(tmp) / "compose.yml"
+                target.write_text(yaml.safe_dump(compose), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, service + ": protected question workbench"):
+                    validate(target, ROOT / "app.env.example", ROOT / "deployment.env.example")
+
     def test_release_images_use_swr_instead_of_legacy_registry(self):
         release_package = (
             Path(__file__).resolve().parents[1] / "release_package.py"

@@ -180,8 +180,34 @@ def verify_question_workbench() -> str:
             if "=" in line and not line.lstrip().startswith("#"):
                 key, value = line.split("=", 1)
                 values[key] = value
+    workbench_env = cwd / ".env.question-workbench"
+    if workbench_env.is_file():
+        for line in workbench_env.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.split("=", 1)
+                values[key] = value
     if not values.get("QUESTION_WORKBENCH_API_URL"):
         return "skipped"
+    configuration = None
+    for service in ("api", "worker"):
+        try:
+            identifier = compose_ps(service)
+            output = subprocess.check_output(
+                ["docker", "inspect", identifier, "--format", "{{json .Config.Env}}"],
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+            environment = dict(item.split("=", 1) for item in json.loads(output))
+        except (OSError, ValueError, TypeError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f"{service} question workbench configuration is unavailable") from exc
+        current = tuple(environment.get(key, "") for key in (
+            "QUESTION_WORKBENCH_URL", "QUESTION_WORKBENCH_API_URL", "QUESTION_WORKBENCH_SECRET",
+        ))
+        if not all(current) or len(current[2]) < 32:
+            raise RuntimeError(f"{service} question workbench configuration is incomplete")
+        if configuration is not None and current != configuration:
+            raise RuntimeError("API and worker question workbench configurations differ")
+        configuration = current
     command = [
         "python", "-c",
         "import os,urllib.request; "
@@ -190,12 +216,13 @@ def verify_question_workbench() -> str:
         "u+'/api/health',headers={'User-Agent':'zhiku-deploy-health/1.0'}); "
         "print(urllib.request.urlopen(q,timeout=5).status)"
     ]
-    try:
-        output = compose_exec("api", *command).strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError("question workbench is unavailable") from exc
-    if output.splitlines()[-1] != "200":
-        raise RuntimeError("question workbench is unavailable")
+    for service in ("api", "worker"):
+        try:
+            output = compose_exec(service, *command).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f"question workbench is unavailable from {service}") from exc
+        if not output or output.splitlines()[-1] != "200":
+            raise RuntimeError(f"question workbench is unavailable from {service}")
     return "ok"
 
 

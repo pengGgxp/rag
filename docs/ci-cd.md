@@ -150,6 +150,12 @@ application secret file. `deploy/deployment.env.example` documents that layer,
 but the actual `.env.release` is generated from `app.env` and the release
 manifest rather than entered twice.
 
+Both API and the ordinary Worker must load `.env.question-workbench`: API
+authorizes selection, while the Worker supplies and executes the model tools.
+Release health checks compare their effective bridge configuration without
+logging values and verify connectivity from both containers. A healthy API
+alone does not verify the background conversation tool path.
+
 ## First production takeover
 
 Do not treat a deployed release as a completed takeover. Follow these stages:
@@ -496,8 +502,9 @@ A release is healthy only when all applicable checks pass:
 - Resource library and checkout pages return successfully.
 - Preview gateway health is available.
 - The database Alembic revision equals the release manifest head.
-- The question-workbench bridge health is reachable from the API network when
-  it is configured; otherwise the result is explicitly `skipped`, not `ok`.
+- The question-workbench bridge has matching effective API/Worker configuration
+  and is reachable from both containers when configured; otherwise the result
+  is explicitly `skipped`, not `ok`.
 - `nginx -t` passes before hot reload.
 
 Container running alone is not Worker health. A missing or expired Redis

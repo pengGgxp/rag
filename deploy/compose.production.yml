@@ -87,6 +87,8 @@ services:
     env_file:
       - path: ${ZHIKU_APP_ENV_FILE:-app.env}
         required: false
+      - path: .env.question-workbench
+        required: false
     environment:
       RESOURCE_CACHE_DIR: /var/cache/rag-resources
       APP_VERSION: ${APP_VERSION:-dev}

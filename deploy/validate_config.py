@@ -233,6 +233,13 @@ def validate(
             volumes = service.get("volumes", [])
             if any(isinstance(item, dict) and item.get("type") == "bind" for item in volumes):
                 fail(f"{name}: source bind mounts are forbidden")
+        if name in {"api", "worker"}:
+            env_files = {
+                item.get("path") if isinstance(item, dict) else item
+                for item in service.get("env_file", [])
+            }
+            if ".env.question-workbench" not in env_files:
+                fail(f"{name}: protected question workbench env file is required")
 
     if services["api"].get("ports") != ["127.0.0.1:8000:8000"]:
         fail("api must only bind to loopback")
