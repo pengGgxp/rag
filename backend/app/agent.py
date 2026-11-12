@@ -15,12 +15,15 @@ from .llm import LLMProviderError, OpenAICompatibleChatProvider, ToolCall, estim
 from .models import KnowledgeBase
 from .workspace_files import FILE_TOOL_ERRORS
 from .image_reading import model_image_message
+from .upstream_retries import retry_activity
 
 FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_file",
                              "apply_patch", "delete_file", "run_command"))
 
 
 def tool_failure_summary(name, result):
+    if name == "read_image" and result.get("error"):
+        return result["error"]
     if name in ("start_preview", "stop_preview"):
         return result.get("preview", {}).get("summary") or result.get("error") or "预览未能启动，请检查命令和端口后重试"
     if name in ("save_to_knowledge_base", "list_writable_knowledge_bases", "get_saved_document_status"):
@@ -256,7 +259,9 @@ def stream_retrieval_agent(
                 write(("delta", {"text": response.content, "block_id": f"text-{state.get('steps', 0) + 1}"}))
             return response
         try:
-            response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
+            with retry_activity(check_active, write, {"call_id": f"model-retry-{state.get('steps', 0) + 1}",
+                    "name": "model_request", "label": "请求回答", "kind": "model"}):
+                response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
         except BaseException:
             if hasattr(provider, "thinking_diagnostic"):
                 write(("thinking_status", {"round": state.get("steps", 0) + 1,
@@ -365,12 +370,13 @@ def stream_retrieval_agent(
                     "kind": kind}
                 if call.name != "search_knowledge_base":
                     write(("tool_started", {**activity, "status": "running"}))
-                    executable = (
-                        context_manager.read_original(call.arguments)
-                        if context_manager and call.name == "read_conversation_history" else
-                        extensions.execute(call.name, call.arguments, check_active=check_active)
-                        if extensions else {"error": "该工具不可用"}
-                    )
+                    with retry_activity(check_active, write, activity, finish=False):
+                        executable = (
+                            context_manager.read_original(call.arguments)
+                            if context_manager and call.name == "read_conversation_history" else
+                            extensions.execute(call.name, call.arguments, check_active=check_active)
+                            if extensions else {"error": "该工具不可用"}
+                        )
                     image_result = executable.image if hasattr(executable, "image") else None
                     result = executable.result if image_result is not None else executable
                     if image_result is not None:

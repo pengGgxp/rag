@@ -130,7 +130,8 @@ def test_real_http_thinking_precedes_text_and_final_usage():
         release.set()
         rest = list(events)
     assert [name for name, _ in rest] == ["thinking_status", "delta", "thinking_status", "complete"]
-    assert instance.thinking_diagnostic() == {"received_thinking": True, "reasoning_tokens": 15, "stream": "sse"}
+    assert instance.thinking_diagnostic() == {"received_thinking": True, "reasoning_tokens": 15, "stream": "sse",
+        "upstream": {"accepted_response": True, "attempts": 1}}
 
 
 def test_display_checkpoint_permissions_and_no_private_continuation_fallback(accounts, monkeypatch):

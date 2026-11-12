@@ -191,7 +191,10 @@ class ContextManager:
                 if result is None or not result.content or result.tool_calls:
                     raise LLMProviderError("整理未返回有效摘要")
                 return result
-            result = self.meter.invoke(self.provider, invoke, summary_messages, []) if self.meter else invoke()
+            from .upstream_retries import retry_activity
+            with retry_activity(check_active, emit, {"call_id": call_id, "name": "compact_context",
+                    "label": "整理早期上下文", "kind": "compaction"}, finish=False):
+                result = self.meter.invoke(self.provider, invoke, summary_messages, []) if self.meter else invoke()
             check_active()
             compacted = prefix + [{"role": "user", "content": SUMMARY_PREFIX + result.content}] + recent
             after = estimate_input(compacted, tools)
@@ -216,6 +219,7 @@ class ContextManager:
             self.did_compact = True
             self.covered = max(self.covered, through)
             emit(("compaction", {"call_id": call_id, "status": "completed", "label": "上下文已压缩",
+                "summary": "",
                 "estimated_before": before, "estimated_after": after}))
             emit(("context", self.state(compacted, tools)))
             if after > budget:

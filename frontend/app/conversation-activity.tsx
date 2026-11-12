@@ -110,7 +110,7 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
   const cancelled = items.some(item => item.status === "cancelled");
   const single = items.length === 1 ? items[0] : null;
   const headline = single
-    ? `${single.label}${single.saved_document || single.image_task ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? " · 执行中" : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? " · 未完成" : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
+    ? `${single.label}${single.saved_document || single.image_task ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? ` · ${single.summary || "执行中"}` : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? ` · ${single.summary || "未完成"}` : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
     : current ? current.summary || current.label : finished
     ? cancelled ? `已停止 · ${items.length} 项活动` : failed ? `${items.length} 项活动 · ${failed} 项失败` : `已完成 ${items.length} 项活动`
     : "等待下一步";
