@@ -13,7 +13,7 @@ from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
     ChatMessage, Conversation, ConversationLibrary, CreditAccount, DocumentStatus,
-    Document, KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, Membership, User, Workspace,
+    Document, KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, Membership, QueryTrace, User, Workspace,
 )
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate, model_id, generation_response
@@ -81,6 +81,72 @@ def turn(http, id, query="needle", **extra):
     assert response.status_code == 200, response.text
     events = [(event.event, event.json()) for event in EventSource(generation_response(response)).iter_sse()]
     return events, payload
+
+
+def test_search_evidence_document_id_can_be_reused_for_scoped_retrieval(client, monkeypatch):
+    http, db, _ = client
+    library = add_library(db)
+    document = add_document(db, library, "needle scientific methods")
+    document.chunks[0].version_group_id = document.version_group_id
+    db.commit()
+    assert document.id != document.version_group_id
+
+    class Provider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                arguments = {"knowledge_base_ids": [str(library.id)], "query": "needle"}
+            elif self.step == 2:
+                evidence = json.loads(messages[-1]["content"])["evidence"]
+                assert evidence[0]["document_id"] == str(document.version_group_id)
+                arguments = {"knowledge_base_ids": [str(library.id)], "query": "needle",
+                    "document_ids": [evidence[0]["document_id"], evidence[0]["version_id"]]}
+            else:
+                result = json.loads(messages[-1]["content"])
+                assert result["result_count"] == 1 and "error" not in result
+                return ToolResponse(content="verified", tool_calls=[])
+            return ToolResponse(content=None, tool_calls=[ToolCall(
+                id=f"search-{self.step}", name="search_knowledge_base", arguments=arguments)])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **kwargs: Provider())
+    events, _ = turn(http, create(http)["id"])
+    results = [data for name, data in events if name == "tool_result"]
+    assert [item["status"] for item in results] == ["completed", "completed"]
+    assert events[-1][1]["status"] == "completed"
+
+
+@pytest.mark.parametrize("unavailable", ["inactive", "deleted", "other_library", "old_version"])
+def test_scoped_search_rejects_unavailable_stable_ids_and_inactive_versions(client, monkeypatch, unavailable):
+    http, db, _ = client
+    library = add_library(db)
+    document = add_document(db, add_library(db) if unavailable == "other_library" else library, "needle")
+    if unavailable in ("inactive", "old_version"):
+        document.is_active = False
+    if unavailable == "deleted":
+        document.status = DocumentStatus.DELETED
+    db.commit()
+    identifier = document.id if unavailable == "old_version" else document.version_group_id
+
+    class Provider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(content=None, tool_calls=[ToolCall(id="invalid",
+                    name="search_knowledge_base", arguments={"query": "needle",
+                        "knowledge_base_ids": [str(library.id)], "document_ids": [str(identifier)]})])
+            assert "error" in json.loads(messages[-1]["content"])
+            return ToolResponse(content="unavailable", tool_calls=[])
+
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **kwargs: Provider())
+    events, _ = turn(http, create(http)["id"])
+    result = next(data for name, data in events if name == "tool_result")
+    assert result["status"] == "error"
+    assert result["summary"] == "所选文档当前不可用或不属于所选知识库"
+    assert db.scalars(select(QueryTrace)).all() == []
 
 
 def test_persists_streamed_turn_and_followup_context(client):

@@ -161,14 +161,16 @@ SEARCH_TOOL: dict[str, Any] = {
                 "knowledge_base_ids": {
                     "type": "array",
                     "items": {"type": "string", "format": "uuid"},
+                    "minItems": 1,
                     "maxItems": 8,
                     "description": "IDs returned by discover_knowledge_bases or explicitly mentioned by the user. The server rechecks access.",
                 },
                 "query": {"type": "string", "minLength": 1},
                 "document_ids": {
                     "type": "array", "items": {"type": "string", "format": "uuid"},
+                    "minItems": 1,
                     "maxItems": 8,
-                    "description": "Optional IDs returned by discover_knowledge_bases or mentioned by the user. Documents must belong to the selected knowledge bases; the server rechecks current access and availability.",
+                    "description": "Optional document IDs from discovery, user mentions or search evidence. Stable document_id values resolve to the current active version; version_id values must still be active. Omit this field when not filtering by document. Documents must belong to the selected knowledge bases; the server rechecks access and availability.",
                 },
                 "top_k": {
                     "type": "integer", "minimum": 1,
@@ -570,6 +572,13 @@ def stream_retrieval_agent(
                                 error = "document_ids 中包含无效的文档 ID"
                                 break
                             document = db.get(Document, identifier, populate_existing=True)
+                            if document is None:
+                                versions = db.scalars(select(Document).where(
+                                    Document.version_group_id == identifier,
+                                    Document.knowledge_base_id.in_(search_ids),
+                                    Document.status == DocumentStatus.READY, Document.is_active.is_(True),
+                                ).execution_options(populate_existing=True).limit(2)).all()
+                                document = versions[0] if len(versions) == 1 else None
                             if (document is None or document.status != DocumentStatus.READY or not document.is_active
                                     or document.knowledge_base_id not in search_ids):
                                 error = "所选文档当前不可用或不属于所选知识库"
@@ -580,8 +589,8 @@ def stream_retrieval_agent(
                             except HTTPException:
                                 error = "所选文档当前不可用或无权访问"
                                 break
-                            parsed_documents.append(identifier)
-                            document_libraries[identifier] = document.knowledge_base_id
+                            parsed_documents.append(document.id)
+                            document_libraries[document.id] = document.knowledge_base_id
                         if error is None:
                             document_filter = list(dict.fromkeys(parsed_documents))
                 if error:
@@ -591,7 +600,7 @@ def stream_retrieval_agent(
                         "call_id": call.id, "name": call.name, "kind": "knowledge",
                         "label": "知识库检索", "status": "error", **result,
                     })
-                    write(("tool_result", {**activity, "status": "error", "summary": "检索参数未通过校验，未执行检索"}))
+                    write(("tool_result", {**activity, "status": "error", "summary": error}))
                     continue
                 write(("tool_started", {**activity, "status": "running"}))
                 found: list[tuple[float, dict[str, Any]]] = []

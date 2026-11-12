@@ -108,6 +108,7 @@ class ContextManager:
         self.persisted_rows = []
         self.scope = None
         self.covered = -1
+        self.next_compaction_at = 0
 
     def history(self, db, conversation, rows):
         self.persisted_rows = rows
@@ -132,8 +133,13 @@ class ContextManager:
             if self.manual:
                 raise LLMConfigurationError("上下文保护未就绪，请联系管理员配置模型容量")
             return messages
-        if not self.manual and before < budget * 0.75:
+        trigger = min(budget, max(budget * 0.75, self.next_compaction_at))
+        if not self.manual and before < trigger:
             return messages
+        minimum_saving = 1 if before > budget else min(4096, max(512, before * 0.05))
+        retry_margin = max(1024, budget * 0.1)
+        summary_reserve = min(2048, max(256, budget * 0.05))
+        summary_overhead = estimate_input([{"role": "user", "content": SUMMARY_PREFIX}])
         # Keep two completed turns plus the current unfinished user turn.
         positions = [i for i, item in enumerate(messages) if item.get("role") == "user"
                      and not str(item.get("content", "")).startswith(SUMMARY_PREFIX)]
@@ -141,7 +147,9 @@ class ContextManager:
         cut = positions[-keep_count] if len(positions) > keep_count else 1
         prefix, older, recent = messages[:1], messages[1:cut], messages[cut:]
         through = -1
-        if older:
+        useful_history = bool(older) and (self.manual or
+            before - estimate_input(prefix + recent, tools) >= minimum_saving)
+        if useful_history:
             candidates = eligible_rows(self.persisted_rows)
             if candidates:
                 through = candidates[-1].sequence
@@ -164,10 +172,24 @@ class ContextManager:
                 if expected.issubset(returned):
                     groups.append((index, end))
                 index = end
-            if len(groups) > 2:
-                first, end = groups[0][0], groups[-3][1]
-                prefix, older, recent = messages[:first], messages[first:end], messages[end:]
+            older = []
+            if groups:
+                # Merge earlier summaries in this run instead of accumulating
+                # them in an uncompressible prefix. Keep complete call/result pairs.
+                first = next((i for i in range(start, groups[0][0])
+                    if str(messages[i].get("content", "")).startswith(SUMMARY_PREFIX)), groups[0][0])
+                for keep in ((2, 1, 0) if before > budget else (2, 1)):
+                    if len(groups) <= keep:
+                        continue
+                    end = groups[-keep - 1][1]
+                    remaining = estimate_input(messages[:first] + messages[end:], tools)
+                    if before - remaining < minimum_saving or remaining + summary_overhead > budget:
+                        continue
+                    prefix, older, recent = messages[:first], messages[first:end], messages[end:]
+                    if remaining + summary_reserve <= budget * 0.75:
+                        break
         if not older:
+            self.next_compaction_at = before + retry_margin
             if before > budget:
                 raise LLMConfigurationError("当前问题或近期上下文超出模型容量，请缩短输入或新建会话")
             return messages
@@ -198,8 +220,10 @@ class ContextManager:
             check_active()
             compacted = prefix + [{"role": "user", "content": SUMMARY_PREFIX + result.content}] + recent
             after = estimate_input(compacted, tools)
-            if after >= before:
+            if after >= before or (not self.manual and before - after < minimum_saving):
                 raise LLMProviderError("整理未缩小上下文，已保留原文")
+            if after > budget:
+                raise LLMConfigurationError("整理后近期上下文仍超出模型容量，请缩短输入或新建会话")
             with self.factory() as db:
                 conversation = db.get(Conversation, self.conversation_id, with_for_update=True)
                 scope = scope_digest(db, conversation, self.access, self.skill_versions)
@@ -217,19 +241,20 @@ class ContextManager:
                     model=self.config.model, estimated_before=before, estimated_after=after))
                 db.commit()
             self.did_compact = True
+            self.next_compaction_at = after + retry_margin
             self.covered = max(self.covered, through)
             emit(("compaction", {"call_id": call_id, "status": "completed", "label": "上下文已压缩",
                 "summary": "",
                 "estimated_before": before, "estimated_after": after}))
             emit(("context", self.state(compacted, tools)))
-            if after > budget:
-                raise LLMConfigurationError("整理后近期上下文仍超出模型容量，请缩短输入或新建会话")
             return compacted
         except AgentCancelled:
             raise
-        except (LLMProviderError, LLMConfigurationError):
+        except (LLMProviderError, LLMConfigurationError) as exc:
+            self.next_compaction_at = before + retry_margin
             emit(("compaction", {"call_id": call_id, "status": "failed", "label": "上下文整理未完成",
-                "summary": "已保留原始上下文，可稍后重试"}))
+                "summary": str(exc) if isinstance(exc, LLMConfigurationError)
+                    else "已保留原始上下文，可稍后重试"}))
             if self.manual or before > budget:
                 raise
             return messages

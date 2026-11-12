@@ -573,6 +573,133 @@ def test_same_task_compaction_only_replaces_complete_old_tool_groups(client):
     assert len(compacted) == 7
 
 
+def tool_group(identifier, text):
+    return [{"role": "assistant", "content": None, "tool_calls": [
+        {"id": identifier, "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": identifier, "content": text}]
+
+
+@pytest.mark.parametrize("images", [False, True])
+def test_compaction_skips_tiny_catalog_and_includes_large_complete_search_group(client, images):
+    from app.conversation_context import SUMMARY_PREFIX, estimate_input
+    manager, _ = manager_fixture(client, capacity=50000 if images else 10000)
+    content = [{"type": "text", "text": "current task"},
+        {"type": "chat_image", "attachment_id": "image-1", "width": 1818, "height": 865},
+        {"type": "chat_image", "attachment_id": "image-2", "width": 1774, "height": 953}] if images else "current task"
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": content}]
+    messages += tool_group("catalog", "one document")
+    messages += tool_group("search", "重要资料。" * (4000 if images else 800))
+    messages += tool_group("error", "invalid document ID")
+    captured = []
+
+    class Provider:
+        def stream_with_tools(self, summary_messages, *args, **kwargs):
+            captured.append(summary_messages)
+            yield "complete", ToolResponse("旧工具记录摘要", [])
+
+    manager.provider = Provider()
+    events = []
+    compacted = manager.prepare(messages, [], events.append, lambda: None)
+    assert len(captured) == 1
+    assert "重要资料" in captured[0][1]["content"]
+    assert compacted[:2] == messages[:2] and compacted[-2:] == messages[-2:]
+    assert compacted[2]["content"].startswith(SUMMARY_PREFIX)
+    assert estimate_input(compacted) < estimate_input(messages) / 2
+    assert "chat_image" not in captured[0][1]["content"]
+
+
+def test_failed_compaction_waits_for_growth_but_never_bypasses_hard_budget(client):
+    from app.llm import LLMProviderError
+    manager, _ = manager_fixture(client, capacity=10000)
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
+    messages += tool_group("old", "内容。" * 1300)
+    messages += tool_group("recent", "recent result")
+    calls = []
+
+    class Provider:
+        def stream_with_tools(self, *args, **kwargs):
+            calls.append(1)
+            yield "complete", ToolResponse("更多内容。" * 1800, [])
+
+    manager.provider = Provider()
+    events = []
+    assert manager.prepare(messages, [], events.append, lambda: None) == messages
+    assert [data["status"] for name, data in events if name == "compaction"] == ["running", "failed"]
+    slightly_larger = messages + tool_group("next", "small result")
+    assert manager.prepare(slightly_larger, [], events.append, lambda: None) == slightly_larger
+    assert len(calls) == 1
+    with pytest.raises(LLMProviderError):
+        manager.prepare(slightly_larger + tool_group("large", "新内容。" * 400), [], events.append, lambda: None)
+    assert len(calls) == 2
+
+
+def test_compaction_does_not_repeat_for_small_growth_above_soft_threshold(client):
+    from app.conversation_context import SUMMARY_PREFIX, estimate_input
+    manager, _ = manager_fixture(client, capacity=10000)
+    messages = [{"role": "system", "content": "rules"},
+        {"role": "user", "content": "不可压缩的当前输入。" * 420},
+        {"role": "user", "content": SUMMARY_PREFIX + "previous summary"}]
+    messages += tool_group("old", "old result " * 450)
+    messages += tool_group("recent", "recent result")
+    calls = []
+
+    class Provider:
+        def stream_with_tools(self, summary_messages, *args, **kwargs):
+            calls.append(summary_messages)
+            yield "complete", ToolResponse("新摘要", [])
+
+    manager.provider = Provider()
+    compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
+    assert len(calls) == 1 and estimate_input(compacted) > 0.75 * 9488
+    assert "previous summary" in calls[0][1]["content"]
+    assert sum(str(item.get("content", "")).startswith(SUMMARY_PREFIX) for item in compacted) == 1
+    assert manager.prepare(compacted + tool_group("next", "small result"), [], lambda _: None, lambda: None)
+    assert len(calls) == 1
+
+
+def test_over_budget_summary_never_persists_or_emits_completed(client):
+    from app.conversation_context import estimate_input
+    from app.llm import LLMConfigurationError
+    manager, _ = manager_fixture(client, capacity=10000)
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "current task " * 600}]
+    messages += tool_group("old", "原始结果。" * 850)
+    messages += tool_group("recent", "recent result")
+    assert estimate_input(messages) > 9488
+
+    class Provider:
+        def stream_with_tools(self, *args, **kwargs):
+            yield "complete", ToolResponse("仍然很长。" * 750, [])
+
+    manager.provider = Provider()
+    events = []
+    with pytest.raises(LLMConfigurationError, match="整理后近期上下文仍超出"):
+        manager.prepare(messages, [], events.append, lambda: None)
+    assert [data["status"] for name, data in events if name == "compaction"] == ["running", "failed"]
+    with manager.factory() as db:
+        assert db.scalars(select(ContextCheckpoint)).all() == []
+
+
+def test_hard_budget_accepts_small_compaction_when_it_is_sufficient(client):
+    from app.conversation_context import estimate_input, input_budget
+    manager, _ = manager_fixture(client)
+    messages = [{"role": "system", "content": "rules"},
+        {"role": "user", "content": "当前输入。" * 800}]
+    messages += tool_group("old", "旧文。" * 50)
+    messages += tool_group("recent", "recent result")
+    before = estimate_input(messages)
+    manager.config = replace(manager.config, context_capacity=before - 100 + 512)
+
+    class Provider:
+        def stream_with_tools(self, *args, **kwargs):
+            yield "complete", ToolResponse("摘要", [])
+
+    manager.provider = Provider()
+    compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
+    after = estimate_input(compacted)
+    assert after <= input_budget(manager.config)
+    assert 0 < before - after < 512
+
+
 def test_original_lookup_is_current_conversation_only_and_rechecks_access(client):
     from dataclasses import replace as copy
     from fastapi import HTTPException
