@@ -589,8 +589,22 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
             raise HTTPException(503, "图片读取结果无效，请重试")
         provider = adapter(row.snapshot, row.encrypted_api_key)
         sandbox = provider.connect(row.provider_id)
-        data = provider.read_file(sandbox, sandbox_path, max_bytes=MAX_IMAGE_BYTES,
-            check_active=check_active)
+        def check_read_access():
+            if check_active:
+                check_active()
+            checked = access.revalidate(db)
+            owner(db, checked, conversation_id)
+            db.refresh(row)
+            if row.status not in ("ready", "running") or (row.started_at and
+                    now() >= aware(row.started_at) + timedelta(seconds=row.snapshot["max_seconds"])):
+                raise HTTPException(409, "云电脑已结束，请重新读取图片")
+        from .upstream_retries import retry_scope
+        import time
+        remaining = ((aware(row.started_at) + timedelta(seconds=row.snapshot["max_seconds"]) - now()).total_seconds()
+            if row.started_at else 30)
+        with retry_scope(check_read_access, deadline=time.monotonic() + max(0, remaining)):
+            data = provider.read_file(sandbox, sandbox_path, max_bytes=MAX_IMAGE_BYTES,
+                check_active=check_read_access)
         digest = hashlib.sha256(data).hexdigest()
         if len(data) != metadata["size_bytes"] or digest != metadata["sha256"]:
             raise HTTPException(409, "图片在读取过程中发生变化，请重新读取")

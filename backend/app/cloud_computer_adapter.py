@@ -5,6 +5,7 @@ No provider credentials or SDK identifiers are exposed to the model.
 """
 import json
 import shlex
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 PRIVATE_NETWORKS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
@@ -13,6 +14,35 @@ PRIVATE_NETWORKS = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 ROOT = "/home/user/workspace"
 STATE = "/tmp/zhiku-cloud-computer"
 DEPENDENCIES = f"{STATE}/deps"
+
+
+def image_file_client(files):
+    """Use one request budget rather than e2b's cached transport's three inner retries."""
+    import httpx
+    config = files._connection_config
+    return httpx.Client(base_url=files._envd_api_url,
+        headers=config.sandbox_headers,
+        transport=httpx.HTTPTransport(http2=True, proxy=config.proxy, retries=0))
+
+
+@contextmanager
+def image_file_transport(files, observe):
+    from e2b.sandbox_sync.filesystem.filesystem import Filesystem
+    if not isinstance(files, Filesystem):
+        yield
+        return
+    previous = getattr(files._thread_local, "envd_api", None)
+    with image_file_client(files) as client:
+        client.event_hooks["response"].append(observe)
+        files._thread_local.envd_api = client
+        try:
+            yield
+        finally:
+            client.event_hooks["response"].remove(observe)
+            if previous is None:
+                del files._thread_local.envd_api
+            else:
+                files._thread_local.envd_api = previous
 
 
 def preview_ingress_port(identifier):
@@ -299,25 +329,72 @@ class AlibabaSandbox:
     def read_file(self, sandbox, path, *, max_bytes, owner="user", check_active=None):
         """Read at most max_bytes without copying the body into a command result."""
         import httpx
-        from e2b import FileNotFoundException, TimeoutException
+        from e2b import (FileNotFoundException, TimeoutException, RateLimitException, SandboxException,
+            InvalidArgumentException, AuthenticationException)
         from .image_reading import ImageReadError
+        from .upstream_retries import RetryBudget, TRANSIENT_STATUS, retry_after, retry_scope
 
-        data = bytearray()
-        if check_active:
-            check_active()
-        try:
-            with sandbox.files.read(path, format="stream", user=owner) as stream:
-                for block in stream:
-                    if check_active:
-                        check_active()
-                    if len(data) + len(block) > max_bytes:
-                        raise ValueError("图片超过大小限制")
-                    data.extend(block)
-        except (httpx.TransportError, FileNotFoundException, TimeoutException):
-            raise ImageReadError("图片传输未完成") from None
-        if check_active:
-            check_active()
-        return bytes(data)
+        # e2b 2.31 maps 500/503 to SandboxException without structured HTTP metadata.
+        # A temporary response hook on its thread-local client preserves only status/Retry-After.
+        observed = {}
+        def observe(response):
+            if response.request.method == "GET" and response.request.url.path == "/files":
+                observed.update(status=response.status_code, after=retry_after(response.headers.get("Retry-After")),
+                    timeout=response.request.extensions.get("timeout"))
+        with image_file_transport(sandbox.files, observe):
+            with retry_scope(check_active):
+                budget = RetryBudget("sandbox_file")
+                category = "transfer"
+                while budget.begin():
+                    data = bytearray()  # A failed attempt never contributes bytes to the next one.
+                    observed.clear()
+                    try:
+                        with sandbox.files.read(path, format="stream", user=owner,
+                                request_timeout=budget.remaining(), stream_idle_timeout=budget.remaining()) as stream:
+                            iterator = iter(stream)
+                            while True:
+                                budget.check()
+                                if not budget.remaining():
+                                    raise ImageReadError("图片读取等待已超时", category="deadline")
+                                if isinstance(observed.get("timeout"), dict):
+                                    observed["timeout"]["read"] = budget.remaining()
+                                try:
+                                    block = next(iterator)
+                                except StopIteration:
+                                    break
+                                budget.check()
+                                if len(data) + len(block) > max_bytes:
+                                    raise ValueError("图片超过大小限制")
+                                data.extend(block)
+                        budget.check()
+                        if not budget.remaining():
+                            raise ImageReadError("图片读取等待已超时", category="deadline")
+                        return bytes(data)
+                    except FileNotFoundException:
+                        raise ImageReadError("图片文件不存在", category="missing") from None
+                    except (httpx.TransportError, TimeoutException):
+                        category, after = "transfer", None
+                    except SandboxException as error:
+                        status = observed.get("status")
+                        if isinstance(error, AuthenticationException) or status in (401, 403):
+                            if isinstance(error, AuthenticationException):
+                                raise AuthenticationException("图片访问权限已失效") from None
+                            from fastapi import HTTPException
+                            raise HTTPException(status, "图片访问权限已失效") from None
+                        if isinstance(error, InvalidArgumentException):
+                            raise ImageReadError("图片读取请求无效", category="request") from None
+                        if isinstance(error, RateLimitException):
+                            status = 429
+                        elif type(error) is not SandboxException or status is None:
+                            raise  # Unknown SDK errors and permission exceptions retain their semantics.
+                        if status not in TRANSIENT_STATUS:
+                            raise ImageReadError("图片读取请求未能完成", category="request") from None
+                        category, after = f"http_{status}", observed.get("after")
+                    delay = budget.delay(category, after)
+                    if delay is None:
+                        raise ImageReadError("图片传输重试已耗尽", category=category) from None
+                    budget.wait(delay)
+                raise ImageReadError("图片读取等待已超时", category="deadline") from None
 
     def poll(self, sandbox, identifier):
         path = f"{STATE}/jobs/{identifier}/result.json"

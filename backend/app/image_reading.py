@@ -18,6 +18,10 @@ MAX_PATH_LENGTH = 1024
 class ImageReadError(OSError):
     """An expected failure while transferring image bytes from the sandbox."""
 
+    def __init__(self, message, *, category="transfer"):
+        super().__init__(message)
+        self.category = category
+
 
 @dataclass(frozen=True)
 class ImageInput:
@@ -95,8 +99,17 @@ def read_image(arguments, *, config: ChatProviderConfig, local_loader, check_act
             return {"error": "图片在读取过程中发生变化，请重试",
                     "error_code": "image_changed"}
         return workspace_image(path, content_type, width, height, digest, data)
-    except ImageReadError:
-        return {"error": "图片传输未完成；请确认文件仍存在，并重新调用 read_image",
+    except ImageReadError as error:
+        reason = {"http_429": "图片读取服务繁忙，重试次数已用尽；请稍后重新读取",
+            "http_500": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",
+            "http_502": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",
+            "http_503": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",
+            "http_504": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",
+            "missing": "图片文件已不存在，请检查路径或重新生成图片",
+            "request": "图片读取请求无效，请检查图片路径和格式后重试",
+            "deadline": "图片读取等待已超时，请稍后重新读取"}.get(error.category,
+                "图片传输未完成；请确认文件仍存在，并重新调用 read_image")
+        return {"error": reason,
                 "error_code": "image_transfer_failed"}
     except PermissionError:
         raise

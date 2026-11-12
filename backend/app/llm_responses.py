@@ -1,5 +1,6 @@
 """Stateless Responses adaptation for the existing provider-neutral Agent contract."""
 import json
+from .upstream_retries import model_post, model_stream, model_astream
 from copy import deepcopy
 
 from fastapi import HTTPException
@@ -189,7 +190,7 @@ def stream(provider, messages, tools, tool_choice):
     state = ResponseStream(provider)
     provider.stream_diagnostic = "sse"
     try:
-        with httpx.stream("POST", endpoint(provider.base_url, "responses"),
+        with model_stream(provider, "POST", endpoint(provider.base_url, "responses"),
                 headers={"Authorization": f"Bearer {provider.api_key}"},
                 json=payload(provider.config, messages, tools=tools, tool_choice=tool_choice, stream=True),
                 timeout=provider.timeout_seconds) as response:
@@ -216,7 +217,7 @@ def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0
     import httpx
     from .llm import LLMProviderError
     try:
-        response = httpx.post(endpoint(provider.base_url, "responses"),
+        response = model_post(provider, endpoint(provider.base_url, "responses"),
             headers={"Authorization": f"Bearer {provider.api_key}"},
             json=payload(provider.config, messages, temperature, tools=tools, tool_choice=tool_choice),
             timeout=provider.timeout_seconds)
@@ -231,15 +232,17 @@ def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0
 
 async def stream_text(provider, messages):
     import httpx
-    from httpx_sse import aconnect_sse, SSEError
+    from httpx_sse import SSEError
     from .llm import LLMProviderError
     state = ResponseStream(provider)
     provider.stream_diagnostic = "sse"
     try:
         async with httpx.AsyncClient(timeout=provider.timeout_seconds) as client:
-            async with aconnect_sse(client, "POST", endpoint(provider.base_url, "responses"),
+            async with model_astream(provider, client, "POST", endpoint(provider.base_url, "responses"),
                     headers={"Authorization": f"Bearer {provider.api_key}"},
-                    json=payload(provider.config, messages, stream=True)) as source:
+                    json=payload(provider.config, messages, stream=True)) as response:
+                from httpx_sse import EventSource
+                source = EventSource(response)
                 if source.response.status_code >= 400:
                     raise LLMProviderError(f"模型请求失败（HTTP {source.response.status_code}）")
                 if "application/json" in source.response.headers.get("content-type", ""):

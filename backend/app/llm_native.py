@@ -10,6 +10,7 @@ import httpx
 from httpx_sse import EventSource
 
 from .llm import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
+from .upstream_retries import model_post, model_stream, model_astream
 
 
 def _tool_result_image(image, native):
@@ -145,28 +146,41 @@ def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0,
     return url, headers, body
 
 
-def result(provider, body):
+def observe_usage(provider, body):
+    """Keep confirmed cumulative usage even if the accepted response later breaks."""
     native = provider.config.api_protocol
     if native == "anthropic":
-        if body.get("stop_reason") not in ("end_turn", "tool_use", "stop_sequence"):
-            raise LLMProviderError("模型响应未完整生成")
-        parts, usage = body.get("content", []), body.get("usage", {})
+        usage = body.get("usage", {})
+        if not usage:
+            return
         cached = usage.get("cache_read_input_tokens", 0)
         prompt = usage.get("input_tokens")
         provider.last_usage = LLMUsage(prompt_tokens=(prompt + cached + usage.get("cache_creation_input_tokens", 0)) if prompt is not None else None,
             completion_tokens=usage.get("output_tokens"), cached_input_tokens=cached, cache_status="reported")
     else:
-        candidates = body.get("candidates") or []
-        if not candidates or candidates[0].get("finishReason") != "STOP":
-            raise LLMProviderError("模型未完成回答，请调整问题或输出限制")
-        parts = candidates[0].get("content", {}).get("parts", [])
         usage = body.get("usageMetadata", {})
+        if not usage:
+            return
         cached = usage.get("cachedContentTokenCount", 0)
         completion = usage.get("candidatesTokenCount")
         thoughts = usage.get("thoughtsTokenCount", 0)
         provider.last_usage = LLMUsage(prompt_tokens=usage.get("promptTokenCount"),
             completion_tokens=completion + thoughts if completion is not None else None,
             cached_input_tokens=cached, cache_status="reported", reasoning_tokens=thoughts)
+
+
+def result(provider, body):
+    native = provider.config.api_protocol
+    observe_usage(provider, body)
+    if native == "anthropic":
+        if body.get("stop_reason") not in ("end_turn", "tool_use", "stop_sequence"):
+            raise LLMProviderError("模型响应未完整生成")
+        parts = body.get("content", [])
+    else:
+        candidates = body.get("candidates") or []
+        if not candidates or candidates[0].get("finishReason") != "STOP":
+            raise LLMProviderError("模型未完成回答，请调整问题或输出限制")
+        parts = candidates[0].get("content", {}).get("parts", [])
     texts, calls = [], []
     for part in parts:
         if native == "anthropic" and part.get("type") == "tool_use":
@@ -184,7 +198,7 @@ def result(provider, body):
 def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0):
     url, headers, body = request(provider, messages, tools, tool_choice, temperature)
     try:
-        response = httpx.post(url, headers=headers, json=body, timeout=provider.timeout_seconds)
+        response = model_post(provider, url, headers=headers, json=body, timeout=provider.timeout_seconds)
         if response.status_code >= 400:
             raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
         return result(provider, response.json())
@@ -214,13 +228,15 @@ class NativeStream:
                             self.provider.thinking_characters += len(part["text"])
                         yield ("thinking_delta" if part.get("thought") else "delta"), {"text": part["text"]}
             if "usageMetadata" in event:
-                self.body["usageMetadata"] = event["usageMetadata"]
+                self.body.setdefault("usageMetadata", {}).update(event["usageMetadata"])
+                observe_usage(self.provider, self.body)
             return
         kind = event.get("type")
         if kind == "error":
             raise LLMProviderError("模型流式返回错误，请重试")
         if kind == "message_start":
             self.body.update(event["message"])
+            observe_usage(self.provider, self.body)
         elif kind == "content_block_start":
             self.blocks[event["index"]] = {"part": deepcopy(event["content_block"]), "json": ""}
         elif kind == "content_block_delta":
@@ -240,6 +256,7 @@ class NativeStream:
         elif kind == "message_delta":
             self.body.update(event.get("delta", {}))
             self.body["usage"].update(event.get("usage", {}))
+            observe_usage(self.provider, self.body)
         elif kind == "message_stop":
             self.finished = True
 
@@ -262,7 +279,7 @@ def stream(provider, messages, tools=None, tool_choice="auto"):
     state = NativeStream(provider)
     provider.stream_diagnostic = "sse"
     try:
-        with httpx.stream("POST", url, headers=headers, json=body, timeout=provider.timeout_seconds) as response:
+        with model_stream(provider, "POST", url, headers=headers, json=body, timeout=provider.timeout_seconds) as response:
             if response.status_code >= 400:
                 raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
             for event in EventSource(response).iter_sse():
@@ -279,7 +296,7 @@ async def stream_text(provider, messages):
     provider.stream_diagnostic = "sse"
     try:
         async with httpx.AsyncClient(timeout=provider.timeout_seconds) as client:
-            async with client.stream("POST", url, headers=headers, json=body) as response:
+            async with model_astream(provider, client, "POST", url, headers=headers, json=body) as response:
                 if response.status_code >= 400:
                     raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
                 async for event in EventSource(response).aiter_sse():

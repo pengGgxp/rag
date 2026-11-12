@@ -38,6 +38,8 @@ def streamed_file(blocks, error=None):
 
     def read(path, **kwargs):
         calls.append((path, kwargs))
+        if len(calls) > 1:
+            return FileStreamReader(httpx.Response(200, stream=FileDownload(blocks, error)))
         return reader
 
     sandbox = SimpleNamespace(files=SimpleNamespace(read=read))
@@ -54,7 +56,10 @@ def test_read_file_consumes_real_sdk_stream_and_closes(blocks, limit, expected):
     sandbox, download, response, calls = streamed_file(blocks)
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
     assert provider.read_file(sandbox, "/tmp/chart.png", max_bytes=limit) == expected
-    assert calls == [("/tmp/chart.png", {"format": "stream", "user": "user"})]
+    assert len(calls) == 1 and calls[0][0] == "/tmp/chart.png"
+    assert calls[0][1]["format"] == "stream" and calls[0][1]["user"] == "user"
+    assert 0 < calls[0][1]["request_timeout"] <= 30
+    assert 0 < calls[0][1]["stream_idle_timeout"] <= 30
     assert download.closed and response.is_closed
 
 
