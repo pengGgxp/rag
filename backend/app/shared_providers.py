@@ -100,7 +100,7 @@ def read_provider(db, row):
         "connection_version": connection.version if connection else 0,
         "api_protocol": row.chat_protocol,
         "chat_protocol": row.chat_protocol, "supports_chat": row.supports_chat,
-        "image_config": row.image_config,
+        "image_config": {**ImageConfig().model_dump(mode="json"), **(row.image_config or {})},
         "platform": connection.platform if connection else "custom", "enabled": row.enabled,
         "version": row.version,
         "supports_images": row.supports_images,

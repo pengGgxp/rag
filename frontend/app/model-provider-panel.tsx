@@ -8,7 +8,7 @@ import * as Tabs from "../components/ui/tabs";
 import { ApiError, request } from "./api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "./admin/admin-ui";
 import { useAdminChanges } from "./admin/admin-changes";
-import { availabilityLabel, type ModelProvider } from "./model-types";
+import { availabilityLabel, draftImageConfig, type ModelProvider } from "./model-types";
 import { ThinkingDiagnostics } from "./thinking-diagnostics";
 import { ImageConfigFields, ModelConfigFields, draftModel, modelError, modelPayload, type ModelDraft } from "./model-config-fields";
 import { PolicyTable } from "./policy-table";
@@ -43,7 +43,7 @@ export function ModelProviderDetail({ id }: { id: string }) {
       thinking: value.thinking ?? draftModel().thinking, context_capacity: value.context_capacity ?? null,
       supports_images: value.supports_images ?? false,
       supports_chat: value.supports_chat ?? true, chat_protocol: value.chat_protocol ?? value.api_protocol,
-      image_config: value.image_config ?? draftModel().image_config,
+      image_config: draftImageConfig(value.image_config),
       max_output_tokens: value.max_output_tokens ?? null };
     setProvider(value); setForm(next); setConnectionId(value.connection_id);
     setOriginal(JSON.stringify({ ...next, connectionId: value.connection_id }));
