@@ -1,12 +1,13 @@
 import httpx
 import json
 from collections.abc import AsyncIterator, Iterator
-from httpx_sse import aconnect_sse, SSEError
+from httpx_sse import SSEError
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .config import Settings, get_settings
 from .thinking import ThinkingSelection
+from .upstream_retries import model_post, model_stream, model_astream
 
 
 class LLMConfigurationError(RuntimeError):
@@ -126,12 +127,14 @@ class OpenAICompatibleChatProvider:
         self.last_usage = None
         self.thinking_characters = 0
         self.stream_diagnostic = None
+        self.request_observation = {}
 
     def thinking_diagnostic(self):
         return {
             "received_thinking": self.thinking_characters > 0,
             "reasoning_tokens": self.last_usage.reasoning_tokens if self.last_usage else None,
             "stream": self.stream_diagnostic or "not_streamed",
+            "upstream": getattr(self, "request_observation", {}),
         }
 
     @property
@@ -199,12 +202,12 @@ class OpenAICompatibleChatProvider:
             if self.config.thinking.stream_only:
                 self.stream_diagnostic = "sse"
                 payload.update(stream=True, stream_options={"include_usage": True})
-                with httpx.stream("POST", self._chat_url(self.base_url), headers=headers,
+                with model_stream(self, "POST", self._chat_url(self.base_url), headers=headers,
                                   json=payload, timeout=self.timeout_seconds) as response:
                     if response.status_code >= 400:
                         raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
                     return self._collect_tool_stream(response)
-            response = httpx.post(self._chat_url(self.base_url), headers=headers,
+            response = model_post(self, self._chat_url(self.base_url), headers=headers,
                                   json=payload, timeout=self.timeout_seconds)
             if response.status_code >= 400:
                 raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
@@ -393,7 +396,7 @@ class OpenAICompatibleChatProvider:
         finished = False
         finish_error = None
         try:
-            with httpx.stream("POST", self._chat_url(self.base_url),
+            with model_stream(self, "POST", self._chat_url(self.base_url),
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=self._payload(messages, tools=tools, tool_choice=tool_choice, stream=True),
                     timeout=self.timeout_seconds) as response:
@@ -501,10 +504,12 @@ class OpenAICompatibleChatProvider:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                async with aconnect_sse(
-                    client, "POST", self._chat_url(self.base_url),
+                async with model_astream(
+                    self, client, "POST", self._chat_url(self.base_url),
                     headers=headers, json=payload,
-                ) as source:
+                ) as response:
+                    from httpx_sse import EventSource
+                    source = EventSource(response)
                     if source.response.status_code >= 400:
                         raise LLMProviderError(f"回答服务请求失败（HTTP {source.response.status_code}）")
                     # Some compatible providers ignore stream=True and return one JSON response.

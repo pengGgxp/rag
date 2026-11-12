@@ -238,6 +238,8 @@ def interrupt_execution(db, row):
     message = db.get(ChatMessage, row.message_id) if row.message_id else None
     if message and message.request_id == row.request_id and message.status == "streaming":
         message.status, message.error_detail = "interrupted", "回答已中断，请检查已有结果后重试"
+        message.tool_events = [{**item, "status": "interrupted"}
+            if item.get("status") in ("waiting", "running") else item for item in message.tool_events]
     operation = db.get(ContextOperation, row.request_id) if not row.message_id else None
     if operation and operation.status == "running":
         operation.status, operation.result = "interrupted", {"status": "failed", "error": "整理已中断，原始记录已保留"}
