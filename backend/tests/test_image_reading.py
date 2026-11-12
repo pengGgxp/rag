@@ -230,12 +230,19 @@ def test_repeated_reads_can_load_same_image_on_demand():
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
 def test_loaded_image_reaches_four_actual_wire_payloads(monkeypatch, protocol):
-    value = image_reading.workspace_image(
-        "/home/user/workspace/chart.png", "image/png", 1, 1,
-        hashlib.sha256(PNG).hexdigest(), PNG)
-    messages = [{"role": "user", "content": [value.context_part()]}]
+    from app.cloud_computer_adapter import AlibabaSandbox
+    from test_cloud_computer_adapter import streamed_file
+
     config = ChatProviderConfig("https://provider.example/v1", "test-key", "vision",
         api_protocol=protocol, supports_images=True)
+    sandbox, download, response, _ = streamed_file([PNG[:10], PNG[10:]])
+    adapter = AlibabaSandbox.__new__(AlibabaSandbox)
+    def load(path):
+        return adapter.read_file(sandbox, path, max_bytes=10 * 1024 * 1024), {
+            "size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}
+    value = image_reading.read_image({"path": "chart.png"}, config=config, local_loader=load)
+    assert value.data == PNG and download.closed and response.is_closed
+    messages = [{"role": "user", "content": [value.context_part()]}]
     provider = OpenAICompatibleChatProvider(config=config)
     seen = []
     def respond(handler, payload):
@@ -288,7 +295,7 @@ def test_runtime_exposes_read_image_only_for_supported_models(accounts, monkeypa
     assert text_runtime.execute("read_image", {"path": "chart.png"})["error_code"] == "image_model_unsupported"
 
 
-@pytest.mark.parametrize("protocol", ["chat_completions", "anthropic", "gemini"])
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
 def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol):
     seen = []
     image = image_reading.workspace_image(
@@ -374,6 +381,78 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
     assert "write_file" not in {item["function"]["name"] for item in viewer.tools}
 
 
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
+@pytest.mark.parametrize("failure", ["interrupted", "empty", "oversized"])
+def test_image_download_failure_returns_tool_result_and_agent_continues(agent_runtime, protocol, failure, caplog):
+    import httpx
+    from app.cloud_computer_adapter import AlibabaSandbox
+    from test_cloud_computer_adapter import streamed_file
+
+    blocks = [] if failure == "empty" else [PNG[:10], PNG[10:]]
+    error = httpx.ReadError("private transport details") if failure == "interrupted" else None
+    sandbox, download, response, _ = streamed_file(blocks, error)
+    adapter = AlibabaSandbox.__new__(AlibabaSandbox)
+    config = ChatProviderConfig("https://example.test/v1", "test", "vision",
+        api_protocol=protocol, supports_images=True)
+
+    def load(path):
+        data = adapter.read_file(sandbox, path,
+            max_bytes=10 if failure == "oversized" else 10 * 1024 * 1024)
+        return data, {"size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    class Extensions:
+        tools = []
+        skills = []
+        environment_description = "test"
+
+        def label(self, name, arguments=None):
+            return "查看图片"
+
+        def execute(self, name, arguments, check_active=None):
+            return image_reading.read_image(arguments, config=config,
+                local_loader=load, check_active=check_active)
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            if self.count == 1:
+                return ToolResponse(content=None, tool_calls=[
+                    ToolCall(id="image", name="read_image", arguments={"path": "chart.png"})])
+            tool = next(message for message in messages if message.get("role") == "tool")
+            result = json.loads(tool["content"])
+            assert result["error_code"] == (
+                "image_transfer_failed" if failure == "interrupted" else "image_unavailable")
+            assert not any("_image_input" in message for message in messages)
+            return ToolResponse(content="图片未能读取，可重新读取文件。", tool_calls=[])
+
+    provider = Provider()
+    events = list(stream_retrieval_agent(**agent_runtime.arguments, provider=provider, extensions=Extensions()))
+    activity = next(data for name, data in events if name == "tool_result")
+    assert activity["status"] == "error" and activity["summary"]
+    assert next(data for name, data in events if name == "complete").answer == "图片未能读取，可重新读取文件。"
+    assert provider.count == 2 and download.closed and response.is_closed
+    serialized = json.dumps([(name, data) for name, data in events if name != "complete"], ensure_ascii=False)
+    assert base64.b64encode(PNG).decode() not in serialized + caplog.text
+    assert "private transport details" not in serialized + caplog.text
+
+
+@pytest.mark.parametrize("failure", ["cancel", "permission", "unauthorized", "forbidden", "bug"])
+def test_read_image_does_not_swallow_cancel_permission_or_programming_errors(failure):
+    from fastapi import HTTPException
+    from app.agent import AgentCancelled
+
+    errors = {"cancel": AgentCancelled(), "permission": PermissionError("denied"),
+        "unauthorized": HTTPException(401, "denied"), "forbidden": HTTPException(403, "denied"),
+        "bug": AttributeError("unexpected bug")}
+    def load(path):
+        raise errors[failure]
+    with pytest.raises(type(errors[failure])):
+        image_reading.read_image({"path": "chart.png"}, local_loader=load,
+            config=ChatProviderConfig("https://example.test/v1", "test", "vision", supports_images=True))
+
+
 def test_cloud_command_keeps_only_safe_image_metadata():
     class ImageCloud(FakeCloud):
         def start_file(self, sandbox, identifier, operation):
@@ -384,7 +463,7 @@ def test_cloud_command_keeps_only_safe_image_metadata():
         def file_result(self, sandbox, identifier):
             return {"value": {"size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}}
 
-        def read_file(self, sandbox, path, *, max_bytes, owner="user"):
+        def read_file(self, sandbox, path, *, max_bytes, owner="user", check_active=None):
             assert max_bytes == 10 * 1024 * 1024 and owner == "user"
             return PNG
 
@@ -416,7 +495,7 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     fake.start_file = start_file
     fake.file_result = lambda sandbox, identifier: {
         "value": {"size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}}
-    fake.read_file = lambda sandbox, target, *, max_bytes, owner="user": PNG
+    fake.read_file = lambda sandbox, target, *, max_bytes, owner="user", check_active=None: PNG
     image, result = cloud.execute_image(db, user_access, conversation.id, uuid4(), path, None)
     assert image.data == PNG and image.image["width"] == image.image["height"] == 1
     assert fake.creates == 1 and fake.starts == 1

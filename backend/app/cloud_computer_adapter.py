@@ -160,6 +160,8 @@ class AlibabaSandbox:
         mount = self.config.get("resource_mount")
         network = {"deny_out": PRIVATE_NETWORKS + self.config["blocked_hosts"], "allow_public_traffic": False}
         if mount:
+            network["allow_out"] = [
+                f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
             metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
                 "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
                     "bucketName": mount["bucket"], "mountDir": ROOT,
@@ -294,12 +296,27 @@ class AlibabaSandbox:
     def file_result(self, sandbox, identifier):
         return json.loads(sandbox.files.read(f"{STATE}/jobs/{identifier}/file-result.json", user="user"))
 
-    def read_file(self, sandbox, path, *, max_bytes, owner="user"):
+    def read_file(self, sandbox, path, *, max_bytes, owner="user", check_active=None):
         """Read at most max_bytes without copying the body into a command result."""
-        with sandbox.files.read(path, format="stream", user=owner) as stream:
-            data = stream.read(max_bytes + 1)
-        if len(data) > max_bytes:
-            raise RuntimeError("图片超过 10 MiB")
+        import httpx
+        from e2b import FileNotFoundException, TimeoutException
+        from .image_reading import ImageReadError
+
+        data = bytearray()
+        if check_active:
+            check_active()
+        try:
+            with sandbox.files.read(path, format="stream", user=owner) as stream:
+                for block in stream:
+                    if check_active:
+                        check_active()
+                    if len(data) + len(block) > max_bytes:
+                        raise ValueError("图片超过大小限制")
+                    data.extend(block)
+        except (httpx.TransportError, FileNotFoundException, TimeoutException):
+            raise ImageReadError("图片传输未完成") from None
+        if check_active:
+            check_active()
         return bytes(data)
 
     def poll(self, sandbox, identifier):
