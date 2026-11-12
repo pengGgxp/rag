@@ -914,7 +914,26 @@ class ContextCheckpoint(Base):
     model: Mapped[str] = mapped_column(String(200))
     estimated_before: Mapped[int] = mapped_column(Integer)
     estimated_after: Mapped[int] = mapped_column(Integer)
+    window_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    parent_window_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    parent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    encrypted_replacement: Mapped[str | None] = mapped_column(Text, nullable=True)
+    budget: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
+    source: Mapped[str] = mapped_column(String(24), default="local", server_default="legacy")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversationContext(Base):
+    """The only authority for model history; chat rows are display/audit records."""
+    __tablename__ = "conversation_contexts"
+    conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True)
+    window_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    checkpoint_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversation_context_checkpoints.id"), nullable=True)
+    encrypted_suffix: Mapped[str] = mapped_column(Text)
+    scope_digest: Mapped[str] = mapped_column(String(64))
+    blocked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attempted_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ContextOperation(Base):
