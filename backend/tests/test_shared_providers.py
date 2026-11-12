@@ -58,6 +58,25 @@ def choose(client, identifier):
     return binding
 
 
+def test_legacy_empty_image_config_is_complete_in_admin_reads_without_db_changes(accounts, monkeypatch):
+    from app.model_capabilities import ImageConfig
+    owner, db, _ = setup_site(accounts, monkeypatch)
+    value = provider(owner)
+    row = db.get(SiteModelProvider, UUID(value["id"]))
+    row.image_config = {}
+    db.commit()
+    before = (row.version, dict(row.prices), row.supports_chat)
+    expected = ImageConfig().model_dump(mode="json")
+    response = owner.get(f"/site/admin/llm-providers/{row.id}")
+    assert response.status_code == 200
+    assert response.json()["image_config"] == expected
+    listed = owner.get("/site/admin/llm-providers").json()
+    assert next(item for item in listed if item["id"] == str(row.id))["image_config"] == expected
+    db.refresh(row)
+    assert row.image_config == {}
+    assert (row.version, row.prices, row.supports_chat) == before
+
+
 def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
     p = provider(owner)

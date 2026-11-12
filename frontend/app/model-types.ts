@@ -24,6 +24,10 @@ export type ImageConfig = {
 export const emptyImageConfig: ImageConfig = { protocol: "openai_images", generate: false, edit: false,
   max_count: 1, max_references: 1, default_size: "1024x1024", default_quality: "standard", specs: [] };
 
+export function draftImageConfig(value?: Partial<ImageConfig> | null): ImageConfig {
+  return structuredClone({ ...emptyImageConfig, ...value });
+}
+
 export type ModelProvider = {
   id: string;
   key: string;
