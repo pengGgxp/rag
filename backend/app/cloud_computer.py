@@ -589,7 +589,8 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
             raise HTTPException(503, "图片读取结果无效，请重试")
         provider = adapter(row.snapshot, row.encrypted_api_key)
         sandbox = provider.connect(row.provider_id)
-        data = provider.read_file(sandbox, sandbox_path, max_bytes=MAX_IMAGE_BYTES)
+        data = provider.read_file(sandbox, sandbox_path, max_bytes=MAX_IMAGE_BYTES,
+            check_active=check_active)
         digest = hashlib.sha256(data).hexdigest()
         if len(data) != metadata["size_bytes"] or digest != metadata["sha256"]:
             raise HTTPException(409, "图片在读取过程中发生变化，请重新读取")
