@@ -441,7 +441,7 @@ def test_durable_agent_retries_only_failed_model_round_and_reconnect_does_not_ex
         environment_description = "隔离测试"
         def __init__(self, *args, **kwargs): pass
         def label(self, name, arguments=None): return "执行测试命令"
-        def execute(self, name, arguments, check_active=None):
+        def execute(self, name, arguments, check_active=None, **kwargs):
             tools_run.append(name)
             return {"status": "completed"}
     def respond(handler, payload):

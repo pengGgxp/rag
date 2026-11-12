@@ -475,7 +475,8 @@ def stream_retrieval_agent(
                         executable = (
                             context_manager.read_original(call.arguments)
                             if context_manager and call.name == "read_conversation_history" else
-                            extensions.execute(call.name, call.arguments, check_active=check_active)
+                            extensions.execute(call.name, call.arguments, check_active=check_active,
+                                call_id=activity["call_id"])
                             if extensions else {"error": "该工具不可用"}
                         )
                     image_result = executable.image if hasattr(executable, "image") else None

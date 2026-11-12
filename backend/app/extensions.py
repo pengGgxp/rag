@@ -143,14 +143,14 @@ class ExtensionRuntime(SkillRuntime):
             self.versions.append(("question-workbench", self.question_workbench.version))
             self.versions.sort()
 
-    def _image_local_loader(self, path, check_active):
-        from .cloud_computer import execute_image
+    def _image_local_loader(self, path, check_active, call_id):
+        from .cloud_computer import execute_image, tool_request_id
         from .models import ChatMessage
         with self.factory() as db:
             access = self.access.revalidate(db)
             message = db.get(ChatMessage, self.message_id) if self.message_id else None
             image, _ = execute_image(db, access, message.conversation_id if message else None,
-                self.request_id, path, check_active)
+                tool_request_id(self.request_id, call_id), path, check_active)
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"]}
 
     def label(self, name, arguments=None):
@@ -172,7 +172,7 @@ class ExtensionRuntime(SkillRuntime):
                 "start_preview": "启动成果预览", "stop_preview": "停止成果预览"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else super().label(name, arguments)
 
-    def execute(self, name, arguments, check_active=None):
+    def execute(self, name, arguments, check_active=None, *, call_id=None):
         if check_active:
             check_active()
         from .cloud_preview import LABELS as PREVIEW_LABELS, execute as preview_tool
@@ -180,7 +180,7 @@ class ExtensionRuntime(SkillRuntime):
             if name not in self.workspace_tool_names:
                 return {"error": "成果预览尚未开放"}
             try:
-                return preview_tool(self, name, arguments, check_active)
+                return preview_tool(self, name, arguments, check_active, call_id=call_id)
             except PayloadValidationError:
                 return {"error": "请检查启动命令、网页端口和预览名称", "error_code": "preview_arguments"}
             except HTTPException as error:
@@ -232,7 +232,7 @@ class ExtensionRuntime(SkillRuntime):
                     return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
                 if name == "read_image":
                     result = read_image(arguments, config=self.provider_config,
-                        local_loader=lambda path: self._image_local_loader(path, check_active),
+                        local_loader=lambda path: self._image_local_loader(path, check_active, call_id),
                         check_active=check_active)
                     if hasattr(result, "public"):
                         return ImageToolResult(result, {**result.public,
@@ -264,8 +264,10 @@ class ExtensionRuntime(SkillRuntime):
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     try:
+                        from .cloud_computer import tool_request_id
                         return execute_tool(name, arguments, db, access, access.workspace_id,
-                            conversation_id=message.conversation_id if message else None, request_id=self.request_id,
+                            conversation_id=message.conversation_id if message else None,
+                            request_id=tool_request_id(self.request_id, call_id),
                             skill_packages=packages, check_active=check_active)
                     except PayloadValidationError:
                         return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}

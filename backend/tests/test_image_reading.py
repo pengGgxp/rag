@@ -310,7 +310,7 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol
         def label(self, name, arguments=None):
             return "查看图片"
 
-        def execute(self, name, arguments, check_active=None):
+        def execute(self, name, arguments, check_active=None, **kwargs):
             from app.extensions import ImageToolResult
             return ImageToolResult(image, {"filename": "chart.png",
                 "summary": "已读取图片「chart.png」"})
@@ -365,7 +365,8 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
         return image, {"cloud_computer": {"status": "ready"}, "command_id": "command"}
 
     monkeypatch.setattr(cloud, "execute_image", execute_image)
-    result = runtime.execute("read_image", {"path": "chart.png"})
+    runtime.request_id = uuid4()
+    result = runtime.execute("read_image", {"path": "chart.png"}, call_id="tool-1-image")
     assert calls and calls[0][1] == "/home/user/workspace/chart.png"
     assert result.image.data == PNG
     assert result.result["filename"] == "chart.png"
@@ -408,7 +409,7 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
         def label(self, name, arguments=None):
             return "查看图片"
 
-        def execute(self, name, arguments, check_active=None):
+        def execute(self, name, arguments, check_active=None, **kwargs):
             return image_reading.read_image(arguments, config=config,
                 local_loader=load, check_active=check_active)
 
