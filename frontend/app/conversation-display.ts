@@ -1,4 +1,4 @@
-import type { ConversationActivityItem, SavedDocument } from "./conversation-activity";
+import type { ConversationActivityItem, KnowledgeBaseResult, SavedDocument } from "./conversation-activity";
 import type { ImageTaskResult } from "./image-task-result";
 import type { Preview } from "./cloud-preview";
 
@@ -12,6 +12,7 @@ export type ToolEvent = {
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
+  knowledge_base?: KnowledgeBaseResult;
 };
 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
@@ -21,6 +22,7 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     saved_document: item.saved_document,
     image_task: item.image_task,
     preview: item.preview,
+    knowledge_base: item.knowledge_base,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
     status: item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "uncertain"
