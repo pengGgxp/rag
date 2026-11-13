@@ -24,6 +24,8 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   const [dialog, setDialog] = useState<"delete" | "edit" | null>(null), [busy, setBusy] = useState(false);
   const [editor, setEditor] = useState<{ item: ResourceFile; content: string; initialContent: string; version: number } | null>(null), [clipboard, setClipboard] = useState<{ mode: "copy" | "cut"; paths: string[] } | null>(null), [preview, setPreview] = useState<ResourceFile | null>(null);
   const [inlineEdit, setInlineEdit] = useState<{ path: string; value: string; creating?: boolean } | null>(null);
+  const [editingAddress, setEditingAddress] = useState(false), [addressDraft, setAddressDraft] = useState("");
+  const addressInput = useRef<HTMLInputElement>(null), addressDisplay = useRef<HTMLDivElement>(null), selectAddress = useRef(true);
   const [quota, setQuota] = useState<StorageAllowances | null>(null);
   const input = useRef<HTMLInputElement>(null), menuRef = useRef<HTMLDivElement>(null), anchorRef = useRef<string | null>(null), longPress = useRef<number | null>(null);
   const canWrite = role === "admin" || role === "editor", scope = session ? `${session.user.id}:${session.workspace_id}` : "";
@@ -41,6 +43,25 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   useEffect(() => { const controller = new AbortController(); const timer = setTimeout(() => void load(controller.signal), query ? 180 : 0); return () => { clearTimeout(timer); controller.abort(); }; }, [session?.workspace_id, path, query, source, sort, select]);
   useEffect(() => { try { setView(localStorage.getItem(`resource-view:${session?.user.id}`) === "list" ? "list" : "grid"); } catch {} }, [session?.user.id]);
   useEffect(() => { if (select || !session) return; const controller = new AbortController(); void request<StorageAllowances>("/storage/allowances", { signal: controller.signal }).then(value => !controller.signal.aborted && setQuota(value)).catch(() => {}); return () => controller.abort(); }, [session?.workspace_id, select]);
+  useEffect(() => { if (editingAddress) { addressInput.current?.focus(); if (selectAddress.current) addressInput.current?.select(); } }, [editingAddress]);
+
+  function editAddress() {
+    selectAddress.current = true;
+    setAddressDraft(path ? `工作区/${path}` : "工作区");
+    setEditingAddress(true);
+  }
+  function closeAddress() {
+    setEditingAddress(false);
+    requestAnimationFrame(() => addressDisplay.current?.focus());
+  }
+  function navigateAddress() {
+    const destination = addressDraft.trim().replace(/\\/g, "/").replace(/^工作区(?:\/|$)/, "").replace(/^\/+|\/+$/g, "");
+    if (destination.split("/").some(part => part === ".." || part === ".")) {
+      setError("请输入工作区内的文件夹路径，不要包含 . 或 ..");
+      return;
+    }
+    setPath(destination); setQuery(""); closeAddress();
+  }
 
   function selectItem(item: Item, event: React.MouseEvent) {
     setMenu(null);
@@ -114,6 +135,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (dialog || select) return;
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") { event.preventDefault(); setSelected(new Set(items.map(item => item.path))); }
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") setClipboard({ mode: "copy", paths: [...selected] });
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "x") setClipboard({ mode: "cut", paths: [...selected] });
@@ -152,7 +174,21 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
         <Tooltip content="刷新"><button type="button" className="icon-button" aria-label="刷新工作区" disabled={loading || busy} onClick={() => void load()}><RefreshCw size={17} /></button></Tooltip>
       </div>
     </div>
-    {!select && <><div className="workspace-address-bar"><button type="button" className="icon-button" aria-label="返回上级" disabled={!path} onClick={() => setPath(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "")}><ChevronLeft size={17} /></button><div className="workspace-breadcrumbs">{crumbs.map((crumb, index) => <span key={crumb.path}><button type="button" onClick={() => setPath(crumb.path)}>{crumb.name}</button>{index < crumbs.length - 1 && <ChevronRight size={14} />}</span>)}</div><input aria-label="地址栏" value={path || "工作区"} onFocus={event => event.currentTarget.select()} onChange={event => setPath(event.target.value === "工作区" ? "" : event.target.value.replace(/^工作区\/?/, ""))} onKeyDown={event => { if (event.key === "Enter") void load(); }} /></div><ResourceNotice /></>}
+    {!select && <><div className="workspace-address-bar">
+      <Tooltip content="返回上级"><button type="button" className="icon-button" aria-label="返回上级" disabled={!path} onClick={() => { setPath(path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ""); setQuery(""); }}><ChevronLeft size={17} /></button></Tooltip>
+      <div className={`workspace-address ${editingAddress ? "workspace-address-editing" : ""}`}>
+        {editingAddress ? <input ref={addressInput} aria-label="地址栏" value={addressDraft} spellCheck={false} autoComplete="off" onChange={event => setAddressDraft(event.target.value)} onBlur={() => setEditingAddress(false)} onKeyDown={event => {
+          event.stopPropagation();
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") { event.preventDefault(); navigateAddress(); }
+          if (event.key === "Escape") { event.preventDefault(); closeAddress(); }
+        }} /> : <div ref={addressDisplay} className="workspace-breadcrumbs" role="group" aria-label="当前路径，双击或按 Enter 编辑" tabIndex={0} onDoubleClick={event => { event.preventDefault(); editAddress(); }} onKeyDown={event => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === "Enter" || event.key === "F2") { event.preventDefault(); event.stopPropagation(); editAddress(); }
+          else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); event.stopPropagation(); selectAddress.current = false; setAddressDraft(event.key); setEditingAddress(true); }
+        }}>{(crumbs.length ? crumbs : [{ name: "工作区", path: "" }]).map((crumb, index, entries) => <span key={crumb.path}><button type="button" onClick={event => { if (event.detail > 1 || crumb.path === path) return; setPath(crumb.path); setQuery(""); }}>{crumb.name}</button>{index < entries.length - 1 && <ChevronRight size={14} />}</span>)}</div>}
+      </div>
+    </div><ResourceNotice /></>}
     <div className="resource-browser-summary"><span>{select ? "选择文件" : path ? `工作区 · ${path}` : "工作区"}<small>{items.length}</small></span>{!select && quota && <span>已用 {bytes(quota.used_bytes)}<span className="resource-summary-divider">/</span>{bytes(quota.limit_bytes)}</span>}</div>
     {error && <p className="resource-browser-alert" role="alert">{error}</p>}
     <section className={`resource-browser-results ${grid ? "resource-masonry" : "resource-rows"}`} aria-label="工作区内容" tabIndex={0}>
