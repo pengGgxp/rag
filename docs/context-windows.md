@@ -1,5 +1,7 @@
 # 有效上下文窗口（Issue #96）
 
+回答收尾保存的加密 continuation 仅供审计，序列化前单独将工具图片转换为安全描述，不保存图片字节。转换不修改 Agent 当前项或权威窗口的完整图片快照，也不删除仍有效的工具配对、reasoning 或协议签名。刷新和 Worker 恢复仍从权威窗口加载图片，不从审计描述恢复。
+
 模型输入的唯一历史来源是 `ConversationContext`。没有活动检查点时，窗口是加密 suffix；安装检查点之后，恢复公式固定为 **checkpoint.encrypted_replacement + context.encrypted_suffix**。系统提示每次从当前配置构造，不写入窗口。原始 `ChatMessage`、SSE 事件、旧 continuation 和前端显示状态均不能决定恢复边界。
 
 `context_windows.py` 负责项标识、加密序列化、工具配对、协议投影和数据库读写。`effective_context.py` 提供统一的加载、当前输入追加、模型/工具追加和本地摘要安装。项保存来源、原消息/请求归属和工具调用 ID，工具图片与交接不会被当作真实用户消息。临时工具图片保存为带稳定 snapshot_id 和 SHA-256 的加密不可变快照；加载时完整恢复并校验字节，鉴权始终依附所属会话和工作区。上传资源图片仍逐次鉴权，实际字节必须匹配窗口记录的指纹，资源被修改或删除时失败。
