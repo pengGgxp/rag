@@ -387,7 +387,9 @@ def model_messages(messages, config, resource_context=None):
                     attachment.size_bytes = resource.size_bytes
                     attachment.object_key = version.object_key
                     raw = read_bytes(db, checked, resource, version)
-                    expected_hash = version.content_hash
+                    # A retained image denotes the originally selected bytes. Never
+                    # silently upgrade a saved window to a changed live resource.
+                    expected_hash = part["sha256"]
             else:
                 with download_fileobj(part["object_key"]) as source:
                     raw = source.read(MAX_IMAGE_BYTES + 1)

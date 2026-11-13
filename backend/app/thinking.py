@@ -159,11 +159,14 @@ def select_thinking(raw, version, option_id=None, expected_version=None):
 def encrypt_continuation(config, messages):
     if not config.continuation_required:
         return None
+    from .image_reading import persisted_model_images
     from .mcp_client import encrypt_headers
+    # This is an audit copy. Keep complete image bytes in the authoritative
+    # context window, and scrub only the separately serialized continuation.
     return encrypt_headers({"continuation": json.dumps({
         "provider": config.site_provider_id, "model": config.model,
         "protocol": config.api_protocol, "connection": config.connection_id,
-        "adapter": config.thinking.adapter, "messages": messages,
+        "adapter": config.thinking.adapter, "messages": persisted_model_images(messages),
     }, ensure_ascii=True)})
 
 

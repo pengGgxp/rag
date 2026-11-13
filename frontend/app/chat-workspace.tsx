@@ -46,6 +46,7 @@ import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
 import { Tooltip } from "../components/ui/tooltip";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
+import { acceptContextState } from "./conversation-context-state";
 import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
 import { AttachmentButton, DraftAttachments, MessageAttachments, useChatAttachments, type ChatAttachment } from "./chat-attachments";
@@ -115,13 +116,15 @@ type ModelOptions = { default_provider_id: string | null; providers: ModelChoice
 type ContextResponse = {
   estimated_input_tokens: number; capacity: number | null; output_reserve: number | null;
   eligible: boolean; status: ConversationContextState["status"];
+  window_id?: string | null; context_revision?: number;
 };
 const emptyContext: ConversationContextState = {
   estimatedInputTokens: null, capacity: null, outputReserve: null, eligible: false, status: "idle",
 };
 function contextState(value: ContextResponse): ConversationContextState {
   return { estimatedInputTokens: value.estimated_input_tokens, capacity: value.capacity,
-    outputReserve: value.output_reserve, eligible: value.eligible, status: value.status };
+    outputReserve: value.output_reserve, eligible: value.eligible, status: value.status,
+    windowId: value.window_id, contextRevision: value.context_revision };
 }
 type Conversation = {
   id: string;
@@ -436,7 +439,7 @@ export function ChatWorkspace({
     if (thinkingId) params.set("thinking_option_id", thinkingId);
     request<ContextResponse>(`/conversations/${conversation.id}/context?${params}`,
       { signal: controller.signal }).then(value => {
-        if (!controller.signal.aborted) setContextInfo(contextState(value));
+        if (!controller.signal.aborted) setContextInfo(current => acceptContextState(current, contextState(value)));
       }).catch(error => {
         if (!controller.signal.aborted) setContextError(
           error instanceof Error ? error.message : "上下文状态加载失败");
@@ -873,10 +876,15 @@ export function ChatWorkspace({
           if (name === "tool_result") setPhase("正在分析工具结果…");
           if (name === "thinking_delta") setPhase("正在思考…");
           if (name === "thinking_status" || name === "delta") setPhase("正在生成回答…");
-          if (name === "context") setContextInfo(contextState(data as ContextResponse));
+          if (name === "context") setContextInfo(current => acceptContextState(current, contextState(data as ContextResponse)));
+          if (name === "context_error") setContextInfo(value => ({ ...value, status: "failed", error: (data as { message: string }).message }));
           if (name === "compaction") {
             const status = (data as ToolEvent).status;
-            setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
+            const update = data as { window_id?: string; context_revision?: number; summary?: string };
+            setContextInfo(value => acceptContextState(value, { ...value,
+              status: status === "running" ? "running" : status === "completed" ? "completed" : "failed",
+              error: status === "failed" ? update.summary : undefined,
+              windowId: update.window_id ?? value.windowId, contextRevision: update.context_revision ?? value.contextRevision }));
             setPhase(status === "running" ? "正在整理早期上下文…" : "正在继续回答…");
           }
           if (name === "message" || name === "done") {
@@ -978,9 +986,13 @@ export function ChatWorkspace({
         if (epoch.current !== currentEpoch || active.controller.signal.aborted) return;
         if (name === "compaction") {
           const status = (data as ToolEvent).status;
-          setContextInfo(value => ({ ...value, status: status === "running" ? "running" : status === "completed" ? "completed" : "failed" }));
+          const update = data as { window_id?: string; context_revision?: number; summary?: string };
+          setContextInfo(value => acceptContextState(value, { ...value,
+            status: status === "running" ? "running" : status === "completed" ? "completed" : "failed",
+            error: status === "failed" ? update.summary : undefined,
+            windowId: update.window_id ?? value.windowId, contextRevision: update.context_revision ?? value.contextRevision }));
         }
-        if (name === "context") setContextInfo(contextState(data as ContextResponse));
+        if (name === "context") setContextInfo(current => acceptContextState(current, contextState(data as ContextResponse)));
         if (name === "done") {
           const result = data as { status: string; error?: string };
           if (result.status === "failed") throw new Error(result.error || "整理未完成，原始上下文已保留");

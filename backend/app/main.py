@@ -172,6 +172,15 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
+
+
+from .context_windows import ContextWindowError
+
+
+@app.exception_handler(ContextWindowError)
+async def context_window_error(_request, exc):
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=409, content={"detail": str(exc), "error_code": exc.code})
 settings = get_settings()
 app.add_middleware(BrowserRequestGuard)
 app.add_middleware(

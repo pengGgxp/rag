@@ -272,7 +272,7 @@ def test_compaction_treats_images_as_images_and_retains_original(client, objects
     summary = calls[0][1]["content"]
     assert summary[1]["type"] == "chat_image"
     assert "_chat/" not in summary[0]["text"]
-    assert "record-3" in summary[0]["text"] and "record-4" not in summary[0]["text"]
+    assert "record-3" in summary[0]["text"] and "record-4" in summary[0]["text"]
     db.expire_all()
     assert db.get(ChatMessage, original.id).attachments[0].id == UUID(item["id"])
-    assert db.scalars(select(ContextCheckpoint)).first().through_sequence == 3
+    assert db.scalars(select(ContextCheckpoint)).first().through_sequence == 7
