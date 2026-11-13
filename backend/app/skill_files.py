@@ -91,6 +91,28 @@ def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
     return files
 
 
+def _reject_raw_zip_paths(content: bytes) -> None:
+    """Inspect central-directory names before zipfile normalizes Windows separators."""
+    cursor = 0
+    marker = b"PK\x01\x02"
+    while True:
+        start = content.find(marker, cursor)
+        if start < 0:
+            return
+        if start + 46 > len(content):
+            raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持")
+        name_length = int.from_bytes(content[start + 28:start + 30], "little")
+        extra_length = int.from_bytes(content[start + 30:start + 32], "little")
+        comment_length = int.from_bytes(content[start + 32:start + 34], "little")
+        end = start + 46 + name_length + extra_length + comment_length
+        if end > len(content):
+            raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持")
+        raw_name = content[start + 46:start + 46 + name_length]
+        if b"\\" in raw_name or b"\x00" in raw_name:
+            raise HTTPException(422, "文件路径必须是 Skill 内的相对路径，不能包含 ..、反斜杠或空目录")
+        cursor = end
+
+
 def imported_files(entries: list[tuple[str, bytes]]) -> tuple[dict[str, bytes], str | None]:
     entries = [(safe_path(path), content) for path, content in entries]
     paths = [path for path, _ in entries]
@@ -115,6 +137,7 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "ZIP 不能超过 25 MiB")
     try:
+        _reject_raw_zip_paths(content)
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             infos = archive.infolist()
             if len(infos) > MAX_FILES * 3:
@@ -147,6 +170,7 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
     name = path.lower()
     try:
         if name.endswith(".zip"):
+            _reject_raw_zip_paths(content)
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 infos = archive.infolist()
                 if len(infos) > MAX_FILES * 3:

@@ -15,12 +15,13 @@ from . import mcp_client
 from .models import MCPServer, RemoteToolExecution
 from .personal_skills import router as skills_router, owned
 from .personal_mcp import router as mcp_router
-from .site_skills import LOAD_SKILL
+from .site_skills import LOAD_SKILL, catalog_router
 from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
 from .image_reading import read_image
 from .config import get_settings
 
 router = APIRouter()
+router.include_router(catalog_router)
 router.include_router(skills_router)
 router.include_router(mcp_router)
 

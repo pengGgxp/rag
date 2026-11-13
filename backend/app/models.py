@@ -1020,6 +1020,18 @@ class SiteSkillFile(Base):
     content: Mapped[bytes] = mapped_column(LargeBinary)
 
 
+class WorkspaceSkillInstall(Base):
+    __tablename__ = "workspace_skill_installs"
+    __table_args__ = (UniqueConstraint("workspace_id", "site_skill_id", name="uq_workspace_skill_install"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    site_skill_id: Mapped[UUID] = mapped_column(ForeignKey("site_skills.id", ondelete="CASCADE"), index=True)
+    directory: Mapped[str] = mapped_column(String(512), unique=True)
+    source_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ProductSuggestion(Base):
     __tablename__ = "product_suggestions"
     __table_args__ = (UniqueConstraint("user_id", "request_id", name="uq_suggestion_request"),)

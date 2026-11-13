@@ -14,7 +14,7 @@ import "./resource-library.css";
 
 export type ResourceFile = { id: string; path: string; content_type: string; size_bytes: number;
   source: string; updated_at: string; availability?: "pending" | "missing" | "available" };
-const sources: Record<string, string> = { chat_upload: "对话上传", resource_upload: "资源库上传", model_output: "模型生成" };
+const sources: Record<string, string> = { chat_upload: "对话上传", resource_upload: "资源库上传", model_output: "模型生成", platform: "平台 Skill" };
 
 export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => Promise<void> }) {
   const { session, role } = useAuth();
