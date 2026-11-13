@@ -631,6 +631,19 @@ class Document(Base):
     )
 
 
+class KnowledgeBaseToolExecution(Base):
+    __tablename__ = "knowledge_base_tool_executions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
+    knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
+    arguments_digest: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ConversationDocumentSave(Base):
     __tablename__ = "conversation_document_saves"
     __table_args__ = (UniqueConstraint("user_id", "request_id", "knowledge_base_id", "content_hash", name="uq_conversation_document_save"),)

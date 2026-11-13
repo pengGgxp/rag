@@ -1035,7 +1035,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                     if name == "compaction":
                         data = {**data, "kind": "compaction", "name": "compact_context"}
                     summary = {
-                        key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary", "files", "saved_document", "image_task", "preview",
+                        key: data[key] for key in ("call_id", "name", "label", "kind", "status", "result_count", "summary", "files", "saved_document", "image_task", "preview", "knowledge_base",
                                                    "skill_id", "skill_name", "skill_version")
                         if key in data
                     }
