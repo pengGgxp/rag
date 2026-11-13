@@ -1,5 +1,15 @@
 # Agent 自主执行
 
+## 知识库基础管理（Issue #93）
+
+内置 `create_knowledge_base`、`update_knowledge_base`、`list_knowledge_bases` 和
+`get_knowledge_base_document_status`。只有当前用户明确要求且名称、目标和改动内容充分时写入；
+只读成员仅查询。活动显示真实对象和入口，写入与回执同事务提交，重复投递不重复创建。
+查询返回真实版本/处理状态，排队或处理中不可描述为可检索，不启动上传或处理任务。
+不改变发现、检索、@、引用、拒答和原成果保存规则。
+参数、权限与意图判断边界见 [工具身份上下文](agent-runtime-access.md)，
+隔离验证记录见 [Issue #93 任务记录](tasks/issue-93-knowledge-base-tools.md)。
+
 ## 对话成果保存（Issue #74）
 
 内置 `list_writable_knowledge_bases`、`save_to_knowledge_base` 和

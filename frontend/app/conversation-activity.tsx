@@ -13,6 +13,8 @@ export type SavedDocument = {
   document_status: string; terminal: boolean; summary: string;
 };
 
+export type KnowledgeBaseResult = { id: string; name: string };
+
 export type ConversationActivityItem = {
   id: string;
   label: string;
@@ -23,6 +25,7 @@ export type ConversationActivityItem = {
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
+  knowledge_base?: KnowledgeBaseResult;
 };
 
 function SavedDocumentResult({ initial, onUpdate, showStatus }: { initial: SavedDocument; onUpdate: (value: SavedDocument) => void; showStatus: boolean }) {
@@ -130,6 +133,11 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
     {items.filter(item => item.saved_document).map(item => <SavedDocumentResult key={item.saved_document!.save_id}
       initial={item.saved_document!} onUpdate={updateSaved} showStatus={items.length > 1} />)}
     {items.filter(item => item.image_task).map(item => <ImageTaskActivity key={item.image_task!.task_id} initial={item.image_task!} onUpdate={updateImage} showStatus={items.length > 1} />)}
+    {items.filter(item => item.knowledge_base && item.status === "completed").map(item => <div className="activity-file-downloads" key={item.id}>
+      <Link className="activity-file-download" href={`/?library=${encodeURIComponent(item.knowledge_base!.id)}&view=documents`}>
+        <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>
+      </Link>
+    </div>)}
     {items.filter(item => item.preview).map(item => <div className="activity-file-downloads" key={item.preview!.id}>
       <button type="button" className="activity-file-download" onClick={() => openPreview(item.preview!.id)}><ExternalLink size={15} /><span>{item.preview!.status === "ready" ? "打开预览" : "查看预览状态"} · {item.preview!.name}</span></button>
     </div>)}

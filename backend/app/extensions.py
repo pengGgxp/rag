@@ -125,6 +125,11 @@ class ExtensionRuntime(SkillRuntime):
         with factory() as db:
             self.tools.extend(image_tools(db, access))
         from .conversation_documents import TOOLS as DOCUMENT_TOOLS
+        from .knowledge_base_tools import TOOLS as KNOWLEDGE_TOOLS, WRITE_NAMES
+        self.tools.extend(item for item in KNOWLEDGE_TOOLS
+            if access.role in ("admin", "editor") or item["function"]["name"] not in WRITE_NAMES)
+        self.versions.append(("knowledge-base-tools", 1))
+        self.versions.sort()
         if access.role in ("admin", "editor"):
             self.tools.extend(DOCUMENT_TOOLS)
             self.versions.append(("conversation-documents", 1))
@@ -153,6 +158,9 @@ class ExtensionRuntime(SkillRuntime):
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"]}
 
     def label(self, name, arguments=None):
+        from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
+        if name in KNOWLEDGE_LABELS:
+            return KNOWLEDGE_LABELS[name]
         from .image_tools import LABELS as IMAGE_LABELS
         if name in IMAGE_LABELS:
             return IMAGE_LABELS[name]
@@ -174,6 +182,19 @@ class ExtensionRuntime(SkillRuntime):
     def execute(self, name, arguments, check_active=None, *, call_id=None):
         if check_active:
             check_active()
+        from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
+        if name in KNOWLEDGE_LABELS:
+            try:
+                return knowledge_tool(self, name, arguments, call_id=call_id)
+            except PayloadValidationError:
+                return {"error": "参数不完整或无效，请确认知识库、名称及需要修改的字段", "error_code": "knowledge_arguments"}
+            except HTTPException as error:
+                detail = ("知识库或文档不存在或无权访问，请重新选择可访问的对象"
+                    if error.status_code == 404 else str(error.detail))
+                return {"error": detail, "error_code": "knowledge_access"}
+            except Exception:
+                return {"error": "操作结果尚未确认，请先查看知识库核对结果，再重试原调用", "uncertain": True,
+                        "error_code": "knowledge_result"}
         from .cloud_preview import LABELS as PREVIEW_LABELS, execute as preview_tool
         if name in PREVIEW_LABELS:
             if name not in self.workspace_tool_names:

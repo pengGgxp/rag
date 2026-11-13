@@ -103,7 +103,8 @@ def test_runtime_snapshot_revocation_and_private_retention(accounts, monkeypatch
     runtime = ExtensionRuntime(lambda: nullcontext(db), access)
     assert {tool["function"]["name"] for tool in runtime.tools} == {
         "load_skill", "read_skill_resource",
-        "list_writable_knowledge_bases", "save_to_knowledge_base", "get_saved_document_status"}
+        "list_writable_knowledge_bases", "save_to_knowledge_base", "get_saved_document_status",
+        "create_knowledge_base", "update_knowledge_base", "list_knowledge_bases", "get_knowledge_base_document_status"}
     assert "SECRET" not in str(runtime.skills) and "instructions" not in str(runtime.skills)
     args = {"skill_id": item["id"]}
     row = db.get(SiteSkill, UUID(item["id"]))
