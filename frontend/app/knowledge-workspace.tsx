@@ -105,7 +105,13 @@ export default function KnowledgeWorkspace() {
   const [documentSearch, setDocumentSearch] = useState("");
   const [trash, setTrash] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [libraryLoading, setLibraryLoading] = useState(true);
+  const libraryDestination = `${screen}:${selectedId}`;
+  const libraryDestinationRef = useRef(libraryDestination);
+  libraryDestinationRef.current = libraryDestination;
+  const libraryRequest = useRef(0);
+  const [libraryLoadedFor, setLibraryLoadedFor] = useState<string | null>(null);
+  const [librariesLoading, setLibraryLoading] = useState(true);
+  const libraryLoading = librariesLoading || libraryLoadedFor !== libraryDestination;
   const [libraryError, setLibraryError] = useState("");
   const [documentError, setDocumentError] = useState("");
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
@@ -146,17 +152,28 @@ export default function KnowledgeWorkspace() {
     }
   }, []);
   const loadLibraries = useCallback(async () => {
+    const sequence = ++libraryRequest.current;
+    const isCurrent = () => sequence === libraryRequest.current &&
+      libraryDestinationRef.current === libraryDestination;
+    setLibraryLoading(true);
     try {
       const data = await request<KnowledgeBase[]>("/knowledge-bases");
-      setLibraries(data);
-      setLibraryError("");
+      if (isCurrent()) {
+        setLibraries(data);
+        setLibraryError("");
+      }
     } catch (error) {
-      setLibraryError(error instanceof Error ? error.message : "知识库加载失败");
-      throw error;
+      if (isCurrent()) {
+        setLibraryError(error instanceof Error ? error.message : "知识库加载失败");
+        throw error;
+      }
     } finally {
-      setLibraryLoading(false);
+      if (isCurrent()) {
+        setLibraryLoadedFor(libraryDestination);
+        setLibraryLoading(false);
+      }
     }
-  }, []);
+  }, [libraryDestination]);
   const loadDocuments = useCallback(async (id: string, quiet = false) => {
     const sequence = ++documentRequest.current;
     if (!quiet) setLoading(true);
@@ -178,9 +195,14 @@ export default function KnowledgeWorkspace() {
     }
   }, []);
   useEffect(() => {
-    loadLibraries().catch(notifyError);
+    // SPA navigation keeps this workspace mounted, including after Agent writes.
+    // Re-read authorized metadata before treating a cached miss as inaccessible.
+    setLibraryLoadedFor(null);
+    void loadLibraries().catch(notifyError);
+  }, [loadLibraries, notifyError]);
+  useEffect(() => {
     void refreshHealth();
-  }, [loadLibraries, notifyError, refreshHealth]);
+  }, [refreshHealth]);
   useEffect(() => {
     const admitted = (event: Event) => {
       const id = (event as CustomEvent<{ library: string }>).detail.library;
@@ -430,7 +452,8 @@ export default function KnowledgeWorkspace() {
     next.set(destination === "knowledge" ? "view" : "chat", destination === "knowledge" ? "documents" : "1");
     router.push(`/?${next.toString()}`, { scroll: false });
   }
-  const selected = libraries.find((item) => item.id === selectedId);
+  const selected = libraryLoadedFor === libraryDestination && !libraryError
+    ? libraries.find((item) => item.id === selectedId) : undefined;
   const activeDocuments = documents.filter((doc) => doc.status !== "deleted");
   const visibleDocuments = documents.filter(
     (doc) =>
