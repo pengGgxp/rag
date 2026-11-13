@@ -235,9 +235,9 @@ class SkillRuntime:
     def execution_metadata(self, snapshot):
         available = bool(getattr(self, "execution_available", False))
         return {"execute_scripts": available,
-            "execution": {"tool": "run_command", "directory": f"/skills/{snapshot['id']}",
-                "working_directory": "/workspace", "scripts": snapshot["scripts"], "read_only": True,
-                "instructions": "使用解释器和目录中的绝对脚本路径运行；包内相对资料位于同一目录。输出写入 /workspace，不要修改 Skill 包。"}
+            "execution": {"tool": "run_command", "directory": f"/home/user/workspace/skill-packages/{snapshot['id']}",
+                "working_directory": "/home/user/workspace", "scripts": snapshot["scripts"], "read_only": True,
+                "instructions": "方法默认位于资源库的只读 skill-packages 目录，包内相对资料保留原结构。按需使用解释器运行脚本，成果写入资源库其他目录。"}
                 if available else None}
 
     def execute(self, name, arguments, check_active=None):

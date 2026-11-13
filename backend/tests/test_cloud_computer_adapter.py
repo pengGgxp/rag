@@ -164,13 +164,16 @@ def test_dependencies_use_runtime_tmp_volume_outside_outputs():
     assert DEPENDENCIES.startswith("/tmp/")
 
 
-def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
+@pytest.mark.parametrize("managed", [False, True])
+def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets(managed):
     calls = {}
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
     provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": ["blocked.example"],
         "oss_role_arn": "acs:ram::123:role/sandbox", "resource_mount": {
             "bucket": "test-bucket", "region": "cn-beijing",
             "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared", "file_tools": True}}
+    if managed:
+        provider.config["skill_mount"] = {"prefix": "skill-pkg/workspace-a/user-a/session-a/"}
     provider.options = {}
     def create(**kwargs):
         calls.update(kwargs)
@@ -178,9 +181,13 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
     provider.sdk = SimpleNamespace(create=create)
     provider.create("session-a")
     points = json.loads(calls["metadata"]["fc.sandbox.storage.oss"])["mountPoints"]
-    assert points == [{"bucketName": "test-bucket", "mountDir": "/home/user/workspace",
+    assert points[0] == {"bucketName": "test-bucket", "mountDir": "/home/user/workspace",
         "bucketPath": "/workspaces/workspace-a/resource-directory",
-        "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}]
+        "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}
+    if managed:
+        assert points[1] == {**points[0], "mountDir": "/home/user/workspace/skill-packages",
+            "bucketPath": "/skill-pkg/workspace-a/user-a/session-a", "readOnly": True}
+    assert len(points) == (2 if managed else 1)
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
     assert calls["allow_internet_access"] is True
     assert calls["network"]["allow_out"] == ["test-bucket.oss-cn-beijing.aliyuncs.com"]

@@ -1,16 +1,12 @@
 """Review package resources without extracting or executing uploaded files."""
 import base64
 import binascii
-import posixpath
-import re
-from urllib.parse import unquote, urlsplit
 
 from fastapi import HTTPException
 
-from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, text_content, validate_files
+from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, validate_files
 
 TEXT_SUFFIXES = {"md", "txt", "csv", "json", "yaml", "yml", "xml", "html", "css", "svg"}
-LOCAL_LINK = re.compile(r"!?\[[^\[\]\r\n]*\]\(<?([^\s)<>]+)>?(?:[ \t]+[^()\r\n]*)?\)")
 
 
 def decode_files(items, markdown):
@@ -50,16 +46,4 @@ def review(files):
                 entry["archive_error"] = str(exc.detail)
                 entry["blocking"] = True
                 issues.append(f"{path}：{exc.detail}")
-        if path.lower().endswith(".md") and entry["readable"]:
-            for match in LOCAL_LINK.finditer(text_content(files[path])):
-                try:
-                    target = urlsplit(match[1])
-                except ValueError:
-                    issues.append(f"{path}：存在无法识别的资料链接，请修改后再启用")
-                    continue
-                if target.scheme or target.netloc or not target.path:
-                    continue
-                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), unquote(target.path)))
-                if resolved not in files:
-                    issues.append(f"{path}：引用的文件 {target.path} 不在包内，请补齐或修改指令")
     return {"manifest": entries, "issues": list(dict.fromkeys(issues)), "can_enable": not issues}

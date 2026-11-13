@@ -51,11 +51,11 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     captured = []
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
     assert runtime.execute("run_command", {"command": "echo ready"}, call_id="tool-1-ready")["exit_code"] == 0
-    assert captured.pop()["skill_packages"] == {}
-    assert runtime.execute("run_command", {"command": f"python /skills/{first['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
-    assert set(captured.pop()["skill_packages"]) == {first["id"]}
+    assert set(captured.pop()["skill_packages"]) == {first["id"], second["id"]}
+    assert runtime.execute("run_command", {"command": f"python skill-packages/{first['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
+    assert set(captured.pop()["skill_packages"]) == {first["id"], second["id"]}
     loaded = runtime.execute("load_skill", {"skill_id": first["id"]})
-    assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/skills/{first['id']}"
+    assert loaded["execute_scripts"] and loaded["execution"]["directory"] == f"/home/user/workspace/skill-packages/{first['id']}"
     assert loaded["execution"]["read_only"] and loaded["execution"]["scripts"] == ["scripts/task.py"]
     row = db.get(AgentSkill, UUID(first["id"]))
     row.files[0].content = b"CHANGED AFTER REQUEST"
@@ -63,13 +63,13 @@ def test_runtime_passes_available_pinned_packages_without_selection_or_loading(a
     db.commit()
     assert runtime.execute("run_command", {"command": "python script.py", "skill_ids": [first["id"]]}, call_id="tool-3-pinned")["exit_code"] == 0
     package = captured[0]["skill_packages"]
-    assert set(package) == {first["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
+    assert set(package) == {first["id"], second["id"]} and package[first["id"]]["scripts/task.py"] == b"print('PINNED SCRIPT')"
     assert package[first["id"]]["assets/value.bin"] == b"\xff\x00"
     assert runtime.execute("run_command", {"command": "x", "skill_files": {}}).get("error")
     row.enabled = False
     db.commit()
     assert runtime.execute("run_command", {"command": "echo unrelated task"}, call_id="tool-4-unrelated")["exit_code"] == 0
-    assert captured[-1]["skill_packages"] == {}
+    assert set(captured[-1]["skill_packages"]) == {second["id"]}
     assert len(captured) == 2
 
 
@@ -147,7 +147,7 @@ def test_command_without_personal_skill_and_role_revocation(accounts, monkeypatc
         if platform:
             assert "instructions" in runtime.execute("load_skill", {"skill_id": method["id"]})
         assert runtime.execute("run_command", {"command": "echo ready"}, call_id="tool-1-ready")["exit_code"] == 0
-        assert captured[-1]["skill_packages"] == {}
+        assert set(captured[-1]["skill_packages"]) == ({method["id"]} if platform else set())
     member = db.get(Membership, (access.workspace_id, access.user_id))
     member.role = "viewer"
     db.commit()
@@ -174,30 +174,29 @@ def test_platform_package_mounts_by_skill_id_and_command_path_with_pinned_bytes(
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, message_id=message.id, request_id=uuid4())
     loaded = runtime.execute("load_skill", {"skill_id": skill["id"]})
     assert loaded["execute_scripts"] and loaded["resources"] == [{"path": "scripts/task.py"}]
-    assert loaded["execution"]["directory"] == f"/skills/{skill['id']}"
+    assert loaded["execution"]["directory"] == f"/home/user/workspace/skill-packages/{skill['id']}"
     assert loaded["execution"]["scripts"] == ["scripts/task.py"] and loaded["execution"]["read_only"]
-    written = []
-    monkeypatch.setattr(fake, "write_skill", lambda sandbox, path, data: written.append((path, data)))
+    from app import cloud_computer as cloud
+    from app.skill_directory import prefix
     result = runtime.execute("run_command", {"command": "echo ready", "skill_ids": [skill["id"]]}, call_id="tool-1-ready")
     assert result["exit_code"] == 0
-    assert fake.skill_clears == 1
-    assert dict(written) == {f"{skill['id']}/SKILL.md": skill["markdown"].encode(),
+    computer = db.query(cloud.Computer).one()
+    root = prefix(access.workspace_id, access.user_id, computer.id)
+    assert {key[len(root):]: value for key, value in fake.storage.objects.items() if key.startswith(root)
+        and not key.endswith(".directory.json")} == {f"{skill['id']}/SKILL.md": skill["markdown"].encode(),
         f"{skill['id']}/assets/value.bin": b"\xff\x00", f"{skill['id']}/scripts/task.py": b"print('PLATFORM')"}
-    written.clear()
-    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
-    assert fake.skill_clears == 2
-    assert {path for path, _ in written} == {f"{skill['id']}/SKILL.md", f"{skill['id']}/assets/value.bin",
-        f"{skill['id']}/scripts/task.py"}
+    assert runtime.execute("run_command", {"command": f"python skill-packages/{skill['id']}/scripts/task.py"}, call_id="tool-2-script")["exit_code"] == 0
     row = db.get(SiteSkill, UUID(skill["id"]))
     row.files[0].content, row.version = b"CHANGED", 2
     db.commit()
-    written.clear()
     runtime.request_id = uuid4()
-    runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py changed"}, call_id="tool-1-changed")
-    assert (f"{skill['id']}/scripts/task.py", b"print('PLATFORM')") in written
+    runtime.execute("run_command", {"command": f"python skill-packages/{skill['id']}/scripts/task.py changed"}, call_id="tool-1-changed")
+    assert fake.storage.objects[root + f"{skill['id']}/scripts/task.py"] == b"print('PLATFORM')"
+    db.refresh(computer)
+    assert computer.manifest["skill_versions"] == {skill["id"]: 1}
     row.enabled = False
     db.commit()
-    assert runtime.execute("run_command", {"command": f"python /skills/{skill['id']}/scripts/task.py"})["error_code"] == "skill_missing"
+    assert runtime.execute("run_command", {"command": f"python skill-packages/{skill['id']}/scripts/task.py"})["error_code"] == "skill_missing"
 
 
 def test_platform_and_personal_uuid_collision_is_rejected(accounts, monkeypatch):
@@ -220,7 +219,7 @@ def test_unknown_command_skill_path_is_rejected_before_execution(accounts, monke
     enable_cloud(db, access_for(admin, db), monkeypatch)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: pytest.fail("command submitted"))
-    result = runtime.execute("run_command", {"command": f"python /skills/{path}/task.py"})
+    result = runtime.execute("run_command", {"command": f"python skill-packages/{path}/task.py"})
     assert result["error_code"] == "skill_missing"
 
 
@@ -232,7 +231,7 @@ def test_command_skill_limit_includes_ids_and_paths(accounts, monkeypatch):
     selected.append(scripted(admin, name="Path only")["id"])
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: pytest.fail("command submitted"))
-    result = runtime.execute("run_command", {"command": f"python /skills/{selected[-1]}/scripts/task.py",
+    result = runtime.execute("run_command", {"command": f"python skill-packages/{selected[-1]}/scripts/task.py",
         "skill_ids": selected[:-1]})
     assert result["error_code"] == "skill_limit"
 
@@ -255,13 +254,13 @@ def test_run_command_forwards_packages_and_saves_only_outputs(accounts, monkeypa
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(admin, db)
     fake, execute = enable_cloud(db, access, monkeypatch)
-    captured, stored = [], {}
+    stored = {}
     fake.outputs = {"report.txt": b"result"}
-    monkeypatch.setattr(fake, "write_skill", lambda sandbox, path, data: captured.append((path, data)))
+    selected = scripted(admin)
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda file, key, *_: stored.update({key: file.read()}))
-    result = execute({"command": "python /skills/test/main.py"}, {"test": {"main.py": b"print('ok')"}})
+    result = execute({"command": f"python skill-packages/{selected['id']}/scripts/task.py"})
     assert result["exit_code"] == 0 and "files" not in result
-    assert captured == [("test/main.py", b"print('ok')")]
+    assert any(key.endswith(f"{selected['id']}/scripts/task.py") for key in fake.storage.objects)
     assert not stored
     assert admin.get("/resources").json()["items"][0]["path"] == "report.txt"
     from app.models import CloudComputerCommand

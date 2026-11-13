@@ -192,11 +192,15 @@ class AlibabaSandbox:
         if mount:
             network["allow_out"] = [
                 f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
-            metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
-                "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
+            points = [{
                     "bucketName": mount["bucket"], "mountDir": ROOT,
                     "bucketPath": "/" + mount["prefix"].rstrip("/"),
-                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]})})
+                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]
+            if self.config.get("skill_mount"):
+                points.append({**points[0], "mountDir": ROOT + "/skill-packages",
+                    "bucketPath": "/" + self.config["skill_mount"]["prefix"].rstrip("/"), "readOnly": True})
+            metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
+                "fc.sandbox.storage.oss": json.dumps({"mountPoints": points})})
         sandbox = self.sdk.create(template=self.config["template"], timeout=self.config["max_seconds"],
             metadata=metadata, secure=True,
             allow_internet_access=True,
@@ -235,9 +239,6 @@ class AlibabaSandbox:
         sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {DEPENDENCIES}", user="user")
         sandbox.files.write(f"{STATE}/launcher.py", LAUNCHER, user="user")
 
-    def clear_skills(self, sandbox):
-        sandbox.commands.run("rm -rf /skills && mkdir -p /skills && chmod 555 /skills", user="root")
-
     def write(self, sandbox, path, data, root=ROOT):
         from .workspace_files import valid_path
         path = valid_path(path)
@@ -246,16 +247,6 @@ class AlibabaSandbox:
             "assert not any(q.is_symlink() for q in [p,*p.parents]); p.parent.mkdir(parents=True,exist_ok=True)")
         sandbox.commands.run("python3 -c " + shlex.quote(script), user="user")
         sandbox.files.write(f"{root}/{path}", data, user="user")
-
-    def write_skill(self, sandbox, path, data):
-        from .workspace_files import valid_path
-        path = valid_path(path)
-        target = f"/skills/{path}"
-        script = ("from pathlib import Path; p=Path("+repr(target)+"); "
-            "assert not any(q.is_symlink() for q in [p,*p.parents]); p.parent.mkdir(parents=True,exist_ok=True)")
-        sandbox.commands.run("python3 -c " + shlex.quote(script), user="root")
-        sandbox.files.write(target, data, user="root")
-        sandbox.commands.run("chmod 555 " + shlex.quote(target), user="root")
 
     def remove(self, sandbox, path):
         from .workspace_files import valid_path

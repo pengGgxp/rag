@@ -9,7 +9,7 @@ from uuid import UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 
 from .auth import Access, aware, get_access, now
 from .credit_amounts import CreditRate, amount
@@ -268,7 +268,7 @@ def tool_request_id(request_id, call_id):
     return uuid5(UUID(str(request_id)), "cloud-tool:" + call_id)
 
 
-def submit(db, access, conversation_id, request_id, arguments, skill_packages=None):
+def submit(db, access, conversation_id, request_id, arguments, skill_packages=None, skill_versions=None):
     access = owner(db, access, conversation_id)
     file_operation = arguments.get("file_operation")
     if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image"}:
@@ -277,7 +277,11 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
             from .storage_billing import check_capacity
             check_capacity(db, access.workspace_id, 0)
     serialize_admission(db)
-    payload = {"command": arguments["command"], "inputs": [], "skills": skill_packages or {}}
+    from .skill_directory import current_packages, required_ids
+    if skill_packages is None:
+        skill_packages, skill_versions = current_packages(db, access)
+    payload = {"command": arguments["command"], "inputs": [], "skills": skill_packages,
+        "skill_versions": skill_versions or {}, "required_skills": sorted(required_ids(arguments))}
     if arguments.get("preview"):
         from .cloud_preview import Start
         from .config import get_settings
@@ -312,6 +316,8 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
         raise HTTPException(409, "云电脑正在结束或核对状态，请稍后重试")
     if row and row.snapshot.get("resource_mount", {}).get("mode") != "shared":
         raise HTTPException(409, "请先结束当前云电脑，再重试文件操作")
+    if row and not row.snapshot.get("skill_mount"):
+        raise HTTPException(409, "请先结束当前云电脑，再使用 Skill")
     if row is None:
         count = db.scalar(select(func.count()).select_from(Computer).where(Computer.ended_at.is_(None)))
         if count >= settings.config["concurrency"]:
@@ -320,6 +326,8 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
         snapshot = {**settings.config, "version": settings.version}
         snapshot["resource_mount"] = {"bucket": active_storage.bucket, "region": active_storage.region,
             "prefix": f"workspaces/{access.workspace_id}/resource-directory/", "mode": "shared"}
+        from .skill_directory import prefix as skill_prefix
+        snapshot["skill_mount"] = {"prefix": skill_prefix(access.workspace_id, access.user_id, identifier)}
         reserve = amount(Decimal(str(settings.config["credits_per_minute"])) * settings.config["idle_seconds"] / 60)
         if reserve:
             authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
@@ -402,7 +410,6 @@ def run(identifier, factory=SessionLocal):
 
 def _run(identifier, factory=SessionLocal):
     """Claim once; never replay a command whose upstream submission was uncertain."""
-    import base64
     import time
     with factory() as db:
         command = db.get(Command, UUID(str(identifier)), with_for_update=True)
@@ -423,6 +430,9 @@ def _run(identifier, factory=SessionLocal):
             access.editor()
             if row.snapshot.get("resource_mount", {}).get("mode") != "shared":
                 raise HTTPException(503, "云电脑未挂载工作区资源目录")
+            from .skill_directory import synchronize as synchronize_skills
+            synchronize_skills(db, row, access, command.payload["skills"],
+                command.payload.get("skill_versions", {}), command.payload.get("required_skills", ()))
             if not row.provider_id:
                 stage_mount(db, row, access, command.payload["inputs"])
                 try:
@@ -437,14 +447,6 @@ def _run(identifier, factory=SessionLocal):
             sandbox = provider.connect(row.provider_id)
             provider.prepare(sandbox)
             stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
-            clear_skills = getattr(provider, "clear_skills", None)
-            if clear_skills:
-                # A session reuses the cloud computer; never leave a package from
-                # an earlier command visible to a later, unselected command.
-                clear_skills(sandbox)
-            for skill_id, package in command.payload["skills"].items():
-                for path, encoded in package.items():
-                    provider.write_skill(sandbox, f"{skill_id}/{path}", base64.b64decode(encoded))
             db.refresh(command)
             db.refresh(row, ["status", "billing_stopped_at"])
             if command.cancel_requested or row.status == "stopping":
@@ -463,6 +465,11 @@ def _run(identifier, factory=SessionLocal):
             if command.payload.get("file_operation", {}).get("reference"):
                 from .workspace_files import resolve_input
                 resolve_input(db, access, command.payload["file_operation"]["reference"])
+            access = session_access(db, row)
+            access.editor()
+            from .skill_directory import authorized as skill_authorized
+            if any(not skill_authorized(db, access, identifier) for identifier in row.manifest.get("skill_versions", {})):
+                raise HTTPException(409, "方法状态已变化，请重新发起操作")
             row.status = "running"
             command.status = "running"
             db.commit()
@@ -505,12 +512,13 @@ def _run(identifier, factory=SessionLocal):
                 time.sleep(1)
             command.finished_at = now()
             db.commit()
-        except Exception:
+        except Exception as error:
             db.rollback()
             db.refresh(command)
             db.refresh(row)
             command.status = "uncertain" if submitted else "failed"
-            command.result = {"status": command.status, "error": "执行结果待核对，请查看资源库，勿重复执行" if submitted else "云电脑未能准备文件，请检查资源与额度后重试",
+            command.result = {"status": command.status, "error": ("执行结果待核对，请查看资源库，勿重复执行" if submitted
+                else str(error.detail) if isinstance(error, HTTPException) else "云电脑未能准备文件，请检查资源与额度后重试"),
                                   "uncertain": submitted}
             if submitted and command.payload.get("preview"):
                 from .models import CloudPreview
@@ -540,15 +548,15 @@ def _run(identifier, factory=SessionLocal):
             db.commit()
 
 
-def execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active):
+def execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active, skill_versions=None):
     """Agent waits for the durable command; UI and lifecycle do not depend on it."""
     if arguments.get("inputs"):
         raise HTTPException(422, "云电脑工作区已直接挂载，请移除旧式文件输入参数")
     import base64
     import time
-    packages = {str(identifier): {path: base64.b64encode(data).decode() for path, data in files.items()}
-                for identifier, files in (skill_packages or {}).items()}
-    command = submit(db, access, conversation_id, request_id, arguments, packages)
+    packages = ({str(identifier): {path: base64.b64encode(data).decode() for path, data in files.items()}
+                for identifier, files in skill_packages.items()} if skill_packages is not None else None)
+    command = submit(db, access, conversation_id, request_id, arguments, packages, skill_versions)
     while command.status in BUSY:
         if check_active:
             try:
@@ -564,7 +572,7 @@ def execute(db, access, conversation_id, request_id, arguments, skill_packages, 
     return {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
 
 
-def execute_image(db, access, conversation_id, request_id, path, check_active):
+def execute_image(db, access, conversation_id, request_id, path, check_active, skill_packages=None, skill_versions=None):
     """Inspect a mounted image durably, then read its bytes outside command results."""
     from .chat_attachments import MAX_IMAGE_BYTES
     from .image_reading import local_path, workspace_image
@@ -574,9 +582,12 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
         sandbox_path = local_path(path)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
+    import base64
+    packages = ({str(identifier): {name: base64.b64encode(data).decode() for name, data in files.items()}
+        for identifier, files in skill_packages.items()} if skill_packages is not None else None)
     command = submit(db, access, conversation_id, request_id,
         {"command": "inspect_image",
-         "file_operation": {"name": "inspect_image", "path": sandbox_path}}, None)
+         "file_operation": {"name": "inspect_image", "path": sandbox_path}}, packages, skill_versions)
     try:
         while command.status in BUSY:
             if check_active:
@@ -630,7 +641,8 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
 def maintenance(factory=SessionLocal):
     """Reconcile lifetime independently of browser/Agent, without replaying commands."""
     with factory() as db:
-        identifiers = list(db.scalars(select(Computer.id).where(Computer.ended_at.is_(None))))
+        identifiers = list(db.scalars(select(Computer.id).where(or_(Computer.ended_at.is_(None),
+            Computer.manifest["skill_directory_dirty"].as_boolean().is_(True)))))
     for identifier in identifiers:
         try:
             maintain_one(identifier, factory)
@@ -655,7 +667,11 @@ def maintain_one(identifier, factory=SessionLocal):
 
 def _maintain(db, identifier):
     row = db.get(Computer, identifier, populate_existing=True)
-    if not row or row.ended_at:
+    if not row:
+        return
+    if row.ended_at:
+        from .skill_directory import cleanup
+        cleanup(db, row)
         return
     provider = adapter(row.snapshot, row.encrypted_api_key)
     commands = list(db.scalars(select(Command).where(Command.session_id == row.id, Command.status.in_(BUSY))))

@@ -12,15 +12,15 @@ def test_personal_scripts_have_execution_notices_without_per_file_warning_spam()
              "scripts/task.sh": b"echo ok", "scripts/task.mjs": b"console.log('ok')",
              ".gitignore": b"cache/", "assets/image.png": b"\xff\x00"}
     result = package_review(files)
-    assert not result["can_enable"] and result["has_limitations"]
-    assert len(result["issues"]) == 1 and "missing.md" in result["issues"][0]
+    assert result["can_enable"] and result["has_limitations"]
+    assert result["issues"] == []
     entries = {entry["path"]: entry for entry in result["manifest"]}
     for path in ("scripts/task.py", "scripts/task.sh", "scripts/task.mjs"):
         assert "按任务需要运行" in entries[path]["personal_notice"]
         assert not entries[path]["readable"]
     assert "随包保留" in entries[".gitignore"]["personal_notice"]
     assert "仅用于查看" in entries["assets/image.png"]["personal_notice"]
-    assert not review(files)["can_enable"]
+    assert review(files)["can_enable"]
 
 
 def test_windows_script_limitation_is_explicit_and_text_only_needs_no_acknowledgement():

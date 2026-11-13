@@ -95,8 +95,10 @@ def setup(accounts, monkeypatch, rate="0.6"):
         db.add(storage_row); db.commit()
     monkeypatch.setattr(storage_backend, "active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
-    monkeypatch.setattr(storage_backend, "current_storage", lambda _db: SimpleNamespace(
-        bucket="test-bucket", region="cn-hangzhou"))
+    from test_cloud_computer_mount import MemoryMount
+    managed_store = MemoryMount()
+    managed_store.region = "cn-hangzhou"
+    monkeypatch.setattr(storage_backend, "current_storage", lambda _db: managed_store)
     monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
     body = {"version": 0, "enabled": True, "region": "cn-hangzhou", "template": "test-template", "specification": "test-only",
             "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}

@@ -163,7 +163,7 @@ def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypat
     if tool == "read_image":
         image = workspace_image("/home/user/workspace/chart.png", "image/png", 1, 1,
             hashlib.sha256(PNG).hexdigest(), PNG)
-        def execute_image(db, access, conversation, request, path, check):
+        def execute_image(db, access, conversation, request, path, check, packages=None, versions=None):
             captured.append(request)
             return image, {}
         monkeypatch.setattr(cloud, "execute_image", execute_image)
@@ -171,7 +171,7 @@ def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypat
         arguments = {"path": "chart.png"}
     else:
         monkeypatch.setattr(get_settings(), "preview_enabled", True)
-        def execute(db, access, conversation, request, args, skills, check):
+        def execute(db, access, conversation, request, args, skills, check, versions=None):
             captured.append(request)
             return {"status": "completed", "preview": {"status": "ready"}}
         monkeypatch.setattr(cloud, "execute", execute)

@@ -197,12 +197,18 @@ def test_invalid_personal_example_archive_cannot_be_saved(accounts, monkeypatch)
     assert admin.post("/agent/skills", json={**body, "enabled": False}).status_code == 422
 
 
-def test_personal_missing_reference_saves_as_draft_but_cannot_enable(accounts, monkeypatch):
+def test_personal_missing_reference_can_save_enable_and_be_discovered(accounts, monkeypatch):
     admin, _, _ = setup_site(accounts, monkeypatch)
     draft = import_package(admin, {"SKILL.md": MAIN}).json()
     body = {key: draft[key] for key in ("name", "description", "markdown", "files")}
     assert admin.post("/agent/skills", json={**body, "enabled": False}).status_code == 201
-    assert admin.post("/agent/skills", json={**body, "enabled": True}).status_code == 422
+    enabled = admin.post("/agent/skills", json={**body, "enabled": True})
+    assert enabled.status_code == 201, enabled.text
+    from test_extensions import access_for
+    _, db = accounts
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
+    assert enabled.json()["id"] in runtime.snapshots
+    assert "不存在" in runtime.execute("read_skill_resource", {"skill_id": enabled.json()["id"], "path": "references/guide.md"})["error"]
 
 
 def test_platform_unsafe_archive_saves_as_disabled_draft(accounts, monkeypatch):
@@ -259,8 +265,8 @@ def test_archive_links_duplicates_missing_references_and_limits(accounts, monkey
     assert import_package(admin, {"SKILL.md": MAIN, "skill.md": MAIN}).status_code == 422
     assert import_package(admin, {"SKILL.md": MAIN, "references/big.md": b"x" * (5*1024*1024+1)}).status_code == 413
     missing = import_package(admin, {"SKILL.md": MAIN}).json()
-    assert not missing["package_review"]["can_enable"]
-    assert admin.post("/site/admin/skills", json=write_body(missing, True)).status_code == 422
+    assert missing["package_review"]["can_enable"]
+    assert admin.post("/site/admin/skills", json=write_body(missing, True)).status_code == 201
     # File review uses exactly the same rules as activation.
     response = admin.post("/site/admin/skills/review", json={"markdown": missing["markdown"], "files": []})
     assert response.json()["issues"] == missing["package_review"]["issues"]

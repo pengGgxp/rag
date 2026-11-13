@@ -1,6 +1,5 @@
 """Request-pinned platform methods, private methods and authorized remote tools."""
 import json
-import re
 from dataclasses import dataclass
 from hashlib import sha256
 from uuid import UUID
@@ -22,13 +21,11 @@ from .skill_files import text_content
 from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
 from .image_reading import read_image
 from .config import get_settings
+from .skill_directory import required_ids
 
 router = APIRouter()
 router.include_router(skills_router)
 router.include_router(mcp_router)
-
-SKILL_COMMAND_PATH = re.compile(r"/skills/([^/\s\"'`;|&<>]+)(?:/|(?=$|[\s\"'`;|&<>]))")
-
 
 def defaults(db, access):
     servers = db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
@@ -150,7 +147,9 @@ class ExtensionRuntime(SkillRuntime):
             access = self.access.revalidate(db)
             message = db.get(ChatMessage, self.message_id) if self.message_id else None
             image, _ = execute_image(db, access, message.conversation_id if message else None,
-                tool_request_id(self.request_id, call_id), path, check_active)
+                tool_request_id(self.request_id, call_id), path, check_active,
+                {identifier: snapshot["package_files"] for identifier, snapshot in self.snapshots.items()},
+                {identifier: snapshot["version"] for identifier, snapshot in self.snapshots.items()})
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"]}
 
     def label(self, name, arguments=None):
@@ -238,29 +237,33 @@ class ExtensionRuntime(SkillRuntime):
                         return ImageToolResult(result, {**result.public,
                             "summary": f"已读取图片「{result.public['filename']}」"})
                     return result
-                packages = {}
+                packages, versions = {}, {}
                 with self.factory() as db:
                     access = self.access.revalidate(db)
                     if name == "run_command":
                         access.editor()
-                    needed = set(arguments.get("skill_ids", [])) if name == "run_command" else set()
+                    needed = required_ids(arguments) if name == "run_command" else set()
                     if name == "run_command":
-                        needed.update(SKILL_COMMAND_PATH.findall(arguments["command"]))
                         if len(needed) > 20:
                             return {"error": "本次使用的 Skill 过多，请减少后再试", "error_code": "skill_limit"}
                         if needed - set(self.snapshots):
                             return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
-                    for identifier in needed:
+                    for identifier in self.snapshots:
                         if identifier in self.platform_ids:
                             row = db.get(SiteSkill, UUID(identifier), populate_existing=True)
                             if row is None or not row.enabled:
-                                return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                                if identifier in needed:
+                                    return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                                continue
                         else:
                             row = db.get(AgentSkill, UUID(identifier), populate_existing=True)
                             if (row is None or not row.enabled or row.owner_id != self.access.user_id
                                     or row.workspace_id != self.access.workspace_id):
-                                return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                                if identifier in needed:
+                                    return {"error": "指定的方法不存在或当前不可用，请检查方法 ID", "error_code": "skill_missing"}
+                                continue
                         packages[identifier] = self.snapshots[identifier]["package_files"]
+                        versions[identifier] = self.snapshots[identifier]["version"]
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     try:
@@ -268,7 +271,7 @@ class ExtensionRuntime(SkillRuntime):
                         return execute_tool(name, arguments, db, access, access.workspace_id,
                             conversation_id=message.conversation_id if message else None,
                             request_id=tool_request_id(self.request_id, call_id),
-                            skill_packages=packages, check_active=check_active)
+                            skill_packages=packages, skill_versions=versions, check_active=check_active)
                     except PayloadValidationError:
                         return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}
                     except HTTPException as error:
