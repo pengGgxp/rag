@@ -26,6 +26,22 @@ def prepared(accounts, monkeypatch):
     return client, db, conversation, access, fake, factory, store
 
 
+@pytest.mark.parametrize("path", ["$id", "${id}", "$(printf method)", "*", "?", "[a-f]*",
+    "{first,second}", ".", "..", "scripts", "not-a-skill", str(uuid4()) + "*", str(uuid4()) + ".bak"])
+def test_shell_expansions_and_non_id_segments_are_not_authorization_ids(path):
+    assert directory.required_ids({"command": f'cat "skill-packages/{path}/SKILL.md"'}) == set()
+
+
+def test_literal_uuid_paths_and_explicit_ids_still_require_authorization():
+    first, second = str(uuid4()), str(uuid4())
+    assert directory.required_ids({"command": f'cat /home/user/workspace/skill-packages/{first.upper()}/SKILL.md',
+        "skill_ids": [second]}) == {first, second}
+    assert directory.required_ids({"command": "read_file", "file_operation": {
+        "path": f"skill-packages/{first}/SKILL.md"}}) == {first}
+    assert directory.required_ids({"command": "start_preview", "preview": {
+        "command": f"python skill-packages/{second}/server.py"}}) == {second}
+
+
 def test_default_publication_includes_platform_and_only_own_private_packages(accounts, monkeypatch):
     client, db, conversation, access, fake, factory, store = prepared(accounts, monkeypatch)
     platform, personal = create(client), scripted(client)
@@ -52,6 +68,8 @@ def test_default_publication_includes_platform_and_only_own_private_packages(acc
     assert root != directory.prefix(uuid4(), access.user_id, computer.id)
     assert root != directory.prefix(access.workspace_id, access.user_id, uuid4())
     assert "resource-directory/" not in root
+    assert root == f"workspaces/{access.workspace_id}/skills/{access.user_id.hex}/{computer.id.hex}/"
+    assert not root.startswith(computer.snapshot["resource_mount"]["prefix"])
     assert len("/" + root.rstrip("/")) <= 128
 
 

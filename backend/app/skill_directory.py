@@ -20,13 +20,17 @@ from .skill_files import bundle_files, safe_path, validate_files
 
 DIRECTORY = "skill-packages"
 MOUNT = "/home/user/workspace/skill-packages"
-COMMAND_PATH = re.compile(r"(?<![\w.-])skill-packages/([^/\s\"'`;|&<>]+)(?:/|(?=$|[\s\"'`;|&<>]))")
+COMMAND_PATH = re.compile(r"(?<![\w.-])skill-packages/"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"(?=/|$|[\s\"'`;|&<>])")
 
 
 def required_ids(arguments):
     command = arguments.get("preview", {}).get("command", arguments.get("command", ""))
     paths = command + " " + arguments.get("file_operation", {}).get("path", "")
-    return set(arguments.get("skill_ids", ())) | (set(COMMAND_PATH.findall(paths)) - {".directory.json"})
+    # Shell expansions are resolved inside the isolated execution environment.
+    # They cannot be inferred as authorization IDs by scanning command text.
+    return set(arguments.get("skill_ids", ())) | {str(UUID(value)) for value in COMMAND_PATH.findall(paths)}
 
 
 def hidden(path):
@@ -40,7 +44,9 @@ def visible_rows():
 
 
 def prefix(workspace_id, user_id, computer_id):
-    return f"skill-pkg/{workspace_id}/{user_id}/{computer_id}/"
+    # Keep the private mount within the existing workspace authorization tree,
+    # alongside (never inside) resource-directory, with bounded UUID components.
+    return f"workspaces/{UUID(str(workspace_id))}/skills/{UUID(str(user_id)).hex}/{UUID(str(computer_id)).hex}/"
 
 
 def current_packages(db, access):

@@ -173,7 +173,7 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets(mana
             "bucket": "test-bucket", "region": "cn-beijing",
             "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared", "file_tools": True}}
     if managed:
-        provider.config["skill_mount"] = {"prefix": "skill-pkg/workspace-a/user-a/session-a/"}
+        provider.config["skill_mount"] = {"prefix": "workspaces/workspace-a/skills/user-a/session-a/"}
     provider.options = {}
     def create(**kwargs):
         calls.update(kwargs)
@@ -186,7 +186,7 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets(mana
         "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}
     if managed:
         assert points[1] == {**points[0], "mountDir": "/home/user/workspace/skill-packages",
-            "bucketPath": "/skill-pkg/workspace-a/user-a/session-a", "readOnly": True}
+            "bucketPath": "/workspaces/workspace-a/skills/user-a/session-a", "readOnly": True}
     assert len(points) == (2 if managed else 1)
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
     assert calls["allow_internet_access"] is True

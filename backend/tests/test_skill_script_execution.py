@@ -213,14 +213,31 @@ def test_platform_and_personal_uuid_collision_is_rejected(accounts, monkeypatch)
     assert error.value.status_code == 409 and "标识冲突" in str(error.value.detail)
 
 
-@pytest.mark.parametrize("path", ["not-a-skill", str(uuid4()), "scripts"])
-def test_unknown_command_skill_path_is_rejected_before_execution(accounts, monkeypatch, path):
+def test_unknown_command_skill_path_is_rejected_before_execution(accounts, monkeypatch):
+    path = str(uuid4())
     admin, db, _ = setup_site(accounts, monkeypatch)
     enable_cloud(db, access_for(admin, db), monkeypatch)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db))
     monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: pytest.fail("command submitted"))
     result = runtime.execute("run_command", {"command": f"python skill-packages/{path}/task.py"})
     assert result["error_code"] == "skill_missing"
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_shell_loop_with_dynamic_skill_path_keeps_authorized_default_packages(accounts, monkeypatch, explicit):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    enable_cloud(db, access_for(admin, db), monkeypatch)
+    first, second = scripted(admin), scripted(admin, name="Second loop method")
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), request_id=uuid4())
+    captured = []
+    monkeypatch.setattr(extensions, "execute_tool", lambda *args, **kwargs: captured.append(kwargs) or {"exit_code": 0})
+    command = (f"for id in {first['id']} {second['id']}; "
+        'do dir="/home/user/workspace/skill-packages/$id"; cat "$dir/SKILL.md"; done')
+    arguments = {"command": command}
+    if explicit:
+        arguments["skill_ids"] = [first["id"], second["id"]]
+    assert runtime.execute("run_command", arguments, call_id="loop-call")["exit_code"] == 0
+    assert set(captured[0]["skill_packages"]) == {first["id"], second["id"]}
 
 
 def test_command_skill_limit_includes_ids_and_paths(accounts, monkeypatch):
