@@ -25,19 +25,6 @@ TOOL = {"name": "calculate", "description": "Calculate", "inputSchema": {"type":
     "properties": {"a": {"type": "integer"}}, "required": ["a"], "additionalProperties": False}}
 
 
-def skill(client, **changes):
-    files = [{"path": "references/guide.md", "content": base64.b64encode(b"ONLY RESOURCE MARKER").decode()}]
-    files = changes.pop("files", files)
-    markdown = changes.pop("markdown", "Read [guide](references/guide.md).")
-    if not any(item["path"] == "references/guide.md" for item in files):
-        markdown = markdown.replace("Read [guide](references/guide.md).", "Run the bundled script.")
-    result = client.post("/agent/skills", json={"name": "Personal", "description": "Write a report",
-        "markdown": markdown, "enabled": True,
-        "files": files, **changes})
-    assert result.status_code == 201, result.text
-    return result.json()
-
-
 def connection(client):
     response = client.post("/agent/mcp", json={"name": "My service", "url": "https://mcp.example.com/mcp"})
     assert response.status_code == 201, response.text
@@ -49,71 +36,10 @@ def update_connection(client, row, **changes):
         ("name", "url", "transport", "enabled", "allowed_tools", "version")} | changes)
 
 
-def test_personal_package_draft_limits_reading_ownership_and_conflicts(accounts, monkeypatch):
-    admin, db, _ = setup_site(accounts, monkeypatch)
-    (_, member, anonymous), _ = accounts
-    register(member, "personal-other@example.com")
-    files = {"SKILL.md": b"---\nname: private\ndescription: Private method\n---\nRead the guide.",
-        "references/guide.md": b"Private guide", "scripts/task.py": b"raise RuntimeError('NEVER RUN')",
-        "assets/binary.png": b"\xff\x00"}
-    imported = admin.post("/agent/skills/import", files={"file": ("method.zip", zipped(files, "method/"))})
-    assert imported.status_code == 200, imported.text
-    draft = imported.json()
-    assert not draft["enabled"] and draft["review"]["has_limitations"]
-    body = {key: draft[key] for key in ("name", "description", "markdown", "files")}
-    assert admin.post("/agent/skills", json={**body, "enabled": True}).status_code == 422
-    response = admin.post("/agent/skills", json={**body, "enabled": True, "limitations_acknowledged": True})
-    assert response.status_code == 201, response.text
-    row = response.json()
-    assert len(row["files"]) == 3
-    assert member.get(f"/agent/skills/{row['id']}").status_code == 404
-    assert member.get("/agent/skills").json() == []
-    assert anonymous.get("/agent/skills").status_code == 401
-    access = access_for(admin, db)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [row["id"]], [])
-    args = {"skill_id": row["id"]}
-    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
-    unselected = ExtensionRuntime(lambda: nullcontext(db), access, [], [])
-    assert unselected.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
-    loaded = runtime.execute("load_skill", args)
-    assert loaded["resources"] == [{"path": "references/guide.md"}, {"path": "scripts/task.py"}]
-    assert "NEVER RUN" in runtime.execute("read_skill_resource", {**args, "path": "scripts/task.py"})["content"]
-    assert runtime.execute("read_skill_resource", {**args, "path": "assets/binary.png"}).get("error")
-    assert runtime.execute("read_skill_resource", {**args, "path": "../x"}).get("error")
-    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"})["content"] == "Private guide"
-    update = admin.put(f"/agent/skills/{row['id']}", json={**body, "enabled": False, "version": 1})
-    assert update.status_code == 200 and update.json()["version"] == 2
-    assert admin.put(f"/agent/skills/{row['id']}", json={**body, "version": 1}).status_code == 409
-    assert runtime.execute("load_skill", args).get("error")
-    assert runtime.execute("read_skill_resource", {**args, "path": "references/guide.md"}).get("error")
-    assert admin.get(f"/agent/skills/{row['id']}/export").status_code == 200
-
-
-def test_folder_import_is_draft_and_does_not_publish(accounts, monkeypatch):
-    admin, _, _ = setup_site(accounts, monkeypatch)
-    response = admin.post("/agent/skills/import-folder", files=[
-        ("files", ("SKILL.md", b"Instructions")), ("files", ("guide.txt", b"Guide"))],
-        data={"paths": ["folder/SKILL.md", "folder/guide.txt"]})
-    assert response.status_code == 200, response.text
-    assert response.json()["files"][0]["path"] == "guide.txt"
-    assert admin.get("/agent/skills").json() == []
-
-
-def test_folder_import_discovers_nested_skill_root(accounts, monkeypatch):
-    admin, _, _ = setup_site(accounts, monkeypatch)
-    response = admin.post("/agent/skills/import-folder", files=[
-        ("files", ("SKILL.md", b"Instructions")), ("files", ("guide.txt", b"Guide"))],
-        data={"paths": ["project/skills/report/SKILL.md", "project/skills/report/guide.txt"]})
-    assert response.status_code == 200, response.text
-    draft = response.json()
-    assert draft["name"] == "report"
-    assert draft["files"][0]["path"] == "guide.txt"
-
-
 def test_same_user_other_workspace_cannot_read_select_or_execute(accounts, monkeypatch):
     from dataclasses import replace
     admin, db, _ = setup_site(accounts, monkeypatch)
-    method, remote = skill(admin), connection(admin)
+    remote = connection(admin)
     access = access_for(admin, db)
     workspace = Workspace(name="Second workspace")
     db.add(workspace); db.flush()
@@ -123,10 +49,9 @@ def test_same_user_other_workspace_cannot_read_select_or_execute(accounts, monke
     from app.extensions import validate_selection
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
-        validate_selection(db, other, [method["id"]], [])
+        validate_selection(db, other, [], [remote["id"]])
     assert exc.value.status_code == 404
-    runtime = ExtensionRuntime(lambda: nullcontext(db), other, [method["id"]], [remote["id"]])
-    assert runtime.execute("load_skill", {"skill_id":method["id"]}).get("error")
+    runtime = ExtensionRuntime(lambda: nullcontext(db), other, [], [remote["id"]])
     assert runtime.bindings == {}
     assert admin.post("/agent/skills/import", files={"file":("bad.zip", zipped(
         {"SKILL.md":b"Read instructions", "../escape.txt":b"bad"}))}).status_code == 422
@@ -138,7 +63,6 @@ def test_model_without_tools_does_not_claim_extension_use(accounts, monkeypatch)
     chosen = db.get(SiteModelProvider, UUID(model["id"]))
     chosen.thinking_config = {"kind":"unconfigured", "supports_tools":False}
     db.commit()
-    skill(admin)
     class Model(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, tool_choice):
             assert tools == []
@@ -151,35 +75,6 @@ def test_model_without_tools_does_not_claim_extension_use(accounts, monkeypatch)
     final = events[-1].json()
     assert final["status"] == "completed", {key: final.get(key) for key in ("status", "error_detail", "tool_events")}
     assert not final["tool_events"]
-
-
-def test_request_fixed_skill_and_conversation_defaults_and_legacy_selection(accounts, monkeypatch):
-    admin, db, _ = setup_site(accounts, monkeypatch)
-    first = skill(admin)
-    chat = admin.post("/conversations", json={}).json()
-    assert chat["skill_ids"] == []
-    second = skill(admin, name="Second")
-    assert admin.get(f"/conversations/{chat['id']}").json()["skill_ids"] == []
-    access = access_for(admin, db)
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access, [first["id"]], [])
-    row = db.get(AgentSkill, UUID(first["id"]))
-    row.markdown, row.version = "Changed", 2
-    db.commit()
-    assert runtime.execute("load_skill", {"skill_id": first["id"]})["instructions"] == first["markdown"]
-    assert runtime.execute("load_skill", {"skill_id": second["id"]})["instructions"] == second["markdown"]
-    third = skill(admin, name="Added during request")
-    assert runtime.execute("load_skill", {"skill_id": third["id"]}).get("error")
-    following = ExtensionRuntime(lambda: nullcontext(db), access)
-    assert following.execute("load_skill", {"skill_id": third["id"]})["instructions"] == third["markdown"]
-    current = db.get(Conversation, UUID(chat["id"]))
-    current.active_request_id = uuid4(); db.commit()
-    assert admin.put(f"/conversations/{chat['id']}/extensions", json={}).status_code == 409
-    current.active_request_id = None
-    current.extensions_initialized = False
-    db.commit()
-    assert admin.get(f"/conversations/{chat['id']}").json()["skill_ids"] == []
-    assert admin.put(f"/conversations/{chat['id']}/extensions", json={}).status_code == 200
-    assert admin.post("/conversations", json={"skill_ids": [], "mcp_server_ids": []}).json()["skill_ids"] == []
 
 
 def test_mcp_authorization_versions_discovery_failures_and_credentials(accounts, monkeypatch):
@@ -265,16 +160,11 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     synced = admin.post(f"/agent/mcp/{row['id']}/sync", json={"version": row["version"]})
     assert synced.status_code == 200, synced.text
     row = update_connection(admin, synced.json(), allowed_tools=["calculate"], enabled=True, acknowledge_external_access=True).json()
-    method = skill(admin)
     class Model(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, tool_choice):
             self.last_usage = LLMUsage(prompt_tokens=10, completion_tokens=1)
             results = [json.loads(item["content"]) for item in messages if item["role"] == "tool"]
             if not results:
-                return ToolResponse("Use method", [ToolCall("method", "load_skill", {"skill_id": method["id"]})], self.last_usage)
-            if len(results) == 1:
-                return ToolResponse(None, [ToolCall("read", "read_skill_resource", {"skill_id": method["id"], "path": "references/guide.md"})], self.last_usage)
-            if len(results) == 2:
                 alias = next(tool["function"]["name"] for tool in tools if tool["function"]["name"].startswith("mcp_"))
                 return ToolResponse("Calculate next", [ToolCall("calc", alias, {"a": 3, "b": 4})], self.last_usage)
             assert results[-1]["structuredContent"] == {"result": 7}
@@ -285,7 +175,7 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     final = events[-1].json()
     assert final["status"] == "completed", final
     assert final["content"].endswith("7. ONLY RESOURCE MARKER")
-    assert [item["kind"] for item in final["tool_events"]] == ["skill", "skill", "mcp"]
+    assert [item["kind"] for item in final["tool_events"]] == ["mcp"]
     assert connection_args["state"]["calls"] == 1
     restored = admin.get(f"/conversations/{chat['id']}").json()["messages"][-1]
     assert restored["tool_events"] == final["tool_events"]

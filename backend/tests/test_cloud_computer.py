@@ -140,8 +140,8 @@ def enable_execution(db, access, monkeypatch):
     factory = sessionmaker(bind=db.get_bind())
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
-    def execute(arguments, packages=None):
-        return cloud.execute(db, access, conversation.id, uuid4(), arguments, packages, None)
+    def execute(arguments):
+        return cloud.execute(db, access, conversation.id, uuid4(), arguments, None)
     return fake, execute
 
 

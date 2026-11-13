@@ -1,7 +1,7 @@
 import base64, io, os, subprocess, tarfile, uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from .skill_files import safe_path, MAX_BUNDLE_BYTES
+from .skill_files import safe_path
 
 app=FastAPI(title="workspace-executor")
 RUNNER_NETWORK = "rag-workspace-runners"
@@ -31,10 +31,9 @@ class RunRequest(BaseModel):
     workspace_id: str
     command: str = Field(min_length=1, max_length=2000)
     files: dict[str,str] = Field(default_factory=dict)
-    skill_files: dict[str,str] = Field(default_factory=dict, max_length=2000)
 
 
-def input_archive(files, *, skill=False):
+def input_archive(files):
     archive = io.BytesIO()
     total = 0
     with tarfile.open(fileobj=archive, mode="w") as bundle:
@@ -47,13 +46,11 @@ def input_archive(files, *, skill=False):
             except ValueError:
                 raise HTTPException(422, "文件输入无效") from None
             total += len(data)
-            if skill and total > MAX_BUNDLE_BYTES:
-                raise HTTPException(413, "本次加载的 Skill 文件总大小超过限制")
-            if not skill and (len(data) > 200 * 1024 * 1024 or total > 512 * 1024 * 1024):
+            if (len(data) > 200 * 1024 * 1024 or total > 512 * 1024 * 1024):
                 raise HTTPException(413, "执行输入单文件不能超过 200 MiB，总计不能超过 512 MiB")
             info = tarfile.TarInfo(path)
             info.size = len(data)
-            info.mode = 0o555 if skill and path.lower().endswith((".sh", ".bash", ".py", ".js", ".mjs", ".cjs")) else 0o444 if skill else 0o644
+            info.mode = 0o644
             bundle.addfile(info, io.BytesIO(data))
     return archive.getvalue()
 
@@ -65,8 +62,6 @@ def run(payload: RunRequest):
     def docker(args, *, input_bytes=None, timeout=30):
         return subprocess.run(["docker", *args], input=input_bytes, capture_output=True, timeout=timeout)
     archive = input_archive(payload.files)
-    skills_archive = input_archive(payload.skill_files, skill=True) if payload.skill_files else None
-    skills_volume = f"workspace-exec-skills-{uuid.uuid4().hex}" if skills_archive else None
     prepare_runner_network(docker, runner_image)
     try:
         created = docker(["volume", "create", volume], timeout=15)
@@ -76,19 +71,10 @@ def run(payload: RunRequest):
             "tar", "-x", "-C", "/workspace"], input_bytes=archive, timeout=30)
         if populated.returncode != 0:
             raise HTTPException(503, "隔离执行环境无法准备工作区")
-        if skills_volume:
-            if docker(["volume", "create", skills_volume], timeout=15).returncode != 0:
-                raise HTTPException(503, "无法准备 Skill 文件")
-            populated = docker(["run", "--rm", "-i", "--network=none", "--mount",
-                f"source={skills_volume},target=/skills", runner_image, "tar", "-x", "-C", "/skills"],
-                input_bytes=skills_archive, timeout=30)
-            if populated.returncode != 0:
-                raise HTTPException(503, "无法准备 Skill 文件")
         container_name = f"workspace-exec-run-{uuid.uuid4().hex}"
         command=["docker","run","--name",container_name,"--rm",f"--network={RUNNER_NETWORK}","--cpus=1","--memory=512m","--pids-limit=64",
             "--read-only","--cap-drop=ALL","--security-opt=no-new-privileges",
             "--mount",f"source={volume},target=/workspace,readonly=false",
-            *(["--mount", f"source={skills_volume},target=/skills,readonly=true"] if skills_volume else []),
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "-w","/workspace",runner_image,"sh","-lc",payload.command]
         changed={}
         def export_files():
@@ -112,6 +98,4 @@ def run(payload: RunRequest):
         export_files()
         return {"status":"completed" if completed.returncode==0 else "failed","exit_code":completed.returncode,"stdout":completed.stdout[-12000:],"stderr":completed.stderr[-12000:],"files":changed}
     finally:
-        if skills_volume:
-            docker(["volume", "rm", "-f", skills_volume], timeout=15)
         docker(["volume", "rm", "-f", volume], timeout=15)

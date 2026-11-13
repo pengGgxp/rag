@@ -15,7 +15,7 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
   onChange: (value: ExtensionSelection) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
-  const { skills, platform, servers, workbench, loading, error: loadError, retry } = useExtensionCatalog(open);
+  const { skills, servers, workbench, loading, error: loadError, retry } = useExtensionCatalog(open);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const anchor = useRef<HTMLButtonElement>(null);
@@ -47,8 +47,7 @@ export function ExtensionPicker({ selection, disabled, supportsTools, onChange }
               setSaving(true); void request("/question-workbench/grant", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false, version: workbench.version }) })
                 .then(() => onChange({ ...effective, question_workbench: false })).then(retry).catch(e => setError(e.message)).finally(() => setSaving(false));
             }}>撤销授权</button>}</>}
-          <h3>平台 Skill · 自动发现</h3>{platform.map(item => <p key={item.id}>{item.name}</p>)}{!platform.length && <p>暂无平台 Skill</p>}
-          <h3>我的 Skill · 自动发现</h3>{skills.filter(item => item.enabled).map(item => <p key={item.id}>{item.name}</p>)}{!skills.some(item => item.enabled) && <p>暂无启用的个人 Skill</p>}
+          <h3>工作区 Skill</h3>{skills.filter(item => item.enabled).map(item => <p key={item.id}>{item.name}</p>)}{!skills.some(item => item.enabled) && <p>暂无 Skill 资源</p>}
           <h3>我的 MCP</h3>{servers.filter(item => item.enabled && item.allowed_tools.length).map(item => <label className="extension-check" key={item.id}>
             <input type="checkbox" disabled={saving || !supportsTools} checked={effective.mcp_server_ids.includes(item.id)} onChange={e => void change({ ...effective,
               mcp_server_ids: e.target.checked ? [...effective.mcp_server_ids, item.id] : effective.mcp_server_ids.filter(id => id !== item.id) })} />{item.name}

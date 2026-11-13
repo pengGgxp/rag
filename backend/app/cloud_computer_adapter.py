@@ -235,9 +235,6 @@ class AlibabaSandbox:
         sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {DEPENDENCIES}", user="user")
         sandbox.files.write(f"{STATE}/launcher.py", LAUNCHER, user="user")
 
-    def clear_skills(self, sandbox):
-        sandbox.commands.run("rm -rf /skills && mkdir -p /skills && chmod 555 /skills", user="root")
-
     def write(self, sandbox, path, data, root=ROOT):
         from .workspace_files import valid_path
         path = valid_path(path)
@@ -246,16 +243,6 @@ class AlibabaSandbox:
             "assert not any(q.is_symlink() for q in [p,*p.parents]); p.parent.mkdir(parents=True,exist_ok=True)")
         sandbox.commands.run("python3 -c " + shlex.quote(script), user="user")
         sandbox.files.write(f"{root}/{path}", data, user="user")
-
-    def write_skill(self, sandbox, path, data):
-        from .workspace_files import valid_path
-        path = valid_path(path)
-        target = f"/skills/{path}"
-        script = ("from pathlib import Path; p=Path("+repr(target)+"); "
-            "assert not any(q.is_symlink() for q in [p,*p.parents]); p.parent.mkdir(parents=True,exist_ok=True)")
-        sandbox.commands.run("python3 -c " + shlex.quote(script), user="root")
-        sandbox.files.write(target, data, user="root")
-        sandbox.commands.run("chmod 555 " + shlex.quote(target), user="root")
 
     def remove(self, sandbox, path):
         from .workspace_files import valid_path

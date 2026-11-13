@@ -268,7 +268,7 @@ def tool_request_id(request_id, call_id):
     return uuid5(UUID(str(request_id)), "cloud-tool:" + call_id)
 
 
-def submit(db, access, conversation_id, request_id, arguments, skill_packages=None):
+def submit(db, access, conversation_id, request_id, arguments):
     access = owner(db, access, conversation_id)
     file_operation = arguments.get("file_operation")
     if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image"}:
@@ -277,7 +277,7 @@ def submit(db, access, conversation_id, request_id, arguments, skill_packages=No
             from .storage_billing import check_capacity
             check_capacity(db, access.workspace_id, 0)
     serialize_admission(db)
-    payload = {"command": arguments["command"], "inputs": [], "skills": skill_packages or {}}
+    payload = {"command": arguments["command"], "inputs": []}
     if arguments.get("preview"):
         from .cloud_preview import Start
         from .config import get_settings
@@ -402,7 +402,6 @@ def run(identifier, factory=SessionLocal):
 
 def _run(identifier, factory=SessionLocal):
     """Claim once; never replay a command whose upstream submission was uncertain."""
-    import base64
     import time
     with factory() as db:
         command = db.get(Command, UUID(str(identifier)), with_for_update=True)
@@ -437,14 +436,6 @@ def _run(identifier, factory=SessionLocal):
             sandbox = provider.connect(row.provider_id)
             provider.prepare(sandbox)
             stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
-            clear_skills = getattr(provider, "clear_skills", None)
-            if clear_skills:
-                # A session reuses the cloud computer; never leave a package from
-                # an earlier command visible to a later, unselected command.
-                clear_skills(sandbox)
-            for skill_id, package in command.payload["skills"].items():
-                for path, encoded in package.items():
-                    provider.write_skill(sandbox, f"{skill_id}/{path}", base64.b64decode(encoded))
             db.refresh(command)
             db.refresh(row, ["status", "billing_stopped_at"])
             if command.cancel_requested or row.status == "stopping":
@@ -534,21 +525,15 @@ def _run(identifier, factory=SessionLocal):
             db.refresh(row, ["status", "ended_at"])
             if not row.ended_at and row.status not in ("stopping", "uncertain"):
                 row.status, row.last_activity_at = "ready", now()
-            # Do not retain potentially large Skill payloads after dispatch.
-            if command.status not in ("queued", "preparing"):
-                command.payload = {**command.payload, "skills": {}}
             db.commit()
 
 
-def execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active):
+def execute(db, access, conversation_id, request_id, arguments, check_active=None):
     """Agent waits for the durable command; UI and lifecycle do not depend on it."""
     if arguments.get("inputs"):
         raise HTTPException(422, "云电脑工作区已直接挂载，请移除旧式文件输入参数")
-    import base64
     import time
-    packages = {str(identifier): {path: base64.b64encode(data).decode() for path, data in files.items()}
-                for identifier, files in (skill_packages or {}).items()}
-    command = submit(db, access, conversation_id, request_id, arguments, packages)
+    command = submit(db, access, conversation_id, request_id, arguments)
     while command.status in BUSY:
         if check_active:
             try:
@@ -576,7 +561,7 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
         raise HTTPException(422, str(error)) from None
     command = submit(db, access, conversation_id, request_id,
         {"command": "inspect_image",
-         "file_operation": {"name": "inspect_image", "path": sandbox_path}}, None)
+         "file_operation": {"name": "inspect_image", "path": sandbox_path}})
     try:
         while command.status in BUSY:
             if check_active:

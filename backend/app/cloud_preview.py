@@ -228,4 +228,4 @@ def execute(runtime, name, arguments, check_active, *, call_id=None):
             raise HTTPException(503, "成果预览尚未开放，请联系管理员")
         payload = Start.model_validate(arguments).model_dump()
         return cloud.execute(db, access, message.conversation_id, cloud.tool_request_id(runtime.request_id, call_id),
-            {"command": payload["command"], "preview": payload}, {}, check_active)
+            {"command": payload["command"], "preview": payload}, check_active)

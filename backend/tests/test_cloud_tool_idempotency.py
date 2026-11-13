@@ -171,7 +171,7 @@ def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypat
         arguments = {"path": "chart.png"}
     else:
         monkeypatch.setattr(get_settings(), "preview_enabled", True)
-        def execute(db, access, conversation, request, args, skills, check):
+        def execute(db, access, conversation, request, args, check):
             captured.append(request)
             return {"status": "completed", "preview": {"status": "ready"}}
         monkeypatch.setattr(cloud, "execute", execute)
@@ -205,10 +205,10 @@ def test_cancelled_call_is_not_reexecuted(runtime, monkeypatch):
     def stopped():
         raise AgentCancelled()
     with pytest.raises(AgentCancelled):
-        cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, None, stopped)
+        cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, stopped)
     command = db.scalar(select(cloud.Command))
     cloud.run(command.id, factory)
-    result = cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, None, None)
+    result = cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, None)
     assert result["command_id"] == str(command.id)
     db.refresh(command)
     assert command.status == "cancelled" and command.cancel_requested
