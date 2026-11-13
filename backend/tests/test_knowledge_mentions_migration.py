@@ -87,7 +87,7 @@ def test_postgres_upgrade_preserves_messages_and_billing():
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
             length = next(column["type"].length for column in inspect(connection).get_columns(
                 "alembic_version") if column["name"] == "version_num")
-            assert version == "0065_resource_mentions" and len(version) <= length == 32
+            assert version == "0067_context_tools_merge" and len(version) <= length == 32
             assert connection.scalar(text("SELECT knowledge_base_mentions FROM chat_messages")) == []
             assert connection.scalar(text("SELECT resource_mentions FROM chat_messages")) == []
         current_messages = tables()["chat_messages"]
@@ -107,6 +107,37 @@ def test_postgres_upgrade_preserves_messages_and_billing():
         assert snapshot(schema) == before
         migrate("upgrade", "head")
         assert snapshot(schema) == before
+    finally:
+        engine.dispose()
+        with admin.connect() as connection:
+            connection.execute(text(f'DROP DATABASE "{name}"'))
+        admin.dispose()
+
+
+@pytest.mark.parametrize("starting_revision", ["0066_context_windows", "0066_knowledge_base_tools"])
+def test_postgres_each_existing_head_upgrades_to_combined_schema(starting_revision):
+    configured = os.environ.get("AUTH_TEST_DATABASE_URL")
+    if not configured:
+        pytest.skip("requires AUTH_TEST_DATABASE_URL for disposable PostgreSQL")
+    url = make_url(configured)
+    if url.get_backend_name() != "postgresql" or not (url.database or "").startswith("rag_auth_test_"):
+        pytest.fail("refusing non-test database")
+    name = f"rag_auth_test_merge_{uuid4().hex[:10]}"
+    admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{name}"'))
+    database_url = url.set(database=name).render_as_string(hide_password=False)
+    env = {**os.environ, "DATABASE_URL": database_url, "MIGRATION_DATABASE_URL": database_url}
+    engine = create_engine(database_url)
+    try:
+        for target in (starting_revision, "head", "head"):
+            subprocess.run([sys.executable, "-m", "alembic", "upgrade", target], cwd=ROOT, env=env,
+                capture_output=True, check=True, timeout=60)
+        with engine.connect() as connection:
+            assert list(connection.scalars(text("SELECT version_num FROM alembic_version"))) == [
+                "0067_context_tools_merge"]
+            assert {"conversation_contexts", "knowledge_base_tool_executions"} <= set(
+                inspect(connection).get_table_names())
     finally:
         engine.dispose()
         with admin.connect() as connection:

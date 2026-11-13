@@ -74,6 +74,13 @@ def upgrade():
 
 
 def downgrade():
+    # Report the earlier, more specific accounting safety failure before
+    # checking resource references on a long downgrade path.
+    decimal = op.get_bind().execute(sa.text(
+        'SELECT 1 FROM credit_accounts WHERE balance <> trunc(balance) '
+        'OR balance NOT BETWEEN -2147483648 AND 2147483647 LIMIT 1')).first()
+    if decimal:
+        raise RuntimeError("Decimal credits exist; keep the decimal-compatible API and schema.")
     if op.get_bind().execute(sa.text("""
         SELECT 1 FROM chat_message_resources GROUP BY attachment_id HAVING COUNT(*) > 1 LIMIT 1
     """)).first():

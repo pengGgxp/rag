@@ -32,3 +32,13 @@
 本轮目标与范围：修复导入结果和 Skill 资源详情两个预览按钮缺少 data-resource-id，关闭预览后焦点无法恢复的问题。复用 ResourcePreview 和 Dialog 的既有焦点恢复，不改存储、权限或执行方案。验收标准：两个入口经 Enter 打开、Escape 关闭后，焦点准确回到原文件按钮；在桌面、手机及减少动效下验证。执行前端测试、生产构建、浏览器实际键盘回归及 git diff --check；不新增付费验收、合并或部署。
 
 结果：两个入口已补齐对应资源 ID。扩展 scripts/check-skill-resources.js，在改代码前实际复现关闭后焦点落到导航；修正后导入结果（1440/390px）、独立资源详情（1440px及390px减少动效）四组 Enter/Escape 都准确回到原按钮，截图逐张查看，未发现遮挡或溢出。浏览器使用合成 API 响应，仅验证此次 UI 交互；没有重跑或新增真实付费调用。本分支 npm test 15 项、TypeScript/Next 生产构建及 git diff --check 通过。验收报告的16项是验收方结果，与本轮本分支15项分开记录，不混算。浏览器及本轮开发服务器已关闭。
+
+## 与 main 整合及可回溯验证（2026-11-13）
+
+按用户确认，先固定 PR99 的 b93d4d8 和 main 的 a6d2bf2，在独立工作区提交测试夹具 013fc8c，再将 main 合入本 PR。原提交保留在提交图中，并另存两个本地备份分支和完整 Git bundle；恢复说明见本机 E:/rag/output/pr99-main-resolution/recovery.md。没有重置作者工作区，不强推，不合入 main，不部署。
+
+冲突处理保留 main 的 effective_context.ContextManager、替换窗口恢复和 MCP 当前 authorization_version/启停/选择检查。旧 Skill 行仅用于核验历史压缩边界，不再参与普通资源方案的当前有效上下文；保留空槽保证无 Skill 会话的既有摘要校验值不变。11 项新夹具先在 main 上得到 8 项通过、3 项旧 Skill 耦合失败；整合后 11 项全部通过。
+
+临时 PostgreSQL 实测发现两个 0066 迁移末端导致 upgrade head 失败，因此新增不修改数据的 0067_context_tools_merge 汇合节点，保留两个已有迁移编号。验证空库升级、分别从两个既有末端升级、重复升级、降级再升级，以及历史消息、余额和账单保留。
+
+整合代码本地 Docker 验证：上下文/图片/流式及新夹具 80 项通过；Skill/文件工具/MCP 139 项通过、1 项旧 Docker 执行器可选测试跳过；PostgreSQL 9 项及知识库工具并发 1 项通过；知识库工具、云电脑及资源库 73 项通过。五组不重叠，共 302 passed、1 skipped。前端 16 项、TypeScript 和生产构建通过，API 镜像构建与 Python 编译通过，diff 检查通过。Playwright 对整合后的 Web 在 1440/700/390px 验证导入、错误重试和四组焦点恢复，十张截图已逐张查看；此轮浏览器使用合成 API 响应。本轮不重复此前真实模型/OSS 付费验收，不将本地回归称为新一轮真实云验收，也不声称远程 CI 已通过。

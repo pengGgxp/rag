@@ -182,10 +182,6 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
         conversation = {"id": conversation_id}
         summary_provider(monkeypatch)
         assert compact(http, conversation_id, identifier)[-1][1]["status"] == "completed"
-    if protocol == "responses":
-        from app import mcp_client
-        monkeypatch.setattr(mcp_client, "encrypt_headers", lambda value: json.dumps(value))
-        monkeypatch.setattr(mcp_client, "decrypt_headers", json.loads)
     release, ended = Event(), Event()
     stop_signals = []
     bridge = chat.stream_events
@@ -350,7 +346,7 @@ def compact(http, conversation, provider, request_id=None):
     return [(event.event, event.json()) for event in EventSource(generation_response(response)).iter_sse()]
 
 
-def test_manual_compaction_preserves_recent_turns_and_repeat_is_free(client, monkeypatch):
+def test_manual_compaction_preserves_budgeted_users_and_repeat_is_free(client, monkeypatch):
     http, db, conversation, provider = context_fixture(client, length=60)
     calls = summary_provider(monkeypatch)
     before = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
@@ -358,11 +354,12 @@ def test_manual_compaction_preserves_recent_turns_and_repeat_is_free(client, mon
     events = compact(http, conversation, provider, request_id)
     assert events[-1][1]["status"] == "completed"
     assert len(calls) == 1
-    assert "record-3" in calls[0][1]["content"] and "record-4" not in calls[0][1]["content"]
+    assert "record-3" in calls[0][1]["content"] and "record-4" in calls[0][1]["content"]
     after = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
     assert after["estimated_input_tokens"] < before["estimated_input_tokens"]
     checkpoints = db.scalars(select(ContextCheckpoint)).all()
-    assert len(checkpoints) == 1 and checkpoints[0].through_sequence == 3
+    assert len(checkpoints) == 1 and checkpoints[0].through_sequence == 7
+    assert checkpoints[0].encrypted_replacement and checkpoints[0].window_id
     balance = http.get("/usage").json()["balance"]
     assert compact(http, conversation, provider)[-1][1]["no_op"]
     assert compact(http, conversation, provider, request_id)[-1][1]["status"] == "completed"
@@ -371,7 +368,7 @@ def test_manual_compaction_preserves_recent_turns_and_repeat_is_free(client, mon
     assert len(detail["messages"]) == 8 and "record-0" in detail["messages"][0]["content"]
     assert not detail["active_request_id"]
     assert len(detail["compactions"]) == 1
-    assert detail["compactions"][0]["after_sequence"] == 3
+    assert detail["compactions"][0]["after_sequence"] == 7
     assert "summary" not in detail["compactions"][0]
 
 
@@ -424,7 +421,7 @@ def test_failed_compaction_preserves_original_and_releases_hold(client, monkeypa
     assert not http.get(f"/conversations/{conversation}").json()["active_request_id"]
 
 
-def test_checkpoint_invalidated_when_original_changes(client, monkeypatch):
+def test_display_edits_cannot_restore_replaced_history(client, monkeypatch):
     http, db, conversation, provider = context_fixture(client, length=60)
     summary_provider(monkeypatch)
     compact(http, conversation, provider)
@@ -432,7 +429,8 @@ def test_checkpoint_invalidated_when_original_changes(client, monkeypatch):
     row = db.scalar(select(ChatMessage).where(ChatMessage.conversation_id == UUID(conversation), ChatMessage.sequence == 0))
     row.content += "changed " * 100; db.commit()
     current = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
-    assert current["estimated_input_tokens"] > compressed["estimated_input_tokens"]
+    assert current["estimated_input_tokens"] == compressed["estimated_input_tokens"]
+    assert current["window_id"] == compressed["window_id"]
 
 
 def test_missing_capacity_is_honest_and_no_history_compaction_is_free(client, monkeypatch):
@@ -517,12 +515,13 @@ def test_hard_budget_rejects_huge_current_input_without_upstream(client, monkeyp
     assert not calls
 
 
-def manager_fixture(client, *, capacity=16000):
+def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app import auth
     from app.auth import Access
     from app.llm_providers import request_provider_config
-    from app.conversation_context import ContextManager
-    from app.models import LoginSession
+    from app.conversation_context import ContextManager, SUMMARY_PREFIX
+    from app.context_windows import encrypt_items, make_item
+    from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
     access = Access(session.user_id, session.workspace_id, "admin", session.token_hash)
@@ -533,12 +532,32 @@ def manager_fixture(client, *, capacity=16000):
     row.active_request_id = request_id
     db.commit()
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    manager = ContextManager(factory, access, row.id, config, None, None, request_id)
-    history = manager.history(db, row, list(row.messages))
-    return manager, [{"role": "system", "content": "system-rules"}, *history, {"role": "user", "content": "current question"}]
+    manager = ContextManager(factory, access, row.id, config, None, None, request_id, manual=manual)
+    manager.history(db, row, list(row.messages))
+    if messages is not None:
+        state = db.get(ConversationContext, row.id)
+        state.encrypted_suffix = encrypt_items([make_item(uuid4(), item,
+            "handoff" if str(item.get("content", "")).startswith(SUMMARY_PREFIX) else
+            "user" if item["role"] == "user" else "tool" if item["role"] == "tool" else "model",
+            request_id, config=config) for item in messages[1:]])
+        db.commit()
+        manager.history(db, row)
+        manager.messages = messages
+    else:
+        db.commit()
+        manager.current_message_id = uuid4()
+        messages = manager.start({"role": "system", "content": "system-rules"}, "current question")
+    db.commit()
+    return manager, messages
 
 
-def test_automatic_compaction_keeps_two_recent_complete_turns_and_current_input(client):
+def tool_group(identifier, text):
+    return [{"role": "assistant", "content": None, "tool_calls": [
+        {"id": identifier, "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": identifier, "content": text}]
+
+
+def test_automatic_compaction_keeps_budgeted_users_and_current_input(client):
     from app.conversation_context import SUMMARY_PREFIX
     manager, messages = manager_fixture(client, capacity=7500)
     captured = []
@@ -549,155 +568,90 @@ def test_automatic_compaction_keeps_two_recent_complete_turns_and_current_input(
     manager.provider = Provider()
     events = []
     compacted = manager.prepare(messages, [], events.append, lambda: None)
-    assert len(captured) == 1 and compacted[0] == messages[0]
-    assert compacted[1]["role"] == "user" and compacted[1]["content"].startswith(SUMMARY_PREFIX)
-    assert [item["content"] for item in compacted[-5:]] == [item["content"] for item in messages[-5:]]
-    assert next(data for name, data in events if name == "compaction" and data["status"] == "completed")
+    assert len(captured) == 1 and compacted[0]["content"] == "system-rules"
+    assert sum(i.get("content") == "current question" for i in compacted) == 1
+    assert any(str(i.get("content", "")).startswith(SUMMARY_PREFIX) for i in compacted)
+    assert not any(i["role"] == "assistant" for i in compacted)
     assert events[-1][0] == "context" and events[-1][1]["status"] == "completed"
 
 
-def test_same_task_compaction_only_replaces_complete_old_tool_groups(client):
-    manager, _ = manager_fixture(client, capacity=10000)
+def test_same_task_compaction_preserves_latest_unconsumed_tool_group(client):
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "current task"}]
     for index in range(5):
-        messages.extend([{"role": "assistant", "content": None, "tool_calls": [
-            {"id": f"call-{index}", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": f"call-{index}", "content": "旧工具结果。" * 200}])
+        messages += tool_group(f"call-{index}", "旧工具结果。" * 200)
+    original_last = messages[-2:]
+    manager, messages = manager_fixture(client, capacity=10000, messages=messages)
     class Provider:
         def stream_with_tools(self, *_args, **_kwargs):
             yield "complete", ToolResponse("已回查早期工具结果：42。", [])
     manager.provider = Provider()
     compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
-    assert compacted[:2] == messages[:2]
-    assert compacted[-4:] == messages[-4:]
-    assert len(compacted) == 7
-
-
-def tool_group(identifier, text):
-    return [{"role": "assistant", "content": None, "tool_calls": [
-        {"id": identifier, "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": identifier, "content": text}]
+    assert original_last[0] in compacted and original_last[1] in compacted
+    assert len(compacted) == 5
+    assert "call-0" not in str(compacted)
 
 
 @pytest.mark.parametrize("images", [False, True])
-def test_compaction_skips_tiny_catalog_and_includes_large_complete_search_group(client, images):
-    from app.conversation_context import SUMMARY_PREFIX, estimate_input
-    manager, _ = manager_fixture(client, capacity=50000 if images else 10000)
+def test_compaction_retains_current_multimodal_input_and_atomic_latest_group(client, images):
     content = [{"type": "text", "text": "current task"},
-        {"type": "chat_image", "attachment_id": "image-1", "width": 1818, "height": 865},
-        {"type": "chat_image", "attachment_id": "image-2", "width": 1774, "height": 953}] if images else "current task"
+        {"type": "chat_image", "attachment_id": "image-1", "filename": "one.png", "width": 1818, "height": 865},
+        {"type": "chat_image", "attachment_id": "image-2", "filename": "two.png", "width": 1774, "height": 953}] if images else "current task"
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": content}]
     messages += tool_group("catalog", "one document")
-    messages += tool_group("search", "重要资料。" * (4000 if images else 800))
+    messages += tool_group("search", "重要资料。" * (6000 if images else 1300))
     messages += tool_group("error", "invalid document ID")
-    captured = []
-
+    manager, messages = manager_fixture(client, capacity=50000 if images else 10000, messages=messages)
     class Provider:
-        def stream_with_tools(self, summary_messages, *args, **kwargs):
-            captured.append(summary_messages)
+        def stream_with_tools(self, *_args, **_kwargs):
             yield "complete", ToolResponse("旧工具记录摘要", [])
-
     manager.provider = Provider()
-    events = []
-    compacted = manager.prepare(messages, [], events.append, lambda: None)
-    assert len(captured) == 1
-    assert "重要资料" in captured[0][1]["content"]
-    assert compacted[:2] == messages[:2] and compacted[-2:] == messages[-2:]
-    assert compacted[2]["content"].startswith(SUMMARY_PREFIX)
-    assert estimate_input(compacted) < estimate_input(messages) / 2
-    assert "chat_image" not in captured[0][1]["content"]
+    compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
+    assert compacted[1]["content"] == content
+    assert any(i.get("tool_call_id") == "error" for i in compacted)
+    assert "重要资料" not in str(compacted)
 
 
-def test_failed_compaction_waits_for_growth_but_never_bypasses_hard_budget(client):
-    from app.llm import LLMProviderError
-    manager, _ = manager_fixture(client, capacity=10000)
+def test_failed_compaction_does_not_retry_unchanged_window(client):
+    from app.llm import LLMConfigurationError
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
-    messages += tool_group("old", "内容。" * 1300)
+    messages += tool_group("old", "内容。" * 2100)
     messages += tool_group("recent", "recent result")
+    manager, messages = manager_fixture(client, capacity=14000, messages=messages)
     calls = []
-
     class Provider:
         def stream_with_tools(self, *args, **kwargs):
             calls.append(1)
-            yield "complete", ToolResponse("更多内容。" * 1800, [])
-
+            yield "complete", ToolResponse("更多内容。" * 3000, [])
     manager.provider = Provider()
     events = []
-    assert manager.prepare(messages, [], events.append, lambda: None) == messages
-    assert [data["status"] for name, data in events if name == "compaction"] == ["running", "failed"]
-    slightly_larger = messages + tool_group("next", "small result")
-    assert manager.prepare(slightly_larger, [], events.append, lambda: None) == slightly_larger
+    with pytest.raises(LLMConfigurationError):
+        manager.prepare(messages, [], events.append, lambda: None)
+    assert [d["status"] for n, d in events if n == "compaction"] == ["running", "failed"]
+    try:
+        manager.prepare(messages, [], events.append, lambda: None)
+    except LLMConfigurationError:
+        pass
     assert len(calls) == 1
-    with pytest.raises(LLMProviderError):
-        manager.prepare(slightly_larger + tool_group("large", "新内容。" * 400), [], events.append, lambda: None)
-    assert len(calls) == 2
-
-
-def test_compaction_does_not_repeat_for_small_growth_above_soft_threshold(client):
-    from app.conversation_context import SUMMARY_PREFIX, estimate_input
-    manager, _ = manager_fixture(client, capacity=10000)
-    messages = [{"role": "system", "content": "rules"},
-        {"role": "user", "content": "不可压缩的当前输入。" * 420},
-        {"role": "user", "content": SUMMARY_PREFIX + "previous summary"}]
-    messages += tool_group("old", "old result " * 450)
-    messages += tool_group("recent", "recent result")
-    calls = []
-
-    class Provider:
-        def stream_with_tools(self, summary_messages, *args, **kwargs):
-            calls.append(summary_messages)
-            yield "complete", ToolResponse("新摘要", [])
-
-    manager.provider = Provider()
-    compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
-    assert len(calls) == 1 and estimate_input(compacted) > 0.75 * 9488
-    assert "previous summary" in calls[0][1]["content"]
-    assert sum(str(item.get("content", "")).startswith(SUMMARY_PREFIX) for item in compacted) == 1
-    assert manager.prepare(compacted + tool_group("next", "small result"), [], lambda _: None, lambda: None)
-    assert len(calls) == 1
+    with manager.factory() as db:
+        assert not db.scalars(select(ContextCheckpoint)).all()
 
 
 def test_over_budget_summary_never_persists_or_emits_completed(client):
-    from app.conversation_context import estimate_input
     from app.llm import LLMConfigurationError
-    manager, _ = manager_fixture(client, capacity=10000)
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "current task " * 600}]
     messages += tool_group("old", "原始结果。" * 850)
     messages += tool_group("recent", "recent result")
-    assert estimate_input(messages) > 9488
-
+    manager, messages = manager_fixture(client, capacity=10000, messages=messages)
     class Provider:
         def stream_with_tools(self, *args, **kwargs):
             yield "complete", ToolResponse("仍然很长。" * 750, [])
-
     manager.provider = Provider()
     events = []
-    with pytest.raises(LLMConfigurationError, match="整理后近期上下文仍超出"):
+    with pytest.raises(LLMConfigurationError):
         manager.prepare(messages, [], events.append, lambda: None)
-    assert [data["status"] for name, data in events if name == "compaction"] == ["running", "failed"]
+    assert [d["status"] for n, d in events if n == "compaction"] == ["running", "failed"]
     with manager.factory() as db:
-        assert db.scalars(select(ContextCheckpoint)).all() == []
-
-
-def test_hard_budget_accepts_small_compaction_when_it_is_sufficient(client):
-    from app.conversation_context import estimate_input, input_budget
-    manager, _ = manager_fixture(client)
-    messages = [{"role": "system", "content": "rules"},
-        {"role": "user", "content": "当前输入。" * 800}]
-    messages += tool_group("old", "旧文。" * 50)
-    messages += tool_group("recent", "recent result")
-    before = estimate_input(messages)
-    manager.config = replace(manager.config, context_capacity=before - 100 + 512)
-
-    class Provider:
-        def stream_with_tools(self, *args, **kwargs):
-            yield "complete", ToolResponse("摘要", [])
-
-    manager.provider = Provider()
-    compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
-    after = estimate_input(compacted)
-    assert after <= input_budget(manager.config)
-    assert 0 < before - after < 512
+        assert not db.scalars(select(ContextCheckpoint)).all()
 
 
 def test_original_lookup_is_current_conversation_only_and_rechecks_access(client):

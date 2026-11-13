@@ -16,7 +16,10 @@ def test_schema_preservation_unique_active_and_serialized_settings(auth_postgres
     engine = auth_postgres
     assert "storage_migration_objects" in inspect(engine).get_table_names()
     with Session(engine) as db:
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0058_oss_storage"
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(
+            Config("alembic.ini")).get_current_head()
         row = db.get(SiteStorageSettings, 1)
         if not row:
             row = SiteStorageSettings(id=1, provider="cos", bucket="retained-123", region="ap-guangzhou",
