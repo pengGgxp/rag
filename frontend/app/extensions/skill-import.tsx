@@ -43,9 +43,9 @@ export function SkillImport({ id }: { id?: string }) {
     </div>}
     {(error || resource.error) && <p className="extension-error" role="alert">{error || resource.error}</p>}
     {resource.error && <button type="button" className="secondary" onClick={() => void resource.reload()}>重试</button>}
-    {resource.data && <button type="button" className="text-button" onClick={() => setPreview(resource.data!)}>{resource.data.path}</button>}
+    {resource.data && <button type="button" className="text-button" data-resource-id={resource.data.id} onClick={() => setPreview(resource.data!)}>{resource.data.path}</button>}
     {!!items.length && <><p role="status">已导入 {items.length} 个资源文件</p>
-      <ul>{items.map(item => <li key={item.id}><button type="button" className="text-button" onClick={() => setPreview(item)}>{item.path}</button></li>)}</ul></>}
+      <ul>{items.map(item => <li key={item.id}><button type="button" className="text-button" data-resource-id={item.id} onClick={() => setPreview(item)}>{item.path}</button></li>)}</ul></>}
     <Link href="/resources">查看资源库</Link>
     {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)} />}
   </section>;

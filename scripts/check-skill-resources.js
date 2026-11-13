@@ -20,6 +20,8 @@ async (page) => {
       return route.fulfill({ status: failure ? 413 : 201, json: failure ? { detail: "工作区存储空间不足，请增加额度后重试" } : { directory: "skills/sample", items: [file] } });
     }
     if (path === "/agent/skills/skill-ui-file") return route.fulfill({ json: file });
+    if (path === "/resources/skill-ui-file/preview") return route.fulfill({ json: { revision: "focus-check", kind: "text", size_bytes: 15, original_url: "/resources/skill-ui-file/download", previews: [] } });
+    if (path === "/resources/skill-ui-file/download") return route.fulfill({ contentType: "text/plain", body: "Read missing.md" });
     return route.fulfill({ json: fixtures[path] ?? {} });
   });
   const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -35,6 +37,25 @@ async (page) => {
   }
   await page.locator('input[type="file"]').first().setInputFiles({ name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("Read missing.md") });
   await page.getByRole("status").filter({ hasText: "已导入 1 个资源文件" }).waitFor();
+  const focusChecks = [];
+  async function checkPreviewFocus(entry, width) {
+    const trigger = page.getByRole("button", { name: file.path, exact: true });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await page.getByRole("dialog").waitFor();
+    await page.getByText("Read missing.md", { exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const content = document.querySelector('[role="dialog"] > div');
+      return content && Number(getComputedStyle(content).opacity) >= 0.99;
+    });
+    await page.screenshot({ path: `output/playwright/issue95-focus-${entry}-${width}.png`, fullPage: true });
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.waitForFunction(path => document.activeElement?.textContent === path, file.path, { timeout: 3000 });
+    check(await trigger.evaluate(element => element === document.activeElement), `${entry} 关闭预览后未回到原按钮`);
+    focusChecks.push({ entry, width });
+  }
+  await checkPreviewFocus("import", 390);
   await page.screenshot({ path: "output/playwright/issue95-resource-success-390.png", fullPage: true });
   failure = true;
   await page.locator('input[type="file"]').first().setInputFiles({ name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("Retry") });
@@ -42,6 +63,14 @@ async (page) => {
   failure = false;
   await page.locator('input[type="file"]').first().setInputFiles({ name: "SKILL.md", mimeType: "text/markdown", buffer: Buffer.from("Retry") });
   await page.getByRole("status").filter({ hasText: "已导入 1 个资源文件" }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await checkPreviewFocus("import", 1440);
+  await page.goto(base + "/extensions/skills/skill-ui-file");
+  await page.getByRole("button", { name: file.path, exact: true }).waitFor();
+  await checkPreviewFocus("detail", 1440);
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await checkPreviewFocus("detail-reduced", 390);
   await page.goto(base + "/admin/skills/new");
   await page.getByRole("button", { name: "导入 Skill 包", exact: true }).waitFor();
   await page.screenshot({ path: "output/playwright/issue95-resource-admin-390.png", fullPage: true });
@@ -49,5 +78,5 @@ async (page) => {
   await page.screenshot({ path: "output/playwright/issue95-resource-admin-1440.png", fullPage: true });
   check(calls === 3, "导入次数不符");
   check(errors.length === 0, errors.join("\n"));
-  return { result: "通过", widths: [1440, 700, 390], imports: calls, realBackend: false };
+  return { result: "通过", widths: [1440, 700, 390], imports: calls, focusChecks, realBackend: false };
 }
