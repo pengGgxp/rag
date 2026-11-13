@@ -57,15 +57,10 @@ def test_parallel_suggestions_deduplicate_and_enforce_account_quota(auth_postgre
         assert db.scalar(select(func.count()).select_from(ProductSuggestion).where(ProductSuggestion.user_id == user_id)) == 3
 
 
-def test_parallel_edits_keep_skill_and_feedback_versions_and_private_data(auth_postgres):
+def test_parallel_feedback_edits_preserve_versions_and_private_data(auth_postgres):
     raw, csrf, user_id = actor(auth_postgres)
-    body = {"name": "Method", "description": "Use this method", "markdown": "# Instructions", "enabled": True}
-    result = call(raw, csrf, "POST", "/site/admin/skills", body)
-    assert result.status_code == 201, result.text
-    skill_id = result.json()["id"]
     suggestion = call(raw, csrf, "POST", "/suggestions", {"request_id": str(uuid4()), "category": "other", "content": "Suggestion"}).json()
-    for path, payload in ((f"/site/admin/skills/{skill_id}", {**body, "version": 1}),
-                          (f"/site/admin/suggestions/{suggestion['id']}", {"version": 1, "status": "processing"})):
+    for path, payload in ((f"/site/admin/suggestions/{suggestion['id']}", {"version": 1, "status": "processing"}),):
         barrier = Barrier(2)
         def edit(index):
             barrier.wait(timeout=10)
@@ -73,50 +68,6 @@ def test_parallel_edits_keep_skill_and_feedback_versions_and_private_data(auth_p
         with ThreadPoolExecutor(2) as pool:
             assert sorted(pool.map(edit, range(2))) == [200, 409]
     with Session(auth_postgres) as db:
-        assert db.get(SiteSkill, UUID(skill_id)).version == 2
         private = db.scalar(select(AgentSkill).where(AgentSkill.owner_id == user_id))
         assert private.markdown == "Never publish" and private.files[0].content == b"private"
         assert db.get(ProductSuggestion, UUID(suggestion["id"])).version == 2
-
-
-def test_package_files_save_atomically_and_revoke_future_loads(auth_postgres):
-    from contextlib import contextmanager
-    from app.site_skills import SkillRuntime
-    from app.site_skill_packages import encode_files
-    raw, csrf, user_id = actor(auth_postgres)
-    body = {"name": "Package", "description": "Reviewed report method", "enabled": True,
-            "markdown": "Read [guide](references/guide.md).",
-            "files": encode_files({"references/guide.md": b"First revision"})}
-    created = call(raw, csrf, "POST", "/site/admin/skills", body)
-    assert created.status_code == 201, created.text
-    identifier = UUID(created.json()["id"])
-    with Session(auth_postgres) as db:
-        session = db.get(LoginSession, auth.digest(raw))
-        access = auth.get_access(session, db)
-    @contextmanager
-    def factory():
-        with Session(auth_postgres) as db:
-            yield db
-    runtime = SkillRuntime(factory, access)
-    arguments = {"skill_id": str(identifier)}
-    assert runtime.execute("load_skill", arguments)["resources"] == [{"path": "references/guide.md"}]
-    barrier = Barrier(2)
-    def edit(index):
-        barrier.wait(timeout=10)
-        return call(raw, csrf, "PUT", f"/site/admin/skills/{identifier}",
-            {**body, "version": 1, "files": encode_files({"references/guide.md": f"Revision {index}".encode()})})
-    with ThreadPoolExecutor(2) as pool:
-        results = list(pool.map(edit, range(2)))
-    assert sorted(result.status_code for result in results) == [200, 409]
-    assert runtime.execute("read_skill_resource", {**arguments, "path": "references/guide.md"})["content"] == "First revision"
-    with Session(auth_postgres) as db:
-        row = db.get(SiteSkill, identifier)
-        assert row.version == 2 and len(row.files) == 1
-        assert row.files[0].content in (b"Revision 0", b"Revision 1")
-        row.enabled = False
-        db.commit()
-    assert runtime.execute("read_skill_resource", {**arguments, "path": "references/guide.md"}).get("error")
-    assert call(raw, csrf, "DELETE", f"/site/admin/skills/{identifier}", {"version": 2}).status_code == 204
-    with Session(auth_postgres) as db:
-        assert db.scalar(select(func.count()).select_from(SiteSkillFile).where(SiteSkillFile.skill_id == identifier)) == 0
-        assert db.scalar(select(AgentSkill).where(AgentSkill.owner_id == user_id)).files[0].content == b"private"

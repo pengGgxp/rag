@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from .agent import AGENT_SYSTEM_PROMPT, DISCOVER_TOOL, SEARCH_TOOL, AgentCancelled
 from .llm import LLMConfigurationError, LLMProviderError
-from .models import ChatMessage, ContextCheckpoint, Conversation, Document, KnowledgeBase, SiteSkill
+from .models import ChatMessage, ContextCheckpoint, Conversation, Document, KnowledgeBase
 from .thinking import history_message
 
 SUMMARY_PREFIX = (
@@ -72,8 +72,7 @@ def scope_digest(db, conversation, access, skill_versions=None):
         for row in db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(ids)).order_by(KnowledgeBase.id))]
     documents = list(db.execute(select(Document.id, Document.version_number, Document.is_active,
         Document.status, Document.updated_at).where(Document.knowledge_base_id.in_(ids)).order_by(Document.id)))
-    extensions = skill_versions if skill_versions is not None else [(str(row.id), row.version) for row in db.scalars(
-        select(SiteSkill).where(SiteSkill.enabled.is_(True)).order_by(SiteSkill.id))]
+    extensions = skill_versions if skill_versions is not None else []
     return digest({"libraries": libraries, "documents": [tuple(row) for row in documents],
                    "extensions": extensions, "role": checked.role, "user": str(access.user_id)})
 

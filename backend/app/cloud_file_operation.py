@@ -106,7 +106,7 @@ def perform(operation, root=Path("/home/user/workspace")):
     if name == "list_files":
         items = []
         for directory, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = sorted(name for name in dirs if name not in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} and not (Path(directory) == root and name.casefold() == "skill-packages") and not Path(directory, name).is_symlink())
+            dirs[:] = sorted(name for name in dirs if name not in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} and not Path(directory, name).is_symlink())
             for filename in sorted(files):
                 path = Path(directory, filename)
                 if path.is_symlink() or not path.is_file(): continue
@@ -126,11 +126,7 @@ def perform(operation, root=Path("/home/user/workspace")):
         return {"content": data.decode("utf-8", errors="replace"), "offset": offset,
                 "next_offset": offset + len(data) if offset + len(data) < path.stat().st_size else None}
     if name == "delete_file":
-        if operation["path"].split("/", 1)[0].casefold() == "skill-packages":
-            raise ValueError("请在 Skill 管理页维护方法文件")
         path.unlink(); return {"path": operation["path"], "deleted": True}
-    if operation["path"].split("/", 1)[0].casefold() == "skill-packages":
-        raise ValueError("请在 Skill 管理页维护方法文件")
     content = operation.get("content", "")
     if name == "apply_patch": content = apply_patch(path.read_text(encoding="utf-8"), operation["patch"])
     write_mounted(path, content.encode("utf-8"))

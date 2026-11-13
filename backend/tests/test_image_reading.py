@@ -360,7 +360,7 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
         hashlib.sha256(PNG).hexdigest(), PNG)
     calls = []
 
-    def execute_image(db, access, conversation, request, path, check, packages=None, versions=None):
+    def execute_image(db, access, conversation, request, path, check):
         calls.append((conversation, path, check))
         return image, {"cloud_computer": {"status": "ready"}, "command_id": "command"}
 

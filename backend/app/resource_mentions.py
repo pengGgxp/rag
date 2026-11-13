@@ -15,7 +15,6 @@ def snapshot(row):
 
 def catalog(db, access, query):
     from .shared_resources import refresh_index
-    from .skill_directory import visible_rows
     checked = access.revalidate(db)
     refresh_index(db, checked, query, 0, 20)
     pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -24,7 +23,7 @@ def catalog(db, access, query):
         WorkspaceFile.workspace_id == checked.workspace_id, WorkspaceFile.deleted_at.is_(None),
         WorkspaceFile.path.ilike(pattern, escape="\\"), WorkspaceFileVersion.version == 1,
         WorkspaceFileVersion.workspace_id == checked.workspace_id,
-        WorkspaceFileVersion.deleted_at.is_(None), WorkspaceFileVersion.available.is_not(False), *visible_rows(),
+        WorkspaceFileVersion.deleted_at.is_(None), WorkspaceFileVersion.available.is_not(False),
     ).order_by(WorkspaceFile.path, WorkspaceFile.id).limit(20)).all()
     return [snapshot(row) for row in rows]
 

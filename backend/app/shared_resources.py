@@ -99,7 +99,6 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
     if storage is None:
         return None, False
     from .workspace_files import valid_path, read_file
-    from .skill_directory import hidden, visible_rows
     from .audit_log import record_audit
     from .storage_billing import lock_workspace
     root = prefix(access.workspace_id)
@@ -109,7 +108,7 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
         if not key.startswith(root):
             raise HTTPException(502, "资源目录返回了无效文件")
         path = key[len(root):]
-        if not path or path.endswith("/") or hidden(path) or any(part in EXCLUDED for part in path.split("/")):
+        if not path or path.endswith("/") or any(part in EXCLUDED for part in path.split("/")):
             continue
         valid_path(path)
         objects[path] = item
@@ -169,7 +168,7 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
             rows.append(row)
     present = set(objects)
     for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-            WorkspaceFile.deleted_at.is_(None), *visible_rows())):
+            WorkspaceFile.deleted_at.is_(None))):
         if row.path in present:
             continue
         row.deleted_at = now()

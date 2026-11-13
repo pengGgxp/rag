@@ -45,7 +45,7 @@ def test_file_tool_dispatch_never_downloads_body(accounts, resource_store, monke
     def forbidden(*args, **kwargs): pytest.fail("server body/cache read")
     monkeypatch.setattr("app.resource_cache.read_bytes", forbidden)
     monkeypatch.setattr("app.storage.download_fileobj", forbidden)
-    def execute(db, actor, conversation, request, arguments, skills, check, versions=None):
+    def execute(db, actor, conversation, request, arguments, check):
         calls.append(arguments["file_operation"])
         return {"status": "completed", "file_result": {"value": {"content": "resource facts"}},
                 "cloud_computer": {"id": "same-computer"}, "command_id": "command"}
@@ -84,7 +84,7 @@ def test_file_delete_invalidates_resource(accounts, resource_store, monkeypatch)
     register(client)
     item = upload(client)
     access = access_for(client, db)
-    def execute(db, actor, conversation, request, args, skills, check, versions=None):
+    def execute(db, actor, conversation, request, args, check):
         from app.shared_resources import object_key
         resource_store[0].pop(object_key(actor.workspace_id, item["path"]))
         return {"status": "completed", "file_result": {"value": {"deleted": True}},

@@ -40,10 +40,9 @@ def verify_pending_objects(db, head):
 def listing(q: str = "", source: str = "", offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500), db=Depends(get_db), access: Access=Depends(get_access)):
     from .shared_resources import refresh_index
-    from .skill_directory import visible_rows
     discovered, has_more = refresh_index(db, access, q, offset, limit, source)
     query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%"), *visible_rows())
+        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%"))
     if source:
         query = query.where(WorkspaceFile.source == source)
     rows = list(db.scalars(query.order_by(WorkspaceFile.created_at.desc(), WorkspaceFile.id)

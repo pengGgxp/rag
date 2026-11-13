@@ -227,7 +227,5 @@ def execute(runtime, name, arguments, check_active, *, call_id=None):
         if not get_settings().preview_enabled:
             raise HTTPException(503, "成果预览尚未开放，请联系管理员")
         payload = Start.model_validate(arguments).model_dump()
-        packages = {identifier: snapshot["package_files"] for identifier, snapshot in runtime.snapshots.items()}
-        versions = {identifier: snapshot["version"] for identifier, snapshot in runtime.snapshots.items()}
         return cloud.execute(db, access, message.conversation_id, cloud.tool_request_id(runtime.request_id, call_id),
-            {"command": payload["command"], "preview": payload}, packages, check_active, versions)
+            {"command": payload["command"], "preview": payload}, check_active)

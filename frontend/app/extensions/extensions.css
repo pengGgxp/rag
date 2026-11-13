@@ -76,3 +76,8 @@
   .extension-header-field input:nth-child(2) { grid-row: 2; }
   .extension-header-field button { grid-column: 2; grid-row: 1 / 3; align-self: center; }
 }
+.skill-import { display: grid; gap: 16px; min-width: 0; max-width: 1040px; }
+.skill-import ul { margin: 0; padding-left: 20px; }
+.skill-import .text-button { min-height: 44px; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
+.skill-import > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); }
+.skill-import .extension-actions button { min-height: 44px; }

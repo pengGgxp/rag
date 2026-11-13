@@ -1,31 +1,20 @@
-"""Private Skill drafts share package validation with platform methods."""
-from uuid import UUID
+"""Skill import is an ordinary workspace resource upload, with no published copy."""
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
-from pydantic import Field
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 
 from . import skill_files
 from .auth import get_access
 from .audit_log import record_audit
 from .db import get_db
-from .models import AgentSkill, AgentSkillFile, SiteSkill
-from .site_skill_packages import decode_files, encode_files, review
-from .skill_files import WINDOWS_RESOURCE_SUFFIXES
-from .site_skills import SkillWrite, SkillFileWrite, SkillPackageReview, Version, import_markdown
+from .models import WorkspaceFile
+from .workspace_files import _stage_bytes, owned as resource_owned, read_file
 
-router = APIRouter(prefix="/agent/skills", tags=["personal-skills"])
+router = APIRouter(prefix="/agent/skills", tags=["workspace-skills"])
 
 
-class PersonalWrite(SkillWrite):
-    limitations_acknowledged: bool = False
-
-
-class PersonalUpdate(PersonalWrite):
-    version: int = Field(ge=1, strict=True)
-
-
+# These helpers also serve personal MCP connections; their ownership is unchanged.
 def owned(db, model, identifier, access, lock=False):
     query = select(model).where(model.id == identifier, model.owner_id == access.user_id,
         model.workspace_id == access.workspace_id).execution_options(populate_existing=True)
@@ -37,180 +26,82 @@ def owned(db, model, identifier, access, lock=False):
 
 def audit(db, access, request, action, row):
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action=action, resource_type="agent_skill" if isinstance(row, AgentSkill) else "mcp_server",
-        resource_id=row.id, metadata={"version": row.version}, request=request)
+        action=action, resource_type="mcp_server", resource_id=row.id,
+        metadata={"version": row.version}, request=request)
 
 
-def package_review(files):
-    result = review(files)
-    issues = [issue.replace("请修改后再启用", "请检查该链接") for issue in result["issues"]]
-    for entry in result["manifest"]:
-        windows_resource = entry["path"].lower().endswith(WINDOWS_RESOURCE_SUFFIXES)
-        if windows_resource:
-            entry["personal_notice"] = "Windows 脚本或程序仅随包保留，不能在 Linux 云电脑执行。"
-            continue
-        if entry["readable"]:
-            continue
-        if entry["kind"] == "script":
-            notice = "脚本可按任务需要运行；所需依赖、文件和权限必须可用。"
-        elif entry["kind"] == "archive":
-            notice = "示例压缩包仅用于查看和导出，不会自动解压或执行其中的文件。"
-        elif entry["kind"] == "image":
-            notice = "图片仅用于查看和导出，不会作为文字资料供模型读取。"
-        elif entry["kind"] == "binary":
-            notice = "二进制文件随包保留，可查看或导出。"
-        else:
-            notice = "此文件随包保留，可查看或导出。"
-        entry["personal_notice"] = notice
-    return {**result, "can_enable": not issues,
-        "has_limitations": bool(issues) or any(entry["kind"] == "script"
-            for entry in result["manifest"]),
-        "issues": list(dict.fromkeys(issues))}
-
-
-def read(row, detail=False):
-    value = {"id": str(row.id), "name": row.name, "description": row.description,
-        "enabled": row.enabled, "version": row.version, "updated_at": row.updated_at,
-        "limitations_acknowledged": row.limitations_acknowledged}
-    if detail:
-        files = skill_files.bundle_files(row)
-        value.update(markdown=row.markdown, files=encode_files(files), review=package_review(files))
-    return value
+def save_package(files, db, access):
+    """Use the same keys, quota, audit and metadata writer as ordinary resources."""
+    access.editor()
+    skill_files.validate_files(files)
+    # A fresh directory avoids overwriting user files, including concurrent imports.
+    directory = f"skills/{uuid4().hex}"
+    uploaded, rows = [], []
+    try:
+        from .storage_billing import check_capacity
+        from .shared_resources import object_key
+        check_capacity(db, access.workspace_id, sum(map(len, files.values())))
+        with db.begin_nested():
+            for path, content in files.items():
+                uploaded.append(object_key(access.workspace_id, f"{directory}/{path}"))
+                rows.append(_stage_bytes(access.workspace_id, access, db,
+                    f"{directory}/{path}", content, "application/octet-stream", None))
+                rows[-1].source = "resource_upload"
+            db.flush()
+        db.commit()
+    except BaseException:
+        db.rollback()
+        from .storage import delete_object
+        for key in uploaded:
+            try:
+                delete_object(key)
+            except Exception:
+                pass
+        raise
+    return {"directory": directory, "items": [read_file(row) for row in rows]}
 
 
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
-    return [read(row) for row in db.scalars(select(AgentSkill).where(
-        AgentSkill.owner_id == access.user_id, AgentSkill.workspace_id == access.workspace_id)
-        .order_by(AgentSkill.created_at.desc(), AgentSkill.id))]
+    from .shared_resources import refresh_index
+    refresh_index(db, access)
+    return [read_file(row) for row in db.scalars(select(WorkspaceFile).where(
+        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
+        (WorkspaceFile.path == "SKILL.md") | WorkspaceFile.path.endswith("/SKILL.md"))
+        .order_by(WorkspaceFile.path))]
 
 
-@router.get("/platform")
-def platform(db=Depends(get_db), access=Depends(get_access)):
-    return [{"id": str(row.id), "name": row.name, "description": row.description, "version": row.version}
-        for row in db.scalars(select(SiteSkill).where(SiteSkill.enabled.is_(True))
-            .order_by(SiteSkill.created_at, SiteSkill.id))]
+@router.post("/import", status_code=201)
+def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(get_access)):
+    access.editor()
+    name = (file.filename or "").lower()
+    if not name.endswith((".md", ".zip")):
+        raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
+    data = file.file.read(skill_files.MAX_UPLOAD_BYTES + 1)
+    if len(data) > skill_files.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Skill 包不能超过 25 MiB")
+    files = {"SKILL.md": data} if name.endswith(".md") else skill_files.unzip(data)[0]
+    return save_package(files, db, access)
 
 
-@router.get("/platform/{identifier}")
-def platform_detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    from .site_skills import read as platform_read
-    row = db.get(SiteSkill, identifier)
-    if row is None or not row.enabled:
-        raise HTTPException(404, "Skill 不存在或已停用")
-    return platform_read(row, True)
-
-
-@router.post("/import")
-async def importing(file: UploadFile = File(...), access=Depends(get_access)):
-    result = await import_markdown(file, access)
-    result["review"] = package_review(decode_files(
-        [SkillFileWrite(**item) for item in result["files"]], result["markdown"]))
-    result["limitations_acknowledged"] = False
-    return result
-
-
-@router.post("/import-folder")
-async def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = Form(...),
-                           access=Depends(get_access)):
-    from io import BytesIO
+@router.post("/import-folder", status_code=201)
+def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = Form(...),
+                           db=Depends(get_db), access=Depends(get_access)):
+    access.editor()
     if len(files) != len(paths) or len(files) > skill_files.MAX_FILES:
         raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
     entries, total = [], 0
     for file, path in zip(files, paths):
-        data = await file.read(skill_files.MAX_FILE_BYTES + 1)
+        data = file.file.read(skill_files.MAX_FILE_BYTES + 1)
         total += len(data)
         if len(data) > skill_files.MAX_FILE_BYTES or total > skill_files.MAX_BUNDLE_BYTES:
             raise HTTPException(413, "Skill 文件超过大小限制")
         entries.append((path, data))
-    contents, folder = skill_files.imported_files(entries)
-    name = folder or "skill"
-    packed = skill_files.export_zip(name, contents)
-    return await importing(UploadFile(filename=f"{name}.zip", file=BytesIO(packed)), access)
-
-
-@router.post("/review")
-def reviewing(payload: SkillPackageReview, access=Depends(get_access)):
-    return package_review(decode_files(payload.files, payload.markdown))
-
-
-def apply(row, payload):
-    files = decode_files(payload.files, payload.markdown)
-    checked = package_review(files)
-    if any(entry.get("blocking") for entry in checked["manifest"]):
-        raise HTTPException(422, "Skill 包含无效或不安全的示例压缩包，请修复或移除后再保存")
-    if payload.enabled and not checked["can_enable"]:
-        raise HTTPException(422, "Skill 文件检查未通过，请修复后再启用")
-    if payload.enabled and checked["has_limitations"] and not payload.limitations_acknowledged:
-        raise HTTPException(422, "请先确认脚本会在当前工作区的临时隔离环境中运行，可能读取或生成资源库文件")
-    previous = {item.path: item for item in row.files}
-    for key in ("name", "description", "markdown", "enabled", "limitations_acknowledged"):
-        setattr(row, key, getattr(payload, key))
-    row.files = [previous.get(path) or AgentSkillFile(path=path) for path in files if path != "SKILL.md"]
-    for item in row.files:
-        item.content = files[item.path]
-
-
-@router.post("", status_code=201)
-def create(payload: PersonalWrite, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    from .storage_billing import check_capacity
-    files = decode_files(payload.files, payload.markdown)
-    check_capacity(db, access.workspace_id, sum(len(data) for data in files.values()))
-    row = AgentSkill(owner_id=access.user_id, workspace_id=access.workspace_id, files=[], version=1)
-    apply(row, payload)
-    db.add(row)
-    db.flush()
-    audit(db, access, request, "agent_skill.created", row)
-    db.commit()
-    return read(row, True)
+    return save_package(skill_files.imported_files(entries)[0], db, access)
 
 
 @router.get("/{identifier}")
 def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    return read(owned(db, AgentSkill, identifier, access), True)
-
-
-@router.put("/{identifier}")
-def update(identifier: UUID, payload: PersonalUpdate, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    from .storage_billing import check_capacity, lock_workspace
-    lock_workspace(db, access.workspace_id)
-    row = owned(db, AgentSkill, identifier, access, True)
-    if row.version != payload.version:
-        raise HTTPException(409, "Skill 已更新，请重新加载后再保存")
-    files = decode_files(payload.files, payload.markdown)
-    check_capacity(db, access.workspace_id, sum(len(data) for data in files.values()),
-        skill_replaced_bytes=len(row.markdown.encode("utf-8"))+sum(len(f.content) for f in row.files))
-    apply(row, payload)
-    row.version += 1
-    audit(db, access, request, "agent_skill.updated", row)
-    db.commit()
-    return read(row, True)
-
-
-@router.delete("/{identifier}", status_code=204)
-def delete(identifier: UUID, payload: Version, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, AgentSkill, identifier, access, True)
-    if row.version != payload.version:
-        raise HTTPException(409, "Skill 已更新，请重新加载后再删除")
-    audit(db, access, request, "agent_skill.deleted", row)
-    db.delete(row)
-    db.commit()
-
-
-@router.api_route("/{identifier}/export", methods=["GET", "HEAD"])
-def export(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, AgentSkill, identifier, access)
-    from io import BytesIO
-    from .storage_downloads import download_response
-    data = skill_files.export_zip("skill", skill_files.bundle_files(row))
-    return download_response(db, access, request, object_key="", size=len(data), filename=f"{row.name}.zip",
-        content_type="application/zip", resource=f"skill:{row.id}:{row.version}", source_factory=lambda _: BytesIO(data))
-
-
-@router.get("/{identifier}/files")
-def file_read(identifier: UUID, path: str, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, AgentSkill, identifier, access)
-    content = skill_files.bundle_files(row).get(skill_files.safe_path(path))
-    if content is None:
-        raise HTTPException(404, "文件不存在")
-    return {"path": path, "text": skill_files.text_content(content)}
+    row = resource_owned(db, access, access.workspace_id, identifier)
+    from .shared_resources import refresh_current_metadata
+    return read_file(refresh_current_metadata(db, access, row))

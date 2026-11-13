@@ -4,7 +4,7 @@ import binascii
 
 from fastapi import HTTPException
 
-from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, validate_files
+from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, text_content, validate_files
 
 TEXT_SUFFIXES = {"md", "txt", "csv", "json", "yaml", "yml", "xml", "html", "css", "svg"}
 

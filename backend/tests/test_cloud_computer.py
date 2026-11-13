@@ -95,10 +95,8 @@ def setup(accounts, monkeypatch, rate="0.6"):
         db.add(storage_row); db.commit()
     monkeypatch.setattr(storage_backend, "active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
-    from test_cloud_computer_mount import MemoryMount
-    managed_store = MemoryMount()
-    managed_store.region = "cn-hangzhou"
-    monkeypatch.setattr(storage_backend, "current_storage", lambda _db: managed_store)
+    monkeypatch.setattr(storage_backend, "current_storage", lambda _db: SimpleNamespace(
+        bucket="test-bucket", region="cn-hangzhou"))
     monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
     body = {"version": 0, "enabled": True, "region": "cn-hangzhou", "template": "test-template", "specification": "test-only",
             "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}
@@ -142,8 +140,8 @@ def enable_execution(db, access, monkeypatch):
     factory = sessionmaker(bind=db.get_bind())
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
-    def execute(arguments, packages=None):
-        return cloud.execute(db, access, conversation.id, uuid4(), arguments, packages, None)
+    def execute(arguments):
+        return cloud.execute(db, access, conversation.id, uuid4(), arguments, None)
     return fake, execute
 
 

@@ -192,15 +192,11 @@ class AlibabaSandbox:
         if mount:
             network["allow_out"] = [
                 f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
-            points = [{
+            metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
+                "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
                     "bucketName": mount["bucket"], "mountDir": ROOT,
                     "bucketPath": "/" + mount["prefix"].rstrip("/"),
-                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]
-            if self.config.get("skill_mount"):
-                points.append({**points[0], "mountDir": ROOT + "/skill-packages",
-                    "bucketPath": "/" + self.config["skill_mount"]["prefix"].rstrip("/"), "readOnly": True})
-            metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
-                "fc.sandbox.storage.oss": json.dumps({"mountPoints": points})})
+                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]})})
         sandbox = self.sdk.create(template=self.config["template"], timeout=self.config["max_seconds"],
             metadata=metadata, secure=True,
             allow_internet_access=True,

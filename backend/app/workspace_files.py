@@ -31,8 +31,6 @@ def valid_path(path: str) -> str:
         raise HTTPException(422, "文件路径无效")
     p = PurePosixPath(path)
     if any(part in ("", ".", "..") for part in path.split("/")): raise HTTPException(422, "文件路径无效")
-    from .skill_directory import hidden
-    if hidden(path): raise HTTPException(422, "请在 Skill 管理页维护方法文件")
     return str(p)
 def check_workspace(access, workspace_id):
     if UUID(str(workspace_id)) != access.workspace_id: raise HTTPException(404, "工作区不存在或无权访问")
@@ -41,8 +39,7 @@ def read_file(row):
         "download_url": f"/resources/{row.id}/download", "preview_url": f"/resources/{row.id}/download?preview=true"}
 def owned(db, access, workspace_id, file_id, write=False):
     check_workspace(access, workspace_id); row = db.get(WorkspaceFile, file_id)
-    from .skill_directory import hidden
-    if not row or row.workspace_id != access.workspace_id or row.deleted_at or hidden(row.path): raise HTTPException(404, "文件不存在")
+    if not row or row.workspace_id != access.workspace_id or row.deleted_at: raise HTTPException(404, "文件不存在")
     if write: access.editor()
     return row
 class TextWrite(BaseModel):
@@ -139,8 +136,7 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
     return row
 @router.get("")
 def listing(workspace_id: UUID, q: str = "", offset: int = 0, limit: int = 100, db=Depends(get_db), access: Access=Depends(get_access)):
-    from .skill_directory import visible_rows
-    check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%"), *visible_rows()).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
+    check_workspace(access, workspace_id); limit=min(max(limit,1),500); rows=db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id==access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%")).order_by(WorkspaceFile.path).offset(max(offset,0)).limit(limit)).all(); return {"items":[read_file(r) for r in rows],"offset":offset,"limit":limit}
 @router.get("/{file_id}")
 def detail(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     return read_file(owned(db,access,workspace_id,file_id))
@@ -202,7 +198,7 @@ def tool_definitions():
         ("write_file","创建或覆盖当前工作区文本文件，内容直接写入资源库。",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","直接修改当前文件；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享普通资源；同一环境保留依赖。预装软件见环境能力说明，缺少依赖可用 pip/npm 安装到工作目录之外。编辑前检查输入，用对应库处理 Word/PDF；完成后重新打开输出核对内容。系统和本人个人 Skill 默认位于 skill-packages/方法ID/ 只读目录，无需先选择或加载；目录文件由 Skill 管理页维护，不能直接改写。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件。网页服务用 start_preview 启动，不在此等待服务退出。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000},"skill_ids":{"type":"array","items":{"type":"string"},"maxItems":20}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。预装软件见环境能力说明，缺少依赖可用 pip/npm 安装到工作目录之外。编辑前检查输入，用对应库处理 Word/PDF；完成后重新打开输出核对内容。Skill 就是资源库普通文件，可用 list_files 查找 SKILL.md，read_file 读取，按其所在目录运行脚本；修改和删除使用普通文件工具。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。网页服务用 start_preview 启动，不在此等待服务退出。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000}},"required":["command"],"additionalProperties":False}),
     ]]
 
 
@@ -226,26 +222,11 @@ def resolve_input(db, access, reference):
     version.content_hash = row.content_hash or ""
     return row, version
 
-def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, skill_packages=None, check_active=None, skill_versions=None):
+def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, check_active=None):
     check_workspace(access,workspace_id)
     from .cloud_computer import execute
     if name == "run_command":
-        return execute(db, access, conversation_id, request_id, arguments, skill_packages, check_active, skill_versions)
-    from .skill_directory import hidden, authorized
-    if name == "read_file" and not arguments.get("id") and hidden(arguments.get("path", "")):
-        from .skill_files import safe_path
-        path = safe_path(arguments["path"])
-        identifier = path.split("/", 2)[1] if "/" in path else ""
-        if identifier not in (skill_packages or {}) or not authorized(db, access, identifier):
-            raise HTTPException(404, "方法文件不存在或当前不可用")
-        result = execute(db, access, conversation_id, request_id, {"command": name, "file_operation": {
-            "name": name, "path": path, "offset": max(0, arguments.get("offset", 0)),
-            "limit": min(max(1, arguments.get("limit", 12000)), 12000)}},
-            skill_packages, check_active, skill_versions)
-        file_result = result.get("file_result", {})
-        if file_result.get("error"):
-            raise HTTPException(file_result["status_code"], file_result["error"])
-        return {**result, **file_result.get("value", {}), "file_path": "/home/user/workspace/" + path}
+        return execute(db, access, conversation_id, request_id, arguments, check_active)
     if name not in {"list_files", "read_file", "write_file", "apply_patch", "delete_file"}:
         return {"error": "未知文件工具"}
     if name not in {"list_files", "read_file"}:
@@ -297,7 +278,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             payload = PatchWrite(patch=arguments["patch"], expected_version=1)
             operation["patch"] = payload.patch
     result = execute(db, access, conversation_id, request_id, {
-        "command": name, "file_operation": operation}, skill_packages, check_active, skill_versions)
+        "command": name, "file_operation": operation}, check_active)
     file_result = result.get("file_result", {})
     if file_result.get("error"):
         raise HTTPException(file_result["status_code"], file_result["error"])

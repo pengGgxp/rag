@@ -31,7 +31,6 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
     { id: "compact", kind: "command" as const, name: "compact", description: compactDisabled ? "暂无可压缩的历史内容" : "压缩上下文" },
     ...(extensionsReady && catalog.workbench?.available ? [{ id: "question-workbench", kind: "application" as const, name: "题目工作台", description: "出题、保存题目与组卷导出" }] : []),
     ...catalog.skills.filter(item => extensionsReady && item.enabled).map(item => ({ ...item, kind: "skill" as const })),
-    ...catalog.platform.filter(() => extensionsReady).map(item => ({ ...item, kind: "platform" as const })),
     ...catalog.servers.filter(item => extensionsReady && item.enabled && item.last_checked_at && item.allowed_tools.length)
       .map(item => ({ id: item.id, kind: "mcp" as const, name: item.name, description: `${item.allowed_tools.length} 项已授权工具` })),
   ].filter(item => `${item.name} ${item.description}`.toLocaleLowerCase().includes(query)).slice(0, 30);
@@ -105,7 +104,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
           onMouseDown={event => event.preventDefault()} onMouseEnter={() => setIndex(i)} onClick={() => void choose(item)}>
           {item.kind === "command" ? <Minimize2 size={17} /> : item.kind === "mcp" ? <Plug size={17} /> : <FileText size={17} />}
           <span className="extension-slash-copy"><strong>{item.name}</strong><small>{item.description}</small></span>
-          <span className="extension-slash-source">{item.kind === "command" ? "命令" : item.kind === "application" ? "应用" : item.kind === "platform" ? "平台 Skill" : item.kind === "skill" ? "我的 Skill" : "MCP"}</span>
+          <span className="extension-slash-source">{item.kind === "command" ? "命令" : item.kind === "application" ? "应用" : item.kind === "platform" ? "平台 Skill" : item.kind === "skill" ? "工作区 Skill" : "MCP"}</span>
           {item.kind === "mcp" && effective.mcp_server_ids.includes(item.id) && <Check size={15} aria-label="已选择" />}
         </button>)}
         {!options.length && <p role="status">{query ? "没有匹配项" : "暂无可用命令或扩展"}</p>}
