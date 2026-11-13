@@ -79,7 +79,7 @@ export function CloudComputerPanel({ conversationId, workspaceId }: { conversati
     </div>
     {computer?.terminal && catalog?.available && <div className="cloud-computer-line"><span>{price}</span></div>}
     {last && !last.terminal && <div className="cloud-computer-line"><span>正在处理文件</span><Tooltip content="停止当前命令"><button type="button" className="icon-button" aria-label="停止当前命令" disabled={busy || last.cancel_requested} onClick={() => void act(`/cloud-computer/commands/${last.id}/cancel`)}><Square size={14} /></button></Tooltip></div>}
-    {commands.some(command => command.status === "completed") && <Link href="/resources">打开资源库</Link>}
+      {commands.some(command => command.status === "completed") && <Link href="/resources">打开工作区</Link>}
     {error && <div className="cloud-computer-line" role="alert"><span>{error}</span><button type="button" className="icon-button" aria-label="刷新云电脑状态" onClick={() => setRevision(value => value + 1)}><RotateCcw size={14} /></button></div>}
   </div>;
 }

@@ -108,7 +108,7 @@ export function PreviewSurface({ id, standalone = false, onClose }: { id: string
         <iframe key={url} src={url} title={detail?.preview.name || "成果预览"} referrerPolicy="no-referrer"
           sandbox="allow-scripts allow-forms allow-same-origin allow-downloads" onLoad={() => setFrameLoaded(true)} />
       </> : <div className="cloud-preview-empty" role="status"><Monitor size={28} /><p>{error ? "预览暂不可用" : detail?.preview.summary || "正在获取预览状态"}</p>
-        {computer?.terminal && <a href="/resources">打开资源库</a>}
+        {computer?.terminal && <a href="/resources">打开工作区</a>}
       </div>}
     </div>
   </section>;

@@ -1,4 +1,4 @@
-# 资源库接口与执行边界
+# 工作区接口与执行边界
 
 资源库内容浏览、缩略图与 Word/PDF 阅读器见 `resource-content-preview.md`；当前共享目录执行规则以 `tasks/shared-resource-directory.md` 为准，下文早期版本与输入准备记录不适用于新预览功能。
 
@@ -20,8 +20,12 @@
 | GET/HEAD | `/resources/{id}/download?version=N&preview=true` | 固定版本鉴权下载、单段 Range、用户出口计量 |
 | DELETE | `/resources/{id}` | 立即隐藏，异步清理无引用对象 |
 | POST | `/resources/{id}/attachment?version=N` | 取得固定版本聊天引用，不复制对象 |
+| GET | `/resources/browse?path=&q=&sort=&direction=` | 按当前工作区目录浏览直接子项，返回面包屑和完整路径 |
+| POST/PUT/DELETE | `/resources/directories` | 创建、重命名和递归删除工作区文件夹 |
+| PUT | `/resources/files/{id}` | 在工作区内重命名文件 |
+| POST | `/resources/operations/move` 或 `/resources/operations/copy` | 在同一工作区移动或复制文件/文件夹 |
 
-旧聊天附件内容链接保留鉴权和计量。页面 `/workspace-files` 重定向到 `/resources`。首次使用说明工作区共享、持久保存、容量与下载额度；移除草稿仅取消本轮引用。
+旧聊天附件内容链接保留鉴权和计量。页面 `/workspace-files` 重定向到 `/resources`；用户可见名称为“工作区”，采用 Windows 文件资源管理器式的路径、选择、双击打开、复制/剪切/粘贴和删除交互。工作区、Skill 管理页、云电脑和模型文件工具读取同一份文件。
 
 ## Agent 工具
 

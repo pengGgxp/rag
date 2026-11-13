@@ -181,7 +181,7 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
     return create_upload(file, db, access, source="chat_upload")
 
 
-def create_upload(file, db, access, *, source):
+def create_upload(file, db, access, *, source, directory=""):
     access.editor()
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
@@ -211,7 +211,22 @@ def create_upload(file, db, access, *, source):
     check_capacity(db, access.workspace_id, len(data))
     identifier = uuid4()
     from .shared_resources import object_key
-    resource_path = f"uploads/{identifier}/{filename}"
+    if directory:
+        from .workspace_files import valid_path
+        directory = valid_path(directory)
+        from .models import WorkspaceDirectory
+        if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
+                WorkspaceDirectory.path == directory)) or db.scalar(select(WorkspaceFile.id).where(
+                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
+                WorkspaceFile.path.startswith(directory + "/")))):
+            raise HTTPException(404, "目标文件夹不存在")
+        resource_path = f"{directory}/{filename}"
+        existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+            WorkspaceFile.path == resource_path, WorkspaceFile.deleted_at.is_(None)))
+        if existing:
+            raise HTTPException(409, "目标目录中已存在同名文件，请更换文件名")
+    else:
+        resource_path = f"uploads/{identifier}/{filename}"
     key = object_key(access.workspace_id, resource_path)
     document_types = {".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

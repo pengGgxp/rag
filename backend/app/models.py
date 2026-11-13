@@ -880,6 +880,17 @@ class WorkspaceFile(Base):
     versions: Mapped[list["WorkspaceFileVersion"]] = relationship(cascade="all, delete-orphan", order_by="WorkspaceFileVersion.version")
 
 
+class WorkspaceDirectory(Base):
+    __tablename__ = "workspace_directories"
+    __table_args__ = (UniqueConstraint("workspace_id", "path", name="uq_workspace_directory_path"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class WorkspaceFileVersion(Base):
     __tablename__ = "workspace_file_versions"
     __table_args__ = (UniqueConstraint("file_id", "version", name="uq_workspace_file_version"),)

@@ -10,6 +10,7 @@ from .auth import now
 from .models import ChatAttachment, WorkspaceFile, WorkspaceFileVersion
 
 EXCLUDED = {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"}
+DIRECTORY_MARKER = ".rag-directory"
 
 
 def prefix(workspace_id):
@@ -24,6 +25,10 @@ def backend(db):
 
 def object_key(workspace_id, path):
     return prefix(workspace_id) + path
+
+
+def directory_marker_key(workspace_id, path):
+    return object_key(workspace_id, f"{path.rstrip('/')}/{DIRECTORY_MARKER}")
 
 
 def mount_config(db, workspace_id):
@@ -108,7 +113,8 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
         if not key.startswith(root):
             raise HTTPException(502, "资源目录返回了无效文件")
         path = key[len(root):]
-        if not path or path.endswith("/") or any(part in EXCLUDED for part in path.split("/")):
+        if (not path or path.endswith("/") or path.rsplit("/", 1)[-1] == DIRECTORY_MARKER
+                or any(part in EXCLUDED for part in path.split("/"))):
             continue
         valid_path(path)
         objects[path] = item
@@ -187,7 +193,7 @@ def remove_live(db, resource):
     return True
 
 
-def delete_path(db, access, resource, *, remove_object=True):
+def delete_path(db, access, resource, *, remove_object=True, commit=True):
     from .storage_billing import lock_workspace
     from .auth import now as current_time
     access.editor()
@@ -207,7 +213,8 @@ def delete_path(db, access, resource, *, remove_object=True):
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="resource.deleted", resource_type="resource", resource_id=resource.id,
         metadata={"source": "workspace_mount"})
-    db.commit()
+    if commit:
+        db.commit()
 
 
 def register_operation(db, access, operation, value):

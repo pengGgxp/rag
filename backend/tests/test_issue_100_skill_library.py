@@ -67,3 +67,23 @@ def test_catalog_is_readable_to_viewers_but_install_requires_editor(accounts, mo
     assert member.get("/agent/skills/platform").status_code == 200
     assert member.get(f"/agent/skills/platform/{skill.id}/download").status_code == 200
     assert member.post(f"/agent/skills/platform/{skill.id}/install").status_code == 403
+
+
+def test_workspace_browser_keeps_directories_and_file_operations_in_one_mount(accounts, monkeypatch, resource_store):
+    owner, db, _ = setup_site(accounts, monkeypatch)
+    created = owner.post("/resources/directories", json={"path": "docs"})
+    assert created.status_code == 201
+    assert owner.post("/resources/directories", json={"path": "docs/nested"}).status_code == 201
+    upload = owner.post("/resources", data={"directory": "docs/nested"}, files={"file": ("guide.txt", b"guide")})
+    assert upload.status_code == 201, upload.text
+    item = upload.json()
+    listing = owner.get("/resources/browse", params={"path": "", "q": "guide"})
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["path"] == "docs/nested/guide.txt"
+    assert owner.put(f"/resources/files/{item['id']}", json={"path": item["path"], "new_path": "docs/nested/readme.txt"}).status_code == 200
+    assert owner.post("/resources/operations/copy", json={"paths": ["docs/nested"], "destination": ""}).status_code == 200
+    copied = owner.get("/resources/browse", params={"path": "docs", "q": ""}).json()["items"]
+    assert {entry["path"] for entry in copied} == {"docs/nested"}
+    assert owner.post("/resources/operations/move", json={"paths": ["docs/nested/readme.txt"], "destination": ""}).status_code == 200
+    assert owner.request("DELETE", "/resources/directories", json={"path": "docs"}).status_code == 204
+    assert owner.get("/resources/browse").json()["items"]

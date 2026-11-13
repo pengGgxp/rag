@@ -144,6 +144,27 @@ def write_text(workspace_id: UUID, payload: TextWrite, db, access):
     check_workspace(access, workspace_id); access.editor()
     return _save_bytes(workspace_id, access, db, payload.path, payload.content.encode("utf-8"),
         payload.content_type, payload.expected_version)
+
+
+@router.put("")
+def write_text_endpoint(workspace_id: UUID, payload: TextWrite, db=Depends(get_db), access: Access=Depends(get_access)):
+    return write_text(workspace_id, payload, db, access)
+
+
+@router.get("/{file_id}/text")
+def read_text_endpoint(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
+    row = owned(db, access, workspace_id, file_id)
+    version = _current_file_version(db, row)
+    if not (row.content_type.startswith("text/") or row.path.lower().endswith((".md", ".txt", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh", ".yaml", ".yml"))):
+        raise HTTPException(415, "该文件不是可编辑文本")
+    if version.size_bytes > 5_000_000:
+        raise HTTPException(413, "文件过大，无法在浏览器中编辑")
+    from .storage import download_fileobj
+    try:
+        content = download_fileobj(version.object_key).read().decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(415, "文件不是 UTF-8 文本") from None
+    return {"path": row.path, "content": content, "version": row.current_version, "content_type": row.content_type}
 @router.api_route("/{file_id}/download", methods=["GET", "HEAD"])
 def download(workspace_id: UUID,file_id: UUID,request: Request,db=Depends(get_db),access: Access=Depends(get_access)):
     from .storage_downloads import download_response
