@@ -446,11 +446,63 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     assert event["summary"] == "已生成 1 个文件"
     assert event["files"] == [{key: output[key] for key in ("id", "path", "size_bytes", "version")}]
     assert "object_key" not in json.dumps(event)
-    assert "不要编造 Markdown、URL 或下载地址" in AGENT_SYSTEM_PROMPT
+    assert "不要编造 URL 或下载地址" in AGENT_SYSTEM_PROMPT
     assert "同时说明脚本未完成并列出这些文件" in AGENT_SYSTEM_PROMPT
     assert "不要向用户原样展示 queued、processing、ready 等内部状态码" in AGENT_SYSTEM_PROMPT
     assert "不规定固定工具顺序" in AGENT_SYSTEM_PROMPT
     assert "远程图片" in AGENT_SYSTEM_PROMPT and "run_command" in AGENT_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(("name", "result"), [
+    ("write_file", {"id": "file-1", "path": "报告.md", "size_bytes": 21,
+        "download_url": "/resources/file-1/download"}),
+    ("start_preview", {"preview": {"status": "ready", "name": "排序演示",
+        "url": "https://example.test/previews/preview-1"}}),
+    ("start_preview", {"error": "网页未就绪", "preview": {"status": "failed", "url": None}}),
+    ("generate_image", {"task_id": "image-1", "status": "queued", "files": [],
+        "summary": "等待生成", "view_url": "/resources"}),
+    ("edit_image", {"task_id": "image-2", "status": "completed",
+        "files": [{"id": "file-2", "path": "修改后的图片.png"}],
+        "summary": "图片已生成", "view_url": "/resources"}),
+    ("run_command", {"error": "脚本部分失败", "generated_files": [
+        {"id": "file-3", "path": "报告.pdf", "size_bytes": 30}]}),
+    ("save_to_knowledge_base", {"save_id": "save-1", "document_id": "document-1",
+        "status": "processing", "summary": "资料正在处理",
+        "url": "/?library=library-1&view=documents&document=document-1"}),
+])
+def test_delivery_instructions_and_actual_results_reach_final_model_round(runtime, name, result):
+    class Extensions:
+        tools = []
+        skills = []
+
+        def label(self, *args):
+            return name
+
+        def execute(self, *args, **kwargs):
+            return result
+
+    class Provider:
+        count = 0
+
+        def complete_with_tools(self, messages, tools, *, tool_choice):
+            self.count += 1
+            if self.count == 1:
+                return ToolResponse(content=None, tool_calls=[ToolCall(id="deliver", name=name, arguments={})])
+            prompt = messages[0]["content"]
+            assert "工具执行结束后必须用自然语言给出简短交付总结" in prompt
+            assert "[打开资源库](/resources)" in prompt
+            assert "preview.status 为 ready 且 preview.url 存在" in prompt
+            assert "download_url 等 API 下载地址" in prompt
+            assert "尚未完成及可在哪里查看进度" in prompt
+            assert "部分完成、失败、取消或结果尚未确认" in prompt
+            assert json.loads(next(item["content"] for item in reversed(messages)
+                if item["role"] == "tool")) == result
+            return ToolResponse(content="交付说明测试。", tool_calls=[])
+
+    provider = Provider()
+    run = run_retrieval_agent(**runtime.arguments, provider=provider, extensions=Extensions())
+    assert provider.count == 2
+    assert run.answer == "交付说明测试。"
 
 
 @pytest.mark.parametrize("state", ["starting", "ready", "ended"])
