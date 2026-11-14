@@ -19,6 +19,7 @@ from .workspace_files import FILE_TOOL_ERRORS
 from .image_reading import model_image_message
 from .upstream_retries import retry_activity
 from .knowledge_base_tools import LABELS as KNOWLEDGE_TOOL_LABELS
+from .tool_errors import tool_outcome
 
 FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_file",
                              "apply_patch", "delete_file", "run_command"))
@@ -417,6 +418,9 @@ def stream_retrieval_agent(
         web_sources = {item["source_id"]: item for item in state.get("web_sources", [])}
         budget = context_manager.output_budget(len(state.get("tool_calls", []))) if context_manager else 4000
         execution_id = None
+        def emit_tool_result(activity, result):
+            write(("tool_result", {**activity, "outcome": tool_outcome(result)}))
+
         def record_result(call, result, image=None):
             message = _tool_message(call, result)
             if image is not None:
@@ -443,9 +447,9 @@ def stream_retrieval_agent(
                     result = {"error": call.argument_error, "error_code": "tool_arguments"}
                     record_result(call, result)
                     tool_results.append({"call_id": call.id, "name": call.name, "status": "error", **result})
-                    write(("tool_result", {"call_id": f"tool-{state['steps']}-{call.id}",
+                    emit_tool_result({"call_id": f"tool-{state['steps']}-{call.id}",
                         "name": call.name, "label": "修正工具参数", "kind": "tool", "status": "error",
-                        "summary": call.argument_error}))
+                        "summary": call.argument_error}, result)
                     continue
                 if call.name in ("web_search", "web_fetch") and search:
                     label = "搜索网页" if call.name == "web_search" else "阅读网页"
@@ -465,10 +469,10 @@ def stream_retrieval_agent(
                         web_sources[item["source_id"]]["call_ids"] = list(dict.fromkeys(
                             [*previous.get("call_ids", []), activity["call_id"]]))
                     write(("web_sources", {"sources": list(web_sources.values())}))
-                    write(("tool_result", {**activity, "status": status,
+                    emit_tool_result({**activity, "status": status,
                         "result_count": result.get("result_count", 0),
                         "summary": result.get("error") or (f"找到 {result.get('result_count', 0)} 个来源"
-                            if call.name == "web_search" else result.get("title") or "未能读取正文")}))
+                            if call.name == "web_search" else result.get("title") or "未能读取正文")}, result)
                     check_active()
                     continue
                 label = ("发现知识库" if call.name == "discover_knowledge_bases" else
@@ -486,7 +490,7 @@ def stream_retrieval_agent(
                     write(("tool_started", {**activity, "status": "running"}))
                     requested_query = call.arguments.get("query", "")
                     if not isinstance(requested_query, str) or len(requested_query) > 120:
-                        result = {"error": "query 必须是不超过 120 个字符的文本"}
+                        result = {"error": "query 必须是不超过 120 个字符的文本", "error_code": "knowledge_arguments"}
                     else:
                         pattern = "%" + requested_query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
                         checked = access.revalidate(db)
@@ -534,9 +538,9 @@ def stream_retrieval_agent(
                         "result_count": len(result.get("knowledge_bases", [])) + len(result.get("documents", [])),
                         **({"error": result["error"]} if result.get("error") else {}),
                     })
-                    write(("tool_result", {**activity, "status": tool_results[-1]["status"],
+                    emit_tool_result({**activity, "status": tool_results[-1]["status"],
                         "result_count": tool_results[-1]["result_count"],
-                        "summary": result.get("error") or f"找到 {tool_results[-1]['result_count']} 项资料"}))
+                        "summary": result.get("error") or f"找到 {tool_results[-1]['result_count']} 项资料"}, result)
                     check_active()
                     continue
                 if call.name != "search_knowledge_base":
@@ -551,7 +555,7 @@ def stream_retrieval_agent(
                             if context_manager and call.name == "read_conversation_history" else
                             extensions.execute(call.name, call.arguments, check_active=check_active,
                                 call_id=activity["call_id"])
-                            if extensions else {"error": "该工具不可用"}
+                            if extensions else {"error": "该工具不可用", "error_code": "tool_unavailable"}
                         ))
                     image_result = executable.image if hasattr(executable, "image") else None
                     result = executable.result if image_result is not None else executable
@@ -583,7 +587,7 @@ def stream_retrieval_agent(
                            if call.name in ("load_skill", "read_skill_resource") and result.get("id") else {}),
                         **({"extension": result["_extension"]} if result.get("_extension") else {}),
                     })
-                    write(("tool_result", {**activity, "status": tool_results[-1]["status"],
+                    emit_tool_result({**activity, "status": tool_results[-1]["status"],
                         "summary": tool_failure_summary(call.name, result) if tool_results[-1]["status"] in ("error", "uncertain")
                         else f"已读取图片「{result['filename']}」" if call.name == "read_image" and result.get("filename")
                         else result.get("summary", "操作已完成") if call.name in KNOWLEDGE_TOOL_LABELS
@@ -600,7 +604,7 @@ def stream_retrieval_agent(
                         **({"preview": result["preview"]} if result.get("preview") else {}),
                         **({"knowledge_base": result["knowledge_base"]} if call.name in KNOWLEDGE_TOOL_LABELS and result.get("knowledge_base") else {}),
                         **({"skill_id": result["id"], "skill_name": result["name"], "skill_version": result["version"]}
-                           if call.name in ("load_skill", "read_skill_resource") and result.get("id") else {})}))
+                           if call.name in ("load_skill", "read_skill_resource") and result.get("id") else {})}, result)
                     check_active()
                     continue
                 requested = call.arguments.get("knowledge_base_ids")
@@ -621,6 +625,7 @@ def stream_retrieval_agent(
                 document_libraries = {}
                 top_k = call.arguments.get("top_k", 20)
                 error = None
+                error_code = "knowledge_arguments"
                 if not search_ids or invalid_ids or len(search_ids) > 8:
                     error = "knowledge_base_ids 必须包含 1 至 8 个有效知识库 ID"
                 elif not isinstance(search_query, str) or not search_query.strip():
@@ -636,6 +641,7 @@ def stream_retrieval_agent(
                                 raise HTTPException(404, "知识库不存在或无权访问")
                     except HTTPException:
                         error = "所选知识库当前不可用或无权访问"
+                        error_code = "knowledge_access"
                 if requested_documents is not None and error is None:
                     parsed_documents = []
                     if not isinstance(requested_documents, list) or not 1 <= len(requested_documents) <= 8:
@@ -658,25 +664,27 @@ def stream_retrieval_agent(
                             if (document is None or document.status != DocumentStatus.READY or not document.is_active
                                     or document.knowledge_base_id not in search_ids):
                                 error = "所选文档当前不可用或不属于所选知识库"
+                                error_code = "knowledge_access"
                                 break
                             try:
                                 checked = access.revalidate(db)
                                 checked.library(db, document.knowledge_base_id)
                             except HTTPException:
                                 error = "所选文档当前不可用或无权访问"
+                                error_code = "knowledge_access"
                                 break
                             parsed_documents.append(document.id)
                             document_libraries[document.id] = document.knowledge_base_id
                         if error is None:
                             document_filter = list(dict.fromkeys(parsed_documents))
                 if error:
-                    result = {"error": error}
+                    result = {"error": error, "error_code": error_code}
                     record_result(call, result)
                     tool_results.append({
                         "call_id": call.id, "name": call.name, "kind": "knowledge",
                         "label": "知识库检索", "status": "error", **result,
                     })
-                    write(("tool_result", {**activity, "status": "error", "summary": error}))
+                    emit_tool_result({**activity, "status": "error", "summary": error}, result)
                     continue
                 write(("tool_started", {**activity, "status": "running"}))
                 found: list[tuple[float, dict[str, Any]]] = []
@@ -754,6 +762,8 @@ def stream_retrieval_agent(
                     result.update(result_count=len(selected), omitted_count=len(all_evidence) - len(selected))
                 if retrieval_errors and not selected:
                     result["error"] = retrieval_errors[0]["error"]
+                    result.update({key: retrieval_errors[0][key] for key in ("error_code", "status_code")
+                                   if key in retrieval_errors[0]})
                 citations.update({item["chunk_id"]: item for item in selected})
                 if extensions:
                     extensions.verified_citations = list(citations.values())
@@ -764,8 +774,8 @@ def stream_retrieval_agent(
                     "query": search_query,
                     "result_count": len(selected),
                 })
-                write(("tool_result", {**activity, "status": tool_results[-1]["status"],
-                    "result_count": len(selected), "summary": result.get("error") or f"找到 {len(selected)} 条相关内容"}))
+                emit_tool_result({**activity, "status": tool_results[-1]["status"],
+                    "result_count": len(selected), "summary": result.get("error") or f"找到 {len(selected)} 条相关内容"}, result)
                 write(("sources", {"citations": list(citations.values()), "traces": traces}))
         if image_inputs:
             messages.append(model_image_message(image_inputs))

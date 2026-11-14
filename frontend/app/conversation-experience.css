@@ -57,6 +57,13 @@
 .activity-step-title strong { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
 .activity-state-label { font-size: var(--form-label-size); color: var(--muted); }
 .activity-step-summary { font-size: var(--form-label-size); overflow-wrap: anywhere; }
+.activity-details { min-width: 0; }
+.activity-detail { min-width: 0; }
+.activity-detail .conversation-thinking { margin: 4px 0; }
+.activity-notice { display: flex; align-items: flex-start; gap: 7px; margin: 4px 0 8px 23px; font-size: var(--form-label-size); line-height: 1.6; overflow-wrap: anywhere; }
+.activity-notice > svg { flex-shrink: 0; margin-top: 3px; }
+.activity-notice.activity-blocked, .activity-notice.activity-uncertain { color: var(--warning-foreground); }
+.activity-notice.activity-failed { color: var(--danger); }
 .activity-file-downloads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 4px 23px; }
 .activity-file-download { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--form-radius); color: var(--accent); font: inherit; text-align: left; text-decoration: none; overflow-wrap: anywhere; }
 .activity-file-download:hover { background: var(--surface-muted); color: var(--ink); }
@@ -64,6 +71,7 @@
 .activity-running .activity-state-icon, .activity-running .activity-state-label { color: var(--agent); }
 .activity-completed .activity-state-icon { color: var(--success); }
 .activity-failed .activity-state-icon, .activity-failed .activity-state-label { color: var(--danger); }
+.activity-blocked .activity-state-icon, .activity-uncertain .activity-state-icon { color: var(--warning-foreground); }
 .context-trigger {
   gap: 5px;
   min-height: var(--form-control-height);

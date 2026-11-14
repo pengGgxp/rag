@@ -53,6 +53,7 @@ def execute(runtime, name, arguments):
             key = hashlib.sha256((str(runtime.request_id) + ":" + name + ":" + json.dumps(arguments, sort_keys=True)).encode()).hexdigest()
             return create(db, access, payload, key)
         except (ValidationError, ValueError, TypeError):
-            return {"error": "图片参数不完整，请检查提示词、规格和参考资源"}
+            return {"error": "图片参数不完整，请检查提示词、规格和参考资源", "error_code": "image_arguments"}
         except HTTPException as exc:
-            return {"error": str(exc.detail)}
+            from .tool_errors import public_error
+            return {"error": public_error(exc.detail), "status_code": exc.status_code}

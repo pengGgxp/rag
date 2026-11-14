@@ -365,6 +365,44 @@ def test_file_disappears_then_model_uses_another_path_in_same_turn(runtime):
     assert run.answer == "已找到改名后的文件"
 
 
+@pytest.mark.parametrize("malformed", [True, False])
+def test_argument_feedback_is_corrected_without_replaying_tool(runtime, malformed):
+    executions = []
+
+    class Extensions:
+        tools, skills = [], []
+
+        def label(self, *args):
+            return "生成文件"
+
+        def execute(self, name, arguments, **kwargs):
+            executions.append(arguments)
+            return ({"error": "path 必须是文本", "error_code": "file_arguments"}
+                if not isinstance(arguments.get("path"), str) else {"summary": "文件已保存"})
+
+    class Provider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                call = ToolCall.parse("bad", "write_file", '{"path":' if malformed else '{"path": 2}')
+                return ToolResponse(None, [call])
+            if self.step == 2:
+                assert json.loads(messages[-1]["content"])["error"]
+                return ToolResponse(None, [ToolCall("fixed", "write_file", {"path": "result.md"})])
+            assert json.loads(messages[-1]["content"]) == {"summary": "文件已保存"}
+            return ToolResponse("已生成文件。", [])
+
+    events = list(stream_retrieval_agent(**runtime.arguments, provider=Provider(), extensions=Extensions()))
+    results = [value for kind, value in events if kind == "tool_result"]
+    assert [value["outcome"] for value in results] == ["feedback", "success"]
+    assert [value["status"] for value in results] == ["error", "completed"]
+    assert len(executions) == (1 if malformed else 2)
+    assert executions[-1] == {"path": "result.md"}
+    assert events[-1][0] == "complete" and events[-1][1].answer == "已生成文件。"
+
+
 def test_retrieval_http_failure_is_tool_observation_not_turn_failure(runtime):
     def unavailable(*args, **kwargs):
         raise HTTPException(409, "知识库已归档")

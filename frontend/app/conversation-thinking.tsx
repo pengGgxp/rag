@@ -10,8 +10,7 @@ export function ConversationThinking({ block, conversationId, messageId, message
   conversationId: string; messageId: string; messageStatus: string;
 }) {
   const running = messageStatus === "streaming" && block.status === "running";
-  const [choice, setChoice] = useState<boolean | null>(null);
-  const expanded = choice ?? running;
+  const [expanded, setExpanded] = useState(false);
   const [savedText, setSavedText] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -34,7 +33,7 @@ export function ConversationThinking({ block, conversationId, messageId, message
   return <div className="conversation-thinking">
     <button type="button" className="activity-toggle thinking-toggle" aria-expanded={expanded}
       aria-controls={regionId} aria-label={`${expanded ? "收起" : "展开"}第 ${block.round} 轮思考`}
-      onClick={() => setChoice(!expanded)}>
+      onClick={() => setExpanded(!expanded)}>
       <ChevronRight size={14} className={`activity-chevron${expanded ? " expanded" : ""}`} aria-hidden="true" />
       {running ? <Loader2 size={14} className="spin activity-current-icon" aria-hidden="true" />
         : <Brain size={14} aria-hidden="true" />}

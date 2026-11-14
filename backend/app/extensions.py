@@ -165,7 +165,7 @@ class ExtensionRuntime:
             except HTTPException as error:
                 detail = ("知识库或文档不存在或无权访问，请重新选择可访问的对象"
                     if error.status_code == 404 else public_error(error.detail))
-                return {"error": detail, "error_code": "knowledge_access"}
+                return {"error": detail, "error_code": "knowledge_access", "status_code": error.status_code}
             except Exception:
                 return {"error": "操作结果尚未确认，请先查看知识库核对结果，再重试原调用", "uncertain": True,
                         "error_code": "knowledge_result"}
@@ -178,7 +178,7 @@ class ExtensionRuntime:
             except PayloadValidationError:
                 return {"error": "请检查启动命令、网页端口和预览名称", "error_code": "preview_arguments"}
             except HTTPException as error:
-                return {"error": public_error(error.detail), "error_code": "preview_unavailable"}
+                return {"error": public_error(error.detail), "error_code": "preview_unavailable", "status_code": error.status_code}
         from .image_tools import LABELS as IMAGE_LABELS, execute as image_tool
         if name in IMAGE_LABELS:
             return image_tool(self, name, arguments)
@@ -189,7 +189,7 @@ class ExtensionRuntime:
             except PayloadValidationError:
                 return {"error": "保存参数不完整，请确认标题、内容和目标知识库", "error_code": "document_arguments"}
             except HTTPException as error:
-                return {"error": public_error(error.detail), "error_code": "document_save"}
+                return {"error": public_error(error.detail), "error_code": "document_save", "status_code": error.status_code}
             except Exception:
                 return {"error": "保存结果尚未确认，请查询已有任务后再试", "uncertain": True, "error_code": "document_save"}
         from .question_workbench import LABELS, METHOD
@@ -242,7 +242,8 @@ class ExtensionRuntime:
                         if error.status_code in (401, 403):
                             raise
                         if error.status_code in (402, 503) or name == "run_command":
-                            return {"error": public_error(error.detail), "error_code": "cloud_computer_unavailable"}
+                            return {"error": public_error(error.detail), "error_code": "cloud_computer_unavailable",
+                                    "status_code": error.status_code}
                         code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",
                             422: "file_arguments"}.get(error.status_code, "file_storage")
                         return {"error": public_error(error.detail, FILE_TOOL_ERRORS[code]), "error_code": code,
@@ -272,7 +273,7 @@ class ExtensionRuntime:
             result = self._remote_call(name, item, arguments, signature, before_call)
             return {**result, "_extension": {"tool": name, "version": item["authorization"]}}
         except (ValueError, TypeError, ValidationError, Unresolvable):
-            return {"error": "工具参数不符合定义，请修正后重试"}
+            return {"error": "工具参数不符合定义，请修正后重试", "error_code": "tool_arguments"}
         except mcp_client.MCPError as exc:
             uncertain = "未自动重试" in str(exc)
             if uncertain:
