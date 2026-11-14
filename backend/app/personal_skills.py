@@ -137,6 +137,8 @@ def update(identifier: UUID, payload: SkillContentUpdate, request: Request,
 @router.get("/{identifier}/files")
 def files(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = resource_owned(db, access, access.workspace_id, identifier)
+    from .workspace_mutations import snapshot
+    snapshot(db, access)
     directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
     query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
         WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(directory + "/"))

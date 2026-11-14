@@ -36,7 +36,7 @@ async (page) => {
   const skillEditor = page.getByRole('textbox', { name: 'Skill 内容' });
   assert((await skillEditor.inputValue()).includes('工作区修改后的方法'), '管理页应读取工作区修改');
   await skillEditor.fill(changed + '\n尚未保存');
-  await page.getByRole('link', { name: 'Skills', exact: true }).click();
+  await page.getByRole('link', { name: '返回我的 Skill', exact: true }).click();
   await page.getByText('有尚未保存的修改，要放弃并离开吗？', { exact: true }).waitFor();
   await button('继续编辑').click();
   await button('保存').click(); await page.getByRole('status').filter({ hasText: '已保存' }).waitFor();
@@ -46,7 +46,7 @@ async (page) => {
   await page.getByRole('link').filter({ hasText: '报告助手' }).click();
   await button('安装到当前工作区').click();
   await page.getByRole('status').filter({ hasText: '已安装到 .skills/' }).waitFor();
-  await page.getByRole('link', { name: 'Skills', exact: true }).click();
+  await page.getByRole('link', { name: '返回平台 Skill', exact: true }).click();
   await page.getByRole('link', { name: '添加 Skill', exact: true }).click();
   await page.locator('input[type=file][accept=".md,.zip"]').setInputFiles('output/playwright/issue100-platform-skill.zip');
   await page.getByRole('status').filter({ hasText: '已导入 3 个资源文件' }).waitFor();
