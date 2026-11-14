@@ -1,8 +1,8 @@
 "use client";
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Check, ChevronRight, Download, FileCode2, FileText, FolderOpen, Loader2, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Download, FileCode2, FileText, FolderOpen, Loader2, Pencil, Save, Trash2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { ApiError, downloadFile, request } from "../../../api";
 import { WorkspaceHeader, WorkspaceSkeleton } from "../../../workspace-header";
@@ -28,7 +28,9 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
   const paramsSearch = useSearchParams();
   const platform = paramsSearch.has("platform");
   const requestedReturn = paramsSearch.get("returnTo");
-  const returnTo = requestedReturn && /^\/extensions(?:\?|$)/.test(requestedReturn) ? requestedReturn : `/extensions?source=${platform ? "platform" : "personal"}`;
+  const returnTo = requestedReturn && /^\/extensions(?:\?|$)/.test(requestedReturn) ? requestedReturn : "/extensions";
+  const [editing, setEditing] = useState(paramsSearch.get("action") === "edit");
+  const handledAction = useRef("");
   const base = platform ? "/agent/skills/platform" : "/agent/skills";
   const resource = useExtensionResource<SkillDetail>(id === "new" ? null : `${base}/${id}`);
   const files = useExtensionResource<ResourceFile[]>(platform || id === "new" ? null : `${base}/${id}/files`);
@@ -58,7 +60,12 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
   useEffect(() => {
     if (resource.data?.markdown !== undefined) { setContent(resource.data.markdown); setInitialContent(resource.data.markdown); setRevision(resource.data.revision); }
   }, [resource.data]);
-  useEffect(() => { setInstalledPaths(null); setPackagePath(null); setPreview(null); setNotice(""); setError(""); }, [id, platform]);
+  useEffect(() => { setInstalledPaths(null); setPackagePath(null); setPreview(null); setNotice(""); setError(""); setEditing(paramsSearch.get("action") === "edit"); }, [id, platform, paramsSearch]);
+  useEffect(() => {
+    if (!resource.data || platform || !canWrite || paramsSearch.get("action") !== "uninstall" || handledAction.current === id) return;
+    handledAction.current = id;
+    void beginDelete();
+  }, [resource.data, id, platform, canWrite, paramsSearch]);
 
   async function save() {
     if (!dirty || busy || !canWrite) return;
@@ -100,18 +107,19 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
 
   const feedback = <>{error && <div className="skill-detail-feedback extension-error" role="alert"><span>{error}</span>{!platform && <button id="skill-reload" className="secondary" disabled={busy} onClick={() => dirty ? setDiscard(true) : void resource.reload()}>重新加载</button>}</div>}{platform && notice && <p className="skill-detail-feedback" role="status">{notice}</p>}</>;
 
-  if (id === "new") return <><WorkspaceHeader title="添加 Skill" /><div className="workspace-body extension-page"><Link className="extension-back" href={returnTo}><ArrowLeft size={16} />返回我的 Skill</Link><SkillImport /></div></>;
+  if (id === "new") return <><WorkspaceHeader title="添加 Skill" /><div className="workspace-body extension-page"><div className="skill-detail-content"><Link className="extension-back" href={returnTo}><ArrowLeft size={16} />返回 Skill 仓库</Link><SkillImport /></div></div></>;
   return <>
-    <WorkspaceHeader title={resource.data?.name || (platform ? "平台 Skill" : resource.data ? "待修复的 Skill" : "我的 Skill")} />
+    <WorkspaceHeader title={resource.data?.name || (resource.data ? "待修复的 Skill" : "Skill 详情")} />
     <div className="workspace-body extension-page skill-detail-page">
       <div className="skill-detail-content">
-        <Link className="extension-back" href={returnTo}><ArrowLeft size={16} />返回{platform ? "平台 Skill" : "我的 Skill"}</Link>
+        <Link className="extension-back" href={returnTo}><ArrowLeft size={16} />返回 Skill 仓库</Link>
         {resource.loading && !resource.data ? <WorkspaceSkeleton /> : resource.error ? <div className="extension-error" role="alert">{resource.error}<button className="secondary" onClick={() => void resource.reload()}>重试</button></div> : resource.data && <>
           <section className="skill-detail-overview" aria-label="Skill 概要">
-            <div className="skill-detail-status"><span className="skill-detail-source">{platform ? "平台 Skill" : "我的 Skill"}</span>{platform && <span>{directories.length ? <><Check size={14} />工作区已有同名 Skill</> : "尚未安装到当前工作区"}</span>}{!platform && !canWrite && <span>只读</span>}</div>
+            <div className="skill-detail-status"><span className="skill-detail-source">{!platform || directories.length ? <><Check size={14} />已安装</> : "未安装"}</span>{!canWrite && <span>只读</span>}</div>
             {resource.data.description && <p className="skill-detail-description">{resource.data.description}</p>}
             {(!platform || directories.length > 0) && <p className="skill-detail-location"><FolderOpen size={15} /><span>{!platform ? resource.data.directory : directories.length === 1 ? directories[0] : `${directories.length} 个同名目录，查看时选择位置`}</span></p>}
             <div className="extension-actions">
+              {!platform && canWrite && <button className={editing ? "secondary" : "primary"} disabled={busy || (editing && dirty)} onClick={() => setEditing(value => !value)}><Pencil size={16} />{editing ? "查看说明" : "编辑 Skill"}</button>}
               {platform && !directories.length && <button className="primary" disabled={busy || !canWrite} onClick={() => void install()}>{busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />}安装到当前工作区</button>}
               {(!platform || directories.length > 0) && (platform && directories.length > 1
                 ? <button id="skill-choose-directory" className="primary" aria-haspopup="dialog" onClick={() => setChoosingDirectory(true)}><FolderOpen size={16} />在工作区查看</button>
@@ -120,9 +128,10 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
             </div>
             {platform && !directories.length && !canWrite && <p className="skill-detail-muted">需要工作区编辑权限才能安装，可先查看说明或下载包。</p>}
             {platform && feedback}
+            {!platform && !editing && feedback}
           </section>
           {resource.data.manifest_error && <p className="skill-detail-feedback extension-error" role="alert">{resource.data.manifest_error}</p>}
-          {platform ? <section className="skill-detail-section" aria-labelledby="skill-instructions-title">
+          {platform || !editing ? <section className="skill-detail-section" aria-labelledby="skill-instructions-title">
             <h2 id="skill-instructions-title">使用说明</h2>
             <div className="answer-markdown skill-detail-markdown"><ReactMarkdown skipHtml components={{
               img: ({ alt }) => <span>{alt || "包内图片"}</span>,
@@ -130,9 +139,10 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
                 if (href && /^https?:\/\//i.test(href)) return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
                 let path = "";
                 try { path = decodeURIComponent((href || "").split(/[?#]/)[0]).replace(/^(?:\.\/)+/, ""); } catch { /* Invalid references remain readable. */ }
-                return packageFiles.some(file => file.path === path) ? <button className="skill-resource-link" data-skill-reference={encodeURIComponent(path)} onClick={() => { setPackageOrigin(`[data-skill-reference="${encodeURIComponent(path)}"]`); setPackagePath(path); }}>{children}</button> : <span>{children}</span>;
+                const workspaceFile = workspaceFiles.find(file => file.path === `${resource.data!.directory}/${path}`);
+                return (platform ? packageFiles.some(file => file.path === path) : workspaceFile) ? <button className="skill-resource-link" data-skill-reference={encodeURIComponent(path)} onClick={() => { if (!platform && workspaceFile) setPreview(workspaceFile); else { setPackageOrigin(`[data-skill-reference="${encodeURIComponent(path)}"]`); setPackagePath(path); } }}>{children}</button> : <span>{children}</span>;
               },
-            }}>{resource.data.markdown || "暂无使用说明"}</ReactMarkdown></div>
+            }}>{(resource.data.markdown || "暂无使用说明").replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "")}</ReactMarkdown></div>
           </section> : resource.data.markdown !== undefined && <section className="skill-detail-section skill-detail-editor" aria-labelledby="skill-editor-title">
             <div className="skill-detail-section-heading"><h2 id="skill-editor-title"><label htmlFor="skill-content">SKILL.md</label></h2><span className="skill-detail-muted">{canWrite ? "编辑文件" : "只读文件"}</span></div>
             <p className="skill-detail-file-path">{resource.data.manifest_path}</p>
@@ -152,8 +162,8 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
               {!(platform ? packageFiles : workspaceFiles).length && <li className="skill-detail-muted skill-detail-no-files">没有附属文件</li>}
             </ul>}
           </section>
-          {!platform && canWrite && <section className="skill-detail-danger" aria-label="删除 Skill"><div><h2>删除 Skill</h2><p>删除此目录及其中的文件，将影响当前工作区的所有成员。</p></div><button id="skill-delete" className="danger" disabled={busy} onClick={() => void beginDelete()}><Trash2 size={16} />删除 Skill</button></section>}
-          {deleting && <Modal title="删除 Skill" restoreFocusSelector="#skill-delete" busy={busy} onClose={() => setDeleting(false)}><div className="skill-detail-confirm"><p>将删除 {deletePreview?.files} 个文件和 {deletePreview?.directories} 个文件夹，影响当前工作区的所有成员。{dirty && "未保存的修改也会被放弃。"}</p>{error && <p className="extension-error" role="alert">{error}</p>}<div className="extension-actions"><button className="secondary" disabled={busy} onClick={() => setDeleting(false)}>取消</button><button className="danger" disabled={busy} onClick={() => void remove()}>确认删除</button></div></div></Modal>}
+          {!platform && canWrite && <section className="skill-detail-danger" aria-label="卸载 Skill"><div><h2>卸载 Skill</h2><p>移除此安装目录及其中的文件，影响当前工作区的所有成员。</p></div><button id="skill-delete" className="danger" disabled={busy} onClick={() => void beginDelete()}><Trash2 size={16} />卸载</button></section>}
+          {deleting && <Modal title="卸载 Skill" restoreFocusSelector="#skill-delete" busy={busy} onClose={() => setDeleting(false)}><div className="skill-detail-confirm"><p>{resource.data.directory}</p><p>将删除 {deletePreview?.files} 个文件和 {deletePreview?.directories} 个文件夹，影响当前工作区的所有成员。{dirty && "未保存的修改也会被放弃。"}</p>{error && <p className="extension-error" role="alert">{error}</p>}<div className="extension-actions"><button className="secondary" disabled={busy} onClick={() => setDeleting(false)}>取消</button><button className="danger" disabled={busy} onClick={() => void remove()}>确认卸载</button></div></div></Modal>}
           {discard && <Modal title="重新加载文件" restoreFocusSelector="#skill-reload, #skill-content" onClose={() => setDiscard(false)}><div className="skill-detail-confirm"><p>放弃尚未保存的修改并重新加载？</p><div className="extension-actions"><button className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button className="danger" onClick={() => { setDiscard(false); setError(""); setNotice(""); void resource.reload(); }}>放弃修改</button></div></div></Modal>}
           {choosingDirectory && <Modal title="选择工作区目录" restoreFocusSelector="#skill-choose-directory" onClose={() => setChoosingDirectory(false)}><div className="skill-detail-confirm"><p>当前工作区有 {directories.length} 个同名 Skill，请选择要查看的位置。</p><ul className="skill-detail-directory-list">{directories.map(directory => <li key={directory}><Link href={workspaceUrl(directory)}><FolderOpen size={18} /><span>{directory}</span><ChevronRight size={16} /></Link></li>)}</ul></div></Modal>}
           {packagePath && <Modal title="包内文件" wide restoreFocusSelector={packageOrigin} onClose={() => setPackagePath(null)}><div className="skill-detail-package-preview"><SkillResources files={packageFiles} review={resource.data.review} path={packagePath} onSelect={setPackagePath} personal /></div></Modal>}
