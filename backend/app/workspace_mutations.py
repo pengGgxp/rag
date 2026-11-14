@@ -182,11 +182,11 @@ def unique_name(path, occupied):
 
 
 def transfer(db, access, paths, destination="", *, move=False, rename=None, policy="error", resolutions=None,
-             expected=None, request_id=None):
+             expected=None, request_id=None, signature=None):
     access.editor()
     paths = normalize_selection(paths)
     resolutions, expected = resolutions or {}, expected or {}
-    signature = ops.fingerprint(["move" if move else "copy", paths, destination, rename, policy, resolutions, expected])
+    signature = signature or ops.fingerprint(["move" if move else "copy", paths, destination, rename, policy, resolutions, expected])
     with ops.workspace_lock(db, access.workspace_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
@@ -293,5 +293,10 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
                     db.delete(explicit[origin])
             db.flush()
             shared.refresh_index(db, access, commit=False)
-            return {"moved" if move else "copied": paths, "destination": destination, "targets": list(roots.values())}
+            result = {"moved" if move else "copied": paths, "destination": destination, "targets": list(roots.values())}
+            if move and rename and len(paths) == 1 and paths[0] in files:
+                from .workspace_files import read_file
+                # Commit the exact rename response with the operation, including a no-op rename.
+                result["file"] = read_file(files[paths[0]])
+            return result
         return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)

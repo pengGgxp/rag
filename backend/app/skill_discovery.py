@@ -53,7 +53,7 @@ def discover(db, access, *, refresh=True):
         from .workspace_mutations import snapshot
         snapshot(db, access)
     rows = db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(ROOT + "/"),
+        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(ROOT + "/", autoescape=True),
         WorkspaceFile.path.endswith("/SKILL.md")).order_by(WorkspaceFile.path)).all()
     result, roots = [], []
     store = shared.backend(db)

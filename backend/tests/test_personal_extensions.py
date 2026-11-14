@@ -201,6 +201,10 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     enable_execution(db, access_for(owner, db), monkeypatch)
     db.commit()
     stored = {}
+    from test_cloud_computer_mount import MemoryMount
+    storage = MemoryMount()
+    storage.objects = stored
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: storage)
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: __import__("io").BytesIO(stored[key]))
     from app import storage_downloads

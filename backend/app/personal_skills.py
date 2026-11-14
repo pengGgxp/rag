@@ -141,7 +141,7 @@ def files(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     snapshot(db, access)
     directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
     query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(directory + "/"))
+        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(directory + "/", autoescape=True))
     return [read_file(item) for item in db.scalars(query.order_by(WorkspaceFile.path))]
 
 

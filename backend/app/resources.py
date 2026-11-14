@@ -51,9 +51,9 @@ def _children(db, access, current: str, query: str, sort: str, direction: str, s
     global_search = bool(query.strip())
     prefix = f"{current}/" if current and not global_search else ""
     rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(prefix))).all())
+        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(prefix, autoescape=True))).all())
     directories = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-        WorkspaceDirectory.path.startswith(prefix))).all())
+        WorkspaceDirectory.path.startswith(prefix, autoescape=True))).all())
     dirs: dict[str, dict] = {}
     for row in directories:
         relative = row.path[len(prefix):] if prefix and row.path.startswith(prefix) else row.path
@@ -159,10 +159,20 @@ def delete_directory(payload: PathPayload, db=Depends(get_db), access: Access = 
 @router.put("/files/{identifier}")
 def rename_file(identifier: UUID, payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
     from .workspace_mutations import transfer
-    row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
-    transfer(db, access, [row.path], move=True, rename=_path(payload.new_path or "", allow_root=False),
-        expected={row.path: payload.revision} if payload.revision else {}, request_id=payload.request_id)
-    return workspace_files.read_file(row)
+    from .file_operations import workspace_lock, fingerprint, replay
+    access.editor()
+    target = _path(payload.new_path or "", allow_root=False)
+    # File identity and request fields survive a successful rename; row.path does not.
+    signature = fingerprint(["rename_file", identifier, payload.model_dump(exclude={"request_id"})])
+    with workspace_lock(db, access.workspace_id):
+        previous = replay(db, access, payload.request_id, signature)
+        if previous is not None:
+            return previous["file"]
+        row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
+        result = transfer(db, access, [row.path], move=True, rename=target,
+            expected={row.path: payload.revision} if payload.revision else {}, request_id=payload.request_id,
+            signature=signature)
+        return result["file"]
 
 
 @router.post("/operations/move")

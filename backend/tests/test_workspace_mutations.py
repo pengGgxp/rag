@@ -25,6 +25,118 @@ def write(client, actor, path, content, revision=None):
     return client.put(f"/workspaces/{actor.workspace_id}/files", json={"path": path, "content": content, "revision": revision})
 
 
+@pytest.mark.parametrize("directory,neighbor", [("a_b", "axb"), ("a%b", "axxb"), ("a/b", "axb")])
+def test_browse_uses_literal_directory_prefix(accounts, resource_store, directory, neighbor):
+    client, db, actor = setup(accounts)
+    for root in (directory, neighbor):
+        assert write(client, actor, f"{root}/inside.txt", root).status_code == 200
+        assert client.post("/resources/directories", json={"path": f"{root}/empty"}).status_code == 201
+    result = client.get("/resources/browse", params={"path": directory})
+    assert result.status_code == 200, result.text
+    assert {item["path"] for item in result.json()["items"]} == {f"{directory}/inside.txt", f"{directory}/empty"}
+
+
+@pytest.mark.parametrize("directory,neighbor", [("review_skill", "reviewXskill"), ("review%skill", "reviewXXskill"), ("review/skill", "reviewXskill")])
+def test_skill_files_use_literal_directory_prefix(accounts, resource_store, directory, neighbor):
+    client, db, actor = setup(accounts)
+    manifests = {}
+    for name in (directory, neighbor):
+        root = f".skills/{name}"
+        manifests[name] = write(client, actor, f"{root}/SKILL.md", "---\nname: example\n---\nbody").json()
+        assert write(client, actor, f"{root}/inside.txt", name).status_code == 200
+    result = client.get(f"/agent/skills/{manifests[directory]['id']}/files")
+    assert result.status_code == 200, result.text
+    assert {item["path"] for item in result.json()} == {f".skills/{directory}/SKILL.md", f".skills/{directory}/inside.txt"}
+
+
+def test_file_rename_replays_original_response_after_path_changes(accounts, resource_store):
+    client, db, actor = setup(accounts)
+    item = upload(client, "before.txt", b"original")
+    endpoint = f"/resources/files/{item['id']}"
+    request = {"path": item["path"], "new_path": "after.txt", "revision": item["revision"], "request_id": str(uuid4())}
+    first = client.put(endpoint, json=request)
+    assert first.status_code == 200, first.text
+    for _ in range(2):
+        retry = client.put(endpoint, json=request)
+        assert retry.status_code == 200, retry.text
+        assert retry.json() == first.json()
+    assert client.put(endpoint, json={**request, "new_path": "different.txt"}).status_code == 409
+    assert client.put(endpoint, json={**request, "revision": "stale"}).status_code == 409
+    assert client.put(endpoint, json={"new_path": "later.txt", "revision": first.json()["revision"], "request_id": str(uuid4())}).status_code == 200
+    retry = client.put(endpoint, json=request)
+    assert retry.status_code == 200 and retry.json() == first.json()
+    assert client.get(f"/resources/{item['id']}").json()["path"] == "later.txt"
+    assert resource_store[0][shared.object_key(actor.workspace_id, "later.txt")] == b"original"
+    assert len(db.scalars(select(WorkspaceFileOperation).where(WorkspaceFileOperation.request_id == request["request_id"])).all()) == 1
+
+
+def test_file_rename_replay_checks_permissions_workspace_and_file_identity(accounts, resource_store):
+    (client, other, _), db = accounts
+    identity = register(client)
+    register(other, "rename-viewer@example.com")
+    item = upload(client, "before.txt")
+    endpoint = f"/resources/files/{item['id']}"
+    request = {"new_path": "after.txt", "revision": item["revision"], "request_id": str(uuid4())}
+    first = client.put(endpoint, json=request)
+    assert first.status_code == 200
+    assert other.put(endpoint, json=request).status_code == 404
+    second = upload(client, "second.txt")
+    assert client.put(f"/resources/files/{second['id']}", json=request).status_code == 409
+    share(client, "rename-viewer@example.com", "viewer")
+    switch(other, identity["workspace_id"])
+    assert other.put(endpoint, json=request).status_code == 403
+
+
+def test_file_rename_failed_commit_recovers_and_retries_same_request(accounts, resource_store, monkeypatch):
+    client, db, actor = setup(accounts)
+    item = upload(client, "before.txt", b"original")
+    endpoint = f"/resources/files/{item['id']}"
+    request = {"new_path": "after.txt", "revision": item["revision"], "request_id": str(uuid4())}
+    commit, failed = db.commit, []
+    def fail_once():
+        if not failed and any(isinstance(row, WorkspaceFileOperation) and row.state == "completed" for row in db.dirty):
+            failed.append(True)
+            raise RuntimeError("synthetic rename commit failure")
+        return commit()
+    monkeypatch.setattr(db, "commit", fail_once)
+    with pytest.raises(RuntimeError, match="rename commit"):
+        client.put(endpoint, json=request)
+    assert resource_store[0][shared.object_key(actor.workspace_id, "before.txt")] == b"original"
+    assert shared.object_key(actor.workspace_id, "after.txt") not in resource_store[0]
+    retry = client.put(endpoint, json=request)
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["path"] == "after.txt"
+    assert client.put(endpoint, json=request).json() == retry.json()
+    assert not any("/file-operations/" in key for key in resource_store[0])
+
+
+def test_file_rename_noop_is_replayable_without_moving_bytes(accounts, resource_store):
+    client, db, actor = setup(accounts)
+    item = upload(client, "same.txt")
+    request = {"new_path": item["path"], "revision": item["revision"], "request_id": str(uuid4())}
+    endpoint = f"/resources/files/{item['id']}"
+    first = client.put(endpoint, json=request)
+    assert first.status_code == 200 and first.json() == item
+    assert client.put(endpoint, json=request).json() == first.json()
+    assert len(resource_store[0]) == 1
+
+
+@pytest.mark.parametrize("directory,neighbor", [("a_b", "axb"), ("a%b", "axxb")])
+def test_attachment_directory_existence_uses_literal_prefix(accounts, resource_store, directory, neighbor):
+    from fastapi import HTTPException, UploadFile
+    from app.chat_attachments import create_upload
+    client, db, actor = setup(accounts)
+    assert write(client, actor, f"{neighbor}/inside.txt", "neighbor").status_code == 200
+    with pytest.raises(HTTPException) as error:
+        create_upload(UploadFile(io.BytesIO(b"new"), filename="new.txt"), db, actor,
+            source="chat_upload", directory=directory)
+    assert error.value.status_code == 404
+    assert write(client, actor, f"{directory}/inside.txt", "own").status_code == 200
+    create_upload(UploadFile(io.BytesIO(b"new"), filename="new.txt"), db, actor,
+        source="chat_upload", directory=directory)
+    assert resource_store[0][shared.object_key(actor.workspace_id, f"{directory}/new.txt")] == b"new"
+
+
 def test_revision_detects_external_same_size_change_and_preserves_new_bytes(accounts, resource_store):
     client, db, actor = setup(accounts)
     item = write(client, actor, "note.md", "first").json()

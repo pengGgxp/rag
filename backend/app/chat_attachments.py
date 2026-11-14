@@ -224,7 +224,7 @@ def _create_upload(file, db, access, *, source, directory):
         if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
                 WorkspaceDirectory.path == directory)) or db.scalar(select(WorkspaceFile.id).where(
                 WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
-                WorkspaceFile.path.startswith(directory + "/")))):
+                WorkspaceFile.path.startswith(directory + "/", autoescape=True)))):
             raise HTTPException(404, "目标文件夹不存在")
         resource_path = f"{directory}/{filename}"
         existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
