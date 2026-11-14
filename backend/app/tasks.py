@@ -494,9 +494,9 @@ def maintain_uploads() -> None:
 
 
 def cleanup_workspace_files() -> None:
-    # Shared directory deletion happens before its index tombstone is committed.
-    # Replaying deletion by path could remove a newly recreated file.
-    return
+    from .file_operations import recover_pending
+    with SessionLocal() as db:
+        recover_pending(db)
 
 
 @celery_app.task(bind=True, max_retries=3)

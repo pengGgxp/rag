@@ -308,7 +308,8 @@ def test_image_provider_preparation_uses_resource_cache(accounts, resource_store
     (owner, _, _), db = accounts
     register(owner); item = upload(owner, "input.png", PNG)
     actor = access_for(owner, db)
-    row = db.get(ChatAttachment, UUID(item["id"]))
+    attached = owner.post(f"/resources/{item['id']}/attachment").json()
+    row = db.get(ChatAttachment, UUID(attached["id"]))
     messages = [{"role": "user", "content": chat_attachments.user_content("image", [row])}]
     from sqlalchemy.orm import sessionmaker
     context = (sessionmaker(bind=db.bind), actor)

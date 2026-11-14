@@ -108,6 +108,7 @@ def perform(operation, root=Path("/home/user/workspace")):
         for directory, dirs, files in os.walk(root, followlinks=False):
             dirs[:] = sorted(name for name in dirs if name not in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} and not Path(directory, name).is_symlink())
             for filename in sorted(files):
+                if filename == ".rag-directory": continue
                 path = Path(directory, filename)
                 if path.is_symlink() or not path.is_file(): continue
                 relative = path.relative_to(root).as_posix()

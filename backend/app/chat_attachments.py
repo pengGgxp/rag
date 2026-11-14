@@ -182,6 +182,12 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
 
 
 def create_upload(file, db, access, *, source, directory=""):
+    from .file_operations import workspace_lock
+    with workspace_lock(db, access.workspace_id):
+        return _create_upload(file, db, access, source=source, directory=directory)
+
+
+def _create_upload(file, db, access, *, source, directory):
     access.editor()
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()

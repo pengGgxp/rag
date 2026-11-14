@@ -891,6 +891,22 @@ class WorkspaceDirectory(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class WorkspaceFileOperation(Base):
+    __tablename__ = "workspace_file_operations"
+    __table_args__ = (UniqueConstraint("workspace_id", "request_id", name="uq_workspace_file_operation_request"),)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    request_id: Mapped[str] = mapped_column(String(100))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    steps: Mapped[list] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class WorkspaceFileVersion(Base):
     __tablename__ = "workspace_file_versions"
     __table_args__ = (UniqueConstraint("file_id", "version", name="uq_workspace_file_version"),)

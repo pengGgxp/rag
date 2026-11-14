@@ -109,7 +109,8 @@ def inventory(db, identifier, *, exclude_key=None):
     mounted = backend(db)
     if mounted is not None:
         sources.append(("outputs", ((item["Key"], int(item["Size"]))
-            for item in mounted.iter_objects(prefix(identifier)) if not item["Key"].endswith("/"))))
+            for item in mounted.iter_objects(prefix(identifier))
+            if not item["Key"].endswith("/") and item["Key"].rsplit("/", 1)[-1] != ".rag-directory")))
     else:
         sources.append(("outputs", ((object_key(row.workspace_id, row.path), row.size_bytes)
             for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,

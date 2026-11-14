@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from .auth import now
-from .models import ChatAttachment, WorkspaceFile, WorkspaceFileVersion
+from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 
 EXCLUDED = {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"}
 DIRECTORY_MARKER = ".rag-directory"
@@ -98,7 +98,13 @@ def index_file(db, access, path, *, size, content_type=None, digest="", source="
     return read_file(row)
 
 
-def refresh_index(db, access, q="", offset=0, limit=100, source=""):
+def refresh_index(db, access, q="", offset=0, limit=100, source="", *, commit=True):
+    from .file_operations import workspace_lock
+    with workspace_lock(db, access.workspace_id):
+        return _refresh_index(db, access, q, offset, limit, source, commit=commit)
+
+
+def _refresh_index(db, access, q, offset, limit, source, *, commit):
     """Discover files created by shell commands from object metadata, never read bodies."""
     storage = backend(db)
     if storage is None:
@@ -107,19 +113,33 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
     from .audit_log import record_audit
     from .storage_billing import lock_workspace
     root = prefix(access.workspace_id)
-    objects = {}
+    objects, marked_directories = {}, set()
     for item in storage.iter_objects(root):
         key = item["Key"]
         if not key.startswith(root):
             raise HTTPException(502, "资源目录返回了无效文件")
         path = key[len(root):]
-        if (not path or path.endswith("/") or path.rsplit("/", 1)[-1] == DIRECTORY_MARKER
-                or any(part in EXCLUDED for part in path.split("/"))):
+        if str(item.get("Type", "")).lower() == "symlink":
+            continue
+        if not path or any(part in EXCLUDED for part in path.split("/")):
+            continue
+        if path.rsplit("/", 1)[-1] == DIRECTORY_MARKER or path.endswith("/"):
+            directory = path.rsplit("/", 1)[0]
+            if directory:
+                valid_path(directory)
+                marked_directories.add(directory)
             continue
         valid_path(path)
         objects[path] = item
     rows = []
     lock_workspace(db, access.workspace_id)
+    directories = {row.path: row for row in db.scalars(select(WorkspaceDirectory).where(
+        WorkspaceDirectory.workspace_id == access.workspace_id))}
+    for path in marked_directories - directories.keys():
+        db.add(WorkspaceDirectory(workspace_id=access.workspace_id, path=path, created_by=access.user_id))
+    for path, row in directories.items():
+        if path not in marked_directories:
+            db.delete(row)
     for path, item in sorted(objects.items()):
         row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
             WorkspaceFile.path == path).execution_options(populate_existing=True))
@@ -181,7 +201,10 @@ def refresh_index(db, access, q="", offset=0, limit=100, source=""):
         for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
             attachment.deleted_at = row.deleted_at
             attachment.object_deleted_at = row.deleted_at
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return [read_file(row) for row in rows[offset:offset + limit]], len(rows) > offset + limit
 
 

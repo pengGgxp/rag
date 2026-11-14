@@ -27,15 +27,18 @@ FILE_TOOL_ERRORS = {
     "script_output_save": "脚本已运行，但部分文件未保存，请先查看已有输出，勿重复运行",
 }
 def valid_path(path: str) -> str:
-    if not path or len(path) > 512 or path.startswith(("/", "\\")) or "\\" in path or ":" in path or any(ord(c) < 32 for c in path):
+    if not path or len(path) > 512 or path.startswith(("/", "\\")) or any(c in path for c in '\\:<>"|?*') or any(ord(c) < 32 for c in path):
         raise HTTPException(422, "文件路径无效")
     p = PurePosixPath(path)
     if any(part in ("", ".", "..") for part in path.split("/")): raise HTTPException(422, "文件路径无效")
+    if any(part.endswith((" ", ".")) or part == ".rag-directory" for part in path.split("/")):
+        raise HTTPException(422, "名称不能以空格或句点结尾，也不能使用保留名称")
     return str(p)
 def check_workspace(access, workspace_id):
     if UUID(str(workspace_id)) != access.workspace_id: raise HTTPException(404, "工作区不存在或无权访问")
 def read_file(row):
-    return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": 1, "availability": "missing" if row.deleted_at else "available", "source": row.source, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
+    from .file_operations import file_revision
+    return {"id": str(row.id), "path": row.path, "content_type": row.content_type, "size_bytes": row.size_bytes, "sha256": row.content_hash, "version": 1, "revision": file_revision(row), "availability": "missing" if row.deleted_at else "available", "source": row.source, "created_at": row.created_at.isoformat(), "updated_at": row.updated_at.isoformat(),
         "download_url": f"/resources/{row.id}/download", "preview_url": f"/resources/{row.id}/download?preview=true"}
 def owned(db, access, workspace_id, file_id, write=False):
     check_workspace(access, workspace_id); row = db.get(WorkspaceFile, file_id)
@@ -46,27 +49,27 @@ class TextWrite(BaseModel):
     path: str = Field(min_length=1, max_length=512)
     content: str = Field(max_length=5_000_000)
     expected_version: int | None = Field(default=None, ge=1)
+    revision: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
     content_type: str = "text/plain"
 class PatchWrite(BaseModel):
     patch: str = Field(min_length=1, max_length=500_000)
     expected_version: int = Field(ge=1)
 
 
-def _save_bytes(workspace_id, access, db, path, data, content_type="application/octet-stream", expected_version=None):
-    uploaded = []
-    try:
-        with db.begin_nested():
-            row = _stage_bytes(workspace_id, access, db, path, data, content_type, expected_version, uploaded)
-            db.flush()
-        db.commit()
-    except BaseException:
-        db.rollback()
-        from .storage import delete_object
-        for key in uploaded:
-            try: delete_object(key)
-            except Exception: pass
-        raise
-    return read_file(row)
+def _save_bytes(workspace_id, access, db, path, data, content_type="application/octet-stream", expected_version=None, *, expected_revision=None):
+    """Internal writer; interactive clients use revision-mandatory write_text."""
+    check_workspace(access, workspace_id)
+    from .workspace_mutations import save_files
+    from .file_operations import file_revision
+    from .shared_resources import refresh_current_metadata
+    row = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path))
+    if row and row.deleted_at:
+        raise HTTPException(409, "该路径的文件已删除，请重新创建")
+    if row:
+        row = refresh_current_metadata(db, access, row)
+    expected = expected_revision if expected_revision is not None else file_revision(row) if row else None
+    return save_files(db, access, {path: (data, content_type)}, expected={path: expected} if expected else {})["items"][0]
 
 
 def _current_file_version(db, row):
@@ -109,9 +112,14 @@ def _stage_bytes(workspace_id, access, db, path, data, content_type, expected_ve
     row.expires_at = datetime(9999, 12, 31, tzinfo=timezone.utc)
     from .shared_resources import object_key
     key = object_key(access.workspace_id, path)
-    upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
     from .shared_resources import backend
     mounted = backend(db)
+    if active:
+        raise HTTPException(409, "输出路径已有文件，请先在工作区移走该文件后重试")
+    if mounted is not None and getattr(mounted, "conditional_create", False):
+        mounted.put(key, __import__('io').BytesIO(data), row.content_type, create=True)
+    else:
+        upload_fileobj(__import__('io').BytesIO(data), key, row.content_type)
     row.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
     if uploaded is not None and not active: uploaded.append(key)
     # The mounted directory is the source of truth. Keep exactly one current
@@ -142,8 +150,9 @@ def detail(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access
     return read_file(owned(db,access,workspace_id,file_id))
 def write_text(workspace_id: UUID, payload: TextWrite, db, access):
     check_workspace(access, workspace_id); access.editor()
-    return _save_bytes(workspace_id, access, db, payload.path, payload.content.encode("utf-8"),
-        payload.content_type, payload.expected_version)
+    from .workspace_mutations import save_files
+    return save_files(db, access, {payload.path: (payload.content.encode("utf-8"), payload.content_type)},
+        expected={payload.path: payload.revision} if payload.revision else {}, request_id=payload.request_id)["items"][0]
 
 
 @router.put("")
@@ -154,17 +163,27 @@ def write_text_endpoint(workspace_id: UUID, payload: TextWrite, db=Depends(get_d
 @router.get("/{file_id}/text")
 def read_text_endpoint(workspace_id: UUID, file_id: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     row = owned(db, access, workspace_id, file_id)
+    from .shared_resources import refresh_current_metadata
+    row = refresh_current_metadata(db, access, row)
     version = _current_file_version(db, row)
+    from .file_operations import file_revision
+    before_revision = file_revision(row)
     if not (row.content_type.startswith("text/") or row.path.lower().endswith((".md", ".txt", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".sh", ".yaml", ".yml"))):
         raise HTTPException(415, "该文件不是可编辑文本")
     if version.size_bytes > 5_000_000:
         raise HTTPException(413, "文件过大，无法在浏览器中编辑")
-    from .storage import download_fileobj
+    from .file_operations import storage as get_storage
+    mounted = get_storage(db)
     try:
-        content = download_fileobj(version.object_key).read().decode("utf-8")
+        with mounted.download(version.object_key) as body:
+            data = body.read()
+        row = refresh_current_metadata(db, access, row)
+        if before_revision != file_revision(row):
+            raise HTTPException(409, "文件在读取时发生变化，请重新加载")
+        content = data.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(415, "文件不是 UTF-8 文本") from None
-    return {"path": row.path, "content": content, "version": row.current_version, "content_type": row.content_type}
+    return {"path": row.path, "content": content, "version": row.current_version, "revision": file_revision(row), "content_type": row.content_type}
 @router.api_route("/{file_id}/download", methods=["GET", "HEAD"])
 def download(workspace_id: UUID,file_id: UUID,request: Request,db=Depends(get_db),access: Access=Depends(get_access)):
     from .storage_downloads import download_response

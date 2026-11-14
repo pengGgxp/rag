@@ -1,7 +1,10 @@
-"""Workspace-shared resources; uploads reuse the chat attachment validation service."""
+"""Current workspace files, directories and general file operations."""
+import hashlib
 from pathlib import PurePosixPath
-from uuid import UUID
+from uuid import UUID, uuid4
 from io import BytesIO
+from typing import Literal
+import mimetypes
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, Form
 from pydantic import BaseModel, Field
@@ -20,15 +23,23 @@ class PathPayload(BaseModel):
     path: str = Field(default="", max_length=512)
     new_path: str | None = Field(default=None, max_length=512)
     expected_version: int | None = Field(default=None, ge=1)
+    revision: str | None = None
+    confirmation: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class BatchPayload(BaseModel):
-    paths: list[str] = Field(min_length=1, max_length=100)
+    paths: list[str] = Field(min_length=1, max_length=10000)
     destination: str = Field(default="", max_length=512)
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
+    conflict: Literal["error", "keep_both", "replace", "merge"] = "error"
+    expected: dict[str, str] = Field(default_factory=dict)
+    resolutions: dict[str, Literal["error", "keep_both", "replace", "merge"]] = Field(default_factory=dict)
+    confirmation: str | None = None
 
 
 def _path(path: str, *, allow_root=True) -> str:
-    path = (path or "").strip().strip("/")
+    path = path or ""
     if not path:
         if allow_root:
             return ""
@@ -53,6 +64,9 @@ def _children(db, access, current: str, query: str, sort: str, direction: str, s
                 dirs[row.path] = {"kind": "directory", "name": relative.rsplit("/", 1)[-1], "path": row.path, "updated_at": row.updated_at.isoformat()}
         elif "/" not in relative:
             dirs[relative] = {"kind": "directory", "name": relative, "path": row.path, "updated_at": row.updated_at.isoformat()}
+        else:
+            child = relative.split("/", 1)[0]
+            dirs.setdefault(child, {"kind": "directory", "name": child, "path": f"{prefix}{child}"})
     files: dict[str, dict] = {}
     for row in rows:
         relative = row.path[len(prefix):] if prefix and row.path.startswith(prefix) else row.path
@@ -75,6 +89,11 @@ def _children(db, access, current: str, query: str, sort: str, direction: str, s
             item.update(kind="file", name=relative)
             files[relative] = item
     items = list(dirs.values()) + list(files.values())
+    from .workspace_mutations import snapshot, tree_revision
+    all_files, all_dirs, _ = snapshot(db, access, refresh=False)
+    for item in items:
+        if item["kind"] == "directory":
+            item["revision"] = tree_revision([item["path"]], all_files, all_dirs)
     if query and not global_search:
         needle = query.casefold()
         items = [item for item in items if needle in item["path"].casefold()]
@@ -105,280 +124,76 @@ def browse(path: str = "", q: str = "", sort: str = Query("name", pattern="^(nam
         direction: str = Query("asc", pattern="^(asc|desc)$"), source: str = "", offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500), db=Depends(get_db), access: Access = Depends(get_access)):
     current = _path(path)
-    items = _children(db, access, current, q, sort, direction, source)
+    from .workspace_mutations import snapshot
+    from .file_operations import workspace_lock
+    with workspace_lock(db, access.workspace_id):
+        _, directories, _ = snapshot(db, access)
+        if current and current not in directories:
+            raise HTTPException(404, "文件夹不存在或已移动，请返回上级后重新选择")
+        items = _children(db, access, current, q, sort, direction, source)
     return {"path": current, "parent_path": current.rsplit("/", 1)[0] if "/" in current else None,
         "breadcrumbs": _breadcrumbs(current), "items": items[offset:offset + limit],
-        "offset": offset, "limit": limit, "has_more": len(items) > offset + limit}
+        "offset": offset, "limit": limit, "has_more": len(items) > offset + limit, "total": len(items)}
 
 
 @router.post("/directories", status_code=201)
 def create_directory(payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); path = _path(payload.path, allow_root=False)
-    if _workspace_row(db, access, path) or db.scalar(select(WorkspaceDirectory).where(
-            WorkspaceDirectory.workspace_id == access.workspace_id, WorkspaceDirectory.path == path)):
-        raise HTTPException(409, "目标位置已存在同名文件或文件夹")
-    parent = path.rsplit("/", 1)[0] if "/" in path else ""
-    if parent and not db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-            WorkspaceDirectory.path == parent)):
-        # Parent directories may be implicit when files were created by the cloud computer.
-        if not db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-                WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(parent + "/"))):
-            raise HTTPException(404, "上级文件夹不存在")
-    row = WorkspaceDirectory(workspace_id=access.workspace_id, path=path, created_by=access.user_id)
-    db.add(row)
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    marker_key = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, path)
-    if storage:
-        try:
-            storage.put(marker_key, BytesIO(b""), "application/x-directory")
-        except Exception:
-            db.rollback()
-            raise
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()
-        if storage:
-            try: storage.delete(marker_key)
-            except Exception: pass
-        raise
-    return {"kind": "directory", "name": path.rsplit("/", 1)[-1], "path": path}
-
-
-def _rename_files(db, access, old: str, new: str, *, commit=True, source_keys=None):
-    rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), (WorkspaceFile.path == old) | WorkspaceFile.path.startswith(old + "/"))))
-    if not rows:
-        raise HTTPException(404, "文件或文件夹不存在")
-    if old == new:
-        return {"path": new}
-    if _path_exists(db, access, new):
-        raise HTTPException(409, "目标位置已存在同名文件或文件夹")
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    copied = []
-    try:
-        for row in sorted(rows, key=lambda item: len(item.path)):
-            target = new + row.path[len(old):]
-            source_key = __import__("app.shared_resources", fromlist=["object_key"]).object_key(access.workspace_id, row.path)
-            target_key = __import__("app.shared_resources", fromlist=["object_key"]).object_key(access.workspace_id, target)
-            if storage:
-                _copy_object(storage, source_key, target_key, row.live_etag, row.content_type)
-                copied.append((source_key, target_key))
-            row.path = target
-            version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == 1))
-            if version: version.object_key = target_key
-            for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id,
-                    ChatAttachment.deleted_at.is_(None))):
-                attachment.resource_path = target
-                attachment.object_key = target_key
-        if commit:
-            db.commit()
-    except Exception:
-        db.rollback()
-        for source_key, target_key in copied:
-            try:
-                storage.delete(target_key)
-            except Exception:
-                pass
-        raise
-    if storage:
-        if source_keys is not None:
-            source_keys.extend(source_key for source_key, _ in copied)
-        else:
-            for source_key, _ in copied:
-                storage.delete(source_key)
-    return {"path": new}
-
-
-def _path_exists(db, access, path: str):
-    return bool(_workspace_row(db, access, path) or db.scalar(select(WorkspaceDirectory).where(
-        WorkspaceDirectory.workspace_id == access.workspace_id, WorkspaceDirectory.path == path)))
-
-
-def _is_directory(db, access, path: str):
-    return bool(db.scalar(select(WorkspaceDirectory).where(
-        WorkspaceDirectory.workspace_id == access.workspace_id, WorkspaceDirectory.path == path)) or
-        db.scalar(select(WorkspaceFile.id).where(WorkspaceFile.workspace_id == access.workspace_id,
-            WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(path + "/"))))
-
-
-def _copy_object(storage, source_key, target_key, etag, content_type):
-    if hasattr(storage, "copy"):
-        storage.copy(source_key, target_key, etag=etag)
-    else:
-        storage.put(target_key, storage.download(source_key), content_type)
+    from .workspace_mutations import create_directory as create
+    return create(db, access, _path(payload.path, allow_root=False), request_id=payload.request_id)
 
 
 @router.put("/directories")
 def rename_directory(payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); old, new = _path(payload.path, allow_root=False), _path(payload.new_path or "", allow_root=False)
-    if old == new:
-        return {"path": new}
-    if new.startswith(old + "/"):
-        raise HTTPException(409, "不能将文件夹移动到自身内部")
-    row = db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id, WorkspaceDirectory.path == old))
-    if not row and not _children(db, access, old, "", "name", "asc"):
-        raise HTTPException(404, "文件夹不存在")
-    source_keys = []
-    marker_source = None
-    result = _rename_files(db, access, old, new, commit=False, source_keys=source_keys) if _is_directory(db, access, old) and db.scalar(select(WorkspaceFile.id).where(
-        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(old + "/"))) else {"path": new}
-    dirs = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-        (WorkspaceDirectory.path == old) | WorkspaceDirectory.path.startswith(old + "/"))))
-    for item in dirs:
-        item.path = new + item.path[len(old):]
-    if row:
-        row.path = new
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    if storage:
-        marker_old = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, old)
-        marker_new = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, new)
-        try:
-            if storage.head(marker_old):
-                _copy_object(storage, marker_old, marker_new, None, "application/x-directory")
-                marker_source = marker_old
-        except Exception:
-            db.rollback()
-            raise
-    db.commit()
-    if storage:
-        for source_key in source_keys:
-            storage.delete(source_key)
-        if marker_source:
-            storage.delete(marker_source)
-    return result
+    from .workspace_mutations import transfer
+    old, new = _path(payload.path, allow_root=False), _path(payload.new_path or "", allow_root=False)
+    result = transfer(db, access, [old], move=True, rename=new, expected={old: payload.revision} if payload.revision else {}, request_id=payload.request_id)
+    return {**result, "path": new}
 
 
 @router.delete("/directories", status_code=204)
 def delete_directory(payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); path = _path(payload.path, allow_root=False)
-    directory = db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-        WorkspaceDirectory.path == path))
-    rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), (WorkspaceFile.path == path) | WorkspaceFile.path.startswith(path + "/"))))
-    if not directory and not rows:
-        raise HTTPException(404, "文件夹不存在")
-    from .shared_resources import delete_path
-    for row in rows:
-        delete_path(db, access, row, commit=False)
-    dirs = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-        (WorkspaceDirectory.path == path) | WorkspaceDirectory.path.startswith(path + "/"))))
-    for item in dirs:
-        db.delete(item)
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    if storage:
-        marker_key = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key
-        for item in dirs:
-            storage.delete(marker_key(access.workspace_id, item.path))
-    db.commit()
+    from .workspace_mutations import delete
+    delete(db, access, [_path(payload.path, allow_root=False)], confirmation=payload.confirmation, request_id=payload.request_id)
 
 
 @router.put("/files/{identifier}")
 def rename_file(identifier: UUID, payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
-    new = _path(payload.new_path or "", allow_root=False)
-    if db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-            WorkspaceFile.path == new, WorkspaceFile.id != row.id, WorkspaceFile.deleted_at.is_(None))):
-        raise HTTPException(409, "目标位置已存在同名文件")
-    old = row.path; _rename_files(db, access, old, new)
+    from .workspace_mutations import transfer
+    row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
+    transfer(db, access, [row.path], move=True, rename=_path(payload.new_path or "", allow_root=False),
+        expected={row.path: payload.revision} if payload.revision else {}, request_id=payload.request_id)
     return workspace_files.read_file(row)
 
 
 @router.post("/operations/move")
 def move_items(payload: BatchPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); destination = _path(payload.destination)
-    if destination and not _is_directory(db, access, destination):
-        raise HTTPException(404, "目标文件夹不存在")
-    source_keys = []
-    marker_source_keys = []
-    for path in payload.paths:
-        old = _path(path, allow_root=False)
-        name = old.rsplit("/", 1)[-1]
-        target = f"{destination}/{name}" if destination else name
-        if old == target: continue
-        if target.startswith(old + "/"):
-            raise HTTPException(409, "不能将文件夹移动到自身内部")
-        if _workspace_row(db, access, target) or db.scalar(select(WorkspaceDirectory).where(
-                WorkspaceDirectory.workspace_id == access.workspace_id, WorkspaceDirectory.path == target)):
-            raise HTTPException(409, "目标位置已存在同名文件或文件夹")
-        is_dir = _is_directory(db, access, old)
-        has_file_tree = bool(_workspace_row(db, access, old) or db.scalar(select(WorkspaceFile.id).where(
-            WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(old + "/"))))
-        if has_file_tree: _rename_files(db, access, old, target, commit=False, source_keys=source_keys)
-        elif not is_dir:
-            raise HTTPException(404, "文件或文件夹不存在")
-        if is_dir:
-            dirs = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-                (WorkspaceDirectory.path == old) | WorkspaceDirectory.path.startswith(old + "/"))))
-            for item in dirs: item.path = target + item.path[len(old):]
-            storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-            if storage:
-                marker_old = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, old)
-                marker_new = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, target)
-                if storage.head(marker_old):
-                    _copy_object(storage, marker_old, marker_new, None, "application/x-directory")
-                    marker_source_keys.append(marker_old)
-    db.commit()
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    if storage:
-        for source_key in source_keys:
-            storage.delete(source_key)
-        for marker_key in marker_source_keys:
-            storage.delete(marker_key)
-    return {"moved": payload.paths, "destination": destination}
+    return _transfer(payload, db, access, True)
 
 
 @router.post("/operations/copy")
 def copy_items(payload: BatchPayload, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor(); destination = _path(payload.destination)
-    if destination and not _is_directory(db, access, destination):
-        raise HTTPException(404, "目标文件夹不存在")
-    storage = __import__("app.shared_resources", fromlist=["backend"]).backend(db)
-    created_objects = []
-    try:
-        for path in payload.paths:
-            old = _path(path, allow_root=False); name = old.rsplit("/", 1)[-1]; target = f"{destination}/{name}" if destination else name
-            if target.startswith(old + "/"):
-                raise HTTPException(409, "不能将文件夹复制到自身内部")
-            if _path_exists(db, access, target):
-                raise HTTPException(409, "目标位置已存在同名文件或文件夹")
-            rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-                WorkspaceFile.deleted_at.is_(None), (WorkspaceFile.path == old) | WorkspaceFile.path.startswith(old + "/"))))
-            directory = db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-                WorkspaceDirectory.path == old))
-            if not rows and not directory:
-                raise HTTPException(404, "文件或文件夹不存在")
-            for row in rows:
-                new_path = target + row.path[len(old):]
-                source_key = __import__("app.shared_resources", fromlist=["object_key"]).object_key(access.workspace_id, row.path)
-                target_key = __import__("app.shared_resources", fromlist=["object_key"]).object_key(access.workspace_id, new_path)
-                if storage:
-                    _copy_object(storage, source_key, target_key, row.live_etag, row.content_type); created_objects.append(target_key)
-                clone = WorkspaceFile(workspace_id=access.workspace_id, path=new_path, content_type=row.content_type,
-                    size_bytes=row.size_bytes, content_hash=row.content_hash, current_version=1, source=row.source,
-                    created_by=access.user_id, updated_by=access.user_id, expires_at=row.expires_at)
-                db.add(clone); db.flush()
-                db.add(WorkspaceFileVersion(file_id=clone.id, workspace_id=access.workspace_id, version=1,
-                    object_key=target_key, content_type=row.content_type, size_bytes=row.size_bytes,
-                    content_hash=row.content_hash, created_by=access.user_id))
-            dirs = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
-                (WorkspaceDirectory.path == old) | WorkspaceDirectory.path.startswith(old + "/"))))
-            for item in dirs:
-                db.add(WorkspaceDirectory(workspace_id=access.workspace_id, path=target + item.path[len(old):], created_by=access.user_id))
-                if storage:
-                    source_marker = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, item.path)
-                    target_marker = __import__("app.shared_resources", fromlist=["directory_marker_key"]).directory_marker_key(access.workspace_id, target + item.path[len(old):])
-                    if storage.head(source_marker):
-                        _copy_object(storage, source_marker, target_marker, None, "application/x-directory"); created_objects.append(target_marker)
-        db.commit()
-    except Exception:
-        db.rollback()
-        if storage:
-            for key in created_objects:
-                try: storage.delete(key)
-                except Exception: pass
-        raise
-    return {"copied": payload.paths, "destination": destination}
+    return _transfer(payload, db, access, False)
+
+
+def _transfer(payload, db, access, move):
+    from .workspace_mutations import transfer
+    return transfer(db, access, payload.paths, _path(payload.destination), move=move,
+        policy=payload.conflict, resolutions=payload.resolutions, expected=payload.expected, request_id=payload.request_id)
+
+
+@router.post("/operations/delete-preview")
+def preview_delete(payload: BatchPayload, db=Depends(get_db), access: Access = Depends(get_access)):
+    from .workspace_mutations import delete_preview
+    access.editor()
+    return delete_preview(db, access, payload.paths)
+
+
+@router.post("/operations/delete")
+def delete_items(payload: BatchPayload, db=Depends(get_db), access: Access = Depends(get_access)):
+    from .workspace_mutations import delete
+    if not payload.confirmation:
+        raise HTTPException(428, "请先确认删除范围")
+    return delete(db, access, payload.paths, confirmation=payload.confirmation, request_id=payload.request_id)
 
 
 def verify_pending_objects(db, head):
@@ -422,15 +237,39 @@ def listing(q: str = "", source: str = "", offset: int = Query(0, ge=0),
 
 
 @router.post("", status_code=201)
-def upload(file: UploadFile, directory: str = Form(""), db=Depends(get_db), access: Access=Depends(get_access)):
-    result = chat_attachments.create_upload(file, db, access, source="resource_upload", directory=_path(directory))
-    resource = workspace_files.owned(db, access, access.workspace_id, UUID(result["resource_id"]))
-    return workspace_files.read_file(resource)
+def upload(file: UploadFile, directory: str = Form(""), conflict: Literal["error", "keep_both", "replace"] = Form("error"),
+        revision: str | None = Form(None), request_id: str | None = Form(None), db=Depends(get_db), access: Access=Depends(get_access)):
+    from .workspace_mutations import save_files, snapshot, unique_name
+    from .file_operations import workspace_lock, fingerprint, replay
+    access.editor()
+    parent = _path(directory)
+    name = workspace_files.valid_path(file.filename or "")
+    if "/" in name:
+        raise HTTPException(422, "请选择单个文件名，目录请通过当前位置指定")
+    data = file.file.read(workspace_files.MAX_BYTES + 1)
+    if len(data) > workspace_files.MAX_BYTES:
+        raise HTTPException(413, "文件不能超过 200 MiB")
+    signature = fingerprint(["upload", parent, name, conflict, revision, hashlib.sha256(data).hexdigest()])
+    with workspace_lock(db, access.workspace_id):
+        previous = replay(db, access, request_id, signature)
+        if previous is not None:
+            return previous["items"][0]
+        files, dirs, _ = snapshot(db, access)
+        if parent and parent not in dirs:
+            raise HTTPException(404, "目标文件夹不存在，请刷新后选择")
+        path = f"{parent}/{name}" if parent else name
+        if conflict == "keep_both" and (path in files or path in dirs):
+            path = unique_name(path, set(files) | dirs)
+        expected = {path: revision} if conflict == "replace" and revision else {}
+        result = save_files(db, access, {path: (data, mimetypes.guess_type(path)[0] or "application/octet-stream")},
+            expected=expected, request_id=request_id, signature=signature)
+        return result["items"][0]
 
 
 @router.get("/{identifier}")
 def detail(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
-    return workspace_files.read_file(workspace_files.owned(db, access, access.workspace_id, identifier))
+    from .shared_resources import refresh_current_metadata
+    return workspace_files.read_file(refresh_current_metadata(db, access, workspace_files.owned(db, access, access.workspace_id, identifier)))
 
 
 @router.api_route("/{identifier}/download", methods=["GET", "HEAD"])
@@ -450,8 +289,8 @@ def download(identifier: UUID, request: Request, version: int | None = Query(Non
 @router.delete("/{identifier}", status_code=204)
 def remove(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
-    from .shared_resources import delete_path
-    delete_path(db, access, row)
+    from .workspace_mutations import delete
+    delete(db, access, [row.path])
 
 
 @router.post("/{identifier}/attachment")

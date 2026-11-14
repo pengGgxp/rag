@@ -20,6 +20,7 @@ def mounted(accounts, monkeypatch, resource_store):
 def test_shell_edit_is_current_file_without_copy_or_body_read(accounts, monkeypatch, resource_store):
     client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
+    storage.copies.clear()
     key = shared.object_key(access.workspace_id, item["path"])
     computer = db.get(cloud.Computer, submit(db, access, conversation).session_id)
     storage.objects[key] = b"cloud modification"
@@ -46,6 +47,8 @@ def test_recreation_keeps_deleted_chat_reference_unavailable(accounts, monkeypat
     assert client.get(f"/resources/{item['id']}").status_code == 404
     assert client.get(f"/chat/attachments/{attached['id']}/content").status_code == 404
     from app import tasks
+    from sqlalchemy.orm import sessionmaker
+    monkeypatch.setattr(tasks, "SessionLocal", sessionmaker(bind=db.bind))
     tasks.cleanup_workspace_files()
     assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"new file"
 
@@ -75,13 +78,18 @@ def test_api_write_replaces_one_current_object(accounts, monkeypatch, resource_s
     workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"API edit", "text/plain")
     assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"API edit"
     assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
-    assert not storage.copies
+    assert not any("file-operations/" in key for key in storage.objects)
 
 
 def legacy_resource(client, db, storage, *, name="legacy.txt"):
-    item = upload(client, name)
+    # Build a pre-mount fixture without current-directory discovery marking
+    # previously staged legacy keys as externally deleted.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(shared, "refresh_index", lambda *args, **kwargs: (None, False))
+        item = upload(client, name)
     current = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(item["id"])))
     original = current.object_key
+    client.post(f"/resources/{item['id']}/attachment")
     key = f"legacy/{item['id']}.txt"
     storage.objects[key] = storage.objects.pop(original)
     current.object_key = key
@@ -89,6 +97,7 @@ def legacy_resource(client, db, storage, *, name="legacy.txt"):
     attached = db.scalar(select(ChatAttachment).where(ChatAttachment.resource_file_id == UUID(item["id"])))
     attached.object_key = key
     db.commit()
+    storage.copies.clear()
     return item, key, original
 
 

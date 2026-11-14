@@ -293,6 +293,18 @@ def run(identifier, factory=None):
 
 def save_outputs(identifier, factory=None):
     from .db import SessionLocal
+    from .file_operations import workspace_lock
+    factory = factory or SessionLocal
+    with factory() as db:
+        row = db.get(ImageTask, identifier)
+        if row is None:
+            return
+        with workspace_lock(db, row.workspace_id):
+            return _save_outputs(identifier, factory)
+
+
+def _save_outputs(identifier, factory):
+    from .db import SessionLocal
     from .workspace_files import _stage_bytes, read_file
     from .storage import delete_object
     from .llm_providers import _decrypt_api_key
