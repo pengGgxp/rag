@@ -54,3 +54,51 @@ def test_postgres_install_serializes_competing_replacements(auth_postgres):
         state, items = store.load(db)
         assert state.revision == revision + 1
         assert len(items) == 1
+
+
+def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_postgres):
+    from sqlalchemy import select, func
+    from sqlalchemy.orm import sessionmaker
+    from app.agent import AgentCancelled
+    from app.effective_context import ContextManager
+    from app.llm import ToolCall
+    from app.models import AgentToolExecution
+    import pytest
+    engine = auth_postgres
+    request = uuid4()
+    with Session(engine) as db:
+        user, workspace = auth.create_user(db, f"tool-{uuid4().hex}@example.test", "Tool test")
+        raw = uuid4().hex
+        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id, workspace_id=workspace,
+            csrf_token="test-only", expires_at=auth.now() + timedelta(hours=1)))
+        conversation = Conversation(workspace_id=workspace, owner_id=user.id, active_request_id=request)
+        db.add(conversation); db.flush()
+        access = Access(user.id, workspace, "admin", auth.digest(raw))
+        manager = ContextManager(sessionmaker(bind=engine), access, conversation.id,
+            ChatProviderConfig("", "", "test"), None, None, request)
+        manager.history(db, conversation); db.commit()
+    manager.start({"role": "system", "content": "system"})
+    call = ToolCall("once", "write_file", {})
+    manager.record([{"role": "assistant", "content": None, "tool_calls": [
+        {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": "{}"}}]}], "model", "model:1")
+    barrier = Barrier(2)
+    def admit(_):
+        barrier.wait(timeout=10)
+        try:
+            return manager.begin_tool(call)
+        except ContextWindowError as error:
+            return error.code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(admit, range(2)))
+    assert results.count("tool_execution_already_started") == 1
+    identifier = next(value for value in results if value != "tool_execution_already_started")
+    with Session(engine) as db:
+        assert db.scalar(select(func.count()).select_from(AgentToolExecution).where(
+            AgentToolExecution.conversation_id == manager.conversation_id)) == 1
+        db.get(Conversation, manager.conversation_id).active_request_id = None
+        db.commit()
+    with pytest.raises(AgentCancelled):
+        manager.finish_tool(identifier, {"role": "tool", "tool_call_id": call.id,
+            "name": call.name, "content": '{"saved": true}'}, 1000)
+    with Session(engine) as db:
+        assert db.get(AgentToolExecution, identifier).status == "completed"

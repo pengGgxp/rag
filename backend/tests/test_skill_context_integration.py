@@ -34,34 +34,30 @@ def test_public_manager_is_main_replacement_manager():
     assert ContextManager is EffectiveContextManager
 
 
-def test_unchanged_scope_keeps_existing_main_digest_shape(scope_case):
+def test_scope_tracks_conversation_identity_instead_of_external_catalog(scope_case):
     db, store, _, conversation, server = scope_case
-    expected = digest({"libraries": [], "documents": [], "extensions": [], "personal": [],
-        "remote": [(str(server.id), 1, 1, True)],
-        "selection": [[], [], False], "role": "admin", "user": str(store.access.user_id)})
+    expected = digest({"conversation": str(conversation.id), "workspace": str(store.access.workspace_id),
+        "user": str(store.access.user_id)})
     assert scope_digest(db, conversation, store.access) == expected
 
 
 @pytest.mark.parametrize("field,value", [("authorization_version", 2), ("version", 2), ("enabled", False)])
-def test_mcp_changes_block_private_handoff_without_loading_display_history(scope_case, field, value):
+def test_tool_grant_changes_do_not_destroy_past_observations(scope_case, field, value):
     db, store, _, _, server = scope_case
-    window, _ = checkpoint(scope_case)
+    window, handoff = checkpoint(scope_case)
     setattr(server, field, value); db.commit()
-    with pytest.raises(ContextWindowError) as error:
-        store.load(db)
-    assert error.value.code == "context_window_unrecoverable"
-    db.rollback()
-    state = db.get(ConversationContext, store.conversation_id)
+    state, items = store.load(db)
+    assert items == [handoff]
     assert db.get(ContextCheckpoint, state.checkpoint_id).window_id == window
 
 
 @pytest.mark.parametrize("field,value", [("mcp_server_ids", ["other-selection"]), ("question_workbench", True)])
-def test_current_tool_selection_still_invalidates_private_handoff(scope_case, field, value):
+def test_tool_selection_is_not_a_lease_on_conversation_memory(scope_case, field, value):
     db, store, _, conversation, _ = scope_case
-    checkpoint(scope_case)
+    window, handoff = checkpoint(scope_case)
     setattr(conversation, field, value); db.commit()
-    with pytest.raises(ContextWindowError):
-        store.load(db)
+    state, items = store.load(db)
+    assert state.window_id == window and items == [handoff]
 
 
 @pytest.mark.parametrize("kind", ["platform", "personal", "selection"])
@@ -81,17 +77,13 @@ def test_retired_skill_records_do_not_invalidate_resource_based_context(scope_ca
     assert state.window_id == window and items == [handoff]
 
 
-def test_legacy_scope_keeps_old_platform_skill_hash_for_checkpoint_validation(scope_case):
+def test_retired_skill_versions_are_absent_from_identity_fingerprint(scope_case):
     db, store, _, conversation, _ = scope_case
+    expected = scope_digest(db, conversation, store.access)
     old = SiteSkill(name="Historical", description="Unused", markdown="Old body", enabled=True,
         version=7, created_by=store.access.user_id, updated_by=store.access.user_id)
     db.add(old); db.commit()
-    expected = digest({"libraries": [], "documents": [], "extensions": [(str(old.id), 7)],
-        "role": "admin", "user": str(store.access.user_id)})
-    assert scope_digest(db, conversation, store.access, legacy=True) == expected
-    explicit = digest({"libraries": [], "documents": [], "extensions": [],
-        "role": "admin", "user": str(store.access.user_id)})
-    assert scope_digest(db, conversation, store.access, [], legacy=True) == explicit
+    assert scope_digest(db, conversation, store.access) == expected
 
 
 def test_each_message_and_compact_recovery_uses_current_skill_metadata(client, resource_store, monkeypatch):
@@ -120,6 +112,9 @@ def test_each_message_and_compact_recovery_uses_current_skill_metadata(client, r
     def manifest(name):
         resource_store[0][key] = f"---\nname: {name}\ndescription: 元数据用途\n---\nUNLOADED_PRIVATE_BODY".encode()
     manifest("第一版方法")
+    # A directory view/import updates the index. Model admission itself must
+    # never refresh the whole store while holding workspace billing locks.
+    shared_resources.refresh_index(db, access)
     events, payload = turn(http, conversation, "普通消息")
     assert events[-1][1]["status"] == "completed", events[-1]
     assert "第一版方法" in captured[-1][0]["content"] and "UNLOADED_PRIVATE_BODY" not in str(captured[-1])

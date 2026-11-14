@@ -47,6 +47,14 @@ def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0,
         saved = message.get("_native_content")
         if saved and role == "assistant":
             parts = deepcopy(saved)
+            for part in parts:
+                # Native request schemas require object inputs even when the
+                # previous response supplied an invalid value. Preserve it as
+                # data; the paired tool error asks the model to correct it.
+                if part.get("type") == "tool_use" and not isinstance(part.get("input"), dict):
+                    part["input"] = {"_invalid_arguments": part.get("input")}
+                if "functionCall" in part and not isinstance(part["functionCall"].get("args", {}), dict):
+                    part["functionCall"]["args"] = {"_invalid_arguments": part["functionCall"].get("args")}
             for call in message.get("tool_calls", []):
                 names[call["id"]] = call["function"]["name"]
         elif role == "tool":
@@ -83,7 +91,12 @@ def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0,
             for call in message.get("tool_calls", []):
                 function = call["function"]
                 names[call["id"]] = function["name"]
-                args = json.loads(function["arguments"])
+                try:
+                    args = json.loads(function["arguments"])
+                except (ValueError, TypeError):
+                    args = {"_invalid_arguments": function["arguments"]}
+                if not isinstance(args, dict):
+                    args = {"_invalid_arguments": args}
                 parts.append({"type": "tool_use", "id": call["id"], "name": function["name"], "input": args}
                              if native == "anthropic" else {"functionCall": {"name": function["name"], "args": args}})
         if not parts:
@@ -184,13 +197,13 @@ def result(provider, body):
     texts, calls = [], []
     for part in parts:
         if native == "anthropic" and part.get("type") == "tool_use":
-            calls.append(ToolCall(part["id"], part["name"], part["input"]))
+            calls.append(ToolCall.parse(part["id"], part["name"], part.get("input")))
         elif "functionCall" in part:
             call = part["functionCall"]
-            calls.append(ToolCall(call.get("id") or f"call_{uuid4().hex}", call["name"], call.get("args", {})))
+            calls.append(ToolCall.parse(call.get("id") or f"call_{uuid4().hex}", call["name"], call.get("args", {})))
         elif "text" in part and not part.get("thought"):
             texts.append(part["text"])
-    if any(not isinstance(c.arguments, dict) for c in calls) or len({c.id for c in calls}) != len(calls):
+    if len({c.id for c in calls}) != len(calls):
         raise LLMProviderError("模型返回无效工具调用")
     return ToolResponse("".join(texts) or None, calls, provider.last_usage, {"_native_content": parts})
 

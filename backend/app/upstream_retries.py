@@ -171,13 +171,35 @@ def model_failure(*, status=None, uncertain=False):
     return LLMProviderError(message)
 
 
+def context_capacity_failure(response):
+    """Recognize explicit structured capacity errors, not arbitrary HTTP 400s."""
+    if response.status_code not in (400, 413):
+        return None
+    try:
+        error = response.json().get("error", {})
+        if not isinstance(error, dict):
+            return None
+        code = str(error.get("code") or "").lower()
+        kind = str(error.get("type") or error.get("status") or "").lower()
+        message = str(error.get("message") or "").lower()
+        explicit = code in {"context_length_exceeded", "context_window_exceeded", "prompt_too_long", "input_too_long"}
+        explicit |= kind == "invalid_request_error" and message.startswith("prompt is too long")
+        explicit |= kind == "invalid_argument" and "input token count" in message and "exceeds" in message and "maximum" in message
+        if explicit:
+            from .llm import LLMContextCapacityError
+            return LLMContextCapacityError("模型输入超出上下文容量，正在尝试整理当前上下文")
+    except (ValueError, TypeError, AttributeError, httpx.ResponseNotRead):
+        pass
+    return None
+
+
 def _model_decision(budget, response=None, error=None, provider=None):
     if response is not None:
         status = response.status_code
         if status < 400:
             return False, None, None
-        failure = model_failure(status=status)
-        category = f"http_{status}"
+        failure = context_capacity_failure(response) or model_failure(status=status)
+        category = getattr(failure, "code", None) or f"http_{status}"
         after = retry_after(response.headers.get("Retry-After"))
         safe = status in TRANSIENT_STATUS
     else:
@@ -220,6 +242,7 @@ def model_post(provider, url, **kwargs):
                 provider.request_observation["accepted_response"] = True
                 return response
             try:
+                response.read()
                 _, delay, failure = _model_decision(budget, response=response, provider=provider)
             finally:
                 response.close()
@@ -252,6 +275,7 @@ def model_stream(provider, method, url, **kwargs):
                     manager.__exit__(None, None, None)
                 return
             try:
+                response.read()
                 _, delay, failure = _model_decision(budget, response=response, provider=provider)
             finally:
                 manager.__exit__(None, None, None)
@@ -283,6 +307,7 @@ async def model_astream(provider, client, method, url, **kwargs):
                     await manager.__aexit__(None, None, None)
                 return
             try:
+                await response.aread()
                 _, delay, failure = _model_decision(budget, response=response, provider=provider)
             finally:
                 await manager.__aexit__(None, None, None)

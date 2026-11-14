@@ -141,7 +141,7 @@ def test_encrypted_image_snapshot_recovers_and_projects_to_every_protocol(client
 
 
 def test_proven_legacy_checkpoint_converts_once_and_cannot_roll_back(client):
-    from app.conversation_context import source_digest, scope_digest
+    from app.conversation_context import source_digest
     db, store, request = setup_store(client)
     rows = [ChatMessage(conversation_id=store.conversation_id, sequence=n,
         role="user" if n % 2 == 0 else "assistant", content=f"legacy-{n}") for n in range(4)]
@@ -149,7 +149,7 @@ def test_proven_legacy_checkpoint_converts_once_and_cannot_roll_back(client):
     conversation = db.get(Conversation, store.conversation_id)
     db.add(ContextCheckpoint(conversation_id=conversation.id, request_id=request,
         through_sequence=1, source_digest=source_digest(rows[:2]),
-        scope_digest=scope_digest(db, conversation, store.access, legacy=True),
+        scope_digest="retired-v0.1.18-catalog-fingerprint",
         summary="legacy summary", provider_id=UUID(store.config.provider_id), model=store.config.model,
         estimated_before=1000, estimated_after=100)); db.commit()
     _, items = store.load(db); db.commit()

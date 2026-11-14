@@ -120,11 +120,7 @@ def result(provider, body):
                 continuation.append({**{key: item[key] for key in ("type", "id", "role", "status") if key in item},
                                      "content": content})
             elif kind == "function_call":
-                args = json.loads(item["arguments"])
-                if (not isinstance(args, dict) or not isinstance(item.get("call_id"), str)
-                        or not item["call_id"] or not isinstance(item.get("name"), str) or not item["name"]):
-                    raise ValueError
-                calls.append(ToolCall(item["call_id"], item["name"], args))
+                calls.append(ToolCall.parse(item["call_id"], item["name"], item["arguments"]))
                 continuation.append({key: item[key] for key in ("type", "id", "status", "call_id", "name", "arguments")
                                      if key in item})
             elif kind == "reasoning":

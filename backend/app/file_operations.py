@@ -167,6 +167,14 @@ def execute(db, access, changes, update_metadata, *, request_id=None, signature=
     previous = replay(db, access, request_id, signature)
     if previous is not None:
         return previous
+    targets = {item["key"] for item in changes} | {item["source"] for item in changes if item.get("source")}
+    pending = db.scalars(select(WorkspaceFileOperation).where(
+        WorkspaceFileOperation.workspace_id == access.workspace_id,
+        WorkspaceFileOperation.state.in_(("pending", "recovery_required")))).all()
+    for other in pending:
+        if any(step["key"] in targets for step in other.steps):
+            # Do not let later compensation undo a new write to the same file.
+            raise HTTPException(409, "目标文件有尚未完成的操作，请先核对该文件的操作结果")
     identifier = uuid4()
     root = f"workspaces/{access.workspace_id}/file-operations/{identifier}/"
     operation = WorkspaceFileOperation(id=identifier, workspace_id=access.workspace_id, user_id=access.user_id,

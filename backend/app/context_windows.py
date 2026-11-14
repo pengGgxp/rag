@@ -166,20 +166,8 @@ class WindowStore:
             base = decrypt_items(checkpoint.encrypted_replacement)
         items = base + decrypt_items(state.encrypted_suffix)
         if state.scope_digest != scope:
-            # Without a handoff or retrieved private evidence, normal discovery
-            # can safely revalidate current permissions in the existing tools.
-            unsafe = any(i["source"] == "handoff" for i in items)
-            for item in items:
-                if item["source"] == "tool_image" or item["message"].get("role") == "tool" and item["message"].get("name") not in (
-                        "discover_knowledge_bases", "search_knowledge_base"):
-                    unsafe = True
-                if item["message"].get("name") == "search_knowledge_base":
-                    try:
-                        unsafe |= bool(json.loads(item["message"].get("content") or "{}").get("evidence"))
-                    except (TypeError, ValueError, AttributeError):
-                        unsafe = True
-            if unsafe:
-                raise unavailable()
+            # Upgrade the retired catalog fingerprint only after access and
+            # payload validation. Keep the existing replacement/suffix intact.
             state.scope_digest = scope
         if len({i["id"] for i in items}) != len(items):
             raise unavailable()
@@ -187,7 +175,7 @@ class WindowStore:
         return state, items
 
     def initialize(self, db, conversation, scope, rows):
-        from .conversation_context import SUMMARY_PREFIX, source_digest, scope_digest
+        from .conversation_context import SUMMARY_PREFIX, source_digest
         from .thinking import history_message
         rows = list(rows) if rows is not None else list(db.scalars(select(ChatMessage).where(
             ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed")
@@ -197,8 +185,7 @@ class WindowStore:
         items, blocked = [], None
         if latest:
             covered = [r for r in rows if r.sequence <= latest.through_sequence]
-            legacy_scope = scope_digest(db, conversation, self.access, legacy=True)
-            if (latest.through_sequence < 0 or not covered or latest.scope_digest not in (scope, legacy_scope)
+            if (latest.through_sequence < 0 or not covered
                     or latest.encrypted_replacement is not None
                     or latest.source_digest != source_digest(covered)):
                 blocked = "legacy_boundary_unknown"
