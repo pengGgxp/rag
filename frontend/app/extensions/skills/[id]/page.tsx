@@ -80,7 +80,12 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
 
   async function install() {
     setBusy(true); setError(""); setNotice("");
-    try { const value = await request<{ directory: string; already_installed: boolean }>(`${base}/${id}/install`, { method: "POST", headers: { "X-Request-ID": crypto.randomUUID() } }); setInstalledPaths([value.directory]); setNotice(value.already_installed ? `工作区已有：${value.directory}` : `已安装到 ${value.directory}`); await resource.reload(); setInstalledPaths(null); }
+    try {
+      const value = await request<{ directory: string; already_installed: boolean }>(`${base}/${id}/install`, { method: "POST", headers: { "X-Request-ID": crypto.randomUUID() } });
+      // 安装响应已包含真实路径，无须再次读取详情后才能结束写入状态。
+      setInstalledPaths([value.directory]);
+      setNotice(value.already_installed ? `工作区已有：${value.directory}` : `已安装到 ${value.directory}`);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "安装失败，请重试"); }
     finally { setBusy(false); }
   }
