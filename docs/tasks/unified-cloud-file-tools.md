@@ -9,3 +9,5 @@
 ## 实施说明
 
 文件工具以持久命令写入 `CloudComputerCommand`，与 `run_command` 使用相同的会话、计费和取消流程。模型不再看到 `inputs` 参数，也不需要判断文件是否要下载；当前文件路径固定在 `/home/user/workspace`。服务端维护身份与资源元数据，不读取文件正文。
+
+Issue #100 补充：每个新用户消息只发现 `.skills/` 清单元数据（名称、简介、真实路径），不加载全部正文或启动云电脑。选用后通过已有 read_file/run_command 使用同一目录；摘要属于用户可编辑数据，不增加权限。`.rag-directory` 空目录标记不进入 list_files。平台 API 写操作串行并检查 revision；云电脑任意脚本直写不参与该锁，依用户选择 A 保留并发窗口，不宣称跨入口原子覆盖。
