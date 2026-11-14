@@ -581,12 +581,20 @@ def test_same_task_compaction_preserves_latest_unconsumed_tool_group(client):
         messages += tool_group(f"call-{index}", "旧工具结果。" * 200)
     original_last = messages[-2:]
     manager, messages = manager_fixture(client, capacity=10000, messages=messages)
+    messages = manager.start(messages[0])
+    manager.manual = True
     class Provider:
         def stream_with_tools(self, *_args, **_kwargs):
             yield "complete", ToolResponse("已回查早期工具结果：42。", [])
     manager.provider = Provider()
     compacted = manager.prepare(messages, [], lambda _: None, lambda: None)
-    assert original_last[0] in compacted and original_last[1] in compacted
+    assert original_last[0] in compacted
+    last = next(item for item in compacted if item.get("tool_call_id") == "call-4")
+    projection = json.loads(last["content"])
+    assert projection["truncated"]
+    assert original_last[1]["content"].startswith(projection["preview"])
+    saved = manager.read_result({"result_id": projection["result_id"]})
+    assert original_last[1]["content"].startswith(saved["text"])
     assert len(compacted) == 5
     assert "call-0" not in str(compacted)
 

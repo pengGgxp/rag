@@ -86,8 +86,15 @@ def discover(db, access, *, refresh=True):
 
 
 def summary(db, access):
-    return [{key: item[key] for key in ("name", "description", "manifest_path", "directory")}
-        for item in discover(db, access) if item.get("name") and not item.get("manifest_error")]
+    try:
+        return [{key: item[key] for key in ("name", "description", "manifest_path", "directory")}
+            for item in discover(db, access, refresh=False) if item.get("name") and not item.get("manifest_error")]
+    except HTTPException as error:
+        if error.status_code in (401, 403):
+            raise
+        # Optional directory hints are not a prerequisite for a model turn.
+        # Explicit file tools still report their actual error on use.
+        return []
 
 
 def package(row):

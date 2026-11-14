@@ -153,6 +153,7 @@ class ExtensionRuntime:
         return f"{binding['name']} · {binding['tool']['name']}" if binding else "读取任务方法"
 
     def execute(self, name, arguments, check_active=None, *, call_id=None):
+        from .tool_errors import public_error
         if check_active:
             check_active()
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
@@ -163,7 +164,7 @@ class ExtensionRuntime:
                 return {"error": "参数不完整或无效，请确认知识库、名称及需要修改的字段", "error_code": "knowledge_arguments"}
             except HTTPException as error:
                 detail = ("知识库或文档不存在或无权访问，请重新选择可访问的对象"
-                    if error.status_code == 404 else str(error.detail))
+                    if error.status_code == 404 else public_error(error.detail))
                 return {"error": detail, "error_code": "knowledge_access"}
             except Exception:
                 return {"error": "操作结果尚未确认，请先查看知识库核对结果，再重试原调用", "uncertain": True,
@@ -177,7 +178,7 @@ class ExtensionRuntime:
             except PayloadValidationError:
                 return {"error": "请检查启动命令、网页端口和预览名称", "error_code": "preview_arguments"}
             except HTTPException as error:
-                return {"error": str(error.detail), "error_code": "preview_unavailable"}
+                return {"error": public_error(error.detail), "error_code": "preview_unavailable"}
         from .image_tools import LABELS as IMAGE_LABELS, execute as image_tool
         if name in IMAGE_LABELS:
             return image_tool(self, name, arguments)
@@ -188,7 +189,7 @@ class ExtensionRuntime:
             except PayloadValidationError:
                 return {"error": "保存参数不完整，请确认标题、内容和目标知识库", "error_code": "document_arguments"}
             except HTTPException as error:
-                return {"error": str(error.detail), "error_code": "document_save"}
+                return {"error": public_error(error.detail), "error_code": "document_save"}
             except Exception:
                 return {"error": "保存结果尚未确认，请查询已有任务后再试", "uncertain": True, "error_code": "document_save"}
         from .question_workbench import LABELS, METHOD
@@ -201,7 +202,7 @@ class ExtensionRuntime:
                 result = self.question_workbench.execute(name, arguments, check_active)
                 return {**result, "_extension": {"tool": name, "version": self.question_workbench.version}}
             except HTTPException as error:
-                return {"error": str(error.detail) if error.status_code in (403, 404) else "题目工作台操作未完成"}
+                return {"error": public_error(error.detail) if error.status_code in (403, 404) else "题目工作台操作未完成"}
         if name not in self.bindings:
             if name in {item["function"]["name"] for item in tool_definitions()}:
                 if name == "read_image" and not (
@@ -241,10 +242,11 @@ class ExtensionRuntime:
                         if error.status_code in (401, 403):
                             raise
                         if error.status_code in (402, 503) or name == "run_command":
-                            return {"error": str(error.detail), "error_code": "cloud_computer_unavailable"}
+                            return {"error": public_error(error.detail), "error_code": "cloud_computer_unavailable"}
                         code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",
                             422: "file_arguments"}.get(error.status_code, "file_storage")
-                        return {"error": FILE_TOOL_ERRORS[code], "error_code": code}
+                        return {"error": public_error(error.detail, FILE_TOOL_ERRORS[code]), "error_code": code,
+                                "status_code": error.status_code}
             return {"error": "该能力不可用"}
         item = self.bindings[name]
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
@@ -275,7 +277,7 @@ class ExtensionRuntime:
             uncertain = "未自动重试" in str(exc)
             if uncertain:
                 self.uncertain_calls.add(signature)
-            return {"error": str(exc), "uncertain": uncertain}
+            return {"error": public_error(exc), "uncertain": uncertain}
         except HTTPException as exc:
             if exc.status_code in (401, 403):
                 raise

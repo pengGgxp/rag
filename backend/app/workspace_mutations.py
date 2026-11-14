@@ -19,12 +19,8 @@ def snapshot(db, access, *, refresh=True):
 
 def _snapshot(db, access, *, refresh):
     if refresh:
-        pending = list(db.scalars(select(ops.WorkspaceFileOperation).where(
-            ops.WorkspaceFileOperation.workspace_id == access.workspace_id,
-            ops.WorkspaceFileOperation.state.in_(("pending", "recovery_required")))))
-        for operation in pending:
-            if not ops.restore(db, ops.storage(db), operation):
-                raise HTTPException(409, "工作区有未完成的文件恢复，请稍后重试；持续失败请联系管理员")
+        # Observation must not perform recovery writes or gate unrelated paths.
+        # The operation journal and maintenance own compensation.
         shared.refresh_index(db, access)
     files = {row.path: row for row in db.scalars(select(WorkspaceFile).where(
         WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None)))}

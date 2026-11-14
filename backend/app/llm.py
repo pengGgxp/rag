@@ -18,11 +18,34 @@ class LLMProviderError(RuntimeError):
     """Raised when the chat provider returns an invalid response."""
 
 
+class LLMContextCapacityError(LLMProviderError):
+    """An explicit provider rejection before generation, never a transport guess."""
+    code = "provider_context_capacity_exceeded"
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    raw_arguments: Any = field(default=None, repr=False)
+    argument_error: str | None = None
+
+    @classmethod
+    def parse(cls, identifier, name, value):
+        if not isinstance(identifier, str) or not identifier or not isinstance(name, str) or not name:
+            raise LLMProviderError("模型返回了无效的工具名称或调用标识")
+        try:
+            parsed = json.loads(value) if isinstance(value, str) else value
+            if not isinstance(parsed, dict):
+                raise ValueError
+            return cls(identifier, name, parsed)
+        except (ValueError, TypeError):
+            return cls(identifier, name, {}, value, "工具参数必须是有效的 JSON 对象，请修正参数后重新调用")
+
+    def serialized_arguments(self):
+        value = self.raw_arguments if self.argument_error else self.arguments
+        return value if self.argument_error and isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -349,16 +372,7 @@ class OpenAICompatibleChatProvider:
         for raw in raw_calls:
             try:
                 function = raw["function"]
-                arguments = function.get("arguments", {})
-                if isinstance(arguments, str):
-                    arguments = json.loads(arguments)
-                if not isinstance(arguments, dict):
-                    raise TypeError
-                calls.append(ToolCall(
-                    id=str(raw.get("id") or f"tool_{len(calls) + 1}"),
-                    name=str(function["name"]),
-                    arguments=arguments,
-                ))
+                calls.append(ToolCall.parse(raw.get("id"), function["name"], function.get("arguments", {})))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise LLMProviderError("LLM returned an invalid tool call") from exc
         if len({call.id for call in calls}) != len(calls):

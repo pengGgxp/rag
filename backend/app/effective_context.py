@@ -1,14 +1,15 @@
 """Local compact orchestration over the authoritative replacement window."""
 import math
+import json
 from copy import deepcopy
-from uuid import uuid5
+from uuid import UUID, uuid5
 
 from .agent import AgentCancelled
 from .context_windows import ContextWindowError, WindowStore, groups, make_item, project
 from .conversation_context import (
     HISTORY_TOOL, SUMMARY_INSTRUCTION, SUMMARY_PREFIX, estimate_input, estimate_request, input_budget,
 )
-from .llm import LLMConfigurationError, LLMProviderError
+from .llm import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
 
 
 class ContextManager:
@@ -33,41 +34,248 @@ class ContextManager:
     def history(self, db, conversation, rows=None):
         state, items = self.store.load(db, rows)
         self.adopt(state, items)
-        return project(items, self.config)
+        complete, _ = groups(items)
+        # Pending calls are normalized in start, after the new request owns the
+        # generation slot. Previewing context must not replay or finalize them.
+        return project([i for group in complete for i in group], self.config)
 
     def start(self, system, query=None):
         _, pending = groups(self.items)
         if pending:
-            # Recovery never replays uncertain side effects or invents tool success.
-            raise ContextWindowError("context_suffix_incompatible",
-                "上次工具操作已中断，请先核对操作结果，再新建会话继续")
-        self.messages = [deepcopy(system), *project(self.items, self.config)]
+            self.recover_tools(pending)
+        self.archive_large_results()
+        self.messages = [deepcopy(system), *project(self.bounded_items(), self.config)]
         if query is not None and not any(i["message_id"] == str(self.current_message_id)
                 and i["source"] == "user" for i in self.items):
             self.record([{"role": "user", "content": query}], "user", "input",
                         message_id=self.current_message_id, sequence=self.current_sequence)
         return self.messages
 
-    def record(self, messages, source, key, *, message_id=None, sequence=None):
+    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None):
         items = [make_item(uuid5(self.request_id, f"{key}:{index}"), message,
             "tool_image" if source == "tool" and message.get("role") == "user" else source,
             self.request_id, message_id, sequence, self.config) for index, message in enumerate(messages)]
+        for item in items:
+            if plan:
+                item["plan"] = deepcopy(plan)
+            if item["message"].get("tool_calls"):
+                item["tool_intent_version"] = 1
+                item["model_key"] = key
         with self.factory() as db:
             state, current = self.store.append(db, items, request_id=self.request_id, revision=self.revision)
             db.commit()
             self.adopt(state, current)
-        self.messages = self.messages[:1] + project(self.items, self.config)
+        self.messages = self.messages[:1] + project(self.bounded_items(), self.config)
         return self.messages
 
-    def _candidate(self, summary, prefix, tools, budget):
+    def output_budget(self, calls=1):
+        return max(300, min(4000, (input_budget(self.config) or 24000) // 4 // max(1, calls)))
+
+    def result_projections(self):
+        from .agent_tools import bounded_message
         complete, pending = groups(self.items)
+        for group in [*complete, *([pending] if pending else [])]:
+            model = group[0]
+            for item in group[1:]:
+                if item["message"].get("role") == "tool":
+                    identifier = uuid5(UUID(model["id"]), item["message"]["tool_call_id"])
+                    visible = bounded_message(item["message"], identifier, self.output_budget(len(model["pair_ids"])))
+                    yield item, identifier, visible, UUID(model["id"])
+
+    def bounded_items(self):
+        replacements = {item["id"]: visible for item, _, visible, _ in self.result_projections()}
+        return [{**item, "message": replacements.get(item["id"], item["message"])} for item in self.items]
+
+    def archive_large_results(self):
+        """Give legacy oversized observations the same readable receipt as new calls."""
+        from .context_windows import encrypt_items
+        from .models import AgentToolExecution
+        oversized = [(item, identifier, model_id) for item, identifier, visible, model_id in self.result_projections()
+            if visible != item["message"]]
+        if not oversized:
+            return
+        with self.factory() as db:
+            self.store.lock(db, self.request_id)
+            for item, identifier, model_id in oversized:
+                if db.get(AgentToolExecution, identifier) is None:
+                    db.add(AgentToolExecution(id=identifier, conversation_id=self.conversation_id,
+                        request_id=UUID(item["request_id"]) if item.get("request_id") else self.request_id,
+                        model_item_id=model_id,
+                        call_id=item["message"]["tool_call_id"], name=item["message"].get("name", ""),
+                        status="completed", encrypted_result=encrypt_items([item])))
+            db.commit()
+
+    def begin_tool(self, call):
+        from .models import AgentToolExecution
+        _, pending = groups(self.items)
+        if not pending or call.id not in pending[0]["pair_ids"]:
+            raise ContextWindowError("context_suffix_incompatible", "工具调用缺少对应模型记录")
+        model_item = UUID(pending[0]["id"])
+        identifier = uuid5(model_item, call.id)
+        with self.factory() as db:
+            self.store.lock(db, self.request_id)
+            if db.get(AgentToolExecution, identifier):
+                # This slot was already admitted. Never execute its side effect twice.
+                raise ContextWindowError("tool_execution_already_started", "该工具调用已经开始，请继续会话核对已有结果")
+            db.add(AgentToolExecution(id=identifier, conversation_id=self.conversation_id,
+                request_id=self.request_id, model_item_id=model_item, call_id=call.id, name=call.name, status="running"))
+            db.commit()
+        return identifier
+
+    def finish_tool(self, identifier, message, budget):
+        from .context_windows import encrypt_items
+        from .models import AgentToolExecution
+        from .agent_tools import bounded_message
+        raw = make_item(uuid5(identifier, "full-result"), message, "tool", self.request_id)
+        with self.factory() as db:
+            # Save known truth even if stop changed active_request_id while the
+            # tool was finishing. Only window appends require the active slot.
+            self.store.lock(db)
+            row = db.get(AgentToolExecution, identifier)
+            row.encrypted_result = encrypt_items([raw])
+            data = json.loads(message["content"])
+            row.status = "uncertain" if data.get("uncertain") else "failed" if data.get("error") or data.get("isError") else "completed"
+            db.commit()
+        visible = bounded_message(message, identifier, budget)
+        self.record([visible], "tool", f"tool-result:{identifier}",
+            plan=data if message.get("name") == "update_plan" and data.get("plan") and not data.get("error") else None)
+        return visible
+
+    def recover_tools(self, pending):
+        from .context_windows import decrypt_items, encrypt_items
+        from .models import AgentToolExecution
+        model = pending[0]
+        returned = {i["message"].get("tool_call_id") for i in pending[1:]}
+        missing = [c for c in model["message"]["tool_calls"] if c["id"] not in returned]
+        recovered, plan = [], None
+        for call in missing:
+            identifier = uuid5(UUID(model["id"]), call["id"])
+            with self.factory() as db:
+                self.store.lock(db, self.request_id)
+                row = db.get(AgentToolExecution, identifier)
+                if row and row.encrypted_result:
+                    message = decrypt_items(row.encrypted_result)[0]["message"]
+                else:
+                    result = self._business_receipt(db, model, call)
+                    if result is None:
+                        not_started = model.get("tool_intent_version") == 1 and row is None
+                        result = {"error": "上次调用尚未执行" if not_started else "上次调用已中断，结果尚未确认；请核对已有结果，勿盲目重复操作",
+                            "execution_status": "not_executed" if not_started else "uncertain", "uncertain": not not_started}
+                    message = {"role": "tool", "tool_call_id": call["id"], "name": call["function"]["name"],
+                               "content": json.dumps(result, ensure_ascii=False)}
+                    if row is None:
+                        row = AgentToolExecution(id=identifier, conversation_id=self.conversation_id,
+                            request_id=UUID(model["request_id"]) if model.get("request_id") else self.request_id,
+                            model_item_id=UUID(model["id"]), call_id=call["id"], name=call["function"]["name"])
+                        db.add(row)
+                    row.status = result.get("execution_status") or ("uncertain" if result.get("uncertain") else
+                        "failed" if result.get("error") or result.get("isError") else "completed")
+                    row.encrypted_result = encrypt_items([make_item(uuid5(identifier, "recovered-result"),
+                        message, "tool", self.request_id)])
+                db.commit()
+            from .agent_tools import bounded_message
+            if message.get("name") == "update_plan":
+                value = json.loads(message["content"])
+                if value.get("plan") and not value.get("error"):
+                    plan = value
+            recovered.append(bounded_message(message, identifier, self.output_budget(len(missing))))
+        # Close the whole outstanding suffix before projecting to another
+        # protocol. No intermediate incomplete group is sent to any model.
+        self.record(recovered, "tool", f"recovered:{model['id']}", plan=plan)
+
+    def _business_receipt(self, db, model, call):
+        """Read existing local receipts only; never poll/replay an external tool."""
+        from sqlalchemy import select
+        from hashlib import sha256
+        from .models import KnowledgeBaseToolExecution, RemoteToolExecution
+        from .mcp_client import decrypt_headers
+        if not model.get("request_id"):
+            return None
+        name, request = call["function"]["name"], UUID(model["request_id"])
+        key = model.get("model_key", "")
+        if key.startswith("model:"):
+            activity = f"tool-{key.split(':')[1]}-{call['id']}"
+            receipt = db.get(KnowledgeBaseToolExecution, uuid5(request, "knowledge-base-tool:" + activity))
+            if receipt and receipt.workspace_id == self.access.workspace_id and receipt.user_id == self.access.user_id:
+                return receipt.result
+            from .models import CloudComputerCommand, CloudComputerSession
+            from .cloud_computer import tool_request_id
+            command = db.scalar(select(CloudComputerCommand).join(CloudComputerSession).where(
+                CloudComputerCommand.request_id == tool_request_id(request, activity),
+                CloudComputerSession.conversation_id == self.conversation_id,
+                CloudComputerSession.workspace_id == self.access.workspace_id,
+                CloudComputerSession.user_id == self.access.user_id))
+            if command and command.status not in ("queued", "preparing", "running", "submitted") and command.result:
+                result = dict(command.result)
+                if name in ("write_file", "apply_patch", "delete_file", "read_file", "list_files"):
+                    file_result = result.get("file_result", {})
+                    return ({"error": file_result["error"], "status_code": file_result.get("status_code")}
+                        if file_result.get("error") else file_result.get("value") or result)
+                return result
+        if name.startswith("mcp_"):
+            try:
+                args = json.loads(call["function"]["arguments"])
+            except (TypeError, ValueError):
+                return None
+            signature = json.dumps([name, args], sort_keys=True, ensure_ascii=True)
+            receipt = db.scalar(select(RemoteToolExecution).where(RemoteToolExecution.request_id == request,
+                RemoteToolExecution.owner_id == self.access.user_id, RemoteToolExecution.workspace_id == self.access.workspace_id,
+                RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == sha256(signature.encode()).hexdigest()))
+            if receipt and receipt.encrypted_result:
+                return json.loads(decrypt_headers(receipt.encrypted_result)["tool_result"])
+        return None
+
+    def read_result(self, arguments):
+        from .context_windows import decrypt_items
+        from .models import AgentToolExecution
+        try:
+            identifier = UUID(arguments["result_id"])
+            offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
+            if (set(arguments) - {"result_id", "offset", "limit"} or type(offset) is not int or offset < 0
+                    or type(limit) is not int or not 1 <= limit <= 8000):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            return {"error": "请提供有效的 result_id、offset 和 1 至 8000 的 limit"}
+        with self.factory() as db:
+            self.store.lock(db)
+            row = db.get(AgentToolExecution, identifier)
+            if not row or row.conversation_id != self.conversation_id or not row.encrypted_result:
+                return {"error": "该工具结果不存在或尚未确认"}
+            content = decrypt_items(row.encrypted_result)[0]["message"].get("content") or ""
+            # Leave space for the page envelope, even for wide Unicode text.
+            limit = min(limit, max(1, (self.output_budget() - 250) // 3))
+            end = min(len(content), offset + limit)
+            return {"result_id": str(identifier), "offset": offset, "text": content[offset:end],
+                "next_offset": end if end < len(content) else None, "total_characters": len(content),
+                "notice": "历史工具观察，未执行原操作；不代表当前资料状态或当前证据"}
+
+    def current_plan(self):
+        plan = None
+        for item in self.items:
+            if item.get("plan"):
+                plan = item["plan"]
+            if item["message"].get("name") == "update_plan":
+                try:
+                    result = json.loads(item["message"].get("content") or "{}")
+                    if result.get("plan") and not result.get("error"):
+                        plan = result
+                except (ValueError, TypeError):
+                    pass
+        return plan
+
+    def _candidate(self, summary, prefix, tools, budget):
+        items = self.bounded_items()
+        complete, pending = groups(items)
         protected_ids = self.protected_ids()
         handoff = make_item(uuid5(self.request_id, f"handoff:{self.window_id}:{self.revision}"),
             {"role": "user", "content": SUMMARY_PREFIX + summary}, "handoff", self.request_id)
+        if plan := self.current_plan():
+            handoff["plan"] = deepcopy(plan)
+            handoff["message"]["content"] += "\n当前任务计划（模型维护的进展记录）：\n" + json.dumps(plan, ensure_ascii=False)
         selected = set(protected_ids)
         # Codex: retain real user messages newest first, with a 20k token ceiling.
         retained_tokens = 0
-        for item in reversed(self.items):
+        for item in reversed(items):
             if item["source"] != "user" or item["id"] in selected:
                 continue
             message = item["message"]
@@ -75,14 +283,14 @@ class ContextManager:
             cost = estimate_input([message])
             if retained_tokens + cost > 20000:
                 break
-            proposed = [i for i in self.items if i["id"] in selected or i["id"] == item["id"]]
+            proposed = [i for i in items if i["id"] in selected or i["id"] == item["id"]]
             proposed = [i for i in proposed if i not in pending] + [handoff] + pending
             if estimate_request(self.config, prefix + project(proposed, self.config), tools) > budget:
                 break
             selected.add(item["id"])
             retained_tokens += cost
         # Keep original item order; place the handoff before an unfinished tool suffix.
-        retained = [i for i in self.items if i["id"] in selected and i not in pending]
+        retained = [i for i in items if i["id"] in selected and i not in pending]
         return retained + [handoff] + pending
 
     def protected_ids(self):
@@ -99,7 +307,7 @@ class ContextManager:
 
     def _summary_input(self, tools, budget):
         from .chat_attachments import summary_content
-        complete, pending = groups(self.items)
+        complete, pending = groups(self.bounded_items())
         protected = self.protected_ids()
         selected = list(complete) + ([pending] if pending else [])
         while True:
@@ -123,21 +331,27 @@ class ContextManager:
                 {"role": "user", "content": summary_content([i["message"] for g in selected for i in g])}]) >= previous:
                 raise ContextWindowError("context_capacity_exceeded", "上下文无法继续缩减，请新建会话")
 
-    def prepare(self, messages, tools, emit, check_active):
+    def prepare(self, messages, tools, emit, check_active, *, force=False):
         budget = input_budget(self.config)
         before = estimate_request(self.config, messages, tools)
         if budget is None:
             if self.manual:
                 raise LLMConfigurationError("上下文保护未就绪，请联系管理员配置模型容量")
             return messages
+        if force:
+            protected = [i for i in self.bounded_items() if i["id"] in self.protected_ids()]
+            fixed = estimate_request(self.config, messages[:1] + project(protected, self.config), tools)
+            # System/tool schemas cannot be compacted. Shrink history while
+            # leaving a bounded handoff allowance above that fixed floor.
+            budget = min(budget, before - 1, max(math.floor(before * .65), fixed + 1024))
         trigger = min(budget, math.floor(self.config.context_capacity * 0.9))
-        if not self.manual and before < trigger:
+        if not self.manual and not force and before < trigger:
             return messages
-        if self.attempted_revision == self.revision:
+        if not force and self.attempted_revision == self.revision:
             if before > budget:
                 raise ContextWindowError("context_capacity_exceeded", "上下文超出模型容量，请缩短输入或选择容量更大的模型")
             return messages
-        protected = [i for i in self.items if i["id"] in self.protected_ids()]
+        protected = [i for i in self.bounded_items() if i["id"] in self.protected_ids()]
         if estimate_request(self.config, messages[:1] + project(protected, self.config), tools) > budget:
             raise ContextWindowError("context_capacity_exceeded", "当前问题或必需资料超出模型容量，请缩短输入或选择容量更大的模型")
         if not self.eligible():
@@ -164,7 +378,15 @@ class ContextManager:
             from .upstream_retries import retry_activity
             with retry_activity(check_active, emit, {"call_id": call_id, "name": "compact_context",
                     "label": "整理早期上下文", "kind": "compaction"}, finish=False):
-                result = self.meter.invoke(self.provider, invoke, summary_messages, []) if self.meter else invoke()
+                try:
+                    result = self.meter.invoke(self.provider, invoke, summary_messages, []) if self.meter else invoke()
+                except LLMContextCapacityError:
+                    # Shrink the summary request itself, dropping oldest complete
+                    # groups from the current window only. Exactly one retry.
+                    summary_messages = self._summary_input(tools,
+                        min(budget, math.floor(estimate_request(self.config, summary_messages) * .65)))
+                    check_active()
+                    result = self.meter.invoke(self.provider, invoke, summary_messages, []) if self.meter else invoke()
             check_active()
             replacement = self._candidate(result.content, messages[:1], tools, budget)
             compacted = messages[:1] + project(replacement, self.config)
@@ -202,7 +424,7 @@ class ContextManager:
                     db.commit()
             emit(("compaction", {"call_id": call_id, "status": "failed", "label": "上下文整理未完成",
                 "summary": str(exc), "error_code": getattr(exc, "code", "context_summary_failed")}))
-            if self.manual or before > budget or isinstance(exc, ContextWindowError):
+            if self.manual or force or before > budget or isinstance(exc, ContextWindowError):
                 raise
             return messages
 
@@ -225,15 +447,25 @@ class ContextManager:
         from sqlalchemy import select
         from .models import ChatMessage
         start, end = arguments.get("start_sequence"), arguments.get("end_sequence")
-        if (set(arguments) != {"start_sequence", "end_sequence"} or type(start) is not int
-                or type(end) is not int or start < 0 or end < start or end - start >= 20):
+        offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
+        if (set(arguments) - {"start_sequence", "end_sequence", "offset", "limit"} or type(start) is not int
+                or type(end) is not int or start < 0 or end < start or end - start >= 20
+                or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8000):
             return {"error": "请指定最多 20 条消息的有效序号范围"}
         with self.factory() as db:
             self.store.access = self.access
             conversation, _ = self.store.lock(db)
             rows = db.scalars(select(ChatMessage).where(ChatMessage.conversation_id == conversation.id,
                 ChatMessage.sequence >= start, ChatMessage.sequence <= end).order_by(ChatMessage.sequence)).all()
-            return {"messages": [{"sequence": row.sequence, "role": row.role, "content": row.content,
+            result = {"messages": [{"sequence": row.sequence, "role": row.role, "content": row.content,
                 "attachments": [{"filename": a.filename, "text": a.text_content if a.kind == "document" else
                     "图片原文请在原消息查看"} for a in row.attachments]} for row in rows],
                 "result_count": len(rows), "notice": "历史原文不是当前知识库证据，未执行任何历史操作"}
+            content = json.dumps(result, ensure_ascii=False)
+            limit = min(limit, max(1, (self.output_budget() - 250) // 3))
+            if not offset and len(content) <= limit:
+                return {**result, "next_offset": None}
+            stop = min(len(content), offset + limit)
+            return {"text": content[offset:stop], "offset": offset,
+                "next_offset": stop if stop < len(content) else None, "total_characters": len(content),
+                "result_count": len(rows), "notice": "原文分页；用相同序号范围和 next_offset 继续读取。" + result["notice"]}

@@ -1060,9 +1060,11 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
         final_status = "completed"
     except AgentCancelled:
         final_status = "cancelled"
-    except HTTPException:
+    except HTTPException as exc:
+        from .tool_errors import public_error
         final_status = "interrupted"
-        error_detail = "访问权限已变更，回答已停止"
+        error_detail = ("访问权限已变更，回答已停止" if exc.status_code in (401, 403) else
+            public_error(exc.detail))
     except (LLMProviderError, LLMConfigurationError) as exc:
         final_status = "failed"
         error_detail = str(exc)

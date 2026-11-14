@@ -229,7 +229,7 @@ def test_model_can_continue_past_old_and_framework_round_limits(runtime):
     assert run.answer == "Can you clarify the document name?"
 
 
-def test_history_query_and_tool_candidates_are_not_truncated(runtime):
+def test_history_and_query_preserved_while_evidence_is_bounded_as_whole_chunks(runtime):
     history = [{"role": "user" if i % 2 == 0 else "assistant", "content": str(i) * 5000} for i in range(18)]
     long_query = "needle " * 1000
     runtime.arguments.update(history=history, query=long_query)
@@ -276,15 +276,17 @@ def test_history_query_and_tool_candidates_are_not_truncated(runtime):
                     search(runtime.allowed, long_query, top_k=30),
                 ])
             result = json.loads(messages[-1]["content"])
-            assert len(result["evidence"]) == 30
+            assert 0 < len(result["evidence"]) < 30
+            assert result["omitted_count"] == 30 - len(result["evidence"])
             assert "has_sufficient_evidence" not in result
             assert result["evidence"][0]["vector_distance"] == 0.95
             assert result["evidence"][-1]["version_number"] == 3
             return ToolResponse(content="I decide how to use these candidates.", tool_calls=[])
 
     run = run_retrieval_agent(**runtime.arguments, provider=Provider())
-    assert len(run.citations) == 30
-    assert len({item["chunk_id"] for item in run.citations}) == 30
+    assert 0 < len(run.citations) < 30
+    assert len({item["chunk_id"] for item in run.citations}) == len(run.citations)
+    assert all(item["text"] == f"candidate {i}" for i, item in enumerate(run.citations))
 
 
 @pytest.mark.parametrize("arguments", [
@@ -334,12 +336,57 @@ def test_unknown_tool_returns_error_to_model(runtime):
     assert run.tool_results[0]["status"] == "error"
 
 
+def test_file_disappears_then_model_uses_another_path_in_same_turn(runtime):
+    class Extensions:
+        tools, skills = [], []
+        paths = []
+        def label(self, *args):
+            return "读取文件"
+        def execute(self, name, arguments, **kwargs):
+            self.paths.append(arguments["path"])
+            if arguments["path"] == "old.txt":
+                raise HTTPException(404, "文件 old.txt 不存在")
+            return {"text": "当前文件内容"}
+    extensions = Extensions()
+    class Provider:
+        step = 0
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 2:
+                assert json.loads(messages[-1]["content"])["status_code"] == 404
+                assert "old.txt" in messages[-1]["content"]
+            if self.step == 3:
+                assert json.loads(messages[-1]["content"])["text"] == "当前文件内容"
+                return ToolResponse("已找到改名后的文件", [])
+            return ToolResponse(None, [ToolCall(str(self.step), "read_file",
+                {"path": "old.txt" if self.step == 1 else "new.txt"})])
+    run = run_retrieval_agent(**runtime.arguments, provider=Provider(), extensions=extensions)
+    assert extensions.paths == ["old.txt", "new.txt"]
+    assert run.answer == "已找到改名后的文件"
+
+
+def test_retrieval_http_failure_is_tool_observation_not_turn_failure(runtime):
+    def unavailable(*args, **kwargs):
+        raise HTTPException(409, "知识库已归档")
+    class Provider:
+        step = 0
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(None, [search(runtime.allowed)])
+            result = json.loads(messages[-1]["content"])
+            assert result["error"] == "知识库已归档" and result["evidence"] == []
+            return ToolResponse("请提供其他资料", [])
+    run = run_retrieval_agent(**{**runtime.arguments, "retrieve": unavailable}, provider=Provider())
+    assert run.answer == "请提供其他资料" and run.tool_results[0]["status"] == "error"
+
+
 @pytest.mark.parametrize("name,result,expected", [
-    ("write_file", {"error": "PRIVATE", "error_code": "file_storage"}, "稍后重试"),
-    ("write_file", {"error": "PRIVATE", "error_code": "file_conflict"}, "重新读取"),
-    ("run_command", {"error": "PRIVATE", "error_code": "file_tool_unavailable"}, "重新开始对话"),
-    ("run_command", {"error": "PRIVATE", "uncertain": True}, "勿重复运行"),
-    ("mcp_remote", {"error": "PRIVATE", "error_code": "file_storage"}, "重新选择扩展"),
+    ("write_file", {"error": "目标文件有未完成的操作", "error_code": "file_storage"}, "目标文件有未完成的操作"),
+    ("write_file", {"error": "上级路径是文件", "error_code": "file_conflict"}, "上级路径是文件"),
+    ("run_command", {"error": "该文件不存在", "error_code": "file_tool_unavailable"}, "该文件不存在"),
+    ("run_command", {"error": "执行结果尚未确认，请核对文件，勿重复运行", "uncertain": True}, "勿重复运行"),
+    ("mcp_remote", {"error": "服务返回目标不存在", "error_code": "file_storage"}, "服务返回目标不存在"),
 ])
 def test_file_failure_stream_uses_safe_actionable_summary(runtime, name, result, expected):
     class Extensions:

@@ -118,8 +118,9 @@ def test_disconnect_and_invalid_arguments_cannot_execute_tools():
         state.check()
     assert provider.last_usage is None
     for args in ("[]", "invalid"):
-        with pytest.raises(LLMProviderError):
-            result(provider, body([{"type": "function_call", "call_id": "x", "name": "search", "arguments": args}]))
+        call = result(provider, body([{"type": "function_call", "call_id": "x", "name": "search", "arguments": args}])).tool_calls[0]
+        assert call.argument_error and call.raw_arguments == args
+        assert call.id == "x" and call.name == "search"
     assert provider.last_usage.completion_tokens == 25
 
 
