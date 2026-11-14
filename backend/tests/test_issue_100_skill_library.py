@@ -11,6 +11,7 @@ from app import auth, workspace_files
 from app.models import SiteSkill, SiteSkillFile, WorkspaceSkillInstall
 from test_auth import register, share, switch
 from test_shared_providers import setup_site
+from test_resources import resource_store
 
 
 def platform_skill(db, user_id):
@@ -46,14 +47,15 @@ def test_catalog_download_install_is_idempotent_and_keeps_workspace_copy(account
     again = owner.post(f"/agent/skills/platform/{skill.id}/install")
     assert again.status_code == 201 and again.json()["already_installed"] and again.json()["directory"] == directory
     assert owner.get("/resources").json()["items"]
-    assert db.scalar(select(WorkspaceSkillInstall).where(WorkspaceSkillInstall.site_skill_id == skill.id)) is not None
+    assert db.scalar(select(WorkspaceSkillInstall).where(WorkspaceSkillInstall.site_skill_id == skill.id)) is None
 
     root = next(item for item in installed.json()["items"] if item["path"].endswith("/SKILL.md"))
     actor = access_for(owner, db)
-    workspace_files._save_bytes(actor.workspace_id, actor, db, root["path"], b"user changed", "text/markdown", expected_version=1)
+    changed = "---\nname: 报告助手\n---\nuser changed".encode()
+    workspace_files._save_bytes(actor.workspace_id, actor, db, root["path"], changed, "text/markdown", expected_version=1)
     repeated = owner.post(f"/agent/skills/platform/{skill.id}/install")
     assert repeated.status_code == 201 and repeated.json()["already_installed"]
-    assert owner.get(f"/resources/{root['id']}/download").content == b"user changed"
+    assert owner.get(f"/resources/{root['id']}/download").content == changed
 
 
 def test_catalog_is_readable_to_viewers_but_install_requires_editor(accounts, monkeypatch, resource_store):

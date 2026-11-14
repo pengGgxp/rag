@@ -1,6 +1,5 @@
 """Skill import is an ordinary workspace resource upload, with no published copy."""
-import frontmatter
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -11,7 +10,7 @@ from .auth import get_access
 from .audit_log import record_audit
 from .db import get_db
 from .models import WorkspaceFile, WorkspaceFileVersion
-from .workspace_files import _save_bytes, _stage_bytes, owned as resource_owned, read_file, valid_path
+from .workspace_files import owned as resource_owned, read_file
 
 router = APIRouter(prefix="/agent/skills", tags=["workspace-skills"])
 
@@ -19,6 +18,8 @@ router = APIRouter(prefix="/agent/skills", tags=["workspace-skills"])
 class SkillContentUpdate(BaseModel):
     content: str = Field(min_length=1, max_length=5_000_000)
     version: int = Field(default=1, ge=1, strict=True)
+    revision: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 # These helpers also serve personal MCP connections; their ownership is unchanged.
@@ -38,52 +39,27 @@ def audit(db, access, request, action, row):
 
 
 def save_package(files, db, access):
-    """Use the same keys, quota, audit and metadata writer as ordinary resources."""
+    from .skill_discovery import parse, directory_name
+    from .workspace_mutations import save_files, snapshot, unique_name
+    from .file_operations import workspace_lock
+    import mimetypes
     access.editor()
     skill_files.validate_files(files)
-    # A fresh directory avoids overwriting user files, including concurrent imports.
-    directory = f"skills/{uuid4().hex}"
-    uploaded, rows = [], []
-    try:
-        from .storage_billing import check_capacity
-        from .shared_resources import object_key
-        check_capacity(db, access.workspace_id, sum(map(len, files.values())))
-        with db.begin_nested():
-            for path, content in files.items():
-                uploaded.append(object_key(access.workspace_id, f"{directory}/{path}"))
-                rows.append(_stage_bytes(access.workspace_id, access, db,
-                    f"{directory}/{path}", content, "application/octet-stream", None))
-                rows[-1].source = "resource_upload"
-            db.flush()
-        db.commit()
-    except BaseException:
-        db.rollback()
-        from .storage import delete_object
-        for key in uploaded:
-            try:
-                delete_object(key)
-            except Exception:
-                pass
-        raise
-    return {"directory": directory, "items": [read_file(row) for row in rows]}
+    metadata = parse(files["SKILL.md"].decode("utf-8"), "SKILL.md")
+    directory = ".skills/" + directory_name(metadata.get("name") or "skill")
+    with workspace_lock(db, access.workspace_id):
+        current, dirs, _ = snapshot(db, access)
+        if directory in current or directory in dirs:
+            directory = unique_name(directory, set(current) | dirs)
+        result = save_files(db, access, {f"{directory}/{path}": (content,
+            mimetypes.guess_type(path)[0] or "application/octet-stream") for path, content in files.items()})
+        return {"directory": directory, **result}
 
 
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
-    from .shared_resources import refresh_index
-    refresh_index(db, access)
-    rows = db.scalars(select(WorkspaceFile).where(
-        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
-        (WorkspaceFile.path == "SKILL.md") | WorkspaceFile.path.endswith("/SKILL.md"))
-        .order_by(WorkspaceFile.path))
-    result = []
-    for row in rows:
-        value = read_file(row)
-        directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
-        value.update(name=directory.rsplit("/", 1)[-1] or "Skill", description="工作区 Skill",
-            enabled=True, version=row.current_version, directory=directory, source="workspace")
-        result.append(value)
-    return result
+    from .skill_discovery import discover
+    return discover(db, access)
 
 
 @router.post("/import", status_code=201)
@@ -124,20 +100,25 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
         raise HTTPException(422, "请使用 Skill 入口打开 SKILL.md")
     value = read_file(row)
     try:
-        from .storage import download_fileobj
         version = db.scalar(select(WorkspaceFileVersion).where(
             WorkspaceFileVersion.file_id == row.id, WorkspaceFileVersion.version == row.current_version,
             WorkspaceFileVersion.deleted_at.is_(None)))
         if version is None:
             raise HTTPException(404, "Skill 文件已删除")
-        with download_fileobj(version.object_key) as handle:
-            content = handle.read().decode("utf-8")
-        parsed = frontmatter.loads(content.lstrip("\ufeff"))
-        value.update(name=parsed.get("name") or row.path.split("/")[-2],
-            description=parsed.get("description") or "工作区 Skill", markdown=content,
-            directory=row.path.rsplit("/", 1)[0] if "/" in row.path else "")
+        from .shared_resources import backend
+        from .skill_discovery import MAX_MANIFEST_BYTES
+        with backend(db).download(version.object_key) as handle:
+            raw = handle.read(MAX_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            value.update(name=None, description="", manifest_path=row.path,
+                directory=row.path.rsplit("/", 1)[0], manifest_error="清单超过 5 MB，请在工作区替换文件后重试")
+            return value
+        content = raw.decode("utf-8")
+        from .skill_discovery import parse
+        value.update(**parse(content, row.path), markdown=content)
     except UnicodeDecodeError:
-        raise HTTPException(422, "SKILL.md 必须是 UTF-8 文本") from None
+        value.update(name=None, description="", manifest_path=row.path,
+            directory=row.path.rsplit("/", 1)[0], manifest_error="清单需要 UTF-8 文本，请在工作区替换文件后重试")
     return value
 
 
@@ -147,10 +128,9 @@ def update(identifier: UUID, payload: SkillContentUpdate, request: Request,
     row = resource_owned(db, access, access.workspace_id, identifier, write=True)
     if not row.path.lower().endswith("/skill.md") and row.path.lower() != "skill.md":
         raise HTTPException(422, "请使用 Skill 入口修改 SKILL.md")
-    if payload.version != row.current_version:
-        raise HTTPException(409, "Skill 文件已更新，请重新加载后再保存")
-    result = _save_bytes(access.workspace_id, access, db, row.path, payload.content.encode("utf-8"),
-        "text/markdown", expected_version=payload.version)
+    from .workspace_mutations import save_files
+    result = save_files(db, access, {row.path: (payload.content.encode("utf-8"), "text/markdown")},
+        expected={row.path: payload.revision} if payload.revision else {}, request_id=payload.request_id)["items"][0]
     return {**result, "markdown": payload.content, "directory": row.path.rsplit("/", 1)[0] if "/" in row.path else ""}
 
 
@@ -164,13 +144,9 @@ def files(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 
 
 @router.delete("/{identifier}", status_code=204)
-def remove(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
+def remove(identifier: UUID, request: Request, confirmation: str | None = None,
+           request_id: str | None = None, db=Depends(get_db), access=Depends(get_access)):
     row = resource_owned(db, access, access.workspace_id, identifier, write=True)
+    from .workspace_mutations import delete
     directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
-    from .shared_resources import delete_path
-    query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None))
-    query = query.where(WorkspaceFile.path == row.path if not directory else WorkspaceFile.path.startswith(directory + "/"))
-    rows = list(db.scalars(query))
-    for item in rows:
-        delete_path(db, access, item)
+    delete(db, access, [directory or row.path], confirmation=confirmation, request_id=request_id)

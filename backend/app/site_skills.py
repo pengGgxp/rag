@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 
 from .db import get_db
 from .auth import get_access
-from .models import SiteSkill, SiteSkillFile, WorkspaceFile, WorkspaceSkillInstall
+from .models import SiteSkill, SiteSkillFile
 from .site_skill_packages import decode_files, encode_files, review
 from .skill_files import text_content, unzip
 from .site_auth import site_admin
@@ -218,27 +218,29 @@ def catalog(q: str = Query(default="", max_length=200), db=Depends(get_db), acce
     if q.strip():
         query = query.where(SiteSkill.name.icontains(q.strip(), autoescape=True))
     rows = db.scalars(query.order_by(SiteSkill.name, SiteSkill.id)).all()
-    return [{**catalog_read(row), "installed": db.scalar(select(WorkspaceSkillInstall.id).where(
-        WorkspaceSkillInstall.workspace_id == access.workspace_id,
-        WorkspaceSkillInstall.site_skill_id == row.id)) is not None} for row in rows]
+    from .skill_discovery import discover
+    found = discover(db, access)
+    return [{**catalog_read(row), "installed": any(item["name"] == row.name for item in found),
+        "installed_directories": [item["directory"] for item in found if item["name"] == row.name]} for row in rows]
 
 
 @catalog_router.get("/{identifier}")
 def catalog_detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = _catalog_skill(db, identifier, detail=True)
-    installed = db.scalar(select(WorkspaceSkillInstall).where(
-        WorkspaceSkillInstall.workspace_id == access.workspace_id,
-        WorkspaceSkillInstall.site_skill_id == row.id))
+    from .skill_discovery import discover
+    installed = [item["directory"] for item in discover(db, access) if item["name"] == row.name]
     value = catalog_read(row, True)
-    value["installed"] = installed is not None
-    value["installed_directory"] = installed.directory if installed else None
+    value["installed"] = bool(installed)
+    value["installed_directory"] = installed[0] if installed else None
+    value["installed_directories"] = installed
     return value
 
 
 @catalog_router.api_route("/{identifier}/download", methods=["GET", "HEAD"])
 def catalog_download(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = _catalog_skill(db, identifier, detail=True)
-    files = {"SKILL.md": row.markdown.encode("utf-8"), **{item.path: item.content for item in row.files}}
+    from .skill_discovery import package
+    files = package(row)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for path, content in sorted(files.items()):
@@ -251,68 +253,38 @@ def catalog_download(identifier: UUID, request: Request, db=Depends(get_db), acc
 
 
 def _install_directory(row):
-    name = re.sub(r"[^A-Za-z0-9._-]+", "-", row.name).strip("-_").lower() or "skill"
-    return f"skills/{name}-{row.id.hex[:8]}"
-
-
-def _installed_items(db, workspace_id, directory):
-    return list(db.scalars(select(WorkspaceFile).where(
-        WorkspaceFile.workspace_id == workspace_id,
-        WorkspaceFile.path.startswith(directory + "/"),
-        WorkspaceFile.deleted_at.is_(None)).order_by(WorkspaceFile.path)))
+    from .skill_discovery import directory_name
+    return f".skills/{directory_name(row.name)}"
 
 
 @catalog_router.post("/{identifier}/install", status_code=201)
 def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     access.editor()
-    from .storage_billing import check_capacity, lock_workspace
-    from .workspace_files import _stage_bytes, read_file
-    from sqlalchemy.exc import IntegrityError
-
-    lock_workspace(db, access.workspace_id)
-    row = _catalog_skill(db, identifier, detail=True)
-    install = db.scalar(select(WorkspaceSkillInstall).where(
-        WorkspaceSkillInstall.workspace_id == access.workspace_id,
-        WorkspaceSkillInstall.site_skill_id == row.id).with_for_update())
-    files = {"SKILL.md": row.markdown.encode("utf-8"), **{item.path: item.content for item in row.files}}
-    directory = install.directory if install else _install_directory(row)
-    existing = _installed_items(db, access.workspace_id, directory)
-    expected_paths = {f"{directory}/{path}" for path in files}
-    actual_paths = {item.path for item in existing}
-    if install is not None:
-        if actual_paths == expected_paths:
-            return {"installed": True, "already_installed": True, "directory": directory,
-                    "items": [read_file(item) for item in existing], "source": catalog_read(row)}
-        raise HTTPException(409, "该 Skill 的工作区副本已被修改或不完整，请先处理现有文件")
-    if existing:
-        raise HTTPException(409, "安装目录已有文件，请先处理同名冲突")
-    check_capacity(db, access.workspace_id, sum(len(content) for content in files.values()))
-    uploaded = []
-    try:
-        with db.begin_nested():
-            staged = []
-            for path, content in files.items():
-                staged.append(_stage_bytes(access.workspace_id, access, db, f"{directory}/{path}", content,
-                    mimetypes.guess_type(path)[0] or "application/octet-stream", None, uploaded))
-                staged[-1].source = "platform"
-            db.add(WorkspaceSkillInstall(workspace_id=access.workspace_id, site_skill_id=row.id,
-                directory=directory, source_version=row.version, created_by=access.user_id))
-            db.flush()
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(409, "该 Skill 正在安装或已有工作区副本，请刷新后重试") from None
-    except BaseException:
-        db.rollback()
-        from .storage import delete_object
-        for key in uploaded:
-            try:
-                delete_object(key)
-            except Exception:
-                pass
-        raise
-    return {"installed": True, "already_installed": False, "directory": directory,
-            "items": [read_file(item) for item in staged], "source": catalog_read(row)}
+    from .skill_discovery import discover, package
+    from .workspace_mutations import save_files, snapshot
+    from .file_operations import workspace_lock
+    request_id = request.headers.get("x-request-id")
+    if request_id and len(request_id) > 100:
+        raise HTTPException(422, "请求标识过长，请重新发起")
+    with workspace_lock(db, access.workspace_id):
+        row = _catalog_skill(db, identifier, detail=True)
+        found = [item for item in discover(db, access) if item["name"] == row.name]
+        if found:
+            directories = [item["directory"] for item in found]
+            return {"installed": True, "already_installed": True, "directory": directories[0],
+                "directories": directories, "items": found, "source": catalog_read(row)}
+        directory = _install_directory(row)
+        current, dirs, _ = snapshot(db, access, refresh=False)
+        if directory in current or directory in dirs:
+            raise HTTPException(409, "安装目录已有其他内容，请在工作区重命名或移走该目录后重试")
+        files = package(row)
+        result = save_files(db, access, {f"{directory}/{path}": (content,
+            mimetypes.guess_type(path)[0] or "application/octet-stream") for path, content in files.items()},
+            request_id=request_id, source="platform")
+        if not any(item["name"] == row.name for item in discover(db, access)):
+            raise HTTPException(409, "上次安装后的文件已被修改或移除，请重新发起安装")
+        return {"installed": True, "already_installed": False, "directory": directory,
+            **result, "source": catalog_read(row)}
 
 
 LOAD_SKILL = {"type": "function", "function": {"name": "load_skill",
