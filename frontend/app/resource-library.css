@@ -136,7 +136,16 @@
   .resource-search .icon-button { width: 44px; height: 44px; margin-right: -12px; }
   .workspace-context-menu { width: min(260px, calc(100vw - 24px)); }
   .workspace-context-menu button { min-height: 44px; }
+  .modal:has(.workspace-editor) .icon-button { width: 44px; height: 44px; }
+  .modal:has(.workspace-editor) .modal-footer button { min-width: 44px; min-height: 44px; }
   .workspace-file-status { gap: 10px; }
   .workspace-list-heading, .workspace-explorer .resource-row { grid-template-columns: minmax(0, 1fr) 56px 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .resource-card { transition: none; } }
+.workspace-new-options { display: grid; gap: 4px; }
+.workspace-new-options button { min-height: 44px; text-align: left; }
+.workspace-load-more { display: flex; justify-content: center; padding: 16px; }
+.workspace-conflict-list { max-height: 35dvh; overflow: auto; overflow-wrap: anywhere; padding-inline-start: 20px; }
+.workspace-conflict-list li { display: grid; gap: 8px; margin-block: 12px; }
+.workspace-conflict-list select { min-height: 44px; max-width: 100%; }
+.workspace-editor-path { overflow-wrap: anywhere; }

@@ -7,7 +7,7 @@ import * as Tabs from "../../components/ui/tabs";
 import { WorkspaceHeader, WorkspaceSkeleton } from "../workspace-header";
 import { useExtensionResource, type MCPConnection } from "./extension-data";
 
-type SkillSummary = { id: string; name: string; description: string; enabled?: boolean; installed?: boolean };
+type SkillSummary = { id: string; name: string | null; description: string; enabled?: boolean; installed?: boolean; directory?: string; manifest_error?: string };
 
 export default function ExtensionsPage() {
   const params = useSearchParams();
@@ -40,8 +40,8 @@ export default function ExtensionsPage() {
           : <div className="extension-list">{items?.map(item => <Link className="extension-row" key={item.id}
             href={tab === "mcp" ? `/extensions/mcp/${item.id}` : `/extensions/skills/${item.id}${source === "platform" ? "?platform=1" : ""}`}>
             <span className="extension-symbol">{tab === "mcp" ? <Plug size={20} /> : <FileText size={20} />}</span>
-            <span className="extension-copy"><strong>{item.name}</strong><span>{"description" in item ? item.description : item.url}</span></span>
-            <span className="extension-meta">{tab === "skills" && source === "platform" ? (item as SkillSummary).installed ? "已安装" : "平台提供" : item.enabled ? "已启用" : "已停用"}
+            <span className="extension-copy"><strong>{item.name || "待修复的 Skill"}</strong><span>{"description" in item ? item.description : item.url}</span>{"directory" in item && <small>{item.directory}</small>}{"manifest_error" in item && item.manifest_error && <small>{item.manifest_error}</small>}</span>
+            <span className="extension-meta">{tab === "skills" && source === "platform" ? (item as SkillSummary).installed ? "工作区已有" : "平台提供" : item.enabled ? "已启用" : "已停用"}
               {"allowed_tools" in item && <small>{item.allowed_tools.length} 个工具已授权</small>}</span><ChevronRight size={16} />
           </Link>)}
           {!items?.length && <p className="extension-empty">{query || status ? "没有符合条件的扩展" : tab === "mcp" ? "还没有 MCP 连接" : source === "platform" ? "暂无平台 Skill" : "还没有个人 Skill"}</p>}

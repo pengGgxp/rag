@@ -18,7 +18,7 @@ export const API_URL =
 
 let csrfToken = "";
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public detail?: unknown) { super(message); }
 }
 
 const VALIDATION_FIELD_NAMES: Record<string, string> = {
@@ -33,6 +33,7 @@ const VALIDATION_FIELD_NAMES: Record<string, string> = {
 
 function errorMessage(detail: unknown, status: number): string {
   if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && "message" in detail && typeof detail.message === "string") return detail.message;
   if (Array.isArray(detail)) {
     const messages = detail.flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
@@ -68,6 +69,9 @@ export async function request<T>(
     || path === "/chat/attachments" || (path === "/resources" && options?.body instanceof FormData)
     || path.startsWith("/site/admin/skills")
     || path.startsWith("/agent/")
+    || path.startsWith("/resources/operations/")
+    || path.startsWith("/resources/browse") || path.startsWith("/resources/directories")
+    || /^\/workspaces\/[^/]+\/files/.test(path)
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
     ? 30 * 60_000
@@ -102,6 +106,7 @@ export async function request<T>(
   if (!response.ok)
     throw new ApiError(response.status,
       errorMessage(data.detail, response.status),
+      data.detail,
     );
   return data as T;
 }
