@@ -79,7 +79,8 @@ def test_command_never_scans_reads_or_archives_outputs(accounts, monkeypatch):
     assert admin.get("/resources").json()["items"][0]["path"] == "report.txt"
     assert fake.starts == 1
     row = db.query(WorkspaceFile).one()
-    monkeypatch.setattr(workspace_files, "upload_fileobj", unavailable)
+    from app.shared_resources import backend
+    monkeypatch.setattr(backend(db), "put", unavailable)
     with pytest.raises(HTTPException):
         workspace_files._save_bytes(access.workspace_id, access, db, row.path, b"changed", expected_version=1)
     db.commit()

@@ -15,12 +15,13 @@ from . import mcp_client
 from .models import MCPServer, RemoteToolExecution
 from .personal_skills import router as skills_router, owned
 from .personal_mcp import router as mcp_router
-from .site_skills import LOAD_SKILL
+from .site_skills import LOAD_SKILL, catalog_router
 from .workspace_files import FILE_TOOL_ERRORS, tool_definitions, execute_tool
 from .image_reading import read_image
 from .config import get_settings
 
 router = APIRouter()
+router.include_router(catalog_router)
 router.include_router(skills_router)
 router.include_router(mcp_router)
 
@@ -61,6 +62,8 @@ class ExtensionRuntime:
         self.mcp_tokens = {}
         with factory() as db:
             access = self.access = access.revalidate(db)
+            from .skill_discovery import summary
+            self.skills = summary(db, access)
             for row in db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
                     MCPServer.workspace_id == access.workspace_id,
                     MCPServer.id.in_([UUID(str(item)) for item in server_ids]), MCPServer.enabled.is_(True))):
@@ -144,7 +147,7 @@ class ExtensionRuntime:
             return "使用「教师出题」"
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
-            return {"list_files": "查看资源库", "read_file": "读取文件", "read_image": "查看图片", "write_file": "生成文件",
+            return {"list_files": "查看工作区", "read_file": "读取文件", "read_image": "查看图片", "write_file": "生成文件",
                 "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行",
                 "start_preview": "启动成果预览", "stop_preview": "停止成果预览"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else "读取任务方法"

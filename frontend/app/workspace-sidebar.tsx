@@ -14,7 +14,7 @@ const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
   { mode: "chat", href: "/?chat=1", label: "知识问答", icon: MessageSquare },
   { mode: "extensions", href: "/extensions", label: "扩展", icon: Puzzle },
-  { mode: "files", href: "/resources", label: "资源库", icon: Files },
+  { mode: "files", href: "/resources", label: "工作区", icon: Files },
 ] as const;
 
 export function WorkspaceSidebar({ screen, children, onNavigate }: {

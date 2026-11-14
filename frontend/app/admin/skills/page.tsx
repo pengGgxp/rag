@@ -1,11 +1,41 @@
 "use client";
 import Link from "next/link";
-import { Plus } from "lucide-react";
-import { AdminHeading } from "../admin-ui";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Plus, Search } from "lucide-react";
+import { AdminHeading, AdminLoad, date, Pagination, type Page, useAdminResource } from "../admin-ui";
 import "../platform-content.css";
 
+export type SkillFile = { path: string; content: string };
+export type PackageReview = { manifest: { path: string; size: number; text: boolean; readable: boolean; kind: "text" | "script" | "image" | "archive" | "binary"; media_type: string; resource?: boolean; archive_entries?: { path: string; size: number }[]; archive_error?: string; blocking?: boolean; personal_notice?: string }[]; issues: string[]; can_enable: boolean; has_limitations?: boolean };
+export type Skill = { id: string; name: string; description: string; markdown: string; files: SkillFile[]; review: PackageReview; enabled: boolean; version: number; updated_at: string };
 
 export default function SkillsPage() {
-  return <><AdminHeading title="Skill 资源"><Link className="primary" href="/admin/skills/new"><Plus size={16} />导入 Skill</Link></AdminHeading>
-    <p><Link href="/resources">在资源库查看 Skill 文件</Link></p></>;
+  const params = useSearchParams();
+  const router = useRouter();
+  const resource = useAdminResource<Page<Skill>>(`/site/admin/skills?${params}`);
+  return <>
+    <AdminHeading title="Skill 管理"><Link className="primary" href="/admin/skills/new"><Plus size={16} />新建 Skill</Link></AdminHeading>
+    <form key={params.toString()} className="admin-filters" onSubmit={event => {
+      event.preventDefault(); const data = new FormData(event.currentTarget); const next = new URLSearchParams();
+      for (const [key, value] of data) if (value !== "" && value !== "all") next.set(key, String(value));
+      router.push(`/admin/skills?${next}`);
+    }}>
+      <label>搜索<input name="q" aria-label="搜索 Skill" placeholder="名称" maxLength={200} defaultValue={params.get("q") ?? ""} /></label>
+      <label>状态<select name="enabled" defaultValue={params.get("enabled") ?? "all"}><option value="all">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select></label>
+      <button className="secondary" type="submit"><Search size={16} />查询</button>
+    </form>
+    <AdminLoad {...resource} retry={resource.reload}>
+      <div className="managed-list" aria-label="Skill 列表">
+        {resource.data?.items.map(skill => <Link className="managed-row" href={`/admin/skills/${skill.id}`} key={skill.id}>
+          <div className="managed-main"><strong>{skill.name}</strong><p>{skill.description}</p></div>
+          <span className="admin-status">{skill.enabled ? "已启用" : "已停用"}</span>
+          <time>{date(skill.updated_at)}</time>
+        </Link>)}
+      </div>
+      {resource.data && !resource.data.items.length && <p className="admin-empty">暂无符合条件的 Skill</p>}
+      {resource.data && <Pagination total={resource.data.total} page={resource.data.page} pageSize={resource.data.page_size} change={page => {
+        const next = new URLSearchParams(params); next.set("page", String(page)); router.push(`/admin/skills?${next}`);
+      }} />}
+    </AdminLoad>
+  </>;
 }

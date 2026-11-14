@@ -91,7 +91,11 @@ export function Dialog({
               event.preventDefault();
               const anotherDialog = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]'))
                 .some(element => element !== contentRef.current);
-              if (!interactedOutside.current && !anotherDialog && anchor.isConnected) anchor.focus();
+              if (!interactedOutside.current && !anotherDialog) {
+                const target = restoreFocusSelector ? document.querySelector<HTMLElement>(restoreFocusSelector) : null;
+                if (target && target.getClientRects().length) target.focus();
+                else if (anchor.isConnected) anchor.focus();
+              }
               return;
             }
             if (!restoreFocusSelector) return;
@@ -126,9 +130,9 @@ export function Dialog({
           }}
         >
           <motion.div
-            initial={fullScreen ? { opacity: 0 } : anchor ? { opacity: 0, y: 4 } : { opacity: 0, scale: 0.97, y: 6 }}
+            initial={reducedMotion ? false : fullScreen ? { opacity: 0 } : anchor ? { opacity: 0, y: 4 } : { opacity: 0, scale: 0.97, y: 6 }}
             animate={fullScreen ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: anchor && reducedMotion ? 0 : 0.16, ease: "easeOut" }}
+            transition={{ duration: reducedMotion ? 0 : 0.16, ease: "easeOut" }}
           >
             <div className={anchor ? "sr-only" : settingsWindow ? "settings-dialog-heading" : "modal-heading"}>
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>

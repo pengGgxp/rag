@@ -64,7 +64,7 @@ export function useChatAttachments() {
     }
   }
   function add(files: File[], supportsImages: boolean) {
-    if (role !== "admin" && role !== "editor") return "当前工作区为只读权限，可从资源库选择已有文件";
+    if (role !== "admin" && role !== "editor") return "当前工作区为只读权限，可从工作区选择已有文件";
     if (files.some(file => !supportedFile(file))) return "请选择图片、PDF、TXT、Markdown、CSV、Word 或 Excel 文件";
     if (current.current.length + files.length > 6) return "每次最多添加 6 个附件";
     if (files.some(file => imageFile(file) && !supportsImages)) return "当前模型不支持图片，请先选择支持图片的模型";
@@ -198,7 +198,7 @@ export function AttachmentButton({ disabled, add, select }: { disabled: boolean;
     {open && <Modal title={library ? "选择资源" : "添加附件"} wide={library} restoreFocusSelector=".chat-attach-button" onClose={() => { setOpen(false); setLibrary(false); }}>
       {library ? <ResourceLibrary select={async item => { await select(item); setOpen(false); setLibrary(false); }} /> :
         <div className="attachment-source-body"><div className="attachment-source-actions">{canWrite && <button type="button" onClick={() => { setOpen(false); input.current?.click(); }}><span className="attachment-source-icon"><Paperclip size={20} /></span><span><strong>上传文件</strong><small>从设备选择图片或文档</small></span></button>}
-          <button type="button" onClick={() => setLibrary(true)}><span className="attachment-source-icon"><Files size={20} /></span><span><strong>从资源库选择</strong><small>使用工作区已保存的文件</small></span></button></div><ResourceNotice /></div>}
+          <button type="button" onClick={() => setLibrary(true)}><span className="attachment-source-icon"><Files size={20} /></span><span><strong>从工作区选择</strong><small>使用工作区已保存的文件</small></span></button></div><ResourceNotice /></div>}
     </Modal>}
   </>;
 }

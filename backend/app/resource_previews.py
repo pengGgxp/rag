@@ -55,7 +55,7 @@ def current(db, access, identifier):
     storage = current_storage(db)
     metadata = storage.head(object_key(row.workspace_id, row.path))
     if metadata is None:
-        raise HTTPException(404, "文件已删除或不可用，请刷新资源库")
+        raise HTTPException(404, "文件已删除或不可用，请刷新工作区")
     revision = fingerprint(row, metadata)
     row.size_bytes = int(metadata.get("Content-Length", metadata.get("ContentLength", row.size_bytes)))
     if metadata.get("ETag") and row.live_etag != metadata["ETag"]:
@@ -80,7 +80,8 @@ def detail(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_acce
         if item.status == "ready" and not storage.head(item.object_key):
             item.status, item.object_key, item.size_bytes = "expired", None, 0
     db.commit()
-    return {"revision": revision, "kind": file_kind(row), "size_bytes": row.size_bytes,
+    from .file_operations import file_revision
+    return {"revision": revision, "content_revision": file_revision(row), "kind": file_kind(row), "size_bytes": row.size_bytes,
         "previews": [describe(item) for item in previews],
         "original_url": f"/resources/{row.id}/preview/original?revision={revision}"}
 

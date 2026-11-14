@@ -16,20 +16,21 @@ export function SkillImport({ id }: { id?: string }) {
   const input = useRef<HTMLInputElement>(null), folder = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [items, setItems] = useState<ResourceFile[]>([]);
+  const [directory, setDirectory] = useState("");
   const [preview, setPreview] = useState<ResourceFile | null>(null);
   const resource = useExtensionResource<ResourceFile>(id ? `/agent/skills/${id}` : null);
   const canWrite = role === "admin" || role === "editor";
   async function upload(files: File[], isFolder: boolean) {
     if (!files.length || busy) return;
-    setBusy(true); setError(""); setItems([]);
+    setBusy(true); setError(""); setItems([]); setDirectory("");
     try {
       const body = new FormData();
       for (const file of files) {
         body.append(isFolder ? "files" : "file", file);
         if (isFolder) body.append("paths", file.webkitRelativePath);
       }
-      const result = await request<{ items: ResourceFile[] }>(`/agent/skills/import${isFolder ? "-folder" : ""}`, { method: "POST", body });
-      setItems(result.items);
+      const result = await request<{ items: ResourceFile[]; directory: string }>(`/agent/skills/import${isFolder ? "-folder" : ""}`, { method: "POST", body });
+      setItems(result.items); setDirectory(result.directory);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导入失败，请重试"); }
     finally { setBusy(false); }
   }
@@ -46,7 +47,7 @@ export function SkillImport({ id }: { id?: string }) {
     {resource.data && <button type="button" className="text-button" data-resource-id={resource.data.id} onClick={() => setPreview(resource.data!)}>{resource.data.path}</button>}
     {!!items.length && <><p role="status">已导入 {items.length} 个资源文件</p>
       <ul>{items.map(item => <li key={item.id}><button type="button" className="text-button" data-resource-id={item.id} onClick={() => setPreview(item)}>{item.path}</button></li>)}</ul></>}
-    <Link href="/resources">查看资源库</Link>
+    <Link href={`/resources${directory ? `?path=${encodeURIComponent(directory)}` : ""}`}>在工作区查看</Link>
     {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)} />}
   </section>;
 }

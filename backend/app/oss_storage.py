@@ -9,6 +9,7 @@ from .site_auth import reveal
 
 
 class OssStorage:
+    conditional_create = True
     def __init__(self, settings):
         if not settings or not settings.encrypted_secret_id or not settings.encrypted_secret_key:
             raise HTTPException(503, "文件存储尚未配置，请联系站点管理员")
@@ -31,11 +32,13 @@ class OssStorage:
             if (isinstance(error, oss.exceptions.ServiceError) and error.status_code == 404
                     and operation in ("head_object", "abort_multipart_upload")):
                 return None
+            if isinstance(error, oss.exceptions.ServiceError) and error.status_code in (409, 412):
+                raise HTTPException(409, "文件已变化或目标已存在，请刷新后重试") from None
             raise HTTPException(503, "对象存储请求失败，请检查连接或权限后重试") from None
 
-    def put(self, key, stream, content_type="application/octet-stream"):
+    def put(self, key, stream, content_type="application/octet-stream", *, create=False):
         return self._request("put_object", oss.PutObjectRequest(
-            bucket=self.bucket, key=key, body=stream, content_type=content_type))
+            bucket=self.bucket, key=key, body=stream, content_type=content_type, forbid_overwrite=create))
 
     def download(self, key):
         return self._download(oss.GetObjectRequest(bucket=self.bucket, key=key))
@@ -63,15 +66,15 @@ class OssStorage:
         result = self._request("head_object", oss.HeadObjectRequest(bucket=self.bucket, key=key))
         return None if result is None else {"Content-Length": result.content_length,
             "Content-Type": result.content_type, "ETag": result.etag,
-            "CRC64": result.hash_crc64, "Last-Modified": str(result.last_modified)}
+            "CRC64": result.hash_crc64, "Last-Modified": str(result.last_modified), "Type": getattr(result, "object_type", "")}
 
     def delete(self, key):
         self._request("delete_object", oss.DeleteObjectRequest(bucket=self.bucket, key=key))
 
-    def copy(self, source, target, *, etag=None):
+    def copy(self, source, target, *, etag=None, create=False):
         return self._request("copy_object", oss.CopyObjectRequest(
             bucket=self.bucket, key=target, source_bucket=self.bucket,
-            source_key=source, if_match=etag))
+            source_key=source, if_match=etag, forbid_overwrite=create))
 
     def begin(self, key, content_type):
         return self._request("initiate_multipart_upload", oss.InitiateMultipartUploadRequest(
@@ -135,6 +138,7 @@ class OssStorage:
                 bucket=self.bucket, max_keys=1000, continuation_token=token, prefix=prefix))
             for item in result.contents or []:
                 yield {"Key": item.key, "Size": item.size,
+                    "Type": getattr(item, "type", ""),
                     "ETag": item.etag,
                     "LastModified": item.last_modified.isoformat() if item.last_modified else None}
             if not result.is_truncated:

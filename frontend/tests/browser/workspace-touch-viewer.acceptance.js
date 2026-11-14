@@ -1,0 +1,52 @@
+// Uses real Chromium touch events and a separate viewer session; local preview only.
+async (page) => {
+  const assert = (ok, text) => { if (!ok) throw new Error(text); };
+  const session = await (await page.request.get('http://localhost:8000/auth/me')).json();
+  assert(new URL(page.url()).hostname === 'localhost' && session.user.email === 'issue100-local@example.com', '只允许本地临时账号');
+  const browser = page.context().browser();
+  const context = await browser.newContext({ storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' });
+  const mobile = await context.newPage();
+  await mobile.goto('http://localhost:3000/resources?path=' + encodeURIComponent('项目资料'));
+  const file = mobile.getByRole('option', { name: '会议纪要.md', exact: true });
+  await file.tap(); assert(await file.getAttribute('aria-selected') === 'true', '触控单击应选中');
+  const bounds = await file.boundingBox();
+  const cdp = await context.newCDPSession(mobile);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: bounds.x + 25, y: bounds.y + 30 }] });
+  await mobile.waitForTimeout(650);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await mobile.getByRole('menu').waitFor();
+  const menuSize = await mobile.getByRole('menuitem', { name: '打开', exact: true }).boundingBox();
+  assert(menuSize.height >= 44, '触控菜单高度不足44px');
+  await mobile.screenshot({ path: 'output/playwright/issue100-390-touch-menu.png', fullPage: true });
+  await mobile.getByRole('menuitem', { name: '打开', exact: true }).tap();
+  const editor = mobile.getByRole('textbox', { name: '文件内容' }); await editor.waitFor();
+  assert(await editor.inputValue().then(text => text.includes('会议纪要')), '触控打开应读取当前文本');
+  assert((await mobile.getByRole('button', { name: '保存', exact: true }).boundingBox()).height >= 44, '手机编辑器按钮不足44px');
+  await mobile.screenshot({ path: 'output/playwright/issue100-390-editor.png', fullPage: true });
+  await mobile.getByRole('button', { name: '取消', exact: true }).tap();
+  // Two actual touch taps open a directory; single tap only selects it.
+  const directory = mobile.getByRole('option', { name: '目标文件夹', exact: true });
+  await directory.tap(); await directory.tap();
+  await mobile.getByRole('heading', { name: '此文件夹为空' }).waitFor();
+  await context.close();
+  const viewerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const viewer = await viewerContext.newPage();
+  await viewer.goto('http://localhost:3000/auth/login');
+  await viewer.getByRole('textbox', { name: '邮箱', exact: true }).fill('issue100-viewer@example.com');
+  await viewer.getByRole('textbox', { name: '密码', exact: true }).fill('local-preview-password-100');
+  await viewer.getByRole('button', { name: '登录', exact: true }).click();
+  await viewer.getByRole('heading', { name: '知识库', exact: true }).waitFor();
+  const identity = await (await viewer.request.get('http://localhost:8000/auth/me')).json();
+  const switchResponse = await viewer.request.post('http://localhost:8000/auth/workspace', { headers: { 'X-RAG-Request': '1', 'X-CSRF-Token': identity.csrf_token }, data: { workspace_id: session.workspace_id } });
+  assert(switchResponse.ok(), '临时viewer切换失败');
+  await viewer.goto('http://localhost:3000/resources?path=' + encodeURIComponent('项目资料'));
+  await viewer.getByRole('option', { name: '会议纪要.md', exact: true }).dblclick();
+  const preview = viewer.getByRole('textbox', { name: '文件内容' });
+  assert(await preview.getAttribute('readonly') !== null, 'viewer须只读');
+  assert(await viewer.getByRole('button', { name: '保存', exact: true }).count() === 0, 'viewer不能保存');
+  await viewer.getByRole('button', { name: '关闭', exact: true }).last().click();
+  assert(await viewer.getByRole('button', { name: '上传', exact: true }).isDisabled(), 'viewer不能上传');
+  await viewer.screenshot({ path: 'output/playwright/issue100-viewer.png', fullPage: true });
+  await viewerContext.close();
+  return 'PASS 390px真实触控选择/长按/菜单/双击、44px触控目标、只读viewer预览与写操作限制';
+}

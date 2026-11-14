@@ -44,7 +44,7 @@ def importing(client, endpoint="/agent/skills/import", files=None):
     return result.json()
 
 
-@pytest.mark.parametrize("endpoint", ["/agent/skills/import", "/site/admin/skills/import"])
+@pytest.mark.parametrize("endpoint", ["/agent/skills/import"])
 def test_import_preserves_bytes_in_normal_resources_without_body_copy(accounts, monkeypatch, resource_store, endpoint):
     client, db, _ = setup_site(accounts, monkeypatch)
     result = importing(client, endpoint)
@@ -76,6 +76,25 @@ def test_folder_import_preserves_nested_structure_and_does_not_start_cloud(accou
     body = result.json()
     assert {item["path"] for item in body["items"]} == {
         f"{body['directory']}/SKILL.md", f"{body['directory']}/assets/data.csv"}
+
+
+def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(accounts, monkeypatch, resource_store):
+    client, db, _ = setup_site(accounts, monkeypatch)
+    result = importing(client)
+    item = next(item for item in result["items"] if item["path"].endswith("/SKILL.md"))
+    access = access_for(client, db)
+    root = result["directory"]
+    objects = resource_store[0]
+    objects[shared_resources.object_key(access.workspace_id, f"{root}/references/new.txt")] = b"external"
+    objects.pop(shared_resources.object_key(access.workspace_id, f"{root}/assets/data.csv"))
+    objects[shared_resources.object_key(access.workspace_id, f"{root}/.rag-directory")] = b""
+    paths = {file["path"] for file in client.get(f"/agent/skills/{item['id']}/files").json()}
+    assert f"{root}/references/new.txt" in paths
+    assert f"{root}/assets/data.csv" not in paths
+    assert not any(path.endswith(".rag-directory") for path in paths)
+    (_, other, _), _ = accounts
+    register(other, "skill-file-list-outsider@example.com")
+    assert other.get(f"/agent/skills/{item['id']}/files").status_code == 404
 
 
 def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(accounts, monkeypatch, resource_store):
@@ -139,14 +158,15 @@ def test_capacity_is_checked_before_writes_and_failed_import_removes_partial_obj
     assert response.status_code == 413 and not resource_store[0]
     quota.free_storage_bytes = 100000
     db.commit()
-    original = workspace_files.upload_fileobj
+    store = shared_resources.backend(db)
+    original = store.put
     calls = []
-    def fail(stream, key, content_type):
+    def fail(key, stream, content_type):
         calls.append(key)
-        original(stream, key, content_type)
+        original(key, stream, content_type)
         if len(calls) == 2:
             raise RuntimeError("synthetic upload failure")
-    monkeypatch.setattr(workspace_files, "upload_fileobj", fail)
+    monkeypatch.setattr(store, "put", fail)
     with pytest.raises(RuntimeError, match="synthetic"):
         importing(client)
     assert resource_store[0] == {}
@@ -158,7 +178,10 @@ class DiskObjects(MutableMapping):
     def __init__(self, root):
         self.root = root
     def __getitem__(self, key):
-        return (self.root / key).read_bytes()
+        try:
+            return (self.root / key).read_bytes()
+        except FileNotFoundError:
+            raise KeyError(key) from None
     def __setitem__(self, key, data):
         path = self.root / key
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +217,8 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
         return {"status": "completed", "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
     monkeypatch.setattr(cloud_computer, "execute", local_execute)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, request_id=uuid4())
-    assert runtime.skills == []
+    assert runtime.skills == [{"name": "sample", "description": "total",
+        "manifest_path": f"{result['directory']}/SKILL.md", "directory": result["directory"]}]
     assert not any(item["function"]["name"] in {"load_skill", "read_skill_resource"} for item in runtime.tools)
     def run(name, arguments):
         return runtime.execute(name, arguments, call_id=str(uuid4()))
@@ -212,4 +236,4 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
     assert client.get("/agent/skills").json() == []
     assert run("read_file", {"path": main["path"]}).get("error")
     assert all("skills" not in command and "skill_packages" not in command for command in commands)
-    assert not storage.copies
+    assert not any("/file-operations/" in key for key in objects)
