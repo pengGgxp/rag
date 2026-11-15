@@ -7,6 +7,7 @@ export type DisplayBlock = { id: string; type: "text"; text: string }
   | { id: string; type: "thinking"; round: number; status: string; text?: string };
 export type ToolEvent = {
   call_id: string; name: string; label: string; kind: string; status: string;
+  outcome?: "success" | "feedback" | "blocked" | "failed" | "uncertain";
   summary?: string; result_count?: number;
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
@@ -14,6 +15,23 @@ export type ToolEvent = {
   preview?: Preview;
   knowledge_base?: KnowledgeBaseResult;
 };
+
+export type ProcessBlock = { id: string; type: "process"; blocks: Exclude<DisplayBlock, { type: "text" }>[] };
+
+// Keep canonical events untouched. Assistant text is always a presentation boundary.
+export function processBlocks(blocks: DisplayBlock[]): (Extract<DisplayBlock, { type: "text" }> | ProcessBlock)[] {
+  const result: (Extract<DisplayBlock, { type: "text" }> | ProcessBlock)[] = [];
+  for (const block of blocks) {
+    if (block.type === "text") {
+      if (block.text) result.push(block);
+      continue;
+    }
+    const previous = result.at(-1);
+    if (previous?.type === "process") previous.blocks.push(block);
+    else result.push({ id: `process-${block.id}`, type: "process", blocks: [block] });
+  }
+  return result;
+}
 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
   return {
@@ -24,11 +42,27 @@ export function activityItem(item: ToolEvent): ConversationActivityItem {
     preview: item.preview,
     knowledge_base: item.knowledge_base,
     kind: item.kind === "knowledge" ? "retrieval" : item.kind === "compaction" ? "compaction" : "tool",
-    status: item.status === "error" || item.status === "failed" ? "failed"
+    status: item.status === "uncertain" || item.outcome === "uncertain" ? "uncertain"
+      : (item.status === "error" || item.status === "failed") && item.outcome === "feedback" ? "feedback"
+      : (item.status === "error" || item.status === "failed") && item.outcome === "blocked" ? "blocked"
+      : item.status === "error" || item.status === "failed" ? "failed"
       : item.status === "interrupted" ? "uncertain"
       : ["waiting", "running", "completed", "cancelled", "uncertain"].includes(item.status)
         ? item.status as ConversationActivityItem["status"] : "waiting",
   };
+}
+
+export function processHeadline(items: ConversationActivityItem[], finished: boolean, thinking = false) {
+  const current = items.find(item => item.status === "running" || item.status === "waiting");
+  if (current) return `${current.label} · ${current.status === "waiting" ? "等待执行" : "进行中"}`;
+  if (!finished) return thinking ? "正在思考" : items.at(-1)?.status === "feedback" ? "正在调整操作" : "正在继续处理";
+  return items.length ? `处理记录 · ${items.length} 项操作` : "思考记录";
+}
+
+export function activityFiles(items: ConversationActivityItem[]) {
+  const files = new Map<string, NonNullable<ConversationActivityItem["files"]>[number]>();
+  for (const item of items) for (const file of item.files ?? []) files.set(file.id, file);
+  return [...files.values()];
 }
 
 export function appendText(blocks: DisplayBlock[], blockId: string, text: string) {

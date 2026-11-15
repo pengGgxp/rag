@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, Download, ExternalLink, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, Download, ExternalLink, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
 import { API_URL, ApiError, downloadFile, request } from "./api";
 import Link from "next/link";
 import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
 import { openPreview, type Preview } from "./cloud-preview";
+import { activityFiles, processHeadline } from "./conversation-display";
 
 export type SavedDocument = {
   save_id: string; document_id: string; knowledge_base_id: string; filename: string;
@@ -20,7 +21,7 @@ export type ConversationActivityItem = {
   label: string;
   summary?: string;
   kind: "retrieval" | "tool" | "compaction";
-  status: "waiting" | "running" | "completed" | "failed" | "cancelled" | "uncertain";
+  status: "waiting" | "running" | "completed" | "feedback" | "blocked" | "failed" | "cancelled" | "uncertain";
   files?: { id: string; path: string; size_bytes: number; version: number }[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
@@ -70,6 +71,8 @@ const statusLabel = {
   running: "进行中",
   completed: "已完成",
   failed: "失败",
+  feedback: "已反馈模型",
+  blocked: "操作受限",
   cancelled: "已取消",
   uncertain: "结果待确认",
 };
@@ -77,20 +80,23 @@ const statusLabel = {
 function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) {
   if (status === "running") return <Loader2 size={14} className="spin" />;
   if (status === "completed") return <Check size={14} />;
-  if (status === "failed" || status === "uncertain") return <CircleAlert size={14} />;
+  if (status === "failed" || status === "blocked" || status === "uncertain") return <CircleAlert size={14} />;
+  if (status === "feedback") return <CornerDownLeft size={14} />;
   if (status === "cancelled") return <Square size={12} />;
   return <CircleDashed size={14} />;
 }
 
 // Only presentation state lives here. Tool execution and safe summaries belong to the server.
-export function ConversationActivity({ items, finished, workspaceId, children }: {
+export function ConversationActivity({ items, finished, workspaceId, steps, thinking, children }: {
   items: ConversationActivityItem[];
   finished: boolean;
   workspaceId?: string;
+  steps?: ({ type: "activity"; id: string } | { type: "detail"; id: string; content: ReactNode })[];
+  thinking?: boolean;
   children?: ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(items.length > 1 && !finished);
-  const [userExpanded, setUserExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const regionId = useId();
   const [downloadError, setDownloadError] = useState("");
   const [savedResults, setSavedResults] = useState<Record<string, SavedDocument>>({});
   const [imageResults, setImageResults] = useState<Record<string, ImageTaskResult>>({});
@@ -104,45 +110,46 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
       status: (saved.document_status === "failed" || saved.document_status === "deleted" ? "failed"
         : saved.terminal ? "completed" : "running") as ConversationActivityItem["status"] } : item;
   });
-  useEffect(() => {
-    if (!userExpanded) setExpanded(items.length > 1 && !finished);
-  }, [finished, userExpanded, items.length]);
-  if (!items.length) return null;
+  if (!items.length && !steps?.length) return null;
   const current = items.find(item => item.status === "running");
-  const failed = items.filter(item => item.status === "failed").length;
-  const cancelled = items.some(item => item.status === "cancelled");
-  const single = items.length === 1 ? items[0] : null;
-  const headline = single
-    ? `${single.label}${single.saved_document || single.image_task ? ` · ${single.summary}` : single.status === "waiting" ? " · 等待执行" : single.status === "running" ? ` · ${single.summary || "执行中"}` : single.status === "uncertain" ? " · 结果待确认" : single.status === "failed" ? ` · ${single.summary || "未完成"}` : single.status === "cancelled" ? " · 已停止" : single.summary ? ` · ${single.summary}` : " · 已完成"}`
-    : current ? current.summary || current.label : finished
-    ? cancelled ? `已停止 · ${items.length} 项活动` : failed ? `${items.length} 项活动 · ${failed} 项失败` : `已完成 ${items.length} 项活动`
-    : "等待下一步";
+  const headline = processHeadline(items, finished, thinking);
+  const files = activityFiles(items);
+  const notices = [...new Map(items.filter(item => ["blocked", "uncertain"].includes(item.status)
+    || item.status === "failed" && (item.image_task || item.saved_document))
+    .map(item => [item.image_task?.task_id ?? item.saved_document?.save_id ?? item.id, item])).values()];
+  const ordered = steps ?? items.map(item => ({ type: "activity" as const, id: item.id }));
+  const itemById = new Map(items.map(item => [item.id, item]));
+  const savedDocuments = [...new Map(items.flatMap(item => item.saved_document
+    ? [[item.saved_document.save_id, item.saved_document] as const] : [])).values()];
+  const imageTasks = [...new Map(items.flatMap(item => item.image_task
+    ? [[item.image_task.task_id, item.image_task] as const] : [])).values()];
+  const previews = [...new Map(items.flatMap(item => item.preview
+    ? [[item.preview.id, item.preview] as const] : [])).values()];
   return <div className="conversation-activity">
     <button type="button" className="activity-toggle" aria-expanded={expanded}
-      aria-label={`${expanded ? "收起" : "展开"}执行活动`}
-      onClick={() => {
-        setUserExpanded(!expanded);
-        setExpanded(!expanded);
-      }}>
+      aria-controls={regionId} aria-label={`${expanded ? "收起" : "展开"}处理过程`}
+      onClick={() => setExpanded(!expanded)}>
       <ChevronRight size={14} className={expanded ? "activity-chevron expanded" : "activity-chevron"} aria-hidden="true" />
-      {single ? <span className={`activity-single-icon activity-${single.status}`} aria-hidden="true"><StatusIcon status={single.status} /></span>
-        : current ? <Loader2 size={14} className="spin activity-current-icon" aria-hidden="true" />
+      {current || !finished ? <Loader2 size={14} className="spin activity-current-icon" aria-hidden="true" />
         : <Wrench size={14} aria-hidden="true" />}
-      <span>{headline}</span>
+      <span role="status">{headline}</span>
     </button>
-    {items.filter(item => item.saved_document).map(item => <SavedDocumentResult key={item.saved_document!.save_id}
-      initial={item.saved_document!} onUpdate={updateSaved} showStatus={items.length > 1} />)}
-    {items.filter(item => item.image_task).map(item => <ImageTaskActivity key={item.image_task!.task_id} initial={item.image_task!} onUpdate={updateImage} showStatus={items.length > 1} />)}
+    {notices.map(item => <div className={`activity-notice activity-${item.status}`} role="status" key={item.id}>
+      <CircleAlert size={14} aria-hidden="true" />
+      <span>{item.label} · {statusLabel[item.status]}{item.summary ? `：${item.summary}` : ""}</span>
+    </div>)}
+    {savedDocuments.map(saved => <SavedDocumentResult key={saved.save_id} initial={saved} onUpdate={updateSaved} showStatus />)}
+    {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage} showStatus />)}
     {items.filter(item => item.knowledge_base && item.status === "completed").map(item => <div className="activity-file-downloads" key={item.id}>
       <Link className="activity-file-download" href={`/?library=${encodeURIComponent(item.knowledge_base!.id)}&view=documents`}>
         <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>
       </Link>
     </div>)}
-    {items.filter(item => item.preview).map(item => <div className="activity-file-downloads" key={item.preview!.id}>
-      <button type="button" className="activity-file-download" onClick={() => openPreview(item.preview!.id)}><ExternalLink size={15} /><span>{item.preview!.status === "ready" ? "打开预览" : "查看预览状态"} · {item.preview!.name}</span></button>
+    {previews.map(preview => <div className="activity-file-downloads" key={preview.id}>
+      <button type="button" className="activity-file-download" onClick={() => openPreview(preview.id)}><ExternalLink size={15} /><span>{preview.status === "ready" ? "打开预览" : "查看预览状态"} · {preview.name}</span></button>
     </div>)}
-    {workspaceId && single?.files?.length ? <div className="activity-file-downloads">
-      {single.files.map(file => <a key={`${file.id}-${file.version}`} className="activity-file-download"
+    {workspaceId && files.length ? <div className="activity-file-downloads">
+      {files.map(file => <a key={file.id} className="activity-file-download"
         href={`${API_URL}/resources/${file.id}/download`} download
         onClick={event => {
           event.preventDefault();
@@ -154,8 +161,11 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
       </a>)}
       {downloadError && <span className="activity-file-download-error" role="status">{downloadError}</span>}
     </div> : null}
-    {expanded && <><ol className="activity-steps" aria-label="执行活动">
-      {items.map(item => <Motion.li key={item.id} className={`activity-step activity-${item.status}`}
+    {expanded && <div id={regionId} className="activity-details"><ol className="activity-steps" aria-label="处理过程">
+      {ordered.map(step => {
+        if (step.type === "detail") return <li key={step.id} className="activity-detail">{step.content}</li>;
+        const item = itemById.get(step.id);
+        return item ? <Motion.li key={item.id} className={`activity-step activity-${item.status}`}
         initial={false} animate={{ opacity: 1 }} transition={{ duration: 0.14 }}>
         <span className="activity-state-icon" aria-hidden="true"><StatusIcon status={item.status} /></span>
         <div className="activity-step-copy">
@@ -166,8 +176,7 @@ export function ConversationActivity({ items, finished, workspaceId, children }:
           </span>
           {item.summary && <span className="activity-step-summary">{item.summary}</span>}
         </div>
-      </Motion.li>)}
-    </ol>{children}</>}
-    <span className="sr-only" role="status">{headline}</span>
+      </Motion.li> : null; })}
+    </ol>{children}</div>}
   </div>;
 }

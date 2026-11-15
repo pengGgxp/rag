@@ -233,7 +233,7 @@ class Runtime:
         try:
             Draft202012Validator(definition["parameters"], format_checker=FormatChecker()).validate(arguments)
         except ValidationError:
-            return {"error": "工具参数不完整或格式不正确，请修正后重试"}
+            return {"error": "工具参数不完整或格式不正确，请修正后重试", "error_code": "tool_arguments"}
         if check_active:
             check_active()
         self.calls += 1

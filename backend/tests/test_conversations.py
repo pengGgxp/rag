@@ -174,6 +174,39 @@ def test_persists_streamed_turn_and_followup_context(client):
     assert http.get("/conversations").json()["items"][0]["id"] == detail["id"]
 
 
+def test_corrected_tool_feedback_persists_and_resumes_without_turn_failure(client, monkeypatch):
+    http, db, _ = client
+    library = add_library(db)
+    add_document(db, library, "needle")
+
+    class Provider:
+        step = 0
+
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(None, [ToolCall("bad", "search_knowledge_base", {"query": "needle"})])
+            if self.step == 2:
+                assert json.loads(messages[-1]["content"])["error_code"] == "knowledge_arguments"
+                return ToolResponse(None, [ToolCall("fixed", "search_knowledge_base", {
+                    "query": "needle", "knowledge_base_ids": [str(library.id)]})])
+            return ToolResponse("已核实资料。", [])
+
+    provider = Provider()
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **kwargs: provider)
+    identifier = create(http)["id"]
+    events, payload = turn(http, identifier)
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    assert [item["outcome"] for item in answer["tool_events"]] == ["feedback", "success"]
+    saved = http.get(f"/conversations/{identifier}").json()["messages"][-1]
+    assert saved["tool_events"] == answer["tool_events"]
+    assert [item["call_id"] for item in saved["display_blocks"] if item["type"] == "activity"] == [
+        item["call_id"] for item in saved["tool_events"]]
+    turn(http, identifier, **payload)
+    assert provider.step == 3
+
+
 def test_agent_searches_selected_authorized_library_and_excludes_deleted_documents(client):
     http, db, _ = client
     a, b, outside = [add_library(db) for _ in range(3)]

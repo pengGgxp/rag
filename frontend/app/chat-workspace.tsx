@@ -47,7 +47,7 @@ import { citationMarkers } from "./citation-markers";
 import { Tooltip } from "../components/ui/tooltip";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
 import { acceptContextState } from "./conversation-context-state";
-import { activityItem, appendActivity, appendText, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
+import { activityItem, appendActivity, appendText, processBlocks, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
 import { AttachmentButton, DraftAttachments, MessageAttachments, useChatAttachments, type ChatAttachment } from "./chat-attachments";
 
@@ -1159,24 +1159,28 @@ export function ChatWorkspace({
                         : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
                   ) : (
                     <>
-                      {message.display_blocks?.length ? message.display_blocks.map(block => {
+                      {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
-                        if (block.type === "thinking") return <ConversationThinking key={`${message.request_id}-${block.id}`} block={block}
-                          conversationId={conversation.id} messageId={message.id} messageStatus={message.status} />;
-                        const activity = message.tool_events?.find(item => item.call_id === block.call_id);
+                        const thinking = (detail: Extract<DisplayBlock, { type: "thinking" }>) =>
+                          <ConversationThinking key={detail.id} block={detail} conversationId={conversation.id}
+                            messageId={message.id} messageStatus={message.status} />;
+                        const callIds = new Set(block.blocks.flatMap(detail => detail.type === "activity" ? [detail.call_id] : []));
+                        const activities = (message.tool_events ?? []).filter(item => callIds.has(item.call_id));
                         const firstWebCall = message.tool_events?.find(item => item.name === "web_search" || item.name === "web_fetch");
                         const sources = message.web_sources?.filter(source => source.call_ids?.length
-                          ? source.call_ids.includes(block.call_id) : block.call_id === firstWebCall?.call_id) ?? [];
-                        return activity ? <ConversationActivity key={block.id} items={[activityItem(activity)]} workspaceId={session?.workspace_id}
-                          finished={!["waiting", "running"].includes(activity.status)}>
+                          ? source.call_ids.some(id => callIds.has(id)) : !!firstWebCall && callIds.has(firstWebCall.call_id)) ?? [];
+                        return <ConversationActivity key={block.id} items={activities.map(activityItem)} workspaceId={session?.workspace_id}
+                          finished={message.status !== "streaming" || block.blocks.at(-1)?.id !== message.display_blocks?.at(-1)?.id}
+                          thinking={block.blocks.some(detail => detail.type === "thinking" && detail.status === "running")}
+                          steps={block.blocks.map(detail => detail.type === "activity"
+                            ? { type: "activity", id: detail.call_id }
+                            : { type: "detail", id: detail.id, content: thinking(detail) })}>
                           {!!sources.length && <div className="source-list activity-sources" aria-label="网页来源">{sources.map(source => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
                             <Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
                           </a>)}</div>}
-                        </ConversationActivity> : null;
+                        </ConversationActivity>;
                       }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
-                      {message.status === "streaming" && !message.display_blocks?.some(
-                        block => block.type === "thinking" && block.status === "running",
-                      ) && (
+                      {message.status === "streaming" && !message.display_blocks?.length && (
                         <Motion.div
                           className="thinking"
                           role="status"
