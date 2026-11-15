@@ -231,11 +231,12 @@ class RollbackTests(unittest.TestCase):
             with patch.object(deploy_release, "verify_checksums"), \
                  patch.object(deploy_release, "load_manifest", return_value=manifest()), \
                  patch.object(deploy_release, "render_environment", side_effect=render), \
+                 patch.object(deploy_release, "ensure_release_images", side_effect=lambda *_: events.append("images")), \
                  patch.object(deploy_release, "verify_migration_heads", side_effect=verify), \
                  patch.object(deploy_release, "transactional_deploy") as transaction:
                 deploy_release.deploy_release(paths, incoming, self.runner)
 
-            self.assertEqual(events, ["render", "migration-head"])
+            self.assertEqual(events, ["render", "images", "migration-head"])
             transaction.assert_called_once()
 
     def _transaction(self, root, *, policy="automatic-app-rollback", takeover=False, migration=True):
@@ -349,11 +350,48 @@ class RollbackTests(unittest.TestCase):
             "current_compose_args",
             return_value=["docker", "compose"],
         ), patch.object(deploy_release, "confirm_running_digests"):
-            deploy_release.compose_up(paths, runner)
-        start_command = runner.run.call_args_list[1].args[0]
+            with patch.object(deploy_release, "ensure_release_images"):
+                deploy_release.compose_up(paths, runner)
+        start_command = runner.run.call_args_list[0].args[0]
         self.assertIn("up", start_command)
+        self.assertIn("--pull", start_command)
+        self.assertEqual(start_command[start_command.index("--pull") + 1], "never")
+        self.assertNotIn("pull", start_command)
         self.assertNotIn("--wait", start_command)
         self.assertNotIn("--wait-timeout", start_command)
+
+    def test_cached_release_and_rollback_images_do_not_contact_any_registry(self):
+        runner = Mock()
+        with patch.object(deploy_release, "load_manifest", return_value=manifest()):
+            deploy_release.ensure_release_images(Path("/release"), runner)
+        runner.run.assert_called_once_with(
+            ["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"]
+        )
+
+    def test_missing_release_image_pulls_only_its_pinned_reference(self):
+        runner = Mock()
+        runner.run.side_effect = [deploy_release.ReleaseError("not cached"), ""]
+        with patch.object(deploy_release, "load_manifest", return_value=manifest()):
+            deploy_release.ensure_release_images(Path("/release"), runner)
+        self.assertEqual(runner.run.call_args_list, [
+            call(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"]),
+            call(["docker", "pull", IMAGE]),
+        ])
+
+    def test_unavailable_release_image_stops_preflight_before_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = deploy_release.Paths(root=root)
+            incoming = paths.incoming / "v1.2.3"
+            incoming.mkdir(parents=True)
+            make_release(incoming)
+            with patch.object(deploy_release, "render_environment"), \
+                 patch.object(deploy_release, "ensure_release_images", side_effect=deploy_release.ReleaseError("registry unavailable")), \
+                 patch.object(deploy_release, "transactional_deploy") as transaction:
+                with self.assertRaisesRegex(deploy_release.ReleaseError, "registry unavailable"):
+                    deploy_release.deploy_release(paths, incoming, Mock())
+            transaction.assert_not_called()
+            self.assertFalse((paths.releases / "v1.2.3").exists())
 
     def test_successful_compatible_deployment_turns_maintenance_off(self):
         with tempfile.TemporaryDirectory() as tmp:

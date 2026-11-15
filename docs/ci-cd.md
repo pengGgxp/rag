@@ -208,6 +208,13 @@ Subsequent releases use the normal managed-release path.
 Never manually edit a production Compose file, append a temporary override or
 replace a service image on the server. Fix the release and produce a new tag.
 
+Application image availability is checked before maintenance: cached immutable
+digests are reused, and only missing application images are pulled from SWR.
+Starting services uses `--pull never`, so an application rollout or rollback
+does not refresh unchanged database, Redis or object-storage images from Docker
+Hub. Keep the current and previous images, including their infrastructure images,
+on the host; a missing infrastructure image must be prepared before rollout.
+
 ## Manual release runbook
 
 This runbook is the controlled fallback while GitHub Actions is not used for

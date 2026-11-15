@@ -898,6 +898,16 @@ def restore_legacy_nginx(paths: Paths, runner: CommandRunner) -> None:
     runner.run(["nginx", "-s", "reload"])
 
 
+def ensure_release_images(release_dir: Path, runner: CommandRunner) -> None:
+    """Resolve immutable application images without refreshing cached digests."""
+    manifest = load_manifest(release_dir)
+    for image in dict.fromkeys(manifest["images"].values()):
+        try:
+            runner.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"])
+        except ReleaseError:
+            runner.run(["docker", "pull", image])
+
+
 def compose_up(
     paths: Paths,
     runner: CommandRunner,
@@ -906,7 +916,7 @@ def compose_up(
     force_workers: bool = False,
 ) -> None:
     compose = current_compose_args(paths)
-    runner.run([*compose, "pull"])
+    ensure_release_images(paths.current.resolve(), runner)
     targets = list(services or APPLICATION_SERVICES)
     if force_workers:
         targets = list(dict.fromkeys((*targets, "worker", "preview-worker")))
@@ -915,6 +925,8 @@ def compose_up(
             *compose,
             "up",
             "-d",
+            "--pull",
+            "never",
             "--remove-orphans",
             *targets,
         ]
@@ -1596,6 +1608,7 @@ def shadow_release(
     compose = compose_args(target)
     runner.run([*compose, "config", "--quiet"])
     if inspect_runtime:
+        ensure_release_images(target, runner)
         verify_migration_heads(target, runner)
     else:
         # The shadow package must be inspectable without starting the release
@@ -1681,6 +1694,7 @@ def deploy_release(paths: Paths, incoming: Path, runner: CommandRunner) -> Path:
     if incoming.name != manifest["version"]:
         raise ReleaseError("incoming directory must match the release version")
     render_environment(incoming, paths)
+    ensure_release_images(incoming, runner)
     verify_migration_heads(incoming, runner)
     paths.releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     shutil.copytree(incoming, release_dir)
