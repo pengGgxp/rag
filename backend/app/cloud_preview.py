@@ -34,11 +34,13 @@ class Start(BaseModel):
 
 TOOLS = [
     {"type": "function", "function": {"name": "start_preview",
-        "description": "在云电脑工作目录启动独立 HTTP 网页服务，启动命令保持前台运行，由本工具负责后台进程与 HTTP 就绪检查。服务须监听 0.0.0.0 和指定端口；关闭 WebSocket/热更新，用户手动刷新。先创建网页文件，返回就绪后交付真实预览入口；就绪不代表页面所有功能已验证。同一会话一个服务；换服务先 stop_preview。前台预览保持云电脑计费，最长时限不变。",
-        "parameters": Start.model_json_schema()}},
+        "description": "在指定 computer_id 启动 HTTP 网页服务。命令保持前台运行，监听 0.0.0.0 和指定端口；本工具管理后台进程和就绪检查，不创建云电脑。同一实例一个预览服务，换服务先 stop_preview。就绪后交付真实预览入口，关闭预览不结束计费。",
+        "parameters": {**Start.model_json_schema(), "properties": {**Start.model_json_schema()["properties"],
+            "computer_id": {"type": "string", "format": "uuid"}}, "required": ["computer_id", "command", "port", "name"]}}},
     {"type": "function", "function": {"name": "stop_preview",
-        "description": "停止本会话预览服务，保留文件；云电脑按原闲置规则运行和收费。",
-        "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
+        "description": "停止指定 computer_id 的预览服务，保留文件和云电脑；不影响其他实例。",
+        "parameters": {"type": "object", "properties": {"computer_id": {"type": "string", "format": "uuid"}},
+            "required": ["computer_id"], "additionalProperties": False}}},
 ]
 
 
@@ -56,7 +58,7 @@ def origin(row):
 def read(row):
     labels = {"starting": "正在启动预览", "ready": "预览已就绪", "stopping": "正在停止预览",
         "stopped": "预览已停止", "failed": "预览未能启动", "uncertain": "正在核对预览状态"}
-    return {"id": str(row.id), "name": row.name, "status": row.status,
+    return {"id": str(row.id), "computer_id": str(row.session_id), "name": row.name, "status": row.status,
         "summary": row.error or labels.get(row.status, "预览不可用"), "terminal": row.ended_at is not None,
         "url": f"{get_settings().frontend_url.rstrip('/')}/previews/{row.id}" if row.status == "ready" else None}
 
@@ -66,7 +68,7 @@ def owned(db, access, identifier, live=False):
     computer = db.get(cloud.Computer, row.session_id) if row else None
     if not computer or computer.user_id != access.user_id or computer.workspace_id != access.workspace_id:
         raise HTTPException(404, "预览不存在")
-    access = cloud.owner(db, access, computer.conversation_id)
+    cloud.owned_computer(db, access, computer.id)
     if live:
         access.editor()
         if not get_settings().preview_enabled:
@@ -78,11 +80,10 @@ def owned(db, access, identifier, live=False):
     return row, computer
 
 
-@router.get("/conversations/{conversation_id}/preview")
-def current(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
-    cloud.owner(db, access, conversation_id)
-    row = db.scalar(select(Preview).join(cloud.Computer).where(cloud.Computer.conversation_id == conversation_id,
-        cloud.Computer.user_id == access.user_id, cloud.Computer.workspace_id == access.workspace_id)
+@router.get("/cloud-computers/{identifier}/preview")
+def current(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+    computer = cloud.owned_computer(db, access, identifier)
+    row = db.scalar(select(Preview).where(Preview.session_id == computer.id)
         .order_by(Preview.created_at.desc()))
     return {"preview": read(row) if row else None}
 
@@ -218,14 +219,15 @@ def execute(runtime, name, arguments, check_active, *, call_id=None, **execution
         if not message:
             raise HTTPException(404, "当前会话不可用")
         cloud.owner(db, access, message.conversation_id).editor()
+        computer = cloud.owned_computer(db, access, arguments.get("computer_id"), write=True)
         if name == "stop_preview":
-            if arguments:
-                raise HTTPException(422, "停止预览无需参数")
-            row = db.scalar(select(Preview).join(cloud.Computer).where(cloud.Computer.conversation_id == message.conversation_id,
-                cloud.Computer.user_id == access.user_id, Preview.ended_at.is_(None)))
-            return {"preview": stop(db, access, row, db.get(cloud.Computer, row.session_id))} if row else {"summary": "预览已停止"}
+            if set(arguments) != {"computer_id"}:
+                raise HTTPException(422, "请指定要停止预览的 computer_id")
+            row = db.scalar(select(Preview).where(Preview.session_id == computer.id, Preview.ended_at.is_(None)))
+            return {"computer_id": str(computer.id),
+                **({"preview": stop(db, access, row, computer)} if row else {"summary": "预览已停止"})}
         if not get_settings().preview_enabled:
             raise HTTPException(503, "成果预览尚未开放，请联系管理员")
-        payload = Start.model_validate(arguments).model_dump()
+        payload = Start.model_validate({key: value for key, value in arguments.items() if key != "computer_id"}).model_dump()
         return cloud.execute(db, access, message.conversation_id, cloud.tool_request_id(runtime.request_id, call_id),
-            {"command": payload["command"], "preview": payload}, check_active, **execution)
+            {"command": payload["command"], "preview": payload, "computer_id": str(computer.id)}, check_active, **execution)

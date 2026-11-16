@@ -25,4 +25,4 @@ def test_rebuilt_context_retains_server_owned_environment():
     assert "python-docx" in messages[0]["content"]
     assert "已有环境可能仍使用旧模板" in messages[0]["content"]
     assert "工具执行结束后必须用自然语言给出简短交付总结" in messages[0]["content"]
-    assert "[打开资源库](/resources)" in messages[0]["content"]
+    assert "get_workspace_file_link" in messages[0]["content"]

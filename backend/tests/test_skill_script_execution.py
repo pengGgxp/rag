@@ -45,7 +45,8 @@ def test_output_tools_require_cloud_and_recheck_role(accounts, monkeypatch):
     member.role = "viewer"
     db.commit()
     with pytest.raises(HTTPException) as error:
-        runtime.execute("write_file", {"path": "second.txt", "content": "forbidden"}, call_id="tool-1-forbidden")
+        runtime.execute("write_file", {"computer_id": "00000000-0000-4000-a000-000000000112",
+            "path": "second.txt", "content": "forbidden"}, call_id="tool-1-forbidden")
     assert error.value.status_code == 403 and not stored
 
 

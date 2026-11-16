@@ -1,0 +1,13 @@
+FROM node:22-alpine
+WORKDIR /app
+ENV NEXT_PUBLIC_API_URL=http://localhost:8132
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/app ./app
+COPY frontend/components ./components
+COPY frontend/public ./public
+COPY frontend/scripts ./scripts
+COPY frontend/next.config.ts frontend/next-env.d.ts frontend/react-dom.d.ts frontend/tsconfig.json ./
+RUN npm run build
+RUN cp -R public .next/standalone/public && mkdir -p .next/standalone/.next \
+    && cp -R .next/static .next/standalone/.next/static

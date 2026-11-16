@@ -25,7 +25,8 @@ def provider(monkeypatch, calls, *, fail=False, read=False):
                     "用户本轮提及的资源文件（仅定位元数据，按任务需要调用文件工具）：", 1)[1])
                 assert "read_file" in {tool["function"]["name"] for tool in tools}
                 return ToolResponse(content=None, tool_calls=[ToolCall(id="read", name="read_file",
-                    arguments={"id": references[0]["id"]})])
+                    arguments={"id": references[0]["id"],
+                        "computer_id": "00000000-0000-4000-a000-000000000112"})])
             return ToolResponse(content="已收到。", tool_calls=[])
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_: Provider())
 
@@ -221,7 +222,8 @@ def test_agent_reads_reference_through_existing_file_tool(client, resource_store
         assert execution["agent_tool_execution_id"] and callable(execution["on_progress"])
         access.revalidate(db)
         operations.append(arguments["file_operation"])
-        return {"status": "completed", "cloud_computer": {}, "command_id": str(uuid4()),
+        return {"status": "completed", "computer_id": arguments["computer_id"],
+            "cloud_computer": {}, "command_id": str(uuid4()),
             "file_result": {"value": {"content": "resource facts"}}}
     monkeypatch.setattr("app.cloud_computer.execute", execute)
     calls = []

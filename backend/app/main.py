@@ -128,7 +128,7 @@ async def lifespan(_: FastAPI):
         from .cloud_computer import maintenance
         while True:
             try:
-                await asyncio.to_thread(maintenance)
+                await asyncio.to_thread(maintenance, wait=False)
             except Exception:
                 logging.getLogger(__name__).warning("Cloud computer maintenance deferred")
             await asyncio.sleep(15)

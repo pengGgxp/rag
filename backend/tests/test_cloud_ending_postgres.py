@@ -57,7 +57,7 @@ def test_concurrent_end_and_maintenance_charge_once(auth_postgres, monkeypatch):
         barrier.wait(timeout=10)
         if index == 0:
             with factory() as db:
-                cloud.end(conversation_id, db, access)
+                cloud.end(identifier, db, access)
         else:
             cloud.maintain_one(identifier, factory)
     with ThreadPoolExecutor(max_workers=4) as pool:

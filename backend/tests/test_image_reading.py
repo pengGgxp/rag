@@ -293,8 +293,8 @@ def test_runtime_exposes_read_image_only_for_supported_models(accounts, monkeypa
     assert "read_image" in {item["function"]["name"] for item in runtime.tools}
     image_tool = next(item["function"] for item in runtime.tools
         if item["function"]["name"] == "read_image")
-    assert image_tool["parameters"]["required"] == ["path"]
-    assert set(image_tool["parameters"]["properties"]) == {"path"}
+    assert image_tool["parameters"]["required"] == ["path", "computer_id"]
+    assert set(image_tool["parameters"]["properties"]) == {"path", "computer_id"}
     text_runtime = ExtensionRuntime(lambda: nullcontext(db), access, provider_config=unsupported)
     assert "read_image" not in {item["function"]["name"] for item in text_runtime.tools}
     assert text_runtime.execute("read_image", {"path": "chart.png"})["error_code"] == "image_model_unsupported"
@@ -331,7 +331,8 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol
                     for message in messages if isinstance(message.get("content"), list)
                     for part in message["content"])
                 return ToolResponse(content=None, tool_calls=[
-                    ToolCall(id="image", name="read_image", arguments={"path": "chart.png"})])
+                    ToolCall(id="image", name="read_image", arguments={"path": "chart.png",
+                        "computer_id": "00000000-0000-4000-a000-000000000112"})])
             seen.extend(messages)
             return ToolResponse(content="图片显示一张图表。", tool_calls=[])
 
@@ -365,15 +366,17 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
         hashlib.sha256(PNG).hexdigest(), PNG)
     calls = []
 
-    def execute_image(db, access, conversation, request, path, check):
+    def execute_image(db, access, conversation, request, path, check, **kwargs):
         calls.append((conversation, path, check))
-        return image, {"cloud_computer": {"status": "ready"}, "command_id": "command"}
+        return image, {"computer_id": kwargs["computer_id"],
+            "cloud_computer": {"status": "ready"}, "command_id": "command"}
 
     monkeypatch.setattr(cloud, "execute_image", execute_image)
     from app.shared_resources import object_key
     resource_store[0][object_key(access.workspace_id, "chart.png")] = PNG
     runtime.request_id = uuid4()
-    result = runtime.execute("read_image", {"path": "chart.png"}, call_id="tool-1-image")
+    result = runtime.execute("read_image", {"path": "chart.png",
+        "computer_id": "00000000-0000-4000-a000-000000000112"}, call_id="tool-1-image")
     assert calls and calls[0][1] == "/home/user/workspace/chart.png"
     assert result.image.data == PNG
     assert result.result["filename"] == "chart.png"
@@ -419,7 +422,7 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
             return "查看图片"
 
         def execute(self, name, arguments, check_active=None, **kwargs):
-            return image_reading.read_image(arguments, config=config,
+            return image_reading.read_image({"path": arguments["path"]}, config=config,
                 local_loader=load, check_active=check_active)
 
     class Provider:
@@ -429,7 +432,8 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
             self.count += 1
             if self.count == 1:
                 return ToolResponse(content=None, tool_calls=[
-                    ToolCall(id="image", name="read_image", arguments={"path": "chart.png"})])
+                    ToolCall(id="image", name="read_image", arguments={"path": "chart.png",
+                        "computer_id": "00000000-0000-4000-a000-000000000112"})])
             tool = next(message for message in messages if message.get("role") == "tool")
             result = json.loads(tool["content"])
             assert result["error_code"] == (
@@ -497,6 +501,8 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     conversation = Conversation(workspace_id=user_access.workspace_id, owner_id=user_access.user_id)
     db.add(conversation)
     db.commit()
+    computer_id = cloud.create_computer(db, user_access, conversation.id, uuid4(),
+        {"name": "图片检查测试"})["computer_id"]
     path = "/home/user/workspace/chart.png"
     def start_file(sandbox, identifier, operation):
         fake.starts += 1
@@ -506,12 +512,14 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     fake.file_result = lambda sandbox, identifier: {
         "value": {"size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}}
     fake.read_file = lambda sandbox, target, *, max_bytes, owner="user", check_active=None: PNG
-    image, result = cloud.execute_image(db, user_access, conversation.id, uuid4(), path, None)
+    image, result = cloud.execute_image(db, user_access, conversation.id, uuid4(), path, None,
+        computer_id=computer_id)
     assert image.data == PNG and image.image["width"] == image.image["height"] == 1
     assert fake.creates == 1 and fake.starts == 1
     assert result["status"] == "completed"
     assert "data" not in json.dumps(result)
-    second, _ = cloud.execute_image(db, user_access, conversation.id, uuid4(), path, None)
+    second, _ = cloud.execute_image(db, user_access, conversation.id, uuid4(), path, None,
+        computer_id=computer_id)
     assert second.data == PNG and fake.creates == 1 and fake.starts == 2
 
 

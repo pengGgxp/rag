@@ -52,8 +52,10 @@ def bounded_message(message, result_id, budget):
     if estimate_input([{"content": content}]) <= budget:
         return result
     total = len(content)
+    data = {}
     try:
         previous = json.loads(content)
+        data = previous
         if (isinstance(previous, dict) and previous.get("truncated") is True
                 and isinstance(previous.get("preview"), str) and previous.get("result_id")
                 and type(previous.get("total_characters")) is int):
@@ -61,8 +63,10 @@ def bounded_message(message, result_id, budget):
             content, total, result_id = previous["preview"], previous["total_characters"], previous["result_id"]
     except (TypeError, ValueError):
         pass
+    metadata = {key: data[key] for key in ("computer_id", "cloud_computer", "command_id",
+        "status", "uncertain", "error", "error_code") if isinstance(data, dict) and key in data}
     def page(length):
-        return json.dumps({"truncated": True, "result_id": str(result_id), "preview": content[:length],
+        return json.dumps({**metadata, "truncated": True, "result_id": str(result_id), "preview": content[:length],
             "next_offset": length, "total_characters": total,
             "notice": "完整结果已保存，可用 read_tool_result 按字符偏移继续读取；不要重复执行原操作"}, ensure_ascii=False)
     low, high = 0, len(content)

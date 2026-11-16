@@ -11,7 +11,7 @@ import "../../billing.css";
 type Settings = {
   version: number; enabled: boolean; has_api_key: boolean; region: string; template: string;
   specification: string; credits_per_minute: number | null; idle_seconds: number;
-  max_seconds: number; concurrency: number; blocked_hosts: string[]; oss_role_arn: string;
+  max_seconds: number; blocked_hosts: string[]; oss_role_arn: string;
 };
 
 export default function CloudComputerSettings() {
@@ -73,7 +73,7 @@ export default function CloudComputerSettings() {
             </section>
             <section className="model-form-section"><h2>计费与运行</h2><div className="provider-form-grid">
               <label>每分钟积分<input type="number" min={0} max={2147483647} step="0.0001" required={form.enabled} value={form.credits_per_minute ?? ""} onChange={event => setForm({ ...form, credits_per_minute: event.target.value === "" ? null : Number(event.target.value) })} /></label>
-              {([["idle_seconds", "闲置结束时间（秒）", 60, 1800], ["max_seconds", "最长运行时间（秒）", 300, 3600], ["concurrency", "同时运行上限", 1, 100]] as const).map(([field, label, min, max]) => <label key={field}>{label}<input type="number" required min={min} max={max} step={1} value={form[field]} onChange={event => setForm({ ...form, [field]: Number(event.target.value) })} /></label>)}
+              {([["idle_seconds", "闲置结束时间（秒）", 60, 1800], ["max_seconds", "最长运行时间（秒）", 300, 3600]] as const).map(([field, label, min, max]) => <label key={field}>{label}<input type="number" required min={min} max={max} step={1} value={form[field]} onChange={event => setForm({ ...form, [field]: Number(event.target.value) })} /></label>)}
             </div><p className="site-setting-note">按存续秒数计费，等待期间计费。新价格用于新启动的云电脑。</p></section>
             <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : ""}</span>
               <button type="button" className="secondary" disabled={busy || dirty || !form.has_api_key} onClick={() => void check()}><Plug size={16} />检查连接</button>

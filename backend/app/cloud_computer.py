@@ -6,9 +6,11 @@ import math
 from datetime import timedelta
 from decimal import Decimal, ROUND_FLOOR
 from enum import Enum
+from contextlib import contextmanager
+import threading
 from uuid import UUID, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy import func, select, text, update
 
@@ -64,7 +66,6 @@ class Configuration(BaseModel):
     credits_per_minute: CreditRate | None = Decimal("1")
     idle_seconds: int = Field(default=600, ge=60, le=1800)
     max_seconds: int = Field(default=3600, ge=300, le=3600)
-    concurrency: int = Field(default=5, ge=1, le=100)
     blocked_hosts: list[str] = Field(default_factory=list, max_length=100)
     oss_role_arn: str = Field(default="", max_length=256,
         pattern=r"^(acs:ram::[0-9]+:role/[A-Za-z0-9._/-]+)?$")
@@ -167,7 +168,26 @@ def owner(db, access, conversation_id):
 
 
 def session_access(db, row):
-    return owner(db, Access(row.user_id, row.workspace_id, "editor", row.session_hash), row.conversation_id)
+    from .models import Membership, User
+    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True)
+    user = db.get(User, row.user_id, populate_existing=True)
+    if member is None or user is None or user.is_suspended:
+        raise HTTPException(403, "云电脑访问权限已失效")
+    return Access(row.user_id, row.workspace_id, member.role, row.session_hash)
+
+
+def owned_computer(db, access, identifier, *, write=False):
+    access = access.revalidate(db)
+    try:
+        identifier = UUID(str(identifier))
+    except (ValueError, TypeError):
+        raise HTTPException(422, "请指定有效的 computer_id") from None
+    row = db.get(Computer, identifier, populate_existing=True)
+    if row is None or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+        raise HTTPException(404, "云电脑不存在或无权访问")
+    if write:
+        access.editor()
+    return row
 
 
 def charge_at(row, end):
@@ -230,7 +250,8 @@ def read(row, db=None):
     reason_text = STOP_REASONS.get(row.stop_reason)
     if row.ended_at and row.stop_reason == "reservation_expired":
         reason_text = "运行状态核对中断，云电脑已结束"
-    return {"id": str(row.id), "status": row.status, "summary": labels[row.status],
+    return {"id": str(row.id), "computer_id": str(row.id), "name": row.name or f"云电脑 {row.id.hex[:8]}",
+        "conversation_id": str(row.conversation_id), "status": row.status, "summary": labels[row.status],
         "stop_reason": row.stop_reason, "stop_reason_text": reason_text,
         "renewal_required_credits": str(renewal_reserve(row)) if row.stop_reason == "insufficient_balance" else None,
         "terminal": row.ended_at is not None, "credits": str(row.charged_credits if row.ended_at else min(estimated, row.charged_credits+row.held_credits)),
@@ -248,22 +269,32 @@ def catalog(db=Depends(get_db), access=Depends(get_access)):
         ("credits_per_minute", "idle_seconds", "max_seconds")} if row and row.enabled else {})}
 
 
-@router.get("/conversations/{conversation_id}/cloud-computer")
-def current(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
-    owner(db, access, conversation_id)
-    row = db.scalar(select(Computer).where(Computer.conversation_id == conversation_id,
-        Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id).order_by(Computer.created_at.desc()))
-    return {"computer": read(row, db) if row else None}
+@router.get("/cloud-computers")
+def computer_list(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                  active_only: bool = False, db=Depends(get_db), access=Depends(get_access)):
+    access = access.revalidate(db)
+    query = select(Computer).where(Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id)
+    if active_only:
+        query = query.where(Computer.ended_at.is_(None))
+    rows = db.scalars(query.order_by(Computer.ended_at.is_not(None), Computer.created_at.desc(), Computer.id)
+        .offset(offset).limit(limit + 1)).all()
+    return {"items": [read(row, db) for row in rows[:limit]],
+        "next_offset": offset + limit if len(rows) > limit else None}
 
 
-@router.post("/conversations/{conversation_id}/cloud-computer/end")
-def end(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
-    access = owner(db, access, conversation_id)
-    access.editor()
-    row = db.scalar(select(Computer).where(Computer.conversation_id == conversation_id,
-        Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id, Computer.ended_at.is_(None)).with_for_update())
-    if row:
+@router.get("/cloud-computers/{identifier}")
+def computer_detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+    return {"computer": read(owned_computer(db, access, identifier), db)}
+
+
+@router.post("/cloud-computers/{identifier}/end")
+def end(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+    row = owned_computer(db, access, identifier, write=True)
+    row = db.get(Computer, row.id, with_for_update=True, populate_existing=True)
+    if not row.ended_at:
         row.status = "stopping"
+        row.stop_requested_at = row.stop_requested_at or now()
+        row.next_reconcile_at = None
         row.billing_stopped_at = row.billing_stopped_at or now()
         set_stop_reason(db, row, "user_requested")
         for command in db.scalars(select(Command).where(Command.session_id == row.id, Command.status.in_(BUSY))):
@@ -273,16 +304,16 @@ def end(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
 
 
 def command_read(command):
-    return {"id": str(command.id), "status": command.status, "cancel_requested": command.cancel_requested,
+    return {"id": str(command.id), "computer_id": str(command.session_id), "status": command.status, "cancel_requested": command.cancel_requested,
             "result": command.result, "terminal": command.status not in BUSY}
 
 
-@router.get("/conversations/{conversation_id}/cloud-computer/commands")
-def command_list(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
-    owner(db, access, conversation_id)
-    rows = db.scalars(select(Command).join(Computer).where(Computer.conversation_id == conversation_id,
-        Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id)
-        .order_by(Command.created_at.desc()).limit(20)).all()
+@router.get("/cloud-computers/{identifier}/commands")
+def command_list(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
+    row = owned_computer(db, access, identifier)
+    # Active commands are never hidden by a recent-history limit.
+    rows = db.scalars(select(Command).where(Command.session_id == row.id)
+        .order_by(Command.created_at.desc())).all()
     return {"items": [command_read(command) for command in rows]}
 
 
@@ -291,7 +322,7 @@ def own_command(db, access, identifier):
     row = db.get(Computer, command.session_id) if command else None
     if not row or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
         raise HTTPException(404, "命令不存在")
-    owner(db, access, row.conversation_id).editor()
+    owned_computer(db, access, row.id, write=True)
     return command, row
 
 
@@ -310,6 +341,128 @@ def tool_request_id(request_id, call_id):
     return uuid5(UUID(str(request_id)), "cloud-tool:" + call_id)
 
 
+def invocation_lock(db, identifier):
+    if identifier is None:
+        raise HTTPException(422, "缺少操作身份")
+    if db.bind.dialect.name == "postgresql":
+        key = int.from_bytes(uuid5(UUID(str(identifier)), "cloud-invocation").bytes[:8], "big", signed=True)
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
+_leases = set()
+_lease_guard = threading.Lock()
+
+
+@contextmanager
+def instance_lease(factory, identifier):
+    """Nonblocking lease shared by creation and recovery; no account/global IO lock."""
+    with _lease_guard:
+        acquired = identifier not in _leases
+        if acquired:
+            _leases.add(identifier)
+    if not acquired:
+        yield False
+        return
+    try:
+        with factory() as db, db.get_bind().connect() as connection:
+            pg = connection.dialect.name == "postgresql"
+            key = int.from_bytes(identifier.bytes[:8], "big", signed=True)
+            locked = not pg or bool(connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}))
+            try:
+                yield locked
+            finally:
+                if pg and locked:
+                    connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+    finally:
+        with _lease_guard:
+            _leases.discard(identifier)
+
+
+def create_computer(db, access, conversation_id, request_id, arguments, *,
+                    agent_tool_execution_id=None, check_active=None, on_progress=None):
+    access = owner(db, access, conversation_id)
+    access.editor()
+    if check_active:
+        check_active()
+    from .agent_tool_jobs import validate_owner
+    validate_owner(db, agent_tool_execution_id, access, conversation_id)
+    invocation_lock(db, request_id)
+    digest = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
+    row = db.scalar(select(Computer).where(Computer.creation_request_id == request_id))
+    if row:
+        if row.user_id != access.user_id or row.workspace_id != access.workspace_id or row.creation_digest != digest:
+            raise HTTPException(409, "同一次创建的内容已变化，请先核对原实例")
+        return {"computer_id": str(row.id), "cloud_computer": read(row, db), "uncertain": row.status == "uncertain"}
+    settings = db.get(Settings, 1, populate_existing=True)
+    if not settings or not settings.enabled:
+        raise HTTPException(503, "云电脑尚未开放，请联系管理员")
+    from .storage_backend import active_settings
+    storage = active_settings(db)
+    if not settings.config.get("oss_role_arn") or not storage or storage.provider != "oss":
+        raise HTTPException(503, "云电脑工作区挂载尚未就绪，请联系管理员")
+    from .storage_billing import check_capacity
+    check_capacity(db, access.workspace_id, 0)
+    identifier = uuid4()
+    snapshot = {key: value for key, value in settings.config.items() if key != "concurrency"}
+    snapshot.update(version=settings.version, resource_mount={"bucket": storage.bucket, "region": storage.region,
+        "prefix": f"workspaces/{access.workspace_id}/resource-directory/", "mode": "shared"})
+    reserve = amount(Decimal(str(snapshot["credits_per_minute"])) * snapshot["idle_seconds"] / 60)
+    if reserve:
+        authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
+    row = Computer(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
+        conversation_id=conversation_id, session_hash=access.session_hash, creation_request_id=request_id,
+        creation_digest=digest, name=arguments.get("name"), snapshot=snapshot,
+        encrypted_api_key=settings.encrypted_api_key, status="starting", held_credits=reserve)
+    db.add(row)
+    # Durable intent, including the hold, precedes the paid provider request.
+    db.commit()
+    from sqlalchemy.orm import sessionmaker
+    with instance_lease(sessionmaker(bind=db.get_bind()), identifier) as acquired:
+        if acquired:
+            try:
+                if check_active:
+                    check_active()
+                if on_progress:
+                    on_progress({"computer_id": str(row.id), "cloud_computer": read(row), "summary": "正在创建云电脑"})
+                provider = adapter(row.snapshot, row.encrypted_api_key)
+                provider_id, started_at = provider.create(row.id)
+                # Refresh before installing the receipt: a concurrent end intent wins.
+                db.refresh(row)
+                row.provider_id, row.started_at = provider_id, started_at
+                db.commit()
+                provider.prepare(provider.connect(provider_id))
+                db.refresh(row)
+                if not row.stop_requested_at and row.status != "stopping":
+                    row.status, row.error = "ready", None
+                row.next_reconcile_at = None
+                db.commit()
+            except Exception as error:
+                from .agent import AgentCancelled
+                if isinstance(error, AgentCancelled) and row.provider_id is None:
+                    db.rollback()
+                    db.refresh(row)
+                    from .credits import release_hold
+                    if row.held_credits:
+                        release_hold(db, row.workspace_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), row.held_credits)
+                        row.held_credits = Decimal(0)
+                    row.status, row.ended_at = "failed", now()
+                    row.stop_reason = "user_requested"
+                    row.error = None
+                    db.commit()
+                else:
+                    db.rollback()
+                    db.refresh(row)
+                    if row.status != "stopping":
+                        row.status = "uncertain"
+                    row.error = "创建结果待核对，请查询此实例，勿重复原操作"
+                    db.commit()
+    db.refresh(row)
+    from .cloud_environment import environment_description
+    return {"computer_id": str(row.id), "cloud_computer": read(row, db),
+        "environment": environment_description(settings), "uncertain": row.status == "uncertain",
+        "summary": "云电脑已创建" if row.status == "ready" else "正在核对创建结果"}
+
+
 def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_execution_id=None, dispatch_job=True):
     access = owner(db, access, conversation_id)
     from .agent_tool_jobs import validate_owner
@@ -320,8 +473,10 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
         if not file_operation or file_operation.get("name") != "delete_file":
             from .storage_billing import check_capacity
             check_capacity(db, access.workspace_id, 0)
-    serialize_admission(db)
-    payload = {"command": arguments["command"], "inputs": []}
+    row = owned_computer(db, access, arguments.get("computer_id"), write=True)
+    # Serialize only retransmissions of this invocation, never unrelated instances.
+    invocation_lock(db, request_id)
+    payload = {"command": arguments["command"], "inputs": [], "computer_id": str(row.id)}
     if arguments.get("preview"):
         from .cloud_preview import Start
         from .config import get_settings
@@ -332,7 +487,7 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
         payload["file_operation"] = arguments["file_operation"]
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     existing = db.scalar(select(Command).join(Computer).where(Computer.workspace_id == access.workspace_id,
-        Computer.user_id == access.user_id, Computer.conversation_id == conversation_id,
+        Computer.user_id == access.user_id,
         Command.request_id == request_id))
     if existing:
         if existing.digest != digest or existing.agent_tool_execution_id != agent_tool_execution_id:
@@ -342,39 +497,9 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
         return existing
     from .storage_billing import check_capacity
     check_capacity(db, access.workspace_id, 1)
-    settings = db.get(Settings, 1, populate_existing=True)
-    if not settings or not settings.enabled:
-        raise HTTPException(503, "云电脑尚未开放，请联系管理员")
-    from .storage_backend import active_settings
-    active_storage = active_settings(db)
-    if not settings.config.get("oss_role_arn") or not active_storage or active_storage.provider != "oss":
-        raise HTTPException(503, "云电脑工作区挂载尚未就绪，请联系管理员")
-    row = db.scalar(select(Computer).where(Computer.user_id == access.user_id, Computer.ended_at.is_(None)).with_for_update())
-    if row and (row.workspace_id != access.workspace_id or row.conversation_id != conversation_id):
-        raise HTTPException(409, "你在其他会话有运行中的云电脑，请先结束后重试")
-    if row and row.status in ("stopping", "uncertain"):
-        raise HTTPException(409, "云电脑正在结束或核对状态，请稍后重试")
-    if row and row.snapshot.get("resource_mount", {}).get("mode") != "shared":
-        raise HTTPException(409, "请先结束当前云电脑，再重试文件操作")
-    if row is None:
-        count = db.scalar(select(func.count()).select_from(Computer).where(Computer.ended_at.is_(None)))
-        if count >= settings.config["concurrency"]:
-            raise HTTPException(409, "云电脑繁忙，请稍后重试")
-        identifier = uuid4()
-        snapshot = {**settings.config, "version": settings.version}
-        snapshot["resource_mount"] = {"bucket": active_storage.bucket, "region": active_storage.region,
-            "prefix": f"workspaces/{access.workspace_id}/resource-directory/", "mode": "shared"}
-        reserve = amount(Decimal(str(settings.config["credits_per_minute"])) * settings.config["idle_seconds"] / 60)
-        if reserve:
-            authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
-        row = Computer(id=identifier, workspace_id=access.workspace_id, user_id=access.user_id,
-            conversation_id=conversation_id, session_hash=access.session_hash, status="starting",
-            snapshot=snapshot, encrypted_api_key=settings.encrypted_api_key,
-            manifest={}, held_credits=reserve, charged_credits=0, billed_seconds=0, billing_sequence=0)
-        db.add(row)
-        db.flush()
-    if db.scalar(select(Command.id).where(Command.session_id == row.id, Command.status.in_(BUSY))):
-        raise HTTPException(409, "云电脑已有命令正在执行，请等待完成")
+    row = db.get(Computer, row.id, with_for_update=True, populate_existing=True)
+    if row.ended_at or row.status not in ("ready", "running") or row.stop_requested_at:
+        raise HTTPException(409, "指定云电脑暂不可执行，请查询状态或明确创建另一台")
     command = Command(id=uuid4(), session_id=row.id, request_id=request_id, digest=digest, payload=payload,
                       agent_tool_execution_id=agent_tool_execution_id,
                       status="queued", cancel_requested=False, result={})
@@ -483,9 +608,6 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
         if row.ended_at or row.status in ("stopping", "uncertain") or command.cancel_requested:
             command.status, command.finished_at = "cancelled", now()
             command.result = {"status": "cancelled", "error": "命令已停止", "error_code": "cloud_cancelled"}
-            if not row.provider_id:
-                reconcile(db, row, now(), final=True)
-                row.status, row.ended_at = "ended", now()
             db.commit()
             return
         command.status, command.started_at, command.heartbeat_at = "preparing", now(), now()
@@ -500,18 +622,7 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
             if row.snapshot.get("resource_mount", {}).get("mode") != "shared":
                 raise HTTPException(503, "云电脑未挂载工作区资源目录")
             if not row.provider_id:
-                stage_mount(db, row, access, command.payload["inputs"])
-                try:
-                    row.provider_id, row.started_at = provider.create(row.id)
-                except Exception:
-                    row.status, row.error = "uncertain", "云电脑启动结果待核对，请勿重复启动"
-                    command.status, command.finished_at = "uncertain", now()
-                    command.result = {"status": "uncertain", "uncertain": True, "error": row.error,
-                        "error_code": "cloud_result_uncertain"}
-                    db.commit()
-                    return
-                row.status = "ready"
-                db.commit()
+                raise HTTPException(409, "指定云电脑尚未就绪，请查询状态")
             sandbox = provider.connect(row.provider_id)
             provider.prepare(sandbox)
             stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
@@ -600,24 +711,19 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
                     from .cloud_preview import read as read_preview
                     command.result = {**command.result, "preview": read_preview(preview)}
             elif submitted:
-                row.status = "stopping"
-                row.billing_stopped_at = now()
-                set_stop_reason(db, row, "execution_interrupted")
+                # An uncertain command must not destroy other independent work.
+                command.heartbeat_at = now()
             elif row.provider_id:
-                row.status = "stopping"
-                row.billing_stopped_at = row.started_at
-                set_stop_reason(db, row, "execution_interrupted")
+                command.heartbeat_at = now()
             else:
-                set_stop_reason(db, row, "startup_failed")
-                reconcile(db, row, now(), final=True)
-                row.status, row.ended_at = "failed", now()
-                db.commit()
+                row.status = "uncertain"
             logger.warning("Cloud command failed: %s", command.id, exc_info=False)
         finally:
             command.finished_at = now()
-            db.refresh(row, ["status", "ended_at"])
+            db.refresh(row, with_for_update=True)
             if not row.ended_at and row.status not in ("stopping", "uncertain"):
-                row.status, row.last_activity_at = "ready", now()
+                busy = db.scalar(select(Command.id).where(Command.session_id == row.id, Command.status.in_(BUSY)).limit(1))
+                row.status, row.last_activity_at = ("running" if busy else "ready"), now()
             db.commit()
 
 
@@ -638,10 +744,10 @@ def execute(db, access, conversation_id, request_id, arguments, check_active=Non
     row = db.get(Computer, command.session_id, populate_existing=True)
     if command.status in BUSY:
         return {"command_id": str(command.id), "uncertain": True, "error": "命令结果尚未确认，请勿重复执行"}
-    return {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
+    return {**command.result, "computer_id": str(row.id), "cloud_computer": read(row), "command_id": str(command.id)}
 
 
-def execute_image(db, access, conversation_id, request_id, path, check_active, *,
+def execute_image(db, access, conversation_id, request_id, path, check_active, *, computer_id,
                   agent_tool_execution_id=None, on_progress=None):
     """Inspect a mounted image durably, then read its bytes outside command results."""
     from .chat_attachments import MAX_IMAGE_BYTES
@@ -653,7 +759,7 @@ def execute_image(db, access, conversation_id, request_id, path, check_active, *
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
     result = execute(db, access, conversation_id, request_id,
-        {"command": "inspect_image",
+        {"command": "inspect_image", "computer_id": computer_id,
          "file_operation": {"name": "inspect_image", "path": sandbox_path}}, check_active,
         agent_tool_execution_id=agent_tool_execution_id, on_progress=on_progress)
     command = db.get(Command, UUID(result["command_id"]))
@@ -675,7 +781,7 @@ def execute_image(db, access, conversation_id, request_id, path, check_active, *
             if check_active:
                 check_active()
             checked = access.revalidate(db)
-            owner(db, checked, conversation_id)
+            owned_computer(db, checked, row.id)
             db.refresh(row)
             if row.status not in ("ready", "running") or (row.started_at and
                     now() >= aware(row.started_at) + timedelta(seconds=row.snapshot["max_seconds"])):
@@ -700,30 +806,54 @@ def execute_image(db, access, conversation_id, request_id, path, check_active, *
         raise
 
 
-def maintenance(factory=SessionLocal):
+_scheduled = set()
+_schedule_guard = threading.Lock()
+
+
+def maintenance(factory=SessionLocal, *, wait=True):
     """Reconcile lifetime independently of browser/Agent, without replaying commands."""
     with factory() as db:
-        identifiers = list(db.scalars(select(Computer.id).where(Computer.ended_at.is_(None))))
+        query = select(Computer.id).where(Computer.ended_at.is_(None))
+        if not wait:
+            query = query.where((Computer.next_reconcile_at.is_(None)) | (Computer.next_reconcile_at <= now()))
+        identifiers = list(db.scalars(query))
     for identifier in identifiers:
-        try:
+        if wait:
             maintain_one(identifier, factory)
-        except Exception:
-            logger.warning("Cloud computer reconciliation deferred: %s", identifier, exc_info=False)
+            continue
+        with _schedule_guard:
+            if identifier in _scheduled:
+                continue
+            _scheduled.add(identifier)
+        def reconcile_one(identifier=identifier):
+            try:
+                maintain_one(identifier, factory)
+            finally:
+                with _schedule_guard:
+                    _scheduled.discard(identifier)
+        threading.Thread(target=reconcile_one, daemon=True, name=f"cloud-recovery-{identifier}").start()
 
 
 def maintain_one(identifier, factory=SessionLocal):
-    with factory() as db, db.get_bind().connect() as connection:
-        # Session advisory lock spans provider IO, preventing concurrent destroy/
-        # recovery on multiple API workers. It is released even after an exception.
-        lock = int.from_bytes(identifier.bytes[:8], "big", signed=True)
-        pg = connection.dialect.name == "postgresql"
-        if pg and not connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": lock}):
+    with instance_lease(factory, identifier) as acquired:
+        if not acquired:
             return
         try:
-            _maintain(db, identifier)
-        finally:
-            if pg:
-                connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock})
+            with factory() as db:
+                _maintain(db, identifier)
+                row = db.get(Computer, identifier, populate_existing=True)
+                if row:
+                    row.recovery_attempts = 0
+                    row.next_reconcile_at = now() + timedelta(seconds=15)
+                    db.commit()
+        except Exception:
+            logger.warning("Cloud computer reconciliation deferred: %s", identifier, exc_info=False)
+            with factory() as db:
+                row = db.get(Computer, identifier, with_for_update=True)
+                if row and not row.ended_at:
+                    row.recovery_attempts = (row.recovery_attempts or 0) + 1
+                    row.next_reconcile_at = now() + timedelta(seconds=min(300, 15 * 2 ** min(5, row.recovery_attempts)))
+                    db.commit()
 
 
 def _maintain(db, identifier):
@@ -742,20 +872,20 @@ def _maintain(db, identifier):
                 if not owner_active(db, command.agent_tool_execution_id):
                     command.status, command.finished_at, command.cancel_requested = "cancelled", now(), True
                     command.result = {"status": "cancelled", "error": "执行已中断，命令尚未提交"}
-                    if not row.provider_id:
-                        reconcile(db, row, now(), final=True)
-                        row.status, row.ended_at = "ended", now()
                     db.commit()
     if row.ended_at:
         return
-    if row.status in ("starting", "uncertain") and not row.provider_id:
+    if not row.provider_id:
         if (now()-aware(row.created_at)).total_seconds() < 90:
             return
         found = provider.find(row.id)
         if len(found) > 1:
+            # Re-query on the next pass; never mark destruction confirmed from one
+            # lost/failed response, and never create another copy of this intent.
             for provider_id, _ in found:
                 provider.kill(provider_id)
             row.status, row.billing_stopped_at = "stopping", now()
+            row.stop_requested_at = row.stop_requested_at or now()
             set_stop_reason(db, row, "execution_interrupted")
             db.commit()
             return
@@ -769,13 +899,25 @@ def _maintain(db, identifier):
             row.status, row.ended_at = "failed", now()
             db.commit()
             return
+        db.refresh(row)
         row.provider_id, row.started_at = found[0]
-        row.status, row.billing_stopped_at = "stopping", row.started_at
-        set_stop_reason(db, row, "execution_interrupted")
+        if row.creation_request_id and not row.stop_requested_at and row.status != "stopping":
+            provider.prepare(provider.connect(row.provider_id))
+            row.status, row.error = "ready", None
+        else:
+            row.status = "stopping"
+            row.billing_stopped_at = row.billing_stopped_at or row.started_at
+            set_stop_reason(db, row, "execution_interrupted")
         db.commit()
     if not row.provider_id:
         return
     alive = provider.exists(row.provider_id)
+    if alive and row.status in ("starting", "uncertain") and row.creation_request_id and not row.stop_requested_at:
+        provider.prepare(provider.connect(row.provider_id))
+        db.refresh(row)
+        if not row.stop_requested_at:
+            row.status, row.error = "ready", None
+        db.commit()
     from .cloud_preview import maintain as maintain_preview, idle_anchor
     try:
         maintain_preview(db, row, provider, alive)
@@ -797,7 +939,8 @@ def _maintain(db, identifier):
             command.result = {"error": "云电脑已结束，请检查资源库中的输出，勿重复执行", "uncertain": True}
         db.commit()
         return
-    recoverable = [command for command in commands if command.status != "queued"
+    unresolved = list(db.scalars(select(Command).where(Command.session_id == row.id, Command.status == "uncertain")))
+    recoverable = [command for command in commands + unresolved if command.status != "queued"
         and command.heartbeat_at and (now()-aware(command.heartbeat_at)).total_seconds() > 45]
     for command in recoverable:
         if db.get_bind().dialect.name == "postgresql":
@@ -820,14 +963,24 @@ def _maintain(db, identifier):
                 from .cloud_preview import finish_command
                 finish_command(db, command, row, provider, sandbox)
             command.finished_at = now()
-            row.status, row.last_activity_at = "ready", now()
+            db.refresh(row, with_for_update=True)
+            if row.status != "stopping" and not row.ended_at:
+                row.last_activity_at = now()
             db.commit()
         else:
-            # A lost worker cannot safely replay preparation or submission.
-            row.status, row.billing_stopped_at = "stopping", row.billing_stopped_at or now()
-            set_stop_reason(db, row, "execution_interrupted")
+            # Never replay lost submission. Cancel only this command, leaving
+            # other commands/instances alone; a missing receipt stays uncertain.
+            provider.cancel(sandbox, command.id, command.process_id)
+            command.status = "uncertain"
+            command.result = {"status": "uncertain", "uncertain": True, "error": "命令结果待核对，请检查已有输出，勿重复执行"}
+            command.heartbeat_at = now()
             db.commit()
     commands = list(db.scalars(select(Command).where(Command.session_id == row.id, Command.status.in_(BUSY))))
+    db.refresh(row, with_for_update=True)
+    if row.stop_requested_at:
+        row.status = "stopping"
+    elif row.status in ("ready", "running"):
+        row.status = "running" if commands else "ready"
     try:
         session_access(db, row).editor()
     except HTTPException:
@@ -867,8 +1020,9 @@ def _maintain(db, identifier):
     if not provider.kill(row.provider_id):
         db.commit()
         logger.error("Cloud computer destruction not confirmed: %s", identifier)
-        return
+        raise TimeoutError("供应商尚未确认实例已销毁")
     maintain_preview(db, row, provider, False)
+    db.refresh(row, with_for_update=True)
     reconcile(db, row, now(), final=True)
     row.status, row.ended_at = "ended", now()
     db.commit()

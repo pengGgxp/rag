@@ -121,7 +121,7 @@ def _mutation_allowed(path: str) -> bool:
         return True
     if re.fullmatch(r"/conversations/[^/]+/stop", path):
         return True
-    if re.fullmatch(r"/conversations/[^/]+/cloud-computer/end", path):
+    if re.fullmatch(r"/cloud-computers/[^/]+/end", path):
         return True
     if re.fullmatch(r"/cloud-computer/commands/[^/]+/cancel", path):
         return True

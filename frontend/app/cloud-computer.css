@@ -45,3 +45,9 @@
   .cloud-command-line { padding-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .cloud-computer-panel .spin, .cloud-preview-surface .spin { animation: none; } }
+.cloud-computer-list { width: 100%; min-width: 0; }
+.cloud-computer-list > summary { cursor: pointer; min-height: 44px; padding: 10px 4px; }
+.cloud-computer-rows { max-height: 45vh; overflow-y: auto; }
+.cloud-computer-instance { padding: 8px 0; min-width: 0; }
+.cloud-computer-instance + .cloud-computer-instance { border-top: 1px solid var(--line); }
+.cloud-instance-name { overflow-wrap: anywhere; }
