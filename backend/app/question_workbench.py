@@ -213,7 +213,7 @@ METHOD = """先确认用户要求的题型、题量和资料范围。需要依�
 class Runtime:
     def __init__(self, factory, access, selected, request_id, message_id=None):
         self.factory, self.access, self.request_id, self.message_id = factory, access, request_id, message_id
-        self.version, self.calls, self.uncertain = 0, 0, set()
+        self.version, self.uncertain = 0, set()
         if selected and configured():
             with factory() as db:
                 user = db.get(User, access.user_id, populate_existing=True)
@@ -236,9 +236,6 @@ class Runtime:
             return {"error": "工具参数不完整或格式不正确，请修正后重试", "error_code": "tool_arguments"}
         if check_active:
             check_active()
-        self.calls += 1
-        if self.calls > 20:
-            return {"error": "本次题目操作已达上限，请继续发送消息"}
         signature = json.dumps([name, arguments], ensure_ascii=True, sort_keys=True)
         if signature in self.uncertain:
             return {"error": "上次操作结果尚未确认，请打开题目工作台核对", "uncertain": True}

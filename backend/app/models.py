@@ -44,8 +44,6 @@ class SiteSearchSettings(Base):
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=20)
     result_count: Mapped[int] = mapped_column(Integer, default=5)
-    max_search_calls: Mapped[int] = mapped_column(Integer, default=3)
-    max_fetch_calls: Mapped[int] = mapped_column(Integer, default=5)
     prices: Mapped[dict] = mapped_column(JSON, default=dict)
 
 

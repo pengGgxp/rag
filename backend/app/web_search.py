@@ -51,13 +51,11 @@ class SearchConfig:
     api_key: str = field(repr=False)
     timeout_seconds: int = 20
     result_count: int = 5
-    max_search_calls: int = 3
-    max_fetch_calls: int = 5
     prices: dict = field(default_factory=dict)
 
     def snapshot(self):
         return {key: deepcopy(getattr(self, key)) for key in (
-            "version", "timeout_seconds", "result_count", "max_search_calls", "max_fetch_calls", "prices")}
+            "version", "timeout_seconds", "result_count", "prices")}
 
 
 def tools():

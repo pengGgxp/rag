@@ -82,7 +82,7 @@ def test_empty_and_failed_calls_never_charge(paid, monkeypatch, result):
     assert row.units == 0 and row.status in ("empty", "failed")
 
 
-def test_balance_limit_disable_and_call_count_prevent_upstream(paid, monkeypatch):
+def test_balance_and_disable_prevent_upstream_without_task_call_cap(paid, monkeypatch):
     _, db, workspace, _, request, runtime = paid
     called = []
     monkeypatch.setattr(web_search, "invoke", lambda *_: called.append(True) or {"effective": True})
@@ -92,13 +92,14 @@ def test_balance_limit_disable_and_call_count_prevent_upstream(paid, monkeypatch
     assert not called
     db.get(CreditAccount, workspace).balance = 1000
     db.commit()
-    for i in range(3):
+    for i in range(25):
         assert runtime.execute("web_search", {"query": "x"}, str(i), lambda: None)["effective"]
-    assert "上限" in runtime.execute("web_search", {"query": "x"}, "four", lambda: None)["error"]
+    for i in range(12):
+        assert runtime.execute("web_fetch", {"url": "https://example.com"}, f"fetch-{i}", lambda: None)["effective"]
     db.get(SiteSearchSettings, 1).enabled = False
     db.commit()
     assert "暂不可用" in runtime.execute("web_fetch", {"url": "https://example.com"}, "off", lambda: None)["error"]
-    assert len(called) == 3
+    assert len(called) == 37
 
 
 def test_started_call_is_not_replayed_and_recovery_retains_confirmed_usage(paid, monkeypatch):

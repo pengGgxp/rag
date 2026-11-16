@@ -56,7 +56,7 @@ class ExtensionRuntime:
         self.skills = []
         self.message_id, self.request_id = message_id, request_id
         self.provider_config = provider_config
-        self.bindings, self.calls = {}, 0
+        self.bindings = {}
         self.uncertain_calls = set()
         self.verified_citations = []
         self.mcp_tokens = {}
@@ -261,9 +261,6 @@ class ExtensionRuntime:
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
         if signature in self.uncertain_calls:
             return {"error": "上一次操作结果尚未确认，请先到对应服务核对", "uncertain": True}
-        self.calls += 1
-        if self.calls > 20:
-            return {"error": "本次远程工具调用已达上限，请继续发送消息后再试"}
         try:
             mcp_client.validate_tool(item["tool"])
             Draft202012Validator(item["tool"]["inputSchema"], registry=Registry()).validate(arguments)
