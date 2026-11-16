@@ -1,0 +1,65 @@
+name: rag-issue118-acceptance
+x-app: &app
+  image: local/zhiku-issue118-api:local
+  build:
+    context: ../../../..
+    dockerfile: backend/tests/browser/cloud-background/Dockerfile.api
+  environment: &environment
+    DATABASE_URL: postgresql+psycopg://issue118:local-only@db:5432/rag_auth_test_issue118_browser
+    AUTH_TEST_DATABASE_URL: postgresql+psycopg://issue118:local-only@db:5432/rag_auth_test_issue118_suite
+    MIGRATION_DATABASE_URL: postgresql+psycopg://issue118:local-only@db:5432/rag_auth_test_issue118_browser
+    REDIS_URL: redis://redis:6379/0
+    FRONTEND_URL: http://localhost:3138
+    API_PUBLIC_URL: http://localhost:8138
+    AUTH_COOKIE_SECURE: "false"
+    PYTHONPATH: /app:/app/tests:/acceptance
+    SITE_CONFIG_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+    AUTH_SECRET_KEY: local-issue118-not-a-production-secret-2026
+    PREVIEW_ENABLED: "true"
+    PREVIEW_DOMAIN: preview.issue118.test
+    RESOURCE_CACHE_DIR: /tmp/issue118-cache
+    RAG_CLOUD_LIVE_ACCEPT: "0"
+    RAG_IMAGE_READ_LIVE_ACCEPT: "0"
+    RAG_MOUNT_LIVE_ACCEPT: "0"
+  volumes:
+    - ./:/acceptance
+    - data:/synthetic
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_started
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: issue118
+      POSTGRES_PASSWORD: local-only
+      POSTGRES_DB: rag_auth_test_issue118_browser
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U issue118 -d rag_auth_test_issue118_browser"]
+      interval: 2s
+      retries: 30
+    volumes:
+      - ./suite.sql:/docker-entrypoint-initdb.d/001-suite.sql:ro
+  redis:
+    image: redis:7.2-alpine
+  mock:
+    <<: *app
+    command: [uvicorn, acceptance_services:app, --host, 0.0.0.0, --port, "8900", --log-level, warning]
+    ports: ["127.0.0.1:8938:8900"]
+  api:
+    <<: *app
+    command: [bash, -lc, "alembic upgrade head && uvicorn acceptance_runtime:app --host 0.0.0.0 --port 8000 --log-level warning"]
+    ports: ["127.0.0.1:8138:8000"]
+  worker:
+    <<: *app
+    command: [celery, -A, acceptance_runtime:celery_app, worker, --loglevel=warning, --concurrency=4]
+  web:
+    image: local/zhiku-issue118-web:local
+    build:
+      context: ../../../..
+      dockerfile: backend/tests/browser/cloud-background/Dockerfile.web
+    ports: ["127.0.0.1:3138:3000"]
+volumes:
+  data:

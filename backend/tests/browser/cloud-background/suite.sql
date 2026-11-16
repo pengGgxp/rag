@@ -1,0 +1,1 @@
+CREATE DATABASE rag_auth_test_issue118_suite;
