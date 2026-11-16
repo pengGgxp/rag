@@ -1,10 +1,19 @@
 """Authorized reads from retained observations; no remote IO or billing."""
+import json
 from uuid import UUID
 
 from fastapi import HTTPException
 
 from .agent_tools import evidence_page, text_fields
 from .models import AgentToolExecution, Chunk, Document, DocumentStatus, KnowledgeBaseStatus, MCPServer
+
+
+def metadata(content):
+    try:
+        data = json.loads(content)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 def authorize(db, access, row, message, data):
@@ -23,8 +32,7 @@ def authorize(db, access, row, message, data):
         seen.add(identifier)
         row = parent
         message = decrypt_items(row.encrypted_result)[0]["message"]
-        import json
-        data = json.loads(message["content"])
+        data = metadata(message.get("content"))
     extension = data.get("_extension") or {}
     if row.name.startswith("mcp_"):
         try:

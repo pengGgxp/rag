@@ -272,8 +272,8 @@ class ContextManager:
                 return {"error": "该工具结果不存在或尚未确认"}
             message = decrypt_items(row.encrypted_result)[0]["message"]
             content = message.get("content") or ""
-            data = json.loads(content)
-            from .tool_result_reads import authorize, read
+            from .tool_result_reads import authorize, metadata, read
+            data = metadata(content)
             from fastapi import HTTPException
             try:
                 authorize(db, self.access, row, message, data)
