@@ -5,11 +5,12 @@ import logging
 import math
 from datetime import timedelta
 from decimal import Decimal, ROUND_FLOOR
+from enum import Enum
 from uuid import UUID, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 
 from .auth import Access, aware, get_access, now
 from .credit_amounts import CreditRate, amount
@@ -23,6 +24,36 @@ router = APIRouter(tags=["cloud-computer"])
 logger = logging.getLogger(__name__)
 ACTIVE = ("starting", "ready", "running", "stopping", "uncertain")
 BUSY = ("queued", "preparing", "running")
+
+STOP_REASONS = {
+    "user_requested": "你已请求结束云电脑",
+    "idle_timeout": "长时间无操作",
+    "max_lifetime": "已达到最长运行时间",
+    "insufficient_balance": "可用积分不足以继续运行",
+    "reservation_expired": "运行状态核对中断",
+    "access_revoked": "访问权限已失效",
+    "execution_interrupted": "任务执行中断",
+    "provider_ended": "运行环境已停止",
+    "startup_failed": "云电脑未能启动",
+}
+
+
+class ReconcileResult(Enum):
+    CONTINUE = "continue"
+    INSUFFICIENT_BALANCE = "insufficient_balance"
+    RESERVATION_EXPIRED = "reservation_expired"
+    STOPPED = "stopped"
+
+
+def set_stop_reason(db, row, reason):
+    # A manual end and maintenance can race; preserve the first persisted cause.
+    db.execute(update(Computer).where(Computer.id == row.id, Computer.stop_reason.is_(None))
+        .values(stop_reason=reason).execution_options(synchronize_session=False))
+    db.refresh(row, ["stop_reason"])
+
+
+def renewal_reserve(row):
+    return amount(Decimal(str(row.snapshot["credits_per_minute"])) * row.snapshot["idle_seconds"] / 60)
 
 
 class Configuration(BaseModel):
@@ -150,13 +181,17 @@ def charge_at(row, end):
     return seconds, amount(rate * seconds / 60)
 
 
-def reconcile(db, row, end, final=False):
+def reconcile(db, row, end, final=False) -> ReconcileResult:
     """Round cumulative usage once; intervals book only the cumulative delta."""
+    result = ReconcileResult.STOPPED if final or row.billing_stopped_at else ReconcileResult.CONTINUE
     seconds, total = charge_at(row, end)
     limit = row.charged_credits + row.held_credits
     if total > limit:
         rate = Decimal(str(row.snapshot["credits_per_minute"]))
         seconds = int((limit * 60 / rate).to_integral_value(rounding=ROUND_FLOOR)) if rate else seconds
+        if not row.billing_stopped_at:
+            result = ReconcileResult.RESERVATION_EXPIRED
+            set_stop_reason(db, row, "reservation_expired")
         row.billing_stopped_at = aware(row.started_at) + timedelta(seconds=seconds)
         total = amount(rate * seconds / 60)
     delta = max(Decimal(0), total - row.charged_credits)
@@ -174,15 +209,16 @@ def reconcile(db, row, end, final=False):
     row.charged_credits, row.billed_seconds = total, seconds
     row.billing_sequence += 1
     if not final and not row.billing_stopped_at:
-        reserve = amount(Decimal(str(row.snapshot["credits_per_minute"])) * row.snapshot["idle_seconds"] / 60)
+        reserve = renewal_reserve(row)
         account = ensure_account(db, row.workspace_id)
         if account.balance < reserve:
             row.billing_stopped_at = end
-            return False
+            set_stop_reason(db, row, "insufficient_balance")
+            return ReconcileResult.INSUFFICIENT_BALANCE
         if reserve:
             authorization_hold(db, row.workspace_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), reserve)
         row.held_credits = reserve
-    return not row.billing_stopped_at
+    return result
 
 
 def read(row, db=None):
@@ -191,7 +227,12 @@ def read(row, db=None):
     seconds, estimated = charge_at(row, now())
     from .cloud_preview import idle_anchor
     anchor = idle_anchor(db, row) if db is not None else aware(row.last_activity_at)
-    return {"id": str(row.id), "status": row.status, "summary": row.error or labels[row.status],
+    reason_text = STOP_REASONS.get(row.stop_reason)
+    if row.ended_at and row.stop_reason == "reservation_expired":
+        reason_text = "运行状态核对中断，云电脑已结束"
+    return {"id": str(row.id), "status": row.status, "summary": labels[row.status],
+        "stop_reason": row.stop_reason, "stop_reason_text": reason_text,
+        "renewal_required_credits": str(renewal_reserve(row)) if row.stop_reason == "insufficient_balance" else None,
         "terminal": row.ended_at is not None, "credits": str(row.charged_credits if row.ended_at else min(estimated, row.charged_credits+row.held_credits)),
         "credits_per_minute": str(row.snapshot["credits_per_minute"]), "seconds": seconds,
         "idle_ends_at": (anchor+timedelta(seconds=row.snapshot["idle_seconds"])).isoformat() if row.status == "ready" else None,
@@ -224,6 +265,7 @@ def end(conversation_id: UUID, db=Depends(get_db), access=Depends(get_access)):
     if row:
         row.status = "stopping"
         row.billing_stopped_at = row.billing_stopped_at or now()
+        set_stop_reason(db, row, "user_requested")
         for command in db.scalars(select(Command).where(Command.session_id == row.id, Command.status.in_(BUSY))):
             command.cancel_requested = True
         db.commit()
@@ -560,10 +602,13 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
             elif submitted:
                 row.status = "stopping"
                 row.billing_stopped_at = now()
+                set_stop_reason(db, row, "execution_interrupted")
             elif row.provider_id:
                 row.status = "stopping"
                 row.billing_stopped_at = row.started_at
+                set_stop_reason(db, row, "execution_interrupted")
             else:
+                set_stop_reason(db, row, "startup_failed")
                 reconcile(db, row, now(), final=True)
                 row.status, row.ended_at = "failed", now()
                 db.commit()
@@ -711,6 +756,7 @@ def _maintain(db, identifier):
             for provider_id, _ in found:
                 provider.kill(provider_id)
             row.status, row.billing_stopped_at = "stopping", now()
+            set_stop_reason(db, row, "execution_interrupted")
             db.commit()
             return
         if not found:
@@ -718,12 +764,14 @@ def _maintain(db, identifier):
             # the slot during this window to avoid assuming a delayed create failed.
             if now() < aware(row.created_at)+timedelta(seconds=row.snapshot["max_seconds"]+120):
                 return
+            set_stop_reason(db, row, "startup_failed")
             reconcile(db, row, now(), final=True)
             row.status, row.ended_at = "failed", now()
             db.commit()
             return
         row.provider_id, row.started_at = found[0]
         row.status, row.billing_stopped_at = "stopping", row.started_at
+        set_stop_reason(db, row, "execution_interrupted")
         db.commit()
     if not row.provider_id:
         return
@@ -739,6 +787,9 @@ def _maintain(db, identifier):
         # If disappearance was unexpected, charge no unconfirmed interval.
         if row.status != "stopping" and end < aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]):
             end = aware(row.started_at)+timedelta(seconds=row.billed_seconds)
+        if row.status != "stopping":
+            set_stop_reason(db, row, "max_lifetime" if end >= aware(row.started_at)
+                + timedelta(seconds=row.snapshot["max_seconds"]) else "provider_ended")
         reconcile(db, row, end, final=True)
         row.status, row.ended_at = "ended", now()
         for command in commands:
@@ -774,12 +825,14 @@ def _maintain(db, identifier):
         else:
             # A lost worker cannot safely replay preparation or submission.
             row.status, row.billing_stopped_at = "stopping", row.billing_stopped_at or now()
+            set_stop_reason(db, row, "execution_interrupted")
             db.commit()
     commands = list(db.scalars(select(Command).where(Command.session_id == row.id, Command.status.in_(BUSY))))
     try:
         session_access(db, row).editor()
     except HTTPException:
         row.status, row.billing_stopped_at = "stopping", row.billing_stopped_at or now()
+        set_stop_reason(db, row, "access_revoked")
     expired = now() >= aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"])
     anchor = idle_anchor(db, row)
     idle = not commands and now() >= anchor+timedelta(seconds=row.snapshot["idle_seconds"])
@@ -787,9 +840,10 @@ def _maintain(db, identifier):
         row.status = "stopping"
         cutoff = aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]) if expired else anchor+timedelta(seconds=row.snapshot["idle_seconds"])
         row.billing_stopped_at = row.billing_stopped_at or cutoff
+        set_stop_reason(db, row, "max_lifetime" if expired else "idle_timeout")
     if row.status != "stopping" and charge_at(row, now())[0] >= row.billed_seconds + 60:
-        if not reconcile(db, row, now()):
-            row.status, row.error = "stopping", "积分不足，云电脑正在结束"
+        if reconcile(db, row, now()) is not ReconcileResult.CONTINUE:
+            row.status = "stopping"
     db.commit()
     if row.status != "stopping":
         return

@@ -47,6 +47,28 @@ API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页�
 
 预留及释放复用原账本，不计入最终消费；费用类别为 `cloud_computer`。每个环境冻结售价和配置版本，后台调价不改变活跃环境。模型 Token、资源存储及下载费用继续独立核算。云侧实际成本需账单核对，不能用用户积分流水冒充云账单。
 
+### 结束原因与预留不足（Issue #114）
+
+结算返回 `CONTINUE`、`INSUFFICIENT_BALANCE`、`RESERVATION_EXPIRED` 或 `STOPPED`，
+不能将所有停止计费结果解释成余额不足。仅实际可用余额不足以预留完整闲置窗口时，
+记录 `insufficient_balance`。例如单价 2 积分/分钟、闲置窗口 600 秒时，
+每次续期仍需预留 20 积分；余额为正也可能无法满足完整预留。
+
+后台核对延迟使累计费用超过已结算与当前预留总额时，沿用既有费用上限，
+停止计费并结束环境，记录 `reservation_expired`，不追收超过预留覆盖范围的费用、
+不自动续期或重启。此类情况不以账户余额推断原因，也不向用户报积分不足。
+
+`cloud_computer_sessions.stop_reason` 是可空的原因码，通过条件更新保留首次确认原因，
+与运行状态和内部诊断 `error` 分离。原因还包括 `user_requested`、`idle_timeout`、
+`max_lifetime`、`access_revoked`、`execution_interrupted`、`provider_ended` 和 `startup_failed`。
+后续清理或重复结束不覆盖已记录原因；历史记录不从旧错误文字反推原因。
+
+销毁未确认时仍为 `stopping`；只有确认销毁或实例不存在才记录终态和最终结算。
+状态摘要由 `status` 决定，已结束始终显示“云电脑已结束”，内部错误不覆盖摘要。
+迁移 `0073_cloud_stop_reason` 仅增加可空字段，不回填历史原因、不修改余额或账单。
+迁移回滚策略为 `automatic-app-rollback`：旧应用可容忍新增可空列，
+应用回退无需数据库降级；旧字段和计费契约保持不变。
+
 ## API
 
 - `GET/PUT /site/admin/cloud-computer`：版本化设置，管理员权限。
@@ -58,6 +80,15 @@ API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页�
 - `POST /cloud-computer/commands/{id}/cancel`：停止对应命令。
 
 所有用户接口重新验证登录、工作区、会话所有权；写操作要求编辑权限并沿用全局 CSRF/来源校验。
+
+上述环境状态响应及预览附带的 `computer` 统一增加：
+
+- `stop_reason`：可空原因码；未知时为 `null`。
+- `stop_reason_text`：按当前状态生成的用户文案，与 `summary` 分开展示。
+- `renewal_required_credits`：仅 `insufficient_balance` 返回本实例冻结配置计算的续期预留积分字符串，其余为 `null`。
+
+不新增公开接口。聊天控制栏、费用详情、预览与独立预览窗口共用上述状态，
+结束中不显示最终消费；费用详情仅在真实预留不足时展示续期门槛。
 
 ## 对话中的状态与费用（Issue #107）
 
@@ -73,7 +104,8 @@ API 将命令持久化后投递现有 Celery Worker；Agent 等待结果，页�
 结束操作提交后保留“正在结束”，直到现有接口确认 terminal，才展示最终费用。
 查询失败保留最后已知结果并提供刷新，操作响应丢失不会冒充结算成功。
 停止当前命令不停止独立预览；关闭预览不调用结束接口，恢复原有闲置规则。
-本次没有数据库或 API 变更，也没有调整计费、权限、预留、回收和文件持久化规则。
+Issue #107 的界面改造没有数据库或 API 变更，也没有调整计费、权限、预留、回收和文件持久化规则。
+后续结束原因字段与迁移见上文 Issue #114。
 
 ## 上线与验收
 
