@@ -61,6 +61,9 @@ export function CloudFees() {
             <div><dt>已运行</dt><dd>{Math.floor(seconds / 60)} 分 {seconds % 60} 秒</dd></div>
             <div><dt>闲置结束时间</dt><dd>{cloudTime(computer?.idle_ends_at ?? null)}</dd></div>
             <div><dt>最长运行至</dt><dd>{cloudTime(computer?.max_ends_at ?? null)}</dd></div>
+            {computer?.stop_reason_text && <div><dt>结束原因</dt><dd>{computer.stop_reason_text}</dd></div>}
+            {computer?.stop_reason === "insufficient_balance" && computer.renewal_required_credits != null
+              && <div><dt>续期所需预留</dt><dd>{formatCredits(Number(computer.renewal_required_credits))} 积分</dd></div>}
           </dl>
           <p className="cloud-fees-note">{computer?.terminal ? "本次费用已结算。" : computer ? "按秒累计，包含等待时间。" : "尚未启动，不产生云电脑费用。"}
             {!computer && state.catalog?.idle_seconds ? ` 无操作 ${Math.ceil(state.catalog.idle_seconds / 60)} 分钟后自动结束。` : ""}</p>
@@ -108,9 +111,10 @@ export function CloudComputerPanel() {
         <div className="cloud-computer-copy">
           <strong role="status">{ending ? "正在结束云电脑" : computer?.summary || (state.revoked ? "云电脑暂不可访问" : state.error ? "云电脑状态待确认" : "云电脑待命")}</strong>
           <span>{computer?.terminal ? `本次消费 ${formatCredits(Number(computer.credits))} 积分`
-            : ending ? computer?.status === "stopping" && computer.summary !== "正在结束云电脑" ? computer.summary : "正在确认结束结果"
+            : ending ? computer?.stop_reason_text || "正在确认结束结果"
             : computer ? computer.idle_ends_at ? `无操作将于 ${cloudTime(computer.idle_ends_at)} 结束` : "运行期间持续计费"
             : state.error ? "请刷新后重试" : "执行任务时按需启动"}</span>
+          {computer?.terminal && computer.stop_reason_text && <span>{computer.stop_reason_text}</span>}
         </div>
         <div className="cloud-computer-controls">
           {!state.revoked && (computer || state.catalog?.available) && <CloudFees />}

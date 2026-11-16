@@ -1,5 +1,6 @@
 export type Computer = {
   id: string; status: string; summary: string; terminal: boolean;
+  stop_reason: string | null; stop_reason_text: string | null; renewal_required_credits: string | null;
   credits: string; credits_per_minute: string; seconds: number;
   idle_ends_at: string | null; max_ends_at: string | null;
 };
@@ -78,7 +79,9 @@ export class CloudComputerStore {
     if (old && (!next || old.id === next.id)) {
       if (old.terminal) return old;
       if (old.status === "stopping" && !next?.terminal && next?.status !== "stopping")
-        return { ...(next ?? old), status: "stopping", summary: old.summary };
+        return { ...(next ?? old), status: "stopping", summary: old.summary,
+          stop_reason: old.stop_reason, stop_reason_text: old.stop_reason_text,
+          renewal_required_credits: old.renewal_required_credits };
     }
     return next;
   }

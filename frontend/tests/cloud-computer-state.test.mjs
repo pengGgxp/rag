@@ -6,6 +6,7 @@ import { formatCredits } from "../app/credit-format.ts";
 const computer = (patch = {}) => ({
   id: "env-a", status: "ready", summary: "云电脑运行中", terminal: false, credits: "4.9765",
   credits_per_minute: "2.1234", seconds: 149, idle_ends_at: "2026-11-16T09:10:00Z",
+  stop_reason: null, stop_reason_text: null, renewal_required_credits: null,
   max_ends_at: "2026-11-16T10:00:00Z", ...patch,
 });
 const preview = { id: "preview", name: "算法可视化", status: "ready", summary: "预览就绪", terminal: false, url: null };
@@ -51,6 +52,29 @@ test("failure retains last state and can recover; never implies ended", async ()
   f.fail(null); f.set({ credits: "5.0001" }); await f.store.refresh();
   assert.equal(f.store.getSnapshot().error, "");
   assert.equal(f.store.getSnapshot().computer.credits, "5.0001");
+});
+
+test("a stale ready response cannot erase a persisted stop cause or renewal requirement", async () => {
+  const f = fixture();
+  f.set({ status: "stopping", summary: "正在结束云电脑", stop_reason: "insufficient_balance",
+    stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20.0000" });
+  await f.store.refresh();
+  f.set({ status: "ready", stop_reason: null, stop_reason_text: null, renewal_required_credits: null });
+  await f.store.refresh();
+  const stopping = f.store.getSnapshot().computer;
+  assert.equal(stopping.status, "stopping");
+  assert.equal(stopping.stop_reason, "insufficient_balance");
+  assert.equal(stopping.renewal_required_credits, "20.0000");
+  f.set({ status: "ended", terminal: true, summary: "云电脑已结束", stop_reason: "insufficient_balance",
+    stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20.0000", credits: "2.0333" });
+  await f.store.refresh();
+  f.set({ status: "stopping", stop_reason: "reservation_expired" });
+  await f.store.refresh();
+  const ended = f.store.getSnapshot().computer;
+  assert.equal(ended.status, "ended");
+  assert.equal(ended.summary, "云电脑已结束");
+  assert.equal(ended.stop_reason, "insufficient_balance");
+  assert.equal(ended.credits, "2.0333");
 });
 
 test("late poll cannot overwrite end request; duplicate end submits once and waits for confirmation", async () => {
@@ -145,12 +169,15 @@ test("failed end allows retry without falsely settling or clearing known data", 
 
 test("stopping preserves server reason across polls and delayed ready responses", async () => {
   const f = fixture();
-  f.set({ status: "stopping", summary: "积分不足，云电脑正在结束" });
+  f.set({ status: "stopping", summary: "正在结束云电脑",
+    stop_reason: "insufficient_balance", stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20" });
   await f.store.refresh(); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.summary, "积分不足，云电脑正在结束");
+  assert.equal(f.store.getSnapshot().computer.summary, "正在结束云电脑");
+  assert.equal(f.store.getSnapshot().computer.stop_reason_text, "可用积分不足以继续运行");
   f.set({ status: "ready", summary: "云电脑运行中" }); await f.store.refresh();
   assert.equal(f.store.getSnapshot().computer.status, "stopping");
-  assert.equal(f.store.getSnapshot().computer.summary, "积分不足，云电脑正在结束");
+  assert.equal(f.store.getSnapshot().computer.summary, "正在结束云电脑");
+  assert.equal(f.store.getSnapshot().computer.stop_reason_text, "可用积分不足以继续运行");
 });
 
 test("a delayed end acknowledgement cannot replace a newly created environment", async () => {
