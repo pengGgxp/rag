@@ -162,19 +162,20 @@ def test_cloud_bound_job_rejects_other_runners_and_cancels_orphan(inline, monkey
     fake, _ = enable_execution(db, actor, monkeypatch)
     monkeypatch.setattr(cloud, "dispatch", lambda *_: pytest.fail("不得重新派发"))
     tool, _ = invocation(db, actor, name="run_command", request=runtime.request_id, conversation=conversation)
+    computer_id = cloud.create_computer(db, actor, conversation.id, uuid4(), {"name": "失主命令"})["computer_id"]
     command = cloud.submit(db, actor, conversation.id, cloud.tool_request_id(runtime.request_id, "once"),
-        {"command": "echo synthetic"}, agent_tool_execution_id=tool.id, dispatch_job=False)
+        {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=tool.id, dispatch_job=False)
     cloud.run(command.id, runtime.factory)
     cloud.run(command.id, runtime.factory, agent_tool_execution_id=uuid4())
     cloud.maintenance(runtime.factory)
-    assert fake.creates == fake.starts == 0
+    assert fake.creates == 1 and fake.starts == 0
     conversation.active_request_id = None
     db.commit()
     cloud.maintenance(runtime.factory)
     db.expire_all()
     assert db.get(cloud.Command, command.id).status == "cancelled"
-    assert db.get(cloud.Computer, command.session_id).ended_at
-    assert fake.creates == fake.starts == 0
+    assert not db.get(cloud.Computer, command.session_id).ended_at
+    assert fake.creates == 1 and fake.starts == 0
 
 
 def test_edit_uses_saved_reference_and_receipt_recovery_does_not_generate(inline):
@@ -325,11 +326,14 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
             result = json.loads(observations[-1]["content"])
             if observations[-1]["name"] == "generate_image":
                 assert result["status"] == "completed" and result["files"]
-                return ToolResponse(None, [ToolCall("see", "read_image", {"path": result["files"][0]["path"]})])
+                return ToolResponse(None, [ToolCall("create", "create_cloud_computer", {"name": "配图报告"})])
+            if observations[-1]["name"] == "create_cloud_computer":
+                image_result = next(json.loads(m["content"]) for m in observations if m["name"] == "generate_image")
+                return ToolResponse(None, [ToolCall("see", "read_image", {"path": image_result["files"][0]["path"], "computer_id": result["computer_id"]})])
             if observations[-1]["name"] == "read_image":
                 from test_context_image_completion import image_bytes
                 assert png() in image_bytes(messages)
-                return ToolResponse(None, [ToolCall("write", "write_file", {"path": "reports/report.html", "content": document})])
+                return ToolResponse(None, [ToolCall("write", "write_file", {"computer_id": result["computer_id"], "path": "reports/report.html", "content": document})])
             assert result["path"] == "reports/report.html"
             return ToolResponse("配图已生成并写入报告。", [])
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **k: Provider())
@@ -363,7 +367,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     else:
         events, payload = turn(http, conversation["id"], "生成配图并插入报告")
     assert events[-1][1]["status"] == "completed", events[-1]
-    assert len(calls) == 4 and len(generations) == 1
+    assert len(calls) == 5 and len(generations) == 1
     progress = [data for name, data in events if name == "tool_started" and data.get("image_task")]
     assert progress and progress[0]["image_task"]["status"] == "queued"
     assert all(event["call_id"] == progress[0]["call_id"] for event in progress)

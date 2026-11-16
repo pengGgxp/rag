@@ -63,8 +63,10 @@ def bounded_message(message, result_id, budget):
     if estimate_input([{"content": content}]) <= budget:
         return result
     total = len(content)
+    data = {}
     try:
         previous = json.loads(content)
+        data = previous
         if (isinstance(previous, dict) and previous.get("truncated") is True
                 and isinstance(previous.get("preview"), str) and previous.get("result_id")
                 and type(previous.get("total_characters")) is int):
@@ -73,8 +75,9 @@ def bounded_message(message, result_id, budget):
     except (TypeError, ValueError):
         pass
     metadata = {key: data[key] for key in (
-        "status", "execution_status", "error_code", "uncertain", "isError", "exit_code", "status_code",
-        "source_id", "url", "title", "site_name", "fetched_at", "type", "output_capture", "_extension")
+        "computer_id", "cloud_computer", "command_id", "status", "execution_status", "error_code",
+        "uncertain", "isError", "exit_code", "status_code", "source_id", "url", "title",
+        "site_name", "fetched_at", "type", "output_capture", "_extension")
         if isinstance(data, dict) and key in data}
     if isinstance(data, dict) and data.get("error"):
         metadata["error"] = str(data["error"])[:512]

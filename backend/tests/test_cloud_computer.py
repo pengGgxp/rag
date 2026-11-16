@@ -112,7 +112,14 @@ def setup(accounts, monkeypatch, rate="0.6"):
 
 
 def submit(db, access, conversation, command="echo test", request=None, inputs=None):
-    return cloud.submit(db, access, conversation.id, request or uuid4(), {"command": command})
+    # Test callers explicitly choose an existing instance; production never does.
+    previous = db.scalar(select(Command).where(Command.request_id == request)) if request else None
+    row = db.get(Computer, previous.session_id) if previous else db.scalar(select(Computer).where(
+        Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id, Computer.ended_at.is_(None)))
+    if row is None:
+        created = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "测试云电脑"})
+        row = db.get(Computer, UUID(created["computer_id"]))
+    return cloud.submit(db, access, conversation.id, request or uuid4(), {"command": command, "computer_id": str(row.id)})
 
 
 def enable_execution(db, access, monkeypatch):
@@ -141,7 +148,11 @@ def enable_execution(db, access, monkeypatch):
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
     def execute(arguments):
-        return cloud.execute(db, access, conversation.id, uuid4(), arguments, None)
+        row = db.scalar(select(Computer).where(Computer.user_id == access.user_id,
+            Computer.workspace_id == access.workspace_id, Computer.ended_at.is_(None)))
+        identifier = str(row.id) if row else cloud.create_computer(db, access, conversation.id, uuid4(),
+            {"name": "测试文件任务"})["computer_id"]
+        return cloud.execute(db, access, conversation.id, uuid4(), {**arguments, "computer_id": identifier}, None)
     return fake, execute
 
 
@@ -186,7 +197,7 @@ def test_reuse_idempotency_and_outputs(accounts, monkeypatch, resource_store):
     cloud.run(second.id, factory)
     assert fake.creates == 1 and fake.starts == 2 and fake.writes == 0
     assert len(db.scalars(select(Computer)).all()) == 1
-    listing = client.get(f"/conversations/{conversation.id}/cloud-computer/commands")
+    listing = client.get(f"/cloud-computers/{command.session_id}/commands")
     assert "synthetic-api-key" not in listing.text and "provider_id" not in listing.text
 
 
@@ -200,7 +211,7 @@ def test_replay_returns_original_without_preparing_inputs(accounts, monkeypatch,
 
     monkeypatch.setattr("app.workspace_files.resolve_input", unavailable)
     assert submit(db, access, conversation, request=request).id == original.id
-    assert fake.creates == 0
+    assert fake.creates == 1
 
 
 def test_initial_price_is_one_credit_and_remains_disabled():
@@ -242,19 +253,18 @@ def test_insufficient_balance_does_not_create_or_dispatch(accounts, monkeypatch)
     assert db.scalar(select(Computer)) is None and fake.creates == 0
 
 
-def test_owner_workspace_role_and_concurrency(accounts, monkeypatch):
+def test_owner_workspace_role_and_cross_conversation_reuse(accounts, monkeypatch):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch)
     member = accounts[0][1]
     identity = register(member, "member@example.com")
-    assert member.get(f"/conversations/{conversation.id}/cloud-computer").status_code == 404
-    assert member.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 404
-    submit(db, access, conversation)
+    assert member.get("/cloud-computers").json()["items"] == []
+    command = submit(db, access, conversation)
+    computer_id = str(command.session_id)
+    assert member.get(f"/cloud-computers/{computer_id}").status_code == 404
+    assert member.post(f"/cloud-computers/{computer_id}/end", json={}).status_code == 404
     other = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
     db.add(other); db.commit()
-    with pytest.raises(HTTPException) as error:
-        submit(db, access, other)
-    assert error.value.status_code == 409
-    db.rollback()
+    assert submit(db, access, other).session_id == command.session_id
     share(client, "member@example.com", "viewer"); switch(member, str(access.workspace_id))
     own = Conversation(workspace_id=access.workspace_id, owner_id=UUID(identity["user"]["id"]))
     db.add(own); db.commit()
@@ -291,16 +301,15 @@ def test_idle_destroy_and_failed_destroy_not_billed(accounts, monkeypatch, resou
 def test_unknown_create_reconciles_without_second_create(accounts, monkeypatch, resource_store):
     _, db, conversation, access, fake, factory = setup(accounts, monkeypatch)
     fake.create_uncertain = True
-    command = submit(db, access, conversation)
-    cloud.run(command.id, factory)
+    result = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "不确定创建"})
     db.expire_all()
-    row = db.get(Computer, command.session_id)
+    row = db.get(Computer, UUID(result["computer_id"]))
     assert row.status == "uncertain" and fake.creates == 1
     row.created_at = cloud.now()-timedelta(seconds=120)
     db.commit()
     cloud.maintenance(factory)
     db.expire_all()
-    assert db.get(Computer, row.id).ended_at and fake.creates == 1 and fake.starts == 0
+    assert db.get(Computer, row.id).status == "ready" and fake.creates == 1 and fake.starts == 0
 
 
 def test_price_changes_frozen_and_ended_request_not_replayed(accounts, monkeypatch, resource_store):
@@ -313,7 +322,7 @@ def test_price_changes_frozen_and_ended_request_not_replayed(accounts, monkeypat
     db.expire_all()
     row = db.get(Computer, command.session_id)
     assert Decimal(str(row.snapshot["credits_per_minute"])) == Decimal("0.6")
-    assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+    assert client.post(f"/cloud-computers/{row.id}/end", json={}).status_code == 200
     cloud.maintenance(factory)
     assert submit(db, access, conversation, request=request).id == command.id
     assert fake.creates == 1 and fake.starts == 1
@@ -355,7 +364,7 @@ def test_end_destroys_instance_even_when_process_cancellation_fails(accounts, mo
     def unavailable(*args):
         raise TimeoutError()
     monkeypatch.setattr(fake, "cancel", unavailable)
-    assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+    assert client.post(f"/cloud-computers/{command.session_id}/end", json={}).status_code == 200
     cloud.maintenance(factory)
     db.expire_all()
     assert db.get(Computer, command.session_id).ended_at is not None

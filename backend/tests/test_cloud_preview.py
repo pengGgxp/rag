@@ -26,6 +26,7 @@ def prepare(accounts, monkeypatch):
     monkeypatch.setattr(fake, "stop_preview", lambda *_: None, raising=False)
     request = uuid4()
     args = {"command": "python3 -m http.server 8080", "preview": {"command": "python3 -m http.server 8080", "port": 8080, "name": "合成预览"}}
+    args["computer_id"] = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "预览测试"})["computer_id"]
     command = cloud.submit(db, access, conversation.id, request, args)
     cloud.run(command.id, factory)
     db.expire_all()
@@ -83,7 +84,7 @@ def test_ticket_exchange_host_binding_revoke_and_http_proxy(accounts, monkeypatc
     monkeypatch.setattr(gateway, "SessionLocal", factory)
     grant = client.post(f"/previews/{row.id}/access", json={})
     assert grant.status_code == 200
-    host = f"{row.id.hex}.preview.str1ct.top"
+    host = f"{row.id.hex}.{get_settings().preview_domain}"
     browser = TestClient(gateway.app, base_url=f"https://{host}")
     token = grant.json()["url"].split("ticket=")[1]
     response = browser.get(f"/_zk_preview/auth?ticket={token}", follow_redirects=False)
@@ -91,7 +92,7 @@ def test_ticket_exchange_host_binding_revoke_and_http_proxy(accounts, monkeypatc
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "Domain=" not in response.headers["set-cookie"]
     assert browser.get(f"/_zk_preview/auth?ticket={token}").status_code == 401
-    assert browser.get("/", headers={"host": f"{uuid4().hex}.preview.str1ct.top"}).status_code == 401
+    assert browser.get("/", headers={"host": f"{uuid4().hex}.{get_settings().preview_domain}"}).status_code == 401
     assert browser.get("/", headers={"Upgrade": "websocket"}).status_code == 426
     calls = []
     def handle(request):
@@ -121,7 +122,7 @@ def test_stop_service_keeps_computer_and_failure_does_not_claim_ready(accounts, 
     assert preview.stop(db, access, row, computer)["status"] == "stopped"
     fake.result = {"exit_code": 1, "stdout": "", "stderr": "port in use"}
     args = {"command": "bad service", "preview": {"command": "bad service", "port": 8080, "name": "失败示例"}}
-    command2 = cloud.submit(db, access, conversation.id, uuid4(), args)
+    command2 = cloud.submit(db, access, conversation.id, uuid4(), {**args, "computer_id": str(computer.id)})
     cloud.run(command2.id, factory)
     db.expire_all()
     failed = db.scalar(select(CloudPreview).where(CloudPreview.command_id == command2.id))

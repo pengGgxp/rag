@@ -41,12 +41,18 @@ def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
     monkeypatch.setattr("app.storage_backend.active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
     monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
+    fake = FakeCloud()
+    monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
+    with Session(engine) as db:
+        computer = cloud.create_computer(db, access, conversation_id, uuid4(), {"name": "并发幂等测试"})
+        computer_id = computer["computer_id"]
     barrier = Barrier(4)
     request_id = uuid4()
     def submit(_):
         with Session(engine) as db:
             barrier.wait(timeout=10)
-            return cloud.submit(db, access, conversation_id, request_id, {"command": "echo synthetic"}).id
+            return cloud.submit(db, access, conversation_id, request_id,
+                {"computer_id": computer_id, "command": "echo synthetic"}).id
     with ThreadPoolExecutor(max_workers=4) as pool:
         ids = list(pool.map(submit, range(4)))
     assert len(set(ids)) == 1
@@ -58,7 +64,8 @@ def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
         command = db.get(CloudComputerCommand, ids[0])
         command.status = "completed"
         db.commit()
-        assert cloud.submit(db, access, conversation_id, request_id, {"command": "echo synthetic"}).id == ids[0]
+        assert cloud.submit(db, access, conversation_id, request_id,
+            {"computer_id": computer_id, "command": "echo synthetic"}).id == ids[0]
 
 
 @pytest.mark.parametrize("inline", [False, True])
@@ -98,12 +105,17 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
     monkeypatch.setattr("app.storage_backend.current_storage", lambda _: SimpleNamespace(
         bucket="test-bucket", region="cn-hangzhou"))
+    fake = FakeCloud()
+    monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
+    with Session(engine) as db:
+        computer = cloud.create_computer(db, access, conversation_id, uuid4(), {"name": "账务幂等测试"})
+        computer_id = computer["computer_id"]
     barrier = Barrier(4)
     def submit_duplicate(_):
         with Session(engine) as db:
             barrier.wait(timeout=10)
             return cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-1-same"),
-                {"command": "echo synthetic"}, agent_tool_execution_id=execution_id).id
+                {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=execution_id).id
     with ThreadPoolExecutor(max_workers=4) as pool:
         ids = list(pool.map(submit_duplicate, range(4)))
     assert len(set(ids)) == 1
@@ -124,7 +136,7 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
             barrier.wait(timeout=10)
             try:
                 return cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-1-same"),
-                    {"command": "echo synthetic" if index == 0 else "echo different"},
+                    {"computer_id": computer_id, "command": "echo synthetic" if index == 0 else "echo different"},
                     agent_tool_execution_id=execution_id).id
             except HTTPException as error:
                 return error.status_code
@@ -135,7 +147,7 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
         assert [row.id for row in db.scalars(select(CreditLedgerEntry).where(
             CreditLedgerEntry.workspace_id == workspace_id))] == held_entries
         second = cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-2-same"),
-            {"command": "echo synthetic"}, agent_tool_execution_id=second_execution_id)
+            {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=second_execution_id)
         second_id = second.id
         assert second_id != ids[0]
     cloud.run(second_id, sessionmaker(bind=engine), agent_tool_execution_id=second_execution_id)
@@ -154,9 +166,9 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
             [row.id for row in db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.workspace_id == workspace_id))],
             [row.id for row in db.scalars(select(UsageEvent).where(UsageEvent.workspace_id == workspace_id))])
         assert cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-1-same"),
-            {"command": "echo synthetic"}, agent_tool_execution_id=execution_id).id == ids[0]
+            {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=execution_id).id == ids[0]
         assert cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-2-same"),
-            {"command": "echo synthetic"}, agent_tool_execution_id=second_execution_id).id == second_id
+            {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=second_execution_id).id == second_id
     cloud.run(ids[0], sessionmaker(bind=engine), agent_tool_execution_id=execution_id)
     cloud.maintain_one(computer_id, sessionmaker(bind=engine))
     with Session(engine) as db:

@@ -30,7 +30,7 @@ def reply(handler, protocol, *, tool=False, text="红色"):
     handler.send_response(200)
     handler.send_header("Content-Type", "text/event-stream")
     handler.end_headers()
-    arguments = {"path": "chart.png"}
+    arguments = {"computer_id": "00000000-0000-4000-a000-000000000112", "path": "chart.png"}
     if protocol == "responses":
         output = ([{"type": "reasoning", "id": "rs-image", "summary": [],
             "encrypted_content": "private-image-reasoning"}, {"type": "function_call",
@@ -82,7 +82,7 @@ def test_image_completion_restore_compact_and_settlement(client, monkeypatch, pr
     db.commit()
     reads, requests = [], []
 
-    def load_image(self, path, check_active, call_id, **execution):
+    def load_image(self, path, check_active, call_id, computer_id, **execution):
         assert execution["agent_tool_execution_id"]
         check_active()
         reads.append((path, call_id))

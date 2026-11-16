@@ -88,6 +88,9 @@ class ExtensionRuntime:
             or (item["function"]["name"] == "read_image" and provider_config
                 and provider_config.supports_images)]
         from .cloud_preview import TOOLS as PREVIEW_TOOLS
+        from .cloud_computer_tools import TOOLS as COMPUTER_TOOLS
+        if self.execution_available:
+            workspace_tools += COMPUTER_TOOLS
         if self.execution_available and get_settings().preview_enabled:
             workspace_tools = workspace_tools + PREVIEW_TOOLS
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
@@ -119,23 +122,27 @@ class ExtensionRuntime:
             self.versions.append(("question-workbench", self.question_workbench.version))
             self.versions.sort()
 
-    def _image_local_loader(self, path, check_active, call_id, **execution):
+    def _image_local_loader(self, path, check_active, call_id, computer_id, **execution):
         from .cloud_computer import execute_image, tool_request_id
         from .models import ChatMessage
         with self.factory() as db:
             access = self.access.revalidate(db)
             message = db.get(ChatMessage, self.message_id) if self.message_id else None
-            image, _ = execute_image(db, access, message.conversation_id if message else None,
-                tool_request_id(self.request_id, call_id), path, check_active, **execution)
+            image, receipt = execute_image(db, access, message.conversation_id if message else None,
+                tool_request_id(self.request_id, call_id), path, check_active, computer_id=computer_id, **execution)
             from .workspace_file_links import get_file_link, file_reference
             linked = get_file_link(db, access, {"path": path})
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"],
-                "files": [file_reference(linked)]}
+                "files": [file_reference(linked)], "computer_id": receipt["computer_id"],
+                "cloud_computer": receipt["cloud_computer"], "command_id": receipt["command_id"]}
 
     def model_tools(self, messages):
         return self.mcp_catalog.prepare(messages)
 
     def label(self, name, arguments=None):
+        from .cloud_computer_tools import LABELS as COMPUTER_LABELS
+        if name in COMPUTER_LABELS:
+            return COMPUTER_LABELS[name]
         if name in ("search_mcp_tools", "load_mcp_tool"):
             return "查找已授权工具" if name == "search_mcp_tools" else "加载已授权工具"
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
@@ -167,6 +174,17 @@ class ExtensionRuntime:
             if value is not None}
         if check_active:
             check_active()
+        from .cloud_computer_tools import LABELS as COMPUTER_LABELS, execute as computer_tool
+        if name in COMPUTER_LABELS:
+            if name not in self.workspace_tool_names:
+                return {"error": "云电脑尚未开放", "error_code": "cloud_computer_unavailable"}
+            try:
+                return computer_tool(self, name, arguments, check_active, call_id=call_id, **execution)
+            except PayloadValidationError:
+                return {"error": "请检查云电脑名称、ID 或分页参数", "error_code": "cloud_arguments"}
+            except HTTPException as error:
+                return {"error": public_error(error.detail), "error_code": "cloud_computer_unavailable",
+                    "status_code": error.status_code}
         from .mcp_tool_catalog import NAMES as MCP_DISCOVERY_NAMES
         if name in MCP_DISCOVERY_NAMES:
             return self.mcp_catalog.execute(name, arguments)
@@ -232,8 +250,9 @@ class ExtensionRuntime:
                 except ValidationError:
                     return {"error": "工具参数不符合定义，请修正后重试", "error_code": "file_arguments"}
                 if name == "read_image":
-                    result = read_image(arguments, config=self.provider_config,
-                        local_loader=lambda path: self._image_local_loader(path, check_active, call_id, **execution),
+                    result = read_image({"path": arguments["path"]}, config=self.provider_config,
+                        local_loader=lambda path: self._image_local_loader(path, check_active, call_id,
+                            arguments["computer_id"], **execution),
                         check_active=check_active)
                     if hasattr(result, "public"):
                         return ImageToolResult(result, {**result.public,

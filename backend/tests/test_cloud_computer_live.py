@@ -74,7 +74,7 @@ open('summary.html','w').write('<html><body>Synthetic cloud task</body></html>')
         artifacts["resume-v2.docx"] = second.content
         assert client.get(f"/resources/{document['id']}/download?version=1").content == first.content
         assert submit(db, access, conversation, command=updated.payload["command"], request=updated.request_id).id == updated.id
-        assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+        assert client.post(f"/cloud-computers/{computer_id}/end", json={}).status_code == 200
         cloud.maintenance(factory)
         db.expire_all()
         row = db.get(cloud.Computer, computer_id)

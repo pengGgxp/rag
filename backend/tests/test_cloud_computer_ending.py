@@ -1,6 +1,7 @@
 """Termination causes use real billing and lifecycle code, with a synthetic provider."""
 from datetime import timedelta
 from decimal import Decimal
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
@@ -49,13 +50,13 @@ def test_delayed_reconciliation_is_not_insufficient_balance(accounts, monkeypatc
     assert row.status == "stopping" and row.ended_at is None
     assert row.stop_reason == "reservation_expired" and row.charged_credits == 20
     assert row.billed_seconds == 600 and row.held_credits == 0
-    payload = client.get(f"/conversations/{conversation.id}/cloud-computer").json()["computer"]
+    payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "正在结束云电脑"
     assert payload["stop_reason_text"] == "运行状态核对中断"
     assert payload["renewal_required_credits"] is None and not payload["terminal"]
     assert db.get(CreditAccount, access.workspace_id).balance == 95000
     # Repeated end and maintenance cannot replace the cause, charge again or create a VM.
-    assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+    assert client.post(f"/cloud-computers/{row.id}/end", json={}).status_code == 200
     cloud.maintenance(factory)
     fake.kill_uncertain = False
     cloud.maintenance(factory)
@@ -63,7 +64,7 @@ def test_delayed_reconciliation_is_not_insufficient_balance(accounts, monkeypatc
     row = db.get(Computer, row.id)
     assert row.status == "ended" and row.ended_at
     assert row.stop_reason == "reservation_expired"
-    payload = client.get(f"/conversations/{conversation.id}/cloud-computer").json()["computer"]
+    payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "云电脑已结束" and payload["terminal"]
     assert payload["stop_reason_text"] == "运行状态核对中断，云电脑已结束"
     before = (db.get(CreditAccount, access.workspace_id).balance,
@@ -86,7 +87,7 @@ def test_positive_balance_can_fail_full_window_reservation(accounts, monkeypatch
     db.commit()
     assert db.get(CreditAccount, access.workspace_id).balance == Decimal("17.9667")
     cloud.maintenance(factory)
-    payload = client.get(f"/conversations/{conversation.id}/cloud-computer").json()["computer"]
+    payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "正在结束云电脑" and not payload["terminal"]
     assert payload["stop_reason"] == "insufficient_balance"
     assert payload["stop_reason_text"] == "可用积分不足以继续运行"
@@ -94,7 +95,7 @@ def test_positive_balance_can_fail_full_window_reservation(accounts, monkeypatch
     fake.kill_uncertain = False
     cloud.maintenance(factory)
     db.expire_all()
-    payload = client.get(f"/conversations/{conversation.id}/cloud-computer").json()["computer"]
+    payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "云电脑已结束"
     assert payload["stop_reason"] == "insufficient_balance" and payload["terminal"]
 
@@ -103,7 +104,7 @@ def test_positive_balance_can_fail_full_window_reservation(accounts, monkeypatch
 def test_confirmed_end_preserves_its_cause(accounts, monkeypatch, cause):
     client, db, conversation, access, fake, factory, row, clock = running(accounts, monkeypatch)
     if cause == "user_requested":
-        assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+        assert client.post(f"/cloud-computers/{row.id}/end", json={}).status_code == 200
     elif cause == "idle_timeout":
         row.started_at = row.last_activity_at = clock - timedelta(seconds=601)
     elif cause == "max_lifetime":
@@ -152,34 +153,42 @@ def test_first_cause_wins_even_for_a_stale_session(accounts, monkeypatch):
         assert stale.stop_reason == "user_requested"
 
 
-def test_execution_failure_preserves_a_distinct_reason(accounts, monkeypatch):
+def test_execution_failure_does_not_end_other_commands_or_computer(accounts, monkeypatch):
     _, db, _, _, fake, factory, row, _ = running(accounts, monkeypatch)
     from app.models import Conversation, CloudComputerCommand as Command
     access = cloud.session_access(db, row)
     command = submit(db, access, db.get(Conversation, row.conversation_id))
     def lost(*_):
         raise TimeoutError("synthetic execution interruption")
+    original_start = fake.start
     monkeypatch.setattr(fake, "start", lost)
     cloud.run(command.id, factory)
     db.expire_all()
     assert db.get(Command, command.id).status == "uncertain"
-    assert db.get(Computer, row.id).stop_reason == "execution_interrupted"
+    assert db.get(Computer, row.id).status == "ready"
+    assert db.get(Computer, row.id).stop_reason is None
+    second = submit(db, access, db.get(Conversation, row.conversation_id))
+    monkeypatch.setattr(fake, "start", original_start)
+    cloud.run(second.id, factory)
+    db.expire_all()
+    assert db.get(Command, second.id).status == "completed"
+    assert db.get(Computer, row.id).status == "ready"
     cloud.maintenance(factory)
     db.expire_all()
-    assert db.get(Computer, row.id).stop_reason == "execution_interrupted"
-    assert cloud.read(db.get(Computer, row.id))["summary"] == "云电脑已结束"
+    assert db.get(Computer, row.id).stop_reason is None
+    assert cloud.read(db.get(Computer, row.id))["summary"] == "云电脑运行中"
 
 
 def test_startup_failure_keeps_internal_errors_out_of_summary(accounts, monkeypatch):
     _, db, conversation, access, fake, factory = setup(accounts, monkeypatch, rate="2")
-    command = submit(db, access, conversation)
     def unavailable(*_):
         raise RuntimeError("synthetic private diagnostic")
-    monkeypatch.setattr(cloud, "stage_mount", unavailable)
-    cloud.run(command.id, factory)
+    monkeypatch.setattr(fake, "prepare", unavailable)
+    created = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "准备失败测试"})
+    assert created["uncertain"]
     db.expire_all()
-    row = db.get(Computer, command.session_id)
-    assert row.status == "failed" and row.stop_reason == "startup_failed"
+    row = db.get(Computer, UUID(created["computer_id"]))
+    assert row.status == "uncertain"
     row.error = "synthetic private diagnostic"
-    assert cloud.read(row)["summary"] == "云电脑未能启动"
+    assert cloud.read(row)["summary"] == "正在核对云电脑状态"
     assert "synthetic private diagnostic" not in str(cloud.read(row))

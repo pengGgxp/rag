@@ -211,7 +211,8 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
     def local_execute(_db, _access, _conversation, _request, arguments, check_active=None):
         commands.append(arguments)
         if "file_operation" in arguments:
-            return {"status": "completed", "cloud_computer": {"id": "local"}, "command_id": str(uuid4()),
+            return {"status": "completed", "computer_id": arguments["computer_id"],
+                    "cloud_computer": {"id": "local"}, "command_id": str(uuid4()),
                     "file_result": {"value": cloud_file_operation.perform(arguments["file_operation"], root)}}
         completed = subprocess.run(arguments["command"], shell=True, cwd=root, capture_output=True, text=True, timeout=10)
         return {"status": "completed", "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
@@ -220,7 +221,9 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
     assert runtime.skills == [{"name": "sample", "description": "total",
         "manifest_path": f"{result['directory']}/SKILL.md", "directory": result["directory"]}]
     assert not any(item["function"]["name"] in {"load_skill", "read_skill_resource"} for item in runtime.tools)
+    computer_id = "00000000-0000-4000-a000-000000000112"
     def run(name, arguments):
+        arguments = {**arguments, "computer_id": computer_id}
         return runtime.execute(name, arguments, call_id=str(uuid4()))
     listing = run("list_files", {"query": "SKILL.md"})
     assert "items" in listing, listing

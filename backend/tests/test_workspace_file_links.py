@@ -1,5 +1,5 @@
 from contextlib import nullcontext
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -138,11 +138,14 @@ def test_durable_command_link_delivery_and_replay(accounts, resource_store, monk
     fake, _ = enable_execution(db, actor, monkeypatch)
     fake.outputs = {"成果/中文报告.pptx": b"command-created-pptx"}
 
+    computer_id = None
     class Provider(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, **kwargs):
             observed = [item for item in messages if item["role"] == "tool"]
             if not observed:
-                return ToolResponse(None, [ToolCall("make", "run_command", {"command": "synthetic-create"})])
+                return ToolResponse(None, [ToolCall("make", "run_command", {
+                    "computer_id": computer_id,
+                    "command": "synthetic-create"})])
             if observed[-1]["name"] == "run_command":
                 assert "generated_files" not in json.loads(observed[-1]["content"])
                 return ToolResponse("文件已保存，正在获取入口。", [
@@ -152,6 +155,10 @@ def test_durable_command_link_delivery_and_replay(accounts, resource_store, monk
 
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_: Provider())
     conversation = create(http)
+    from app import cloud_computer
+    actor = access_for(http, db)
+    computer_id = cloud_computer.create_computer(db, actor, UUID(conversation["id"]), uuid4(),
+        {"name": "文件链接测试"})["computer_id"]
     events, request = turn(http, conversation["id"], "生成报告并给我文件链接")
     assert events[-1][1]["status"] == "completed"
     file_event = next(value for name, value in events if name == "tool_result"

@@ -204,7 +204,7 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
         reads = len(resource_store[1])
         run("python3 -c \"from pathlib import Path; assert Path('new.txt').read_text()=='persistent output'; print('second command retained files')\"")
         assert len(resource_store[1]) == reads
-        assert client.post(f"/conversations/{conversation.id}/cloud-computer/end", json={}).status_code == 200
+        assert client.post(f"/cloud-computers/{computer.id}/end", json={}).status_code == 200
         cloud.maintenance(factory)
         db.expire_all()
         computer = db.get(cloud.Computer, computer.id)

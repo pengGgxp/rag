@@ -3,211 +3,169 @@ import assert from "node:assert/strict";
 import { CloudComputerStore, previewReady } from "../app/cloud-computer-state.ts";
 import { formatCredits } from "../app/credit-format.ts";
 
-const computer = (patch = {}) => ({
-  id: "env-a", status: "ready", summary: "云电脑运行中", terminal: false, credits: "4.9765",
-  credits_per_minute: "2.1234", seconds: 149, idle_ends_at: "2026-11-16T09:10:00Z",
-  stop_reason: null, stop_reason_text: null, renewal_required_credits: null,
-  max_ends_at: "2026-11-16T10:00:00Z", ...patch,
+const computer = (id = "a", patch = {}) => ({
+  id, computer_id: id, name: `任务 ${id}`, conversation_id: "original-chat",
+  status: "ready", summary: "云电脑运行中", terminal: false, credits: "4.9765",
+  credits_per_minute: "2.1234", seconds: 149, idle_ends_at: null, max_ends_at: null, ...patch,
 });
-const preview = { id: "preview", name: "算法可视化", status: "ready", summary: "预览就绪", terminal: false, url: null };
-const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const apiError = code => Object.assign(new Error("synthetic"), { status: code });
+const preview = id => ({ id: `preview-${id}`, computer_id: id, name: `预览 ${id}`,
+  status: "ready", summary: "预览就绪", terminal: false, url: null });
+const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 function fixture(scope = {}) {
-  let value = computer(), previewValue = preview, failure = null;
-  const calls = [];
-  const handlers = new Map();
+  const values = new Map(["a", "b"].map(id => [id, computer(id)]));
+  const calls = [], handlers = new Map();
+  let failure = null;
   const request = async (path, options) => {
     calls.push({ path, options });
     if (handlers.has(path)) return handlers.get(path)(options);
     if (failure) throw failure;
-    if (path.endsWith("/catalog")) return { available: true, credits_per_minute: 99, idle_seconds: 600 };
+    if (path.endsWith("/catalog")) return { available: true, credits_per_minute: 99 };
+    if (path.startsWith("/cloud-computers?")) return { items: [...values.values()].map(value => structuredClone(value)), next_offset: null };
+    const id = path.split("/")[2];
     if (path.endsWith("/commands")) return { items: [] };
-    if (path === "/previews/preview") return { preview: structuredClone(previewValue), computer: structuredClone(value), conversation_id: "chat-a" };
-    if (path.endsWith("/preview")) return { preview: previewValue };
-    if (path.endsWith("/cloud-computer")) return { computer: value && structuredClone(value) };
-    if (path.endsWith("/heartbeat")) return { computer: computer({ credits: "999" }) };
+    if (path.endsWith("/preview")) return { preview: preview(id) };
+    if (path.startsWith("/previews/") && !options?.method) {
+      const owner = id.replace("preview-", "");
+      return { preview: preview(owner), computer: structuredClone(values.get(owner)), conversation_id: "original-chat" };
+    }
+    if (path.endsWith("/end")) {
+      values.set(id, computer(id, { status: "stopping" }));
+      return { computer: values.get(id) };
+    }
+    if (path.endsWith("/heartbeat") || path.endsWith("/cancel")) return {};
     throw new Error(`Unmocked ${path}`);
   };
-  const store = new CloudComputerStore({ userId: "owner", workspaceId: "workspace-a", conversationId: "chat-a", ...scope }, request);
-  return { store, calls, handlers, set: patch => { value = computer(patch); }, setPreview: next => { previewValue = next; },
-    fail: error => { failure = error; }, noComputer: () => { value = null; previewValue = null; } };
+  return { store: new CloudComputerStore({ userId: "owner", workspaceId: "w", conversationId: "new-chat", ...scope }, request),
+    calls, handlers, values, fail: value => { failure = value; } };
 }
 
-test("coalesces readers; fees are server values at frozen price, without heartbeats", async () => {
+test("coalesces polls, preserves frozen server fees and associates each preview", async () => {
   const f = fixture();
-  await Promise.all([f.store.refresh(), f.store.refresh(), f.store.refresh()]);
-  assert.equal(f.calls.filter(call => call.path.endsWith("/cloud-computer")).length, 1);
-  assert.equal(f.store.getSnapshot().computer.credits, "4.9765");
-  assert.equal(f.store.getSnapshot().computer.credits_per_minute, "2.1234");
-  assert.equal(formatCredits(Number(f.store.getSnapshot().computer.credits)), "4.9765");
-  assert(previewReady(f.store.getSnapshot(), "preview"));
-  assert(f.calls.every(call => !call.options?.method));
+  await Promise.all([f.store.refresh(), f.store.refresh()]);
+  const state = f.store.getSnapshot();
+  assert.equal(f.calls.filter(call => call.path === "/cloud-computer/catalog").length, 1);
+  assert.equal(formatCredits(Number(state.computers.a.credits)), "4.9765");
+  assert.equal(state.computers.a.credits_per_minute, "2.1234");
+  assert(previewReady(state, "preview-a") && previewReady(state, "preview-b"));
+  assert(f.calls.every(call => !call.options?.method && !call.path.includes("/conversations/")));
 });
 
-test("failure retains last state and can recover; never implies ended", async () => {
+test("ending one ID leaves the other instance and its preview active", async () => {
   const f = fixture(); await f.store.refresh();
-  f.fail(new Error("network down")); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.terminal, false);
-  assert.match(f.store.getSnapshot().error, /上次结果/);
-  f.fail(null); f.set({ credits: "5.0001" }); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().error, "");
-  assert.equal(f.store.getSnapshot().computer.credits, "5.0001");
-});
-
-test("a stale ready response cannot erase a persisted stop cause or renewal requirement", async () => {
-  const f = fixture();
-  f.set({ status: "stopping", summary: "正在结束云电脑", stop_reason: "insufficient_balance",
-    stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20.0000" });
-  await f.store.refresh();
-  f.set({ status: "ready", stop_reason: null, stop_reason_text: null, renewal_required_credits: null });
-  await f.store.refresh();
-  const stopping = f.store.getSnapshot().computer;
-  assert.equal(stopping.status, "stopping");
-  assert.equal(stopping.stop_reason, "insufficient_balance");
-  assert.equal(stopping.renewal_required_credits, "20.0000");
-  f.set({ status: "ended", terminal: true, summary: "云电脑已结束", stop_reason: "insufficient_balance",
-    stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20.0000", credits: "2.0333" });
-  await f.store.refresh();
-  f.set({ status: "stopping", stop_reason: "reservation_expired" });
-  await f.store.refresh();
-  const ended = f.store.getSnapshot().computer;
-  assert.equal(ended.status, "ended");
-  assert.equal(ended.summary, "云电脑已结束");
-  assert.equal(ended.stop_reason, "insufficient_balance");
-  assert.equal(ended.credits, "2.0333");
-});
-
-test("late poll cannot overwrite end request; duplicate end submits once and waits for confirmation", async () => {
-  const f = fixture(); await f.store.refresh();
-  const stale = deferred(), stop = deferred();
-  f.handlers.set("/conversations/chat-a/cloud-computer", () => stale.promise);
-  const poll = f.store.refresh();
-  f.handlers.set("/conversations/chat-a/cloud-computer/end", () => stop.promise);
-  const ending = f.store.end();
-  await f.store.end();
-  assert(f.store.getSnapshot().ending);
+  await f.store.end("a");
+  const state = f.store.getSnapshot();
+  assert.equal(state.computers.a.status, "stopping");
+  assert.equal(state.computers.b.status, "ready");
+  assert(!previewReady(state, "preview-a") && previewReady(state, "preview-b"));
   assert.equal(f.calls.filter(call => call.path.endsWith("/end")).length, 1);
-  assert(!previewReady(f.store.getSnapshot(), "preview"));
-  f.handlers.delete("/conversations/chat-a/cloud-computer");
-  f.set({ status: "stopping", summary: "正在结束云电脑" });
-  stop.resolve({ computer: computer({ status: "stopping" }) });
-  await ending;
-  stale.resolve({ computer: computer({ credits: "1" }) }); await poll;
-  assert.equal(f.store.getSnapshot().computer.status, "stopping");
-  assert.equal(f.store.getSnapshot().computer.terminal, false);
-  f.set({ status: "ended", terminal: true, credits: "5.0033" }); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.credits, "5.0033");
-  assert.equal(f.store.getSnapshot().ending, false);
-  f.set({ status: "ready", credits: "6" }); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.status, "ended");
+  await f.store.end("a");
+  assert.equal(f.calls.filter(call => call.path.endsWith("/end")).length, 1);
 });
 
-test("response replacement rejects older reads without cancelling independently started preview", async () => {
+test("late poll cannot overwrite terminal receipt or first stop cause", async () => {
   const f = fixture(); await f.store.refresh();
-  const stale = deferred();
-  f.handlers.set("/conversations/chat-a/cloud-computer", () => stale.promise);
-  const before = f.store.refresh();
-  f.handlers.delete("/conversations/chat-a/cloud-computer");
-  f.set({ credits: "7" }); await f.store.refresh(true);
-  stale.resolve({ computer: computer({ credits: "1" }) }); await before;
-  assert.equal(f.store.getSnapshot().computer.credits, "7");
-  assert(previewReady(f.store.getSnapshot(), "preview"));
+  f.values.set("a", computer("a", { status: "stopping", stop_reason: "insufficient_balance",
+    stop_reason_text: "积分不足", renewal_required_credits: "20" }));
+  await f.store.refresh();
+  f.values.set("a", computer("a")); await f.store.refresh();
+  assert.equal(f.store.getSnapshot().computers.a.stop_reason, "insufficient_balance");
+  f.values.set("a", computer("a", { status: "ended", terminal: true, credits: "5.0033" }));
+  await f.store.refresh();
+  f.values.set("a", computer("a")); await f.store.refresh();
+  assert.equal(f.store.getSnapshot().computers.a.credits, "5.0033");
+  assert(f.store.getSnapshot().computers.a.terminal);
 });
 
-test("scope disposal rejects late writes; another user/workspace starts empty", async () => {
-  const f = fixture(), waiting = deferred();
-  f.handlers.set("/conversations/chat-a/cloud-computer", () => waiting.promise);
-  const pending = f.store.refresh(); f.store.dispose();
-  const other = fixture({ userId: "other", workspaceId: "workspace-b", conversationId: "chat-b" });
-  assert.equal(other.store.getSnapshot().computer, null);
-  waiting.resolve({ computer: computer() }); await pending;
-  assert.equal(f.store.getSnapshot().computer, null);
-  assert.equal(other.store.getSnapshot().computer, null);
-});
-
-for (const code of [401, 403, 404]) test(`access ${code} clears cached records and blocks reads/actions`, async () => {
+test("lost end response preserves state and permits retry only for that ID", async () => {
   const f = fixture(); await f.store.refresh();
-  f.fail(apiError(code)); await f.store.refresh();
+  f.handlers.set("/cloud-computers/a/end", () => { throw new Error("lost"); });
+  await f.store.end("a");
+  const state = f.store.getSnapshot();
+  assert(!state.computers.a.terminal && !state.ending.a);
+  assert.match(state.actionErrors.a, /尚未确认/);
+  assert.equal(state.actionErrors.b, undefined);
+  assert(previewReady(state, "preview-b"));
+});
+
+test("replacement poll discards stale data, while end and new instance remain separate", async () => {
+  const f = fixture(); await f.store.refresh();
+  const stale = deferred(), stopping = deferred();
+  f.handlers.set("/cloud-computers?limit=20", () => stale.promise);
+  const pending = f.store.refresh();
+  f.handlers.delete("/cloud-computers?limit=20");
+  f.handlers.set("/cloud-computers/a/end", () => stopping.promise);
+  const ending = f.store.end("a");
+  f.values.set("c", computer("c")); await f.store.refresh(true);
+  stopping.resolve({ computer: computer("a", { status: "stopping" }) }); await ending;
+  stale.resolve({ items: [computer("a")], next_offset: null }); await pending;
+  assert.equal(f.store.getSnapshot().computers.a.status, "stopping");
+  assert.equal(f.store.getSnapshot().computers.c.status, "ready");
+});
+
+test("active pagination loads beyond recent history without an instance cap", async () => {
+  const f = fixture();
+  f.handlers.set("/cloud-computers?active_only=true&offset=0", () => ({ items: [computer("a")], next_offset: 1 }));
+  f.handlers.set("/cloud-computers?active_only=true&offset=1", () => ({ items: [computer("c")], next_offset: null }));
+  f.values.set("c", computer("c"));
+  await f.store.refresh();
+  assert.deepEqual(new Set(f.store.getSnapshot().computerIds), new Set(["a", "b", "c"]));
+});
+
+test("one instance query failure does not hide other live instances", async () => {
+  const f = fixture(); await f.store.refresh();
+  f.handlers.set("/cloud-computers/a/commands", () => { throw new Error("temporary"); });
+  await f.store.refresh();
+  assert.match(f.store.getSnapshot().instanceErrors.a, /更新失败/);
+  assert(previewReady(f.store.getSnapshot(), "preview-b"));
+  assert(!previewReady(f.store.getSnapshot(), "preview-a"));
+});
+
+test("global query failure retains previous results and recovers", async () => {
+  const f = fixture(); await f.store.refresh();
+  f.fail(new Error("down")); await f.store.refresh();
+  assert.match(f.store.getSnapshot().error, /上次结果/);
+  assert.equal(f.store.getSnapshot().computers.a.terminal, false);
+  f.fail(null); await f.store.refresh();
+  assert.equal(f.store.getSnapshot().error, "");
+});
+
+for (const code of [401, 403]) test(`access ${code} clears data and blocks actions`, async () => {
+  const f = fixture(); await f.store.refresh();
+  f.fail(Object.assign(new Error("denied"), { status: code })); await f.store.refresh();
   assert(f.store.getSnapshot().revoked);
-  assert.equal(f.store.getSnapshot().computer, null);
-  assert.deepEqual(f.store.getSnapshot().details, {});
+  assert.deepEqual(f.store.getSnapshot().computers, {});
   const count = f.calls.length;
-  await f.store.end(); await f.store.refresh(); await f.store.renew("preview");
+  await f.store.end("a"); await f.store.refresh(); await f.store.renew("preview-a");
   assert.equal(f.calls.length, count);
 });
 
-test("heartbeat data never installs fees or revives ended state", async () => {
+test("late heartbeat cannot revive ended instance or install fees", async () => {
   const f = fixture(); await f.store.refresh();
-  const lease = deferred(); f.handlers.set("/previews/preview/heartbeat", () => lease.promise);
-  const renewing = f.store.renew("preview");
-  f.set({ status: "ended", terminal: true, credits: "5" }); await f.store.refresh();
-  lease.resolve({ computer: computer({ credits: "999" }) }); await renewing;
-  assert.equal(f.store.getSnapshot().computer.credits, "5");
-  assert(!previewReady(f.store.getSnapshot(), "preview"));
-});
-
-test("preview must be server-ready and belong to same environment and conversation", async () => {
-  const f = fixture(); f.setPreview({ ...preview, status: "starting" }); await f.store.refresh();
-  assert(!previewReady(f.store.getSnapshot(), "preview"));
-  f.handlers.set("/previews/preview", () => ({ preview, computer: computer({ id: "older" }), conversation_id: "chat-a" }));
+  const lease = deferred(); f.handlers.set("/previews/preview-a/heartbeat", () => lease.promise);
+  const pending = f.store.renew("preview-a");
+  f.values.set("a", computer("a", { terminal: true, status: "ended", credits: "5" }));
   await f.store.refresh();
-  assert(!previewReady(f.store.getSnapshot(), "preview"));
-  f.handlers.set("/previews/preview", () => ({ preview, computer: computer(), conversation_id: "other-chat" }));
-  await f.store.refresh();
-  assert.equal(f.store.getSnapshot().details.preview, undefined);
-  assert.match(f.store.getSnapshot().previewErrors.preview, /不属于/);
+  lease.resolve({ computer: computer("a", { credits: "999" }) }); await pending;
+  assert.equal(f.store.getSnapshot().computers.a.credits, "5");
+  assert(!previewReady(f.store.getSnapshot(), "preview-a"));
 });
 
-test("failed end allows retry without falsely settling or clearing known data", async () => {
-  const f = fixture(); await f.store.refresh();
-  f.handlers.set("/conversations/chat-a/cloud-computer/end", () => { throw new Error("lost response"); });
-  await f.store.end();
-  assert(!f.store.getSnapshot().computer.terminal);
-  assert(!f.store.getSnapshot().ending);
-  assert.match(f.store.getSnapshot().actionError, /尚未确认/);
-});
-
-test("stopping preserves server reason across polls and delayed ready responses", async () => {
-  const f = fixture();
-  f.set({ status: "stopping", summary: "正在结束云电脑",
-    stop_reason: "insufficient_balance", stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20" });
-  await f.store.refresh(); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.summary, "正在结束云电脑");
-  assert.equal(f.store.getSnapshot().computer.stop_reason_text, "可用积分不足以继续运行");
-  f.set({ status: "ready", summary: "云电脑运行中" }); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.status, "stopping");
-  assert.equal(f.store.getSnapshot().computer.summary, "正在结束云电脑");
-  assert.equal(f.store.getSnapshot().computer.stop_reason_text, "可用积分不足以继续运行");
-});
-
-test("a delayed end acknowledgement cannot replace a newly created environment", async () => {
-  const f = fixture(); await f.store.refresh();
-  const stop = deferred(); f.handlers.set("/conversations/chat-a/cloud-computer/end", () => stop.promise);
-  const ending = f.store.end();
-  f.set({ id: "new-env", credits: "0" }); await f.store.refresh();
-  stop.resolve({ computer: computer({ status: "stopping" }) }); await ending;
-  assert.equal(f.store.getSnapshot().computer.id, "new-env");
-  assert(!f.store.getSnapshot().ending);
-  f.set({ id: "env-a" }); await f.store.refresh();
-  assert.equal(f.store.getSnapshot().computer.id, "new-env");
-});
-
-test("command cancel keeps preview active and uses existing command endpoint", async () => {
-  const f = fixture();
-  f.handlers.set("/conversations/chat-a/cloud-computer/commands", () => ({ items: [
-    { id: "cmd", status: "running", terminal: false, cancel_requested: false, result: {} },
+test("command cancellation is independent, standalone can view a cross-conversation instance", async () => {
+  const f = fixture({ conversationId: null, previewId: "preview-a" });
+  f.handlers.set("/cloud-computers/a/commands", () => ({ items: [
+    { id: "cmd", computer_id: "a", status: "running", terminal: false, cancel_requested: false, result: {} },
   ] }));
-  f.handlers.set("/cloud-computer/commands/cmd/cancel", () => ({}));
   await f.store.refresh(); await f.store.cancel("cmd");
-  assert(previewReady(f.store.getSnapshot(), "preview"));
-  assert.equal(f.calls.filter(call => call.path.endsWith("/end")).length, 0);
+  assert(previewReady(f.store.getSnapshot(), "preview-a"));
+  assert(previewReady(f.store.getSnapshot(), "preview-b"));
+  assert(!f.calls.some(call => call.path.endsWith("/end")));
 });
 
-test("unstarted conversation does not create an environment; standalone discovers its conversation", async () => {
-  const fresh = fixture({ conversationId: null }); fresh.noComputer(); await fresh.store.refresh();
-  assert.equal(fresh.store.getSnapshot().computer, null);
-  assert.equal(fresh.calls.length, 1);
-  const standalone = fixture({ conversationId: null, previewId: "preview" }); await standalone.store.refresh();
-  assert(previewReady(standalone.store.getSnapshot(), "preview"));
-  assert(standalone.calls.some(call => call.path === "/conversations/chat-a/cloud-computer"));
+test("disposed scope ignores late writes and another workspace starts empty", async () => {
+  const f = fixture(), pending = deferred();
+  f.handlers.set("/cloud-computers?limit=20", () => pending.promise);
+  const polling = f.store.refresh(); f.store.dispose();
+  pending.resolve({ items: [], next_offset: null }); await polling;
+  assert.deepEqual(f.store.getSnapshot().computers, {});
+  assert.deepEqual(fixture({ workspaceId: "another" }).store.getSnapshot().computers, {});
 });

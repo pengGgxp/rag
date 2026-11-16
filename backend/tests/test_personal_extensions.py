@@ -242,6 +242,7 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
             previous = [item for item in messages if item["role"] == "tool"]
             if not previous:
                 return ToolResponse(None, [ToolCall("write", "write_file", {
+                    "computer_id": "00000000-0000-4000-a000-000000000112",
                     "path": "reports/answer.md", "content": "Downloadable result"})], self.last_usage)
             return ToolResponse("已生成 reports/answer.md，可点击本次操作下方的下载入口。", [], self.last_usage)
 

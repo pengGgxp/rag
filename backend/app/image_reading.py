@@ -104,8 +104,8 @@ def read_image(arguments, *, config: ChatProviderConfig, local_loader, check_act
             return {"error": "图片在读取过程中发生变化，请重试",
                     "error_code": "image_changed"}
         image = workspace_image(path, content_type, width, height, digest, data)
-        return ImageInput(image.image, {**image.public, **({"files": metadata["files"]}
-            if metadata.get("files") else {})}, image.data)
+        return ImageInput(image.image, {**image.public, **{key: metadata[key] for key in
+            ("files", "computer_id", "cloud_computer", "command_id") if key in metadata}}, image.data)
     except ImageReadError as error:
         reason = {"http_429": "图片读取服务繁忙，重试次数已用尽；请稍后重新读取",
             "http_500": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",

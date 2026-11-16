@@ -14,7 +14,7 @@ export function cloudTime(value: string | null) {
   return value ? new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "—";
 }
 
-export function CloudFees() {
+export function CloudFees({ computerId }: { computerId?: string }) {
   const { state } = useCloudComputer();
   const [open, setOpen] = useState(false);
   const [mobile, setMobile] = useState(false);
@@ -43,15 +43,16 @@ export function CloudFees() {
     window.addEventListener("keydown", escape, true);
     return () => window.removeEventListener("keydown", escape, true);
   }, [open]);
-  const computer = state.computer;
+  const computer = computerId ? state.computers[computerId] : null;
   const seconds = computer?.seconds ?? 0;
   return <>
     <button ref={trigger} id={triggerId} type="button" className="cloud-fees-trigger" aria-haspopup="dialog" aria-expanded={open}
+      aria-label={`费用详情 · ${computer?.name || "云电脑"}`}
       onClick={() => setOpen(value => !value)}><Info size={14} aria-hidden="true" />费用详情</button>
-    {open && <Dialog title="云电脑费用" anchor={mobile ? undefined : trigger.current}
+    {open && <Dialog title={computer ? `${computer.name} · 费用` : "云电脑费用"} anchor={mobile ? undefined : trigger.current}
       restoreFocusSelector={`[id="${triggerId}"]`} onClose={() => setOpen(false)}>
       <div className="cloud-fees">
-        {!mobile && <div className="cloud-fees-heading"><h3 ref={heading} tabIndex={-1}>本次云电脑</h3>
+        {!mobile && <div className="cloud-fees-heading"><h3 ref={heading} tabIndex={-1}>{computer?.name || "云电脑"}</h3>
           <button type="button" className="icon-button" aria-label="关闭费用详情" onClick={() => setOpen(false)}><X size={16} /></button></div>}
         {state.revoked ? <p>暂不可查看，请重新登录。</p> : <>
           <div className="cloud-fees-total"><span>{computer?.terminal ? "最终消费" : "当前累计"}</span>
@@ -74,19 +75,21 @@ export function CloudFees() {
   </>;
 }
 
-export function EndCloudComputer() {
+export function EndCloudComputer({ computerId }: { computerId: string }) {
   const { store, state } = useCloudComputer();
-  if (!state.computer || state.computer.terminal || state.revoked) return null;
-  const ending = state.ending || state.computer.status === "stopping";
-  return <button type="button" className="cloud-end-button" disabled={ending} onClick={() => void store.end()}>
+  const computer = state.computers[computerId];
+  if (!computer || computer.terminal || state.revoked) return null;
+  const ending = state.ending[computerId] || computer.status === "stopping";
+  return <button type="button" className="cloud-end-button" aria-label={`结束云电脑 · ${computer.name}`}
+    disabled={ending} onClick={() => void store.end(computerId)}>
     {ending ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Power size={14} aria-hidden="true" />}
     {ending ? "正在结束" : "结束云电脑"}
   </button>;
 }
 
-export function CloudStatusError() {
+export function CloudStatusError({ computerId }: { computerId?: string }) {
   const { store, state } = useCloudComputer();
-  const message = state.actionError || state.error;
+  const message = (computerId && (state.actionErrors[computerId] || state.instanceErrors[computerId])) || state.error;
   if (!message) return null;
   return <div className="cloud-status-error">
     <CircleAlert size={14} aria-hidden="true" /><span>{message}</span>
@@ -95,20 +98,19 @@ export function CloudStatusError() {
   </div>;
 }
 
-export function CloudComputerPanel() {
+function ComputerRow({ computerId }: { computerId: string }) {
   const { store, state } = useCloudComputer();
-  const computer = state.computer;
-  const command = !computer?.terminal && state.commands.find(item => !item.terminal);
-  const ending = state.ending || computer?.status === "stopping";
+  const computer = state.computers[computerId];
+  const commands = computer && !computer.terminal ? state.commands.filter(item => item.computer_id === computer.id && !item.terminal) : [];
+  const ending = state.ending[computerId] || computer?.status === "stopping";
   const working = computer && !computer.terminal && ["starting", "running", "uncertain"].includes(computer.status);
-  return <>
-    <ConversationPreview />
-    {(state.catalog?.available || computer || state.error) && <section className="cloud-computer-panel" aria-label="云电脑">
+  return <section className="cloud-computer-instance" aria-label={computer?.name || "云电脑"}>
       <div className="cloud-computer-line">
         <span className={`cloud-computer-symbol ${computer && !computer.terminal ? "is-active" : ""}`}>
           {ending || working ? <Loader2 size={18} className="spin" aria-hidden="true" /> : <Monitor size={18} aria-hidden="true" />}
         </span>
         <div className="cloud-computer-copy">
+          <span className="cloud-instance-name">{computer?.name} · {computerId.slice(0, 8)}</span>
           <strong role="status">{ending ? "正在结束云电脑" : computer?.summary || (state.revoked ? "云电脑暂不可访问" : state.error ? "云电脑状态待确认" : "云电脑待命")}</strong>
           <span>{computer?.terminal ? `本次消费 ${formatCredits(Number(computer.credits))} 积分`
             : ending ? computer?.stop_reason_text || "正在确认结束结果"
@@ -117,15 +119,32 @@ export function CloudComputerPanel() {
           {computer?.terminal && computer.stop_reason_text && <span>{computer.stop_reason_text}</span>}
         </div>
         <div className="cloud-computer-controls">
-          {!state.revoked && (computer || state.catalog?.available) && <CloudFees />}
-          {computer?.terminal ? <Link className="cloud-files-link" href="/resources"><FolderOpen size={14} />查看文件</Link> : <EndCloudComputer />}
+          {!state.revoked && (computer || state.catalog?.available) && <CloudFees computerId={computerId} />}
+          {computer?.terminal ? <Link className="cloud-files-link" href="/resources"><FolderOpen size={14} />查看文件</Link> : <EndCloudComputer computerId={computerId} />}
         </div>
       </div>
-      {command && !ending && <div className="cloud-command-line"><span>当前命令执行中</span>
-        <button type="button" className="cloud-command-stop" disabled={!!state.cancelling || command.cancel_requested}
+      {!ending && commands.map(command => <div className="cloud-command-line" key={command.id}><span>命令 {command.id.slice(0, 8)} 执行中</span>
+        <button type="button" className="cloud-command-stop" aria-label={`停止命令 ${command.id.slice(0, 8)} · ${computer.name}`}
+          disabled={!!state.cancelling[command.id] || command.cancel_requested}
           onClick={() => void store.cancel(command.id)}><Square size={12} aria-hidden="true" />{command.cancel_requested ? "正在停止命令" : "停止当前命令"}</button>
-      </div>}
-      <CloudStatusError />
+      </div>)}
+      <CloudStatusError computerId={computerId} />
+    </section>;
+}
+
+export function CloudComputerPanel() {
+  const { state } = useCloudComputer();
+  const active = state.computerIds.filter(id => !state.computers[id]?.terminal).length;
+  return <>
+    <ConversationPreview />
+    {(state.catalog?.available || state.computerIds.length > 0 || state.error) && <section className="cloud-computer-panel" aria-label="云电脑">
+      {state.computerIds.length > 1 ? <details className="cloud-computer-list">
+        <summary>{active ? `${active} 台云电脑运行或核对中` : "云电脑已结束"} · 查看各台状态</summary>
+        <div className="cloud-computer-rows">{state.computerIds.map(id => <ComputerRow key={id} computerId={id} />)}</div>
+      </details> : state.computerIds.length === 1 ? <ComputerRow computerId={state.computerIds[0]} /> :
+        <div className="cloud-computer-line"><Monitor size={18} aria-hidden="true" /><div className="cloud-computer-copy">
+          <strong role="status">{state.revoked ? "云电脑暂不可访问" : "云电脑待命"}</strong><span>执行任务时按需创建</span>
+        </div><CloudFees /><CloudStatusError /></div>}
     </section>}
   </>;
 }

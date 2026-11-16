@@ -29,7 +29,8 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
   const [frameLoaded, setFrameLoaded] = useState(false);
   const detail = state.details[id];
   const active = previewReady(state, id);
-  const sameComputer = detail?.computer.id === state.computer?.id;
+  const computer = detail && state.computers[detail.computer.id];
+  const sameComputer = !!computer;
   useEffect(() => {
     store.selectPreview(id);
     return () => store.selectPreview(null);
@@ -64,9 +65,8 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
   const showFrame = active && !!url;
   const refresh = () => { setUrl(""); setError(""); setRevision(value => value + 1); void store.refresh(true); };
   const title = detail?.preview.name || "成果预览";
-  const computer = sameComputer ? state.computer : null;
   const previewError = active ? error : "";
-  const summary = computer && (computer.terminal || state.ending || computer.status === "stopping")
+  const summary = computer && (computer.terminal || state.ending[computer.id] || computer.status === "stopping")
     ? computer.terminal ? computer.summary : "正在结束云电脑"
     : state.previewErrors[id] || (detail && !sameComputer ? "此预览已结束" : detail?.preview.summary) || "正在获取预览状态";
   return <section className={`cloud-preview-surface ${standalone ? "cloud-preview-standalone" : ""}`} aria-label="成果预览">
@@ -79,8 +79,8 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
       </div>
     </header>
     {active && <p className="cloud-preview-notice"><span className="cloud-preview-dot" />预览期间云电脑持续运行并计费</p>}
-    {(standalone || compact) && sameComputer && <div className="cloud-preview-controls"><CloudFees /><EndCloudComputer /></div>}
-    <div className="cloud-preview-status"><CloudStatusError />
+    {(standalone || compact) && computer && <div className="cloud-preview-controls"><CloudFees computerId={computer.id} /><EndCloudComputer computerId={computer.id} /></div>}
+    <div className="cloud-preview-status"><CloudStatusError computerId={computer?.id} />
       {previewError && <div className="cloud-preview-error" role="status">{previewError}</div>}
     </div>
     <div className="cloud-preview-canvas">
@@ -90,7 +90,7 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
           sandbox="allow-scripts allow-forms allow-same-origin allow-downloads" onLoad={() => setFrameLoaded(true)} />
       </> : <div className="cloud-preview-empty" role="status"><Monitor size={28} /><p>{previewError || summary}</p>
         {computer?.stop_reason_text && <p className="cloud-preview-stop-reason">{computer.stop_reason_text}</p>}
-        {detail && (detail.computer.terminal || state.computer?.terminal || !sameComputer)
+        {detail && (detail.computer.terminal || computer?.terminal || !sameComputer)
           && <Link className="cloud-files-link" href="/resources"><FolderOpen size={15} />查看文件</Link>}
       </div>}
     </div>

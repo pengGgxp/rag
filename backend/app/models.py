@@ -1189,6 +1189,12 @@ class CloudComputerSession(Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
     session_hash: Mapped[str] = mapped_column(String(64))
+    creation_request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
+    creation_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    stop_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_reconcile_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    recovery_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(32), default="starting", index=True)
     provider_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     snapshot: Mapped[dict] = mapped_column(JSON)
@@ -1205,8 +1211,6 @@ class CloudComputerSession(Base):
     stop_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    __table_args__ = (Index("uq_cloud_computer_active_user", "user_id", unique=True,
-        postgresql_where=ended_at.is_(None), sqlite_where=ended_at.is_(None)),)
 
 
 class CloudComputerCommand(Base):

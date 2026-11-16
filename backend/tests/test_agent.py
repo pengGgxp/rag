@@ -553,9 +553,10 @@ def test_cloud_file_results_reach_model_and_allow_remaining_tools(runtime, state
     from app.cloud_computer import read
 
     timestamp = datetime(2026, 11, 6, 13, 17, 13, tzinfo=timezone.utc)
-    computer = SimpleNamespace(id=uuid4(), status=state, error=None,
+    computer = SimpleNamespace(id=uuid4(), name="测试实例", conversation_id=uuid4(), status=state, error=None,
         started_at=None if state == "starting" else timestamp,
         ended_at=timestamp if state == "ended" else None, billing_stopped_at=None,
+        stop_reason=None,
         last_activity_at=timestamp, charged_credits=Decimal("0"), held_credits=Decimal("20"),
         snapshot={"credits_per_minute": "2", "max_seconds": 3600, "idle_seconds": 600})
     completed = []

@@ -48,9 +48,10 @@ def test_file_tool_dispatch_never_downloads_body(accounts, resource_store, monke
     def execute(db, actor, conversation, request, arguments, check):
         calls.append(arguments["file_operation"])
         return {"status": "completed", "file_result": {"value": {"content": "resource facts"}},
-                "cloud_computer": {"id": "same-computer"}, "command_id": "command"}
+                "computer_id": "same-computer", "cloud_computer": {"id": "same-computer"}, "command_id": "command"}
     monkeypatch.setattr(cloud, "execute", execute)
-    result = workspace_files.execute_tool("read_file", {"id": item["id"]}, db, access,
+    result = workspace_files.execute_tool("read_file", {"id": item["id"],
+        "computer_id": "00000000-0000-4000-a000-000000000112"}, db, access,
         access.workspace_id, uuid4(), uuid4())
     assert result["content"] == "resource facts"
     assert result["file_path"] == "/home/user/workspace/" + item["path"]
@@ -73,11 +74,12 @@ def test_worker_does_not_scan_or_copy_on_completion(accounts, resource_store, mo
     def forbidden(*args, **kwargs): pytest.fail("post-command file scan/copy")
     monkeypatch.setattr(fake, "manifest", forbidden)
     monkeypatch.setattr(fake, "read", forbidden)
-    command = cloud.submit(db, access, conversation.id, uuid4(), {"command": "touch result.txt"})
+    identifier = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "文件测试"})["computer_id"]
+    command = cloud.submit(db, access, conversation.id, uuid4(), {"command": "touch result.txt", "computer_id": identifier})
     cloud.run(command.id, factory)
     db.refresh(command)
     assert command.status == "completed" and "generated_files" not in command.result
-    client.post(f"/conversations/{conversation.id}/cloud-computer/end")
+    client.post(f"/cloud-computers/{command.session_id}/end")
     cloud.maintenance(factory)
     assert fake.kills == 1 and not resource_store[1]
 
@@ -91,7 +93,7 @@ def test_file_delete_invalidates_resource(accounts, resource_store, monkeypatch)
         from app.shared_resources import object_key
         resource_store[0].pop(object_key(actor.workspace_id, item["path"]))
         return {"status": "completed", "file_result": {"value": {"deleted": True}},
-            "cloud_computer": {"id": "computer"}, "command_id": "command"}
+            "computer_id": "computer", "cloud_computer": {"id": "computer"}, "command_id": "command"}
     monkeypatch.setattr(cloud, "execute", execute)
     result = workspace_files.execute_tool("delete_file", {"path": item["path"]}, db, access,
         access.workspace_id, uuid4(), uuid4())
