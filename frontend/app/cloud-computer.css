@@ -1,8 +1,47 @@
-.cloud-computer-panel { color: var(--text-muted, #66716b); font-size: 12px; padding: 0 12px 8px; line-height: 1.5; min-width: 0; }
-.cloud-computer-line { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
-.cloud-computer-line > span { display: inline-flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
-.cloud-computer-panel .icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
-.cloud-computer-panel .text-button { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; }
-.cloud-computer-panel > a { display: inline-flex; align-items: center; min-height: 44px; color: inherit; text-decoration: none; }
-.cloud-computer-price { color: inherit; font-size: inherit; }
-@media (prefers-reduced-motion: reduce) { .cloud-computer-panel .spin { animation: none; } }
+.cloud-computer-panel { border: 1px solid var(--line); border-radius: var(--form-radius); background: var(--surface); margin-bottom: 10px; padding: 4px 10px; font-size: 12px; min-width: 0; }
+.cloud-computer-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cloud-computer-symbol { color: var(--muted); display: flex; flex: 0 0 auto; }
+.cloud-computer-symbol.is-active { color: var(--accent); }
+.cloud-computer-copy { flex: 1; min-width: 0; padding: 6px 0; display: flex; flex-direction: column; gap: 2px; }
+.cloud-computer-copy strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.cloud-computer-copy > span { color: var(--muted); font-size: 11px; }
+.cloud-computer-controls { display: flex; align-items: center; flex-shrink: 0; gap: 4px; }
+.cloud-fees-trigger, .cloud-end-button, .cloud-files-link, .cloud-command-stop { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 6px 10px; border-radius: var(--form-radius); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.cloud-fees-trigger { color: var(--muted); }
+.cloud-fees-trigger:hover, .cloud-fees-trigger[aria-expanded="true"], .cloud-files-link:hover { background: var(--surface-muted); color: var(--ink); }
+.cloud-end-button { color: var(--danger); }
+.cloud-end-button:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.cloud-files-link { color: var(--ink); }
+.cloud-command-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid var(--line); color: var(--muted); padding-left: 28px; }
+.cloud-command-stop { color: var(--muted); }
+.cloud-command-stop:hover { color: var(--ink); background: var(--surface-muted); }
+.cloud-status-error { display: flex; align-items: center; gap: 7px; color: var(--warning-foreground); font-size: 12px; min-width: 0; }
+.cloud-status-error > span { flex: 1; overflow-wrap: anywhere; }
+.cloud-status-error > svg { flex-shrink: 0; }
+.cloud-status-error .icon-button, .cloud-fees .icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
+.cloud-fees { padding: 18px 20px 20px; min-width: 0; }
+.modal .cloud-fees { padding: 20px 24px 24px; }
+.modal:has(.cloud-fees) .modal-heading { padding: 10px 20px; }
+.modal:has(.cloud-fees) .modal-heading h2 { line-height: 22px; }
+.modal:has(.cloud-fees) .modal-heading .icon-button { width: 44px; height: 44px; }
+.cloud-fees-heading { display: flex; align-items: center; justify-content: space-between; margin: -8px -8px 14px 0; gap: 8px; }
+.cloud-fees-heading h3 { font-size: 14px; font-weight: 600; margin: 0; outline: none; }
+.cloud-fees-total { display: flex; flex-direction: column; gap: 4px; margin-bottom: 22px; }
+.cloud-fees-total > span { color: var(--muted); font-size: 12px; }
+.cloud-fees-total strong { font-size: 26px; font-weight: 600; line-height: 34px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cloud-fees-total small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 7px; }
+.cloud-fees-rows { margin: 0; display: grid; gap: 14px; font-size: 12px; }
+.cloud-fees-rows > div { display: flex; justify-content: space-between; gap: 16px; }
+.cloud-fees-rows dt { color: var(--muted); }
+.cloud-fees-rows dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.cloud-fees-note { color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; margin: 20px 0 0; line-height: 1.7; font-size: 12px; }
+.cloud-fees-warning { display: flex; align-items: flex-start; gap: 6px; color: var(--warning-foreground); font-size: 12px; margin: 12px 0 0; }
+@media (max-width: 700px) {
+  .cloud-computer-line { flex-wrap: wrap; gap: 0 8px; }
+  .cloud-computer-copy { flex-basis: calc(100% - 28px); }
+  .cloud-computer-controls { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); margin-top: 4px; }
+  .cloud-computer-controls > :first-child { margin-left: -6px; }
+  .cloud-computer-controls > :last-child { margin-right: -6px; }
+  .cloud-command-line { padding-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .cloud-computer-panel .spin, .cloud-preview-surface .spin { animation: none; } }

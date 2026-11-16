@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, Download, ExternalLink, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, Download, ExternalLink, FileText, FolderOpen, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
 import { API_URL, ApiError, downloadFile, request } from "./api";
 import Link from "next/link";
 import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
-import { openPreview, type Preview } from "./cloud-preview";
+import { PreviewResultAction, type Preview } from "./cloud-preview";
 import { activityFiles, processHeadline } from "./conversation-display";
 
 export type SavedDocument = {
@@ -145,9 +145,10 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
         <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>
       </Link>
     </div>)}
-    {previews.map(preview => <div className="activity-file-downloads" key={preview.id}>
-      <button type="button" className="activity-file-download" onClick={() => openPreview(preview.id)}><ExternalLink size={15} /><span>{preview.status === "ready" ? "打开预览" : "查看预览状态"} · {preview.name}</span></button>
-    </div>)}
+    {(previews.length > 0 || workspaceId && files.length > 0) && <div className="cloud-result-actions" aria-label="成果操作">
+      {previews.map(preview => <PreviewResultAction key={preview.id} id={preview.id} name={preview.name} />)}
+      {workspaceId && files.length > 0 && <Link className="cloud-result-action" href="/resources"><FolderOpen size={15} aria-hidden="true" />查看文件</Link>}
+    </div>}
     {workspaceId && files.length ? <div className="activity-file-downloads">
       {files.map(file => <a key={file.id} className="activity-file-download"
         href={`${API_URL}/resources/${file.id}/download`} download

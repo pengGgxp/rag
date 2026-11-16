@@ -1,16 +1,15 @@
-.cloud-preview-open { min-height: 44px; display: inline-flex; align-items: center; gap: 6px; color: var(--accent); }
 .cloud-preview-dock { position: fixed; right: 0; top: var(--workspace-header-height, 60px); bottom: 0; width: min(48vw, 760px); z-index: 20; border-left: 1px solid var(--line); background: var(--surface); }
 .has-cloud-preview .chat-main { margin-right: min(48vw, 760px); }
 .cloud-preview-surface { height: 100%; min-height: 0; display: flex; flex-direction: column; background: var(--surface); color: var(--ink); }
 .cloud-preview-heading { min-height: 60px; display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
-.cloud-preview-heading h2 { font-size: 14px; line-height: 1.5; margin: 0; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cloud-preview-heading h2 { font-size: 14px; line-height: 1.5; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cloud-preview-actions { display: flex; align-items: center; flex-shrink: 0; }
 .cloud-preview-actions .icon-button { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
-.cloud-preview-meter { padding: 10px 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
-.cloud-preview-meter strong { color: var(--ink); font-weight: 600; }
-.cloud-preview-live { color: var(--success); }
-.cloud-preview-stop { margin-left: auto; min-height: 44px; gap: 6px; font-size: 12px; }
-.cloud-preview-notice { margin: 0; padding: 8px 16px; color: var(--muted); background: var(--surface-muted); font-size: 12px; }
+.cloud-preview-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 2px 10px; }
+.cloud-preview-notice { margin: 0; padding: 10px 16px; color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid var(--line); }
+.cloud-preview-dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; flex-shrink: 0; }
+.cloud-preview-status:empty { display: none; }
+.cloud-preview-status .cloud-status-error { padding: 0 12px; }
 .cloud-preview-error { padding: 12px 16px; font-size: 13px; color: var(--danger); overflow-wrap: anywhere; }
 .cloud-preview-canvas { flex: 1; min-height: 0; position: relative; background: white; }
 .cloud-preview-canvas iframe { display: block; width: 100%; height: 100%; border: 0; background: white; }
@@ -23,5 +22,11 @@
 .modal.modal-fullscreen:has(.cloud-preview-surface) { width: 100vw; max-width: 100vw; padding: 0; inset: 0; }
 .modal-fullscreen:has(.cloud-preview-surface) .modal-heading { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); }
 .modal-fullscreen:has(.cloud-preview-surface) .modal-heading button { display: none; }
-@media (max-width: 999px) { .has-cloud-preview .chat-main { margin-right: 0; } .cloud-preview-meter { gap: 6px 10px; padding: 10px 12px; } .cloud-preview-heading { padding: 6px 12px; } }
+.cloud-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0 10px 23px; }
+.cloud-result-action { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; min-width: 104px; max-width: 100%; padding: 8px 14px; border-radius: var(--form-radius); background: var(--surface-muted); color: var(--ink); text-decoration: none; font-size: 12px; line-height: 1.5; }
+.cloud-result-action:first-child { color: var(--accent); background: var(--accent-soft); }
+.cloud-result-action:hover { background: var(--line); }
+.cloud-result-action svg { flex-shrink: 0; }
+.cloud-result-action small { color: var(--muted); font-size: 11px; }
+@media (max-width: 999px) { .has-cloud-preview .chat-main { margin-right: 0; } .cloud-preview-heading { padding: 6px 12px; } }
 @media (prefers-reduced-motion: reduce) { .cloud-preview-surface .spin { animation: none; } }

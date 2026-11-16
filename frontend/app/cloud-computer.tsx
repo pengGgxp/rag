@@ -1,85 +1,127 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Loader2, Monitor, RotateCcw, Square } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { CircleAlert, FolderOpen, Info, Loader2, Monitor, Power, RefreshCw, Square, X } from "lucide-react";
 import Link from "next/link";
-import { ApiError, request } from "./api";
-import { json } from "./admin/admin-ui";
+import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
 import { formatCredits } from "./credit-format";
-import "./cloud-computer.css";
+import { useCloudComputer } from "./cloud-computer-context";
 import { ConversationPreview } from "./cloud-preview";
+import "./cloud-computer.css";
 
-type Computer = { id: string; status: string; summary: string; terminal: boolean; credits: string;
-  credits_per_minute: string; idle_ends_at: string | null };
-type Command = { id: string; status: string; terminal: boolean; cancel_requested: boolean;
-  result: { error?: string; generated_files?: { id: string; path: string }[] } };
-type Catalog = { available: boolean; credits_per_minute?: number; idle_seconds?: number };
+export function cloudTime(value: string | null) {
+  return value ? new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "—";
+}
 
-export function CloudComputerPanel({ conversationId, workspaceId }: { conversationId: string | null; workspaceId: string }) {
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [computer, setComputer] = useState<Computer | null>(null);
-  const [commands, setCommands] = useState<Command[]>([]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [revision, setRevision] = useState(0);
+export function CloudFees() {
+  const { state } = useCloudComputer();
+  const [open, setOpen] = useState(false);
+  const [mobile, setMobile] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const triggerId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
-    let disposed = false;
-    setCatalog(null); setComputer(null); setCommands([]); setError("");
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function refresh() {
-      if (document.hidden) { timer = setTimeout(refresh, 5000); return; }
-      try {
-        const value = await request<Catalog>("/cloud-computer/catalog");
-        if (disposed) return;
-        setCatalog(value);
-        if (conversationId) {
-          const current = await request<{ computer: Computer | null }>(`/conversations/${conversationId}/cloud-computer`);
-          if (disposed) return;
-          setComputer(current.computer);
-          if (current.computer) {
-            const history = await request<{ items: Command[] }>(`/conversations/${conversationId}/cloud-computer/commands`);
-            if (disposed) return;
-            setCommands(history.items);
-          }
-        }
-        setError("");
-      } catch (cause) {
-        if (disposed) return;
-        if (cause instanceof ApiError && [401, 403, 404].includes(cause.status)) return;
-        setError("云电脑状态更新失败");
-      }
-      if (!disposed) timer = setTimeout(refresh, 5000);
+    const query = window.matchMedia("(max-width: 700px)");
+    const update = () => setMobile(query.matches);
+    update(); query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (open && !mobile) {
+      const frame = requestAnimationFrame(() => heading.current?.focus());
+      return () => cancelAnimationFrame(frame);
     }
-    void refresh();
-    return () => { disposed = true; if (timer) clearTimeout(timer); };
-  }, [conversationId, workspaceId, revision]);
-  async function act(path: string) {
-    setBusy(true); setError("");
-    try { await request(path, json({})); setRevision(value => value + 1); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "操作失败，请重试"); }
-    finally { setBusy(false); }
-  }
-  if (!catalog?.available && !computer && !error) return null;
-  const last = commands[0];
-  const price = catalog?.available ? `云电脑 ${formatCredits(Number(catalog.credits_per_minute))} 积分/分钟 · 按秒计费，闲置 ${Math.ceil((catalog.idle_seconds || 600) / 60)} 分钟结束` : "云电脑";
-  return <div className="cloud-computer-panel">
-    <ConversationPreview conversationId={conversationId} />
-    <div className="cloud-computer-line">
-      <Monitor size={14} aria-hidden="true" />
-      {computer ? <>
-        <span role="status">{!computer.terminal && <Loader2 size={13} className="spin" />}{computer.summary}</span>
-        <span>{computer.terminal ? "消费" : "累计"} {formatCredits(Number(computer.credits))} 积分</span>
-        {!computer.terminal && <>
-          {computer.idle_ends_at && <span>{new Date(computer.idle_ends_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 闲置结束</span>}
-          <Tooltip content="结束云电脑"><button type="button" className="icon-button" aria-label="结束云电脑" disabled={busy || computer.status === "stopping"} onClick={() => void act(`/conversations/${conversationId}/cloud-computer/end`)}><Square size={14} /></button></Tooltip>
+  }, [open, mobile]);
+  useEffect(() => {
+    if (!open) return;
+    // Consume Escape before the enclosing fullscreen preview handles the same key.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault(); event.stopImmediatePropagation(); setOpen(false);
+    };
+    window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, [open]);
+  const computer = state.computer;
+  const seconds = computer?.seconds ?? 0;
+  return <>
+    <button ref={trigger} id={triggerId} type="button" className="cloud-fees-trigger" aria-haspopup="dialog" aria-expanded={open}
+      onClick={() => setOpen(value => !value)}><Info size={14} aria-hidden="true" />费用详情</button>
+    {open && <Dialog title="云电脑费用" anchor={mobile ? undefined : trigger.current}
+      restoreFocusSelector={`[id="${triggerId}"]`} onClose={() => setOpen(false)}>
+      <div className="cloud-fees">
+        {!mobile && <div className="cloud-fees-heading"><h3 ref={heading} tabIndex={-1}>本次云电脑</h3>
+          <button type="button" className="icon-button" aria-label="关闭费用详情" onClick={() => setOpen(false)}><X size={16} /></button></div>}
+        {state.revoked ? <p>暂不可查看，请重新登录。</p> : <>
+          <div className="cloud-fees-total"><span>{computer?.terminal ? "最终消费" : "当前累计"}</span>
+            <strong>{computer ? formatCredits(Number(computer.credits)) : "0"}<small>积分</small></strong></div>
+          <dl className="cloud-fees-rows">
+            <div><dt>{computer ? "本次单价" : "启动单价"}</dt><dd>{formatCredits(Number(computer?.credits_per_minute ?? state.catalog?.credits_per_minute ?? 0))} 积分/分钟</dd></div>
+            <div><dt>已运行</dt><dd>{Math.floor(seconds / 60)} 分 {seconds % 60} 秒</dd></div>
+            <div><dt>闲置结束时间</dt><dd>{cloudTime(computer?.idle_ends_at ?? null)}</dd></div>
+            <div><dt>最长运行至</dt><dd>{cloudTime(computer?.max_ends_at ?? null)}</dd></div>
+          </dl>
+          <p className="cloud-fees-note">{computer?.terminal ? "本次费用已结算。" : computer ? "按秒累计，包含等待时间。" : "尚未启动，不产生云电脑费用。"}
+            {!computer && state.catalog?.idle_seconds ? ` 无操作 ${Math.ceil(state.catalog.idle_seconds / 60)} 分钟后自动结束。` : ""}</p>
+          {state.error && <p className="cloud-fees-warning"><CircleAlert size={14} />{state.error}</p>}
         </>}
-      </> : <span>{price}</span>}
-      {computer && !computer.terminal && <Tooltip content={`按存续时间收费，包含等待；当前单价 ${computer.credits_per_minute} 积分/分钟。结束后文件保存在资源库。`}><button type="button" className="text-button cloud-computer-price">{computer.credits_per_minute} 积分/分钟</button></Tooltip>}
-    </div>
-    {computer?.terminal && catalog?.available && <div className="cloud-computer-line"><span>{price}</span></div>}
-    {last && !last.terminal && <div className="cloud-computer-line"><span>正在处理文件</span><Tooltip content="停止当前命令"><button type="button" className="icon-button" aria-label="停止当前命令" disabled={busy || last.cancel_requested} onClick={() => void act(`/cloud-computer/commands/${last.id}/cancel`)}><Square size={14} /></button></Tooltip></div>}
-      {commands.some(command => command.status === "completed") && <Link href="/resources">打开工作区</Link>}
-    {error && <div className="cloud-computer-line" role="alert"><span>{error}</span><button type="button" className="icon-button" aria-label="刷新云电脑状态" onClick={() => setRevision(value => value + 1)}><RotateCcw size={14} /></button></div>}
+      </div>
+    </Dialog>}
+  </>;
+}
+
+export function EndCloudComputer() {
+  const { store, state } = useCloudComputer();
+  if (!state.computer || state.computer.terminal || state.revoked) return null;
+  const ending = state.ending || state.computer.status === "stopping";
+  return <button type="button" className="cloud-end-button" disabled={ending} onClick={() => void store.end()}>
+    {ending ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Power size={14} aria-hidden="true" />}
+    {ending ? "正在结束" : "结束云电脑"}
+  </button>;
+}
+
+export function CloudStatusError() {
+  const { store, state } = useCloudComputer();
+  const message = state.actionError || state.error;
+  if (!message) return null;
+  return <div className="cloud-status-error">
+    <CircleAlert size={14} aria-hidden="true" /><span>{message}</span>
+    {!state.revoked && <Tooltip content="刷新云电脑状态"><button type="button" className="icon-button" aria-label="刷新云电脑状态"
+      onClick={() => void store.refresh(true)}><RefreshCw size={14} /></button></Tooltip>}
   </div>;
+}
+
+export function CloudComputerPanel() {
+  const { store, state } = useCloudComputer();
+  const computer = state.computer;
+  const command = !computer?.terminal && state.commands.find(item => !item.terminal);
+  const ending = state.ending || computer?.status === "stopping";
+  const working = computer && !computer.terminal && ["starting", "running", "uncertain"].includes(computer.status);
+  return <>
+    <ConversationPreview />
+    {(state.catalog?.available || computer || state.error) && <section className="cloud-computer-panel" aria-label="云电脑">
+      <div className="cloud-computer-line">
+        <span className={`cloud-computer-symbol ${computer && !computer.terminal ? "is-active" : ""}`}>
+          {ending || working ? <Loader2 size={18} className="spin" aria-hidden="true" /> : <Monitor size={18} aria-hidden="true" />}
+        </span>
+        <div className="cloud-computer-copy">
+          <strong role="status">{ending ? "正在结束云电脑" : computer?.summary || (state.revoked ? "云电脑暂不可访问" : state.error ? "云电脑状态待确认" : "云电脑待命")}</strong>
+          <span>{computer?.terminal ? `本次消费 ${formatCredits(Number(computer.credits))} 积分`
+            : ending ? computer?.status === "stopping" && computer.summary !== "正在结束云电脑" ? computer.summary : "正在确认结束结果"
+            : computer ? computer.idle_ends_at ? `无操作将于 ${cloudTime(computer.idle_ends_at)} 结束` : "运行期间持续计费"
+            : state.error ? "请刷新后重试" : "执行任务时按需启动"}</span>
+        </div>
+        <div className="cloud-computer-controls">
+          {!state.revoked && (computer || state.catalog?.available) && <CloudFees />}
+          {computer?.terminal ? <Link className="cloud-files-link" href="/resources"><FolderOpen size={14} />查看文件</Link> : <EndCloudComputer />}
+        </div>
+      </div>
+      {command && !ending && <div className="cloud-command-line"><span>当前命令执行中</span>
+        <button type="button" className="cloud-command-stop" disabled={!!state.cancelling || command.cancel_requested}
+          onClick={() => void store.cancel(command.id)}><Square size={12} aria-hidden="true" />{command.cancel_requested ? "正在停止命令" : "停止当前命令"}</button>
+      </div>}
+      <CloudStatusError />
+    </section>}
+  </>;
 }
