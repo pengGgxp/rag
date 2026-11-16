@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowUpRight, ChevronLeft, ChevronRight, CreditCard, Info, Loader2, RefreshCw } from "lucide-react";
 import { request } from "./api";
 import { formatCredits } from "./credit-format";
+import { CloudComputerUsage } from "./cloud-computer-usage";
 import "./billing.css";
 
 export type CreditUsage = {
@@ -75,6 +76,7 @@ const usageLabel: Record<string, string> = {
   llm_output_tokens: "模型输出量",
   embedding_tokens: "知识库处理量",
   ocr_pages: "文档解析页数",
+  cloud_computer: "云电脑运行时长",
 };
 
 export function BillingPanel({ workspaceName, onBusyChange }: {
@@ -245,12 +247,13 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
               <div key={capability}>
                 <span>{usageLabel[capability] ?? "其他能力"}<small>累计</small></span>
                 <strong>{count(value.units)}</strong>
-                <small>使用量</small>
+                <small>{capability === "cloud_computer" ? "秒" : "使用量"}</small>
               </div>
             ))}
           </div>
         </section>
       )}
+      <CloudComputerUsage />
       <section className="billing-section" aria-label="我的充值订单">
         <h3>我的充值订单</h3>
         {!orders?.items.length ? <p className="billing-muted">暂无充值订单</p> : (

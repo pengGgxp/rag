@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ExternalLink, FolderOpen, Loader2, Monitor, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
@@ -9,17 +9,17 @@ import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
 import { useCloudComputer } from "./cloud-computer-context";
 import { previewReady } from "./cloud-computer-state";
-import { CloudFees, CloudStatusError, EndCloudComputer } from "./cloud-computer";
+import { CloudStatusError, EndCloudComputer } from "./cloud-computer";
 import "./cloud-preview.css";
 
 export type { Preview } from "./cloud-computer-state";
 
-export function openPreview(id: string) {
-  window.dispatchEvent(new CustomEvent("zhiku:preview", { detail: id }));
+export function openPreview(id: string, trigger?: HTMLElement) {
+  window.dispatchEvent(new CustomEvent("zhiku:preview", { detail: { id, trigger } }));
 }
 
-export function PreviewSurface({ id, standalone = false, compact = false, onClose }: {
-  id: string; standalone?: boolean; compact?: boolean; onClose?: () => void;
+export function PreviewSurface({ id, standalone = false, onClose }: {
+  id: string; standalone?: boolean; onClose?: () => void;
 }) {
   const { store, state } = useCloudComputer();
   const [url, setUrl] = useState("");
@@ -65,22 +65,31 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
   const showFrame = active && !!url;
   const refresh = () => { setUrl(""); setError(""); setRevision(value => value + 1); void store.refresh(true); };
   const title = detail?.preview.name || "成果预览";
+  const close = onClose ?? (() => {
+    window.close();
+    if (!window.closed) window.location.assign(detail?.conversation_id
+      ? `/?conversation=${encodeURIComponent(detail.conversation_id)}` : "/?chat=1");
+  });
   const previewError = active ? error : "";
-  const summary = computer && (computer.terminal || state.ending[computer.id] || computer.status === "stopping")
-    ? computer.terminal ? computer.summary : "正在结束云电脑"
-    : state.previewErrors[id] || (detail && !sameComputer ? "此预览已结束" : detail?.preview.summary) || "正在获取预览状态";
+  const ended = computer?.terminal || detail?.preview.terminal || state.previewErrors[id] === "预览已结束";
+  const summary = ended ? "预览已结束"
+    : computer && (state.ending[computer.id] || computer.status === "stopping")
+    ? "正在结束运行"
+    : state.revoked || state.previewErrors[id] ? "预览状态待确认"
+    : (detail && !sameComputer ? "此预览已结束" : detail?.preview.summary) || "正在获取预览状态";
   return <section className={`cloud-preview-surface ${standalone ? "cloud-preview-standalone" : ""}`} aria-label="成果预览">
     <header className="cloud-preview-heading">
       <Monitor size={17} aria-hidden="true" /><h2 title={title}>{title}</h2>
       <div className="cloud-preview-actions">
         <Tooltip content="刷新预览"><button type="button" className="icon-button" aria-label="刷新预览" onClick={refresh}><RefreshCw size={16} /></button></Tooltip>
+        {computer && <EndCloudComputer computerId={computer.id} />}
         {!standalone && <Tooltip content="新窗口打开"><a className="icon-button" aria-label="新窗口打开预览" href={`/previews/${id}`} target="_blank" rel="noopener noreferrer"><ExternalLink size={16} /></a></Tooltip>}
-        {onClose && <Tooltip content="关闭预览"><button type="button" className="icon-button" aria-label="关闭预览" onClick={onClose}><X size={17} /></button></Tooltip>}
+        {(onClose || standalone) && <Tooltip content="关闭预览"><button type="button" className="icon-button" aria-label="关闭预览"
+          onClick={close}><X size={17} /></button></Tooltip>}
       </div>
     </header>
-    {active && <p className="cloud-preview-notice"><span className="cloud-preview-dot" />预览期间云电脑持续运行并计费</p>}
-    {(standalone || compact) && computer && <div className="cloud-preview-controls"><CloudFees computerId={computer.id} /><EndCloudComputer computerId={computer.id} /></div>}
-    <div className="cloud-preview-status"><CloudStatusError computerId={computer?.id} />
+    {active && <p className="cloud-preview-notice"><Link href="/settings/billing" target="_blank" rel="noopener noreferrer">预览运行期间计费</Link></p>}
+    <div className="cloud-preview-status"><CloudStatusError computerId={computer?.id} previewId={id} />
       {previewError && <div className="cloud-preview-error" role="status">{previewError}</div>}
     </div>
     <div className="cloud-preview-canvas">
@@ -90,7 +99,7 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
           sandbox="allow-scripts allow-forms allow-same-origin allow-downloads" onLoad={() => setFrameLoaded(true)} />
       </> : <div className="cloud-preview-empty" role="status"><Monitor size={28} /><p>{previewError || summary}</p>
         {computer?.stop_reason_text && <p className="cloud-preview-stop-reason">{computer.stop_reason_text}</p>}
-        {detail && (detail.computer.terminal || computer?.terminal || !sameComputer)
+        {ended
           && <Link className="cloud-files-link" href="/resources"><FolderOpen size={15} />查看文件</Link>}
       </div>}
     </div>
@@ -98,11 +107,13 @@ export function PreviewSurface({ id, standalone = false, compact = false, onClos
 }
 
 export function PreviewResultAction({ id, name }: { id: string; name: string }) {
-  const { state } = useCloudComputer();
+  const { store, state } = useCloudComputer();
+  const actionId = useId();
+  useEffect(() => store.watchPreview(id), [store, id]);
   const ready = previewReady(state, id);
   const detail = state.details[id];
-  return <button type="button" className="cloud-result-action" aria-label={`${ready ? "打开预览" : "查看预览状态"} · ${name}`}
-    title={name} onClick={() => openPreview(id)}>
+  return <button id={actionId} type="button" className="cloud-result-action" aria-label={`${ready ? "打开预览" : "查看预览状态"} · ${name}`}
+    title={name} onClick={event => openPreview(id, event.currentTarget)}>
     <ExternalLink size={15} aria-hidden="true" /><span>{ready ? "打开预览" : "查看预览状态"}</span>
     {!ready && detail?.preview.terminal && <small>已结束</small>}
   </button>;
@@ -112,6 +123,7 @@ export function ConversationPreview() {
   const { store } = useCloudComputer();
   const [opened, setOpened] = useState<string | null>(null);
   const [narrow, setNarrow] = useState(false);
+  const [restoreFocusSelector, setRestoreFocusSelector] = useState<string>();
   const trigger = useRef<HTMLElement | null>(null);
   const close = useCallback(() => {
     setOpened(null);
@@ -119,8 +131,10 @@ export function ConversationPreview() {
   }, []);
   useEffect(() => {
     const show = (event: Event) => {
-      trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      setOpened((event as CustomEvent<string>).detail);
+      const detail = (event as CustomEvent<{ id: string; trigger?: HTMLElement }>).detail;
+      trigger.current = detail.trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      setRestoreFocusSelector(trigger.current?.id ? `#${CSS.escape(trigger.current.id)}` : undefined);
+      setOpened(detail.id);
     };
     const resize = () => setNarrow(window.innerWidth < 1000);
     resize(); window.addEventListener("resize", resize); window.addEventListener("zhiku:preview", show);
@@ -143,7 +157,7 @@ export function ConversationPreview() {
     return () => { document.body.classList.remove("has-cloud-preview"); window.removeEventListener("keydown", escape); };
   }, [opened, narrow, close]);
   return opened ? narrow
-    ? <Dialog title="成果预览" fullScreen onClose={close}><PreviewSurface key={opened} id={opened} compact onClose={close} /></Dialog>
+    ? <Dialog title="成果预览" fullScreen onClose={close} restoreFocusSelector={restoreFocusSelector}><PreviewSurface key={opened} id={opened} onClose={close} /></Dialog>
     : createPortal(<aside className="cloud-preview-dock"><PreviewSurface key={opened} id={opened} onClose={close} /></aside>, document.body)
     : null;
 }
