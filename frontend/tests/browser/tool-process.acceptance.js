@@ -89,6 +89,11 @@ async (page) => {
     if (path === "/conversations/fixture/preview") return send({ preview });
     if (path === "/previews/preview") return send({ preview, computer, conversation_id: "fixture" });
     if (path === "/image-tasks/image") return send(imageState);
+    const resourceId = path.match(/^\/resources\/([^/]+)$/)?.[1];
+    if (resourceId) return send(file(resourceId, resourceId === "html" ? "算法可视化.html" : "算法说明.pdf"));
+    if (/^\/resources\/[^/]+\/preview$/.test(path)) return send({
+      revision: "fixture", kind: "unsupported", size_bytes: 2048, original_url: "", previews: [],
+    });
     if (path.endsWith("/image-preview-link")) return send({ status: "ready", url: `${base}/icon.svg`, revision: "fixture", width: 192, height: 192 });
     if (path.endsWith("/download")) return route.fulfill({ headers: { ...headers, "content-disposition": "attachment; filename=fixture.html" },
       contentType: "text/html", body: "<!doctype html><title>local fixture</title>" });
@@ -103,8 +108,8 @@ async (page) => {
   assert(await page.locator(".image-task-result").count() === 1, "查询同一图片任务不能重复呈现产物");
   assert(await page.locator(".activity-details").count() === 0, "详情应默认收起");
   assert(!await page.getByText("path 必须是文本", { exact: true }).count(), "参数反馈不应铺在正文");
-  assert(await page.getByText("下载 算法可视化.html", { exact: true }).isVisible(), "第一个文件应可直接下载");
-  assert(await page.getByText("下载 算法说明.pdf", { exact: true }).isVisible(), "第二个文件不能被分组吞掉");
+  assert(await page.getByRole("link", { name: "查看文件：算法可视化.html", exact: true }).isVisible(), "第一个文件应在消息下方");
+  assert(await page.getByRole("link", { name: "查看文件：算法说明.pdf", exact: true }).isVisible(), "第二个文件不能被分组吞掉");
   assert(await page.getByRole("button", { name: "打开预览 · 排序算法", exact: true }).isVisible(), "预览入口应直接可用");
   assert(thinkingReads === 0, "收起过程不能提前读取思考");
 
@@ -131,12 +136,15 @@ async (page) => {
   await page.getByText("先核对文件路径和页面需求。", { exact: true }).waitFor();
   assert(thinkingReads === 1, "仅在用户展开思考后读取内容");
   await page.getByRole("button", { name: "收起处理过程", exact: true }).click();
+  await page.getByRole("link", { name: "查看文件：算法可视化.html", exact: true }).click();
+  await page.getByText("该格式暂不支持预览", { exact: true }).waitFor();
   const download = page.waitForEvent("download");
-  await page.getByText("下载 算法可视化.html", { exact: true }).click();
+  await page.getByRole("button", { name: "下载原文件", exact: true }).click();
   assert((await download).suggestedFilename().includes("算法可视化"), "下载入口应保留真实文件名");
+  await page.keyboard.press("Escape");
 
   imageState = { ...image, status: "completed", terminal: true, summary: "图片已生成", files: [file("picture", "排序配图.png")] };
-  await page.getByRole("button", { name: "查看原图 排序配图.png", exact: true }).waitFor({ timeout: 12000 });
+  await page.getByRole("link", { name: "查看文件：排序配图.png", exact: true }).waitFor({ timeout: 12000 });
   assert(await page.locator(".activity-details").count() === 0, "独立任务更新不能自动展开过程");
   await page.screenshot({ path: "output/playwright/tool-process-image-completed.png", fullPage: true });
   imageState = { ...image, status: "failed", terminal: true, summary: "图片生成未完成，请重新尝试" };

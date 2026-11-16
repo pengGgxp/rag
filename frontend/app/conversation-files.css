@@ -1,0 +1,29 @@
+.message-files {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 20px 0 12px;
+}
+.message-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: var(--form-touch-height);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--form-radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--form-font-size);
+  text-decoration: none;
+}
+.message-file > svg { flex: 0 0 auto; color: var(--muted); }
+.message-file-name { min-width: 0; overflow-wrap: anywhere; }
+.message-file:hover { background: var(--surface-muted); }
+.message-file:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.message-file.unavailable { color: var(--muted); }
+.message-file.unavailable > span:last-child { flex: 0 0 auto; font-size: var(--form-label-size); }
+.message-file-error { color: var(--danger); font-size: var(--form-font-size); }
+@media (max-width: 1000px) { .message-files { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px) { .message-files { grid-template-columns: minmax(0, 1fr); } }

@@ -24,16 +24,21 @@ async page => {
   // A refresh disconnects the original event stream, but the outer worker keeps running.
   await page.reload();
   await page.getByText("图片已生成并保存，共 1 张。", { exact: true }).waitFor();
-  const image = page.locator(".image-task-result img").first();
+  const file = page.locator(".message-file").first();
+  await file.waitFor();
+  assert(await page.locator(".image-task-result img").count() === 0, "处理步骤不重复展示图片附件");
+  await file.click();
+  const image = page.locator(".resource-image-stage img");
   await image.waitFor();
   await image.evaluate(img => img.decode());
   assert(await image.evaluate(img => img.naturalWidth > 0), "成果缩略图应可解码");
   assert(await page.locator(".image-task-result").count() === 1, "刷新后仍只有同一张成果卡片");
   const downloadEvent = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载原图", exact: true }).click();
+  await page.getByRole("button", { name: "下载原文件", exact: true }).click();
   const download = await downloadEvent;
   await download.saveAs("output/playwright/issue105/generated.png");
   assert((await download.failure()) === null, "原图应能下载");
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: "output/playwright/issue105/completed-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "移动端不能横向溢出");
@@ -44,9 +49,9 @@ async page => {
   await page.getByText("正在生成图片", { exact: true }).first().waitFor();
   await page.getByRole("button", { name: "停止回答", exact: true }).click();
   // The submitted synthetic provider returns late; it must update only this answer.
-  await page.waitForFunction(() => document.querySelectorAll(".image-task-result img").length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".message-file").length === 2);
   await page.reload();
-  await page.locator(".image-task-result img").nth(1).waitFor();
+  await page.locator(".message-file").nth(1).waitFor();
   assert(await page.getByText("图片已生成并保存，共 1 张。", { exact: true }).count() === 1,
     "停止后的迟到结果不能续写模型回答");
   assert(await page.locator(".image-task-result").count() === 2, "两次调用应各自保留原成果");
@@ -54,7 +59,7 @@ async page => {
   await page.goto(`${base}/?chat=1`);
   assert(await page.locator(".image-task-result").count() === 0, "迟到结果不能附到新回答");
   await page.goto(conversationUrl);
-  await page.locator(".image-task-result img").nth(1).waitFor();
+  await page.locator(".message-file").nth(1).waitFor();
   assert(errors.length === 0, `浏览器错误：${errors.join("; ")}`);
   console.log("验收通过：单槽执行、进度、刷新恢复、原图下载、移动布局、停止及迟到结果归属");
 }

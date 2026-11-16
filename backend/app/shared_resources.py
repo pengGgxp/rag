@@ -262,18 +262,18 @@ def register_operation(db, access, operation, value):
     return read_file(row) if row else result
 
 
-def refresh_current_metadata(db, access, resource):
+def refresh_current_metadata(db, access, resource, *, metadata=None):
     """Revalidate current mounted object metadata before a server-side image read."""
     from .storage_billing import lock_workspace
     from .workspace_files import owned
     access = access.revalidate(db) if access.session_hash else access
     resource = owned(db, access, access.workspace_id, resource.id)
     storage = backend(db)
-    if storage is None:
+    if storage is None and metadata is None:
         return resource
     lock_workspace(db, access.workspace_id)
     key = object_key(access.workspace_id, resource.path)
-    metadata = storage.head(key)
+    metadata = storage.head(key) if metadata is None else metadata
     if metadata is None:
         resource.deleted_at = now()
         for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == resource.id)):

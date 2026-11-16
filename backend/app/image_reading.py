@@ -38,7 +38,12 @@ def local_path(value):
         raise ValueError("图片路径无效")
     if "\x00" in value:
         raise ValueError("图片路径无效")
-    return value if value.startswith("/") else f"{WORKSPACE_ROOT}/{value}"
+    from .workspace_file_links import workspace_path
+    try:
+        relative = workspace_path(value)
+    except HTTPException:
+        raise ValueError("请先将图片保存到工作区，再用工作区路径读取") from None
+    return f"{WORKSPACE_ROOT}/{relative}"
 
 
 def display_path(path):
@@ -98,7 +103,9 @@ def read_image(arguments, *, config: ChatProviderConfig, local_loader, check_act
         if metadata.get("sha256") != digest or metadata.get("size_bytes") != len(data):
             return {"error": "图片在读取过程中发生变化，请重试",
                     "error_code": "image_changed"}
-        return workspace_image(path, content_type, width, height, digest, data)
+        image = workspace_image(path, content_type, width, height, digest, data)
+        return ImageInput(image.image, {**image.public, **({"files": metadata["files"]}
+            if metadata.get("files") else {})}, image.data)
     except ImageReadError as error:
         reason = {"http_429": "图片读取服务繁忙，重试次数已用尽；请稍后重新读取",
             "http_500": "图片读取服务暂时不可用，重试次数已用尽；请稍后重新读取",
@@ -113,7 +120,12 @@ def read_image(arguments, *, config: ChatProviderConfig, local_loader, check_act
                 "error_code": "image_transfer_failed"}
     except PermissionError:
         raise
-    except (OSError, ValueError):
+    except ValueError as error:
+        if "先将图片保存到工作区" in str(error):
+            return {"error": str(error), "error_code": "image_arguments"}
+        return {"error": "图片无法读取；请检查路径、图片格式、大小和沙箱访问权限后重试",
+                "error_code": "image_unavailable"}
+    except OSError:
         return {"error": "图片无法读取；请检查路径、图片格式、大小和沙箱访问权限后重试",
                 "error_code": "image_unavailable"}
     except HTTPException as error:

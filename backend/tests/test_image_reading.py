@@ -26,7 +26,7 @@ from test_conversation_streaming import upstream, sse
 from test_extensions import access_for as load_access
 from test_shared_providers import setup_site
 from test_cloud_computer import FakeCloud
-from test_resources import access_for
+from test_resources import access_for, resource_store
 from app.llm import ToolCall, ToolResponse
 
 
@@ -65,11 +65,14 @@ def test_local_image_paths_follow_filesystem_resolution(tmp_path):
     (root/"link.png").symlink_to(root/"relative.png")
     (root/"directory").mkdir()
     assert inspect_image("relative.png", root)["size_bytes"] == len(PNG)
-    assert inspect_image("link.png", root)["size_bytes"] == len(PNG)
+    with pytest.raises(ValueError, match="符号链接"):
+        inspect_image("link.png", root)
     assert inspect_image(".ssh/credentials.png", root)["size_bytes"] == len(PNG)
-    assert inspect_image("../outside.png", root)["size_bytes"] == len(PNG)
-    assert image_reading.local_path("../outside.png") == "/home/user/workspace/../outside.png"
-    assert image_reading.local_path("/tmp/private.pem") == "/tmp/private.pem"
+    with pytest.raises(ValueError):
+        inspect_image("../outside.png", root)
+    for path in ("../outside.png", "/tmp/private.pem"):
+        with pytest.raises(ValueError, match="先将图片保存到工作区"):
+            image_reading.local_path(path)
     with pytest.raises(ValueError, match="普通文件"):
         inspect_image("directory", root)
     with pytest.raises(FileNotFoundError):
@@ -83,7 +86,8 @@ def test_local_image_change_is_detected(monkeypatch, tmp_path):
     calls = {"count": 0}
     def changed_stat(target, *args, **kwargs):
         value = original(target, *args, **kwargs)
-        calls["count"] += 1
+        if target == path and kwargs.get("follow_symlinks", True):
+            calls["count"] += 1
         return SimpleNamespace(st_mode=value.st_mode, st_dev=value.st_dev, st_ino=value.st_ino,
             st_size=value.st_size + (1 if calls["count"] > 1 else 0),
             st_mtime_ns=value.st_mtime_ns)
@@ -106,8 +110,9 @@ def test_model_capability_and_arguments_are_checked_before_io():
     result = image_reading.read_image({"path": "../.ssh/credentials.png"}, config=config,
         local_loader=lambda path: (accepted.append(path) or PNG, {
             "size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}))
-    assert result.data == PNG
-    assert accepted == ["/home/user/workspace/../.ssh/credentials.png"]
+    assert result["error_code"] == "image_arguments"
+    assert "先将图片保存到工作区" in result["error"]
+    assert accepted == []
     unsupported = image_reading.read_image({"path": "chart.png"}, config=ChatProviderConfig(
         "https://example.test/v1", "test", "text", supports_images=False),
         local_loader=lambda path: called.append(path))
@@ -351,7 +356,7 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol
         [(name, data) for name, data in events if name != "complete"], ensure_ascii=False)
 
 
-def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(accounts, monkeypatch):
+def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(accounts, monkeypatch, resource_store):
     admin, db, _ = setup_site(accounts, monkeypatch)
     access = load_access(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, provider_config=ChatProviderConfig(
@@ -365,11 +370,15 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
         return image, {"cloud_computer": {"status": "ready"}, "command_id": "command"}
 
     monkeypatch.setattr(cloud, "execute_image", execute_image)
+    from app.shared_resources import object_key
+    resource_store[0][object_key(access.workspace_id, "chart.png")] = PNG
     runtime.request_id = uuid4()
     result = runtime.execute("read_image", {"path": "chart.png"}, call_id="tool-1-image")
     assert calls and calls[0][1] == "/home/user/workspace/chart.png"
     assert result.image.data == PNG
     assert result.result["filename"] == "chart.png"
+    assert result.result["files"][0]["path"] == "chart.png"
+    assert result.result["files"][0]["url"].startswith("/resources?file=")
     assert "data" not in result.result and "base64" not in json.dumps(result.result).lower()
     assert runtime.label("read_image") == "查看图片"
     member = db.get(Membership, (access.workspace_id, access.user_id))
@@ -523,4 +532,4 @@ def test_workspace_image_passes_paths_to_sandbox_for_access_checks(accounts, mon
     db.commit()
     with pytest.raises(Exception):
         cloud.execute_image(db, user_access, conversation.id, uuid4(), "/home/user/.ssh/id_rsa", None)
-    assert fake.creates == 1
+    assert fake.creates == 0

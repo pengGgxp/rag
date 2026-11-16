@@ -474,7 +474,8 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
         def complete_with_tools(self, messages, tools, *, tool_choice):
             self.count += 1
             if self.count == 1:
-                assert "点击该次工具活动下方的下载入口" in messages[0]["content"]
+                assert "[文件名](工具返回的url)" in messages[0]["content"]
+                assert "该次工具活动下方的下载入口" not in messages[0]["content"]
                 assert "verified-environment-for-test" in messages[0]["content"]
                 return ToolResponse(content=None, tool_calls=[ToolCall(id="file", name="run_command", arguments={})])
             return ToolResponse(content="已生成 reports/summary.md。", tool_calls=[])
@@ -485,6 +486,7 @@ def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime)
     assert event["files"] == [{key: output[key] for key in ("id", "path", "size_bytes", "version")}]
     assert "object_key" not in json.dumps(event)
     assert "不要编造 URL 或下载地址" in AGENT_SYSTEM_PROMPT
+    assert "文件存在、读取成功、取链接成功、命令退出成功或预览就绪等同于成果质量已验证" in AGENT_SYSTEM_PROMPT
     assert "同时说明脚本未完成并列出这些文件" in AGENT_SYSTEM_PROMPT
     assert "不要向用户原样展示 queued、processing、ready 等内部状态码" in AGENT_SYSTEM_PROMPT
     assert "不规定固定工具顺序" in AGENT_SYSTEM_PROMPT
@@ -528,7 +530,8 @@ def test_delivery_instructions_and_actual_results_reach_final_model_round(runtim
                 return ToolResponse(content=None, tool_calls=[ToolCall(id="deliver", name=name, arguments={})])
             prompt = messages[0]["content"]
             assert "工具执行结束后必须用自然语言给出简短交付总结" in prompt
-            assert "[打开资源库](/resources)" in prompt
+            assert "get_workspace_file_link" in prompt and "[文件名](url)" in prompt
+            assert "[打开资源库](/resources)" not in prompt
             assert "preview.status 为 ready 且 preview.url 存在" in prompt
             assert "download_url 等 API 下载地址" in prompt
             assert "尚未完成及可在哪里查看进度" in prompt

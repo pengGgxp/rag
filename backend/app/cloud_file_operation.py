@@ -67,7 +67,12 @@ def image_path(value, root=Path("/home/user/workspace")):
     if "\x00" in value:
         raise ValueError("图片路径无效")
     path = Path(value)
-    return path if path.is_absolute() else Path(root, path)
+    if path.is_absolute():
+        try:
+            value = path.relative_to(root).as_posix()
+        except ValueError:
+            raise ValueError("请先将图片保存到工作区，再用工作区路径读取") from None
+    return safe_path(root, value)
 
 
 def inspect_image(value, root=Path("/home/user/workspace")):

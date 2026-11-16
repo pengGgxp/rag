@@ -1,14 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, Download, ExternalLink, FileText, FolderOpen, Loader2, Search, Square, Wrench } from "lucide-react";
+import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, ExternalLink, FileText, Loader2, Search, Square, Wrench } from "lucide-react";
 import { Motion } from "../components/ui/motion";
-import { API_URL, ApiError, downloadFile, request } from "./api";
+import { ApiError, request } from "./api";
 import Link from "next/link";
 import { latestImageTask } from "./image-task-state";
 import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
 import { PreviewResultAction, type Preview } from "./cloud-preview";
-import { activityFiles, processHeadline } from "./conversation-display";
+import { processHeadline } from "./conversation-display";
+import type { WorkspaceFileReference } from "./workspace-file-link";
+import { useMessageFiles } from "./conversation-files";
 
 export type SavedDocument = {
   save_id: string; document_id: string; knowledge_base_id: string; filename: string;
@@ -23,7 +25,7 @@ export type ConversationActivityItem = {
   summary?: string;
   kind: "retrieval" | "tool" | "compaction";
   status: "waiting" | "running" | "completed" | "feedback" | "blocked" | "failed" | "cancelled" | "uncertain";
-  files?: { id: string; path: string; size_bytes: number; version: number }[];
+  files?: WorkspaceFileReference[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
@@ -98,12 +100,16 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
 }) {
   const [expanded, setExpanded] = useState(false);
   const regionId = useId();
-  const [downloadError, setDownloadError] = useState("");
+  const messageFiles = useMessageFiles();
+  const publishImage = messageFiles?.updateImage;
   const [savedResults, setSavedResults] = useState<Record<string, SavedDocument>>({});
   const [imageResults, setImageResults] = useState<Record<string, ImageTaskResult>>({});
-  const updateImage = useCallback((value: ImageTaskResult) => setImageResults(old => ({
-    ...old, [value.task_id]: old[value.task_id] ? latestImageTask(old[value.task_id], value) : value,
-  })), []);
+  const updateImage = useCallback((value: ImageTaskResult) => {
+    setImageResults(old => ({
+      ...old, [value.task_id]: old[value.task_id] ? latestImageTask(old[value.task_id], value) : value,
+    }));
+    publishImage?.(value);
+  }, [publishImage]);
   const updateSaved = useCallback((value: SavedDocument) => setSavedResults(old => ({ ...old, [value.save_id]: value })), []);
   items = items.map(item => {
     const image = item.image_task && latestImageTask(item.image_task, imageResults[item.image_task.task_id]);
@@ -116,7 +122,6 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
   if (!items.length && !steps?.length) return null;
   const current = items.find(item => item.status === "running");
   const headline = processHeadline(items, finished, thinking);
-  const files = activityFiles(items);
   const notices = [...new Map(items.filter(item => ["blocked", "uncertain"].includes(item.status)
     || item.status === "failed" && (item.image_task || item.saved_document))
     .map(item => [item.image_task?.task_id ?? item.saved_document?.save_id ?? item.id, item])).values()];
@@ -142,29 +147,15 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
       <span>{item.label} · {statusLabel[item.status]}{item.summary ? `：${item.summary}` : ""}</span>
     </div>)}
     {savedDocuments.map(saved => <SavedDocumentResult key={saved.save_id} initial={saved} onUpdate={updateSaved} showStatus />)}
-    {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage} showStatus />)}
+    {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage} showStatus showFiles={false} />)}
     {items.filter(item => item.knowledge_base && item.status === "completed").map(item => <div className="activity-file-downloads" key={item.id}>
       <Link className="activity-file-download" href={`/?library=${encodeURIComponent(item.knowledge_base!.id)}&view=documents`}>
         <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>
       </Link>
     </div>)}
-    {(previews.length > 0 || workspaceId && files.length > 0) && <div className="cloud-result-actions" aria-label="成果操作">
+    {previews.length > 0 && <div className="cloud-result-actions" aria-label="成果操作">
       {previews.map(preview => <PreviewResultAction key={preview.id} id={preview.id} name={preview.name} />)}
-      {workspaceId && files.length > 0 && <Link className="cloud-result-action" href="/resources"><FolderOpen size={15} aria-hidden="true" />查看文件</Link>}
     </div>}
-    {workspaceId && files.length ? <div className="activity-file-downloads">
-      {files.map(file => <a key={file.id} className="activity-file-download"
-        href={`${API_URL}/resources/${file.id}/download`} download
-        onClick={event => {
-          event.preventDefault();
-          setDownloadError("");
-          void downloadFile(`/resources/${file.id}/download`, file.path.split("/").at(-1) || "文件")
-            .catch(error => setDownloadError(error instanceof Error ? error.message : "下载失败，请重试"));
-        }}>
-        <Download size={15} aria-hidden="true" /><span>下载 {file.path.split("/").at(-1) || file.path}</span>
-      </a>)}
-      {downloadError && <span className="activity-file-download-error" role="status">{downloadError}</span>}
-    </div> : null}
     {expanded && <div id={regionId} className="activity-details"><ol className="activity-steps" aria-label="处理过程">
       {ordered.map(step => {
         if (step.type === "detail") return <li key={step.id} className="activity-detail">{step.content}</li>;

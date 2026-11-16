@@ -41,6 +41,9 @@ import { ExtensionSlashMenu, type SlashMenuHandle } from "./extensions/extension
 import type { ExtensionSelection } from "./extensions/extension-data";
 import { DocumentMentionMenu, type MentionDocument, type MentionKnowledgeBase, type MentionResource, type MentionMenuHandle, type MentionReference } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
+import { MessageFileProvider, MessageFiles, useMessageFiles } from "./conversation-files";
+import { workspaceFileId } from "./workspace-file-link";
+import { plainLinkClick } from "./resource-file-link";
 import { CloudComputerPanel } from "./cloud-computer";
 import { CloudComputerProvider } from "./cloud-computer-context";
 import { ConversationThinking } from "./conversation-thinking";
@@ -242,6 +245,7 @@ function AnswerMarkdown({
   text?: string;
 }) {
   const footnotePrefix = `footnote-${useId()}-`;
+  const files = useMessageFiles();
   return (
     <div className="answer-text">
       <ReactMarkdown
@@ -252,6 +256,10 @@ function AnswerMarkdown({
           table: ({ children }) => <div className="answer-table-scroll" role="region" aria-label="回答表格" tabIndex={0}><table>{children}</table></div>,
           img: ({ alt }) => <span>{alt}</span>,
           a: ({ href, children, node: _node, ...props }) => {
+            const fileId = workspaceFileId(href, typeof window !== "undefined" ? window.location.origin : undefined);
+            if (fileId && files) return <a {...props} href={href} aria-busy={files.busyId === fileId}
+              data-file-preview-trigger={`${footnotePrefix}file-${_node?.position?.start.offset ?? fileId}`}
+              onClick={event => { if (plainLinkClick(event)) { event.preventDefault(); void files.open(fileId, event.currentTarget); } }}>{children}</a>;
             const web = message.web_sources?.find(item => href === `#source-${item.source_id}`);
             if (web) return <a className="inline-citation" href={web.url} target="_blank" rel="noopener noreferrer" title={`查看网页：${web.title}`}>{children}</a>;
             const citation = message.citations.find(
@@ -1160,7 +1168,7 @@ export function ChatWorkspace({
                             : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
                         : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
                   ) : (
-                    <>
+                    <MessageFileProvider key={message.id} scope={`${session?.user.id}:${session?.workspace_id}`}>
                       {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
                         const thinking = (detail: Extract<DisplayBlock, { type: "thinking" }>) =>
@@ -1244,6 +1252,7 @@ export function ChatWorkspace({
                           </div>
                         </details>
                       )}
+                      <MessageFiles events={message.tool_events ?? []} />
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
                           {message.content && (
@@ -1311,7 +1320,7 @@ export function ChatWorkspace({
                           )}
                         </div>
                       )}
-                    </>
+                    </MessageFileProvider>
                   )}
                 </article>
                 {conversation.compactions?.filter(item => item.after_sequence === message.sequence).map(item => (
