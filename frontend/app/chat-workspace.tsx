@@ -42,6 +42,7 @@ import type { ExtensionSelection } from "./extensions/extension-data";
 import { DocumentMentionMenu, type MentionDocument, type MentionKnowledgeBase, type MentionResource, type MentionMenuHandle, type MentionReference } from "./document-mention-menu";
 import { ConversationActivity } from "./conversation-activity";
 import { CloudComputerPanel } from "./cloud-computer";
+import { CloudComputerProvider } from "./cloud-computer-context";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
 import { Tooltip } from "../components/ui/tooltip";
@@ -1076,7 +1077,8 @@ export function ChatWorkspace({
   }
   const running = asking || !!conversation?.active_request_id;
   return (
-    <>
+    <CloudComputerProvider
+      scope={{ userId: session.user.id, workspaceId: session.workspace_id, conversationId: conversation?.id ?? null }}>
       <WorkspaceNavigation>
         <button className="secondary new-chat" onClick={newChat}>
           <Plus size={16} />
@@ -1343,7 +1345,7 @@ export function ChatWorkspace({
           follow.current = true; setLatest(false);
         }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
-          <CloudComputerPanel key={`${session.workspace_id}:${conversation?.id ?? "new"}`} conversationId={conversation?.id ?? null} workspaceId={session.workspace_id} />
+          <CloudComputerPanel key={`${session.user.id}:${session.workspace_id}:${conversation?.id ?? "new"}`} />
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
           </div>}
@@ -1619,6 +1621,6 @@ export function ChatWorkspace({
           </div>
         </Modal>
       )}
-    </>
+    </CloudComputerProvider>
   );
 }

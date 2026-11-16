@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>冒泡排序</title>
+<style>
+* { box-sizing: border-box; } body { margin: 0; padding: 28px; background: #fafcfd; color: #172033; font: 14px/1.6 system-ui, sans-serif; }
+main { max-width: 720px; margin: auto; } h1 { font-size: 24px; margin: 0 0 6px; } p { color: #64748b; }
+#bars { height: 230px; display: flex; align-items: flex-end; gap: 10px; margin: 30px 0 20px; }
+.bar { background: #557ce5; color: white; flex: 1; min-width: 0; text-align: center; border-radius: 4px 4px 0 0; padding-top: 10px; transition: height .15s; }
+button { min-height: 44px; padding: 8px 18px; border: 1px solid #d6ddea; border-radius: 6px; cursor: pointer; background: white; color: #172033; font: inherit; }
+button:first-of-type { color: white; background: #2563eb; border-color: #2563eb; } button:focus-visible { outline: 2px solid #172033; outline-offset: 3px; }
+@media (max-width: 400px) { body { padding: 20px; } #bars { gap: 6px; } }
+@media (prefers-reduced-motion: reduce) { .bar { transition: none; } }
+</style>
+<main><h1>冒泡排序</h1><p>每次比较一对相邻数字，逐步完成排序。</p><div id="bars"></div>
+<button id="step">单步</button> <button id="reset">重置</button><p id="status">准备就绪</p></main>
+<script>
+let values = [7, 3, 8, 2, 6, 1], step = 0;
+function draw() { document.querySelector("#bars").innerHTML = values.map(n => '<div class="bar" style="height:' + (n * 24) + 'px">' + n + '</div>').join(""); }
+document.querySelector("#step").onclick = () => { const i = step++ % 5; if (values[i] > values[i+1]) [values[i], values[i+1]] = [values[i+1], values[i]]; draw(); document.querySelector("#status").textContent = "已比较 " + step + " 次"; };
+document.querySelector("#reset").onclick = () => { values = [7, 3, 8, 2, 6, 1]; step = 0; draw(); document.querySelector("#status").textContent = "准备就绪"; };
+draw();
+</script>
+</html>

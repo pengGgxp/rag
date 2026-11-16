@@ -1,0 +1,25 @@
+name: cloud-107-acceptance
+services:
+  redis:
+    image: redis:7.2-alpine
+  api:
+    image: swr.cn-south-1.myhuaweicloud.com/str1ct/zhiku-api:v0.1.23
+    command: [uvicorn, cloud_experience_fixture:app, --host, 0.0.0.0, --port, '8000']
+    environment:
+      DATABASE_URL: sqlite:////tmp/cloud-107-acceptance.db
+      REDIS_URL: redis://redis:6379/0
+      FRONTEND_URL: http://localhost:3127
+      API_PUBLIC_URL: http://localhost:8127
+      PREVIEW_ENABLED: 'true'
+      PREVIEW_DOMAIN: preview.cloud107.test
+      PYTHONPATH: /app:/app/tests:/app/tests/browser
+      AUTH_COOKIE_SECURE: 'false'
+      RESOURCE_CACHE_DIR: /tmp/cloud-107-cache
+    volumes:
+      - ../../app:/app/app:ro
+      - ../:/app/tests:ro
+    ports: ['127.0.0.1:8127:8000']
+    depends_on: [redis]
+  web:
+    image: local/zhiku-cloud-107-web:test
+    ports: ['127.0.0.1:3127:3000']
