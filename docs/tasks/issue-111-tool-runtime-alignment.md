@@ -117,3 +117,27 @@ PR 创建后，GitHub Actions 的 backend/frontend/contracts/secrets 四个作�
 因此远程 CI 未实际运行，不能标记为通过；GitGuardian 外部检查通过。
 本地补查 `npx tsc --noEmit`、前端 45 项测试、部署配置合约和 Alembic head 检查均通过，
 迁移 revision 长度与单一 head 检查 1 项通过。没有更改账户费用或 Actions 配置。
+
+## PR #115 合并前修复与补验收
+
+2026-11-16，独立实机验收确认：随后合入 main 的 #116 增加了
+`0073_cloud_stop_reason`，与本 PR 的 `0074_remote_tool_invocation` 形成两个 head，
+会使 `alembic upgrade head` 直接失败。用户随后授权修复并尝试合并，本次仍不部署。
+
+同步 main，保留所有已发布迁移，增加空合并节点 `0075_tool_cloud_merge`，父节点为
+上述两个 head；不改写历史迁移、不增加业务数据变更或自动数据库降级。
+
+在本地临时 Linux 容器和 PostgreSQL 中，分别从空库、#116 的结束原因版本以及本 PR
+的工具调用版本升级到唯一 head，并重复升级。新增回归核对余额、账单、消息、价格、
+加密回执和已记录的结束原因不变；旧记录新增字段保持空值，调用唯一约束正确。
+该组 5 项 PostgreSQL 测试与单一 head/版本长度检查通过。
+
+合并后的云电脑并发结束、首次原因保留、结算幂等、远程回执并发、上下文竞争、模型账务
+和历史迁移共 13 项 PostgreSQL 回归通过。前端 46 项测试、TypeScript 检查、生产构建
+以及 Compose 配置检查通过。前一轮真实浏览器的发现、加载、25 次同参数新观察、
+长结果续读、刷新恢复、撤权和 1440/700/390px 截图验收记录继续保留在
+`output/pr115/REPORT.md` 与 `output/playwright/pr115-*.png`，未将其描述为付费上游验收。
+
+合并代码后的 Agent 续接、上下文替换、长结果、MCP 发现、云电脑适配、工具幂等和
+结束原因共 117 项后端回归通过。最终 `git diff --check` 通过；远程 Actions 的
+账户账单阻塞仍然存在，本地验证不替代对远程运行状态的如实记录。
