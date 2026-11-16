@@ -68,11 +68,11 @@ def test_lease_idle_and_max_lifetime(accounts, monkeypatch):
     client.get(f"/previews/{row.id}")
     db.refresh(computer)
     assert computer.last_activity_at == before
-    monkeypatch.setattr(cloud, "now", lambda: start+timedelta(seconds=630))
+    monkeypatch.setattr(cloud, "now", lambda: start+timedelta(seconds=599))
     cloud.maintain_one(computer.id, factory)
     db.refresh(computer)
     assert not computer.ended_at
-    monkeypatch.setattr(cloud, "now", lambda: start+timedelta(seconds=661))
+    monkeypatch.setattr(cloud, "now", lambda: start+timedelta(seconds=600))
     cloud.maintain_one(computer.id, factory)
     db.refresh(computer); db.refresh(row)
     assert computer.ended_at and row.ended_at
