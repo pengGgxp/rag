@@ -8,7 +8,7 @@ import time
 from contextlib import asynccontextmanager
 
 os.environ["FRONTEND_URL"] = "http://127.0.0.1:3110"
-os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='rag-chat56-')) / 'preview.db'}"
+os.environ["DATABASE_URL"] = os.environ.get("PREVIEW_DATABASE_URL") or f"sqlite:///{Path(tempfile.mkdtemp(prefix='rag-chat56-')) / 'preview.db'}"
 from cryptography.fernet import Fernet
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

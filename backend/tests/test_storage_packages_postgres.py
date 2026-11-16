@@ -17,6 +17,25 @@ from app.storage_models import StorageEntitlement, StorageQuotaSettings
 from test_auth_postgres import auth_postgres
 
 
+@pytest.fixture(autouse=True)
+def restore_site_quota(auth_postgres):
+    """Do not leave this test's ten-byte quota in a shared disposable database."""
+    from copy import deepcopy
+    with Session(auth_postgres) as db:
+        row = db.get(StorageQuotaSettings, 1)
+        before = {column.name: deepcopy(getattr(row, column.name))
+            for column in StorageQuotaSettings.__table__.columns} if row else None
+    yield
+    with Session(auth_postgres) as db:
+        row = db.get(StorageQuotaSettings, 1)
+        if before:
+            for key, value in before.items():
+                setattr(row, key, value)
+        elif row:
+            db.delete(row)
+        db.commit()
+
+
 def setup(engine):
     with Session(engine) as db:
         user = User(email=f"storage-{uuid4().hex}@example.com", name="Storage test", is_site_admin=True)

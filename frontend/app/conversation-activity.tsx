@@ -5,6 +5,7 @@ import { Check, ChevronRight, CircleAlert, CircleDashed, CornerDownLeft, Downloa
 import { Motion } from "../components/ui/motion";
 import { API_URL, ApiError, downloadFile, request } from "./api";
 import Link from "next/link";
+import { latestImageTask } from "./image-task-state";
 import { ImageTaskActivity, type ImageTaskResult } from "./image-task-result";
 import { PreviewResultAction, type Preview } from "./cloud-preview";
 import { activityFiles, processHeadline } from "./conversation-display";
@@ -100,11 +101,13 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
   const [downloadError, setDownloadError] = useState("");
   const [savedResults, setSavedResults] = useState<Record<string, SavedDocument>>({});
   const [imageResults, setImageResults] = useState<Record<string, ImageTaskResult>>({});
-  const updateImage = useCallback((value: ImageTaskResult) => setImageResults(old => ({ ...old, [value.task_id]: value })), []);
+  const updateImage = useCallback((value: ImageTaskResult) => setImageResults(old => ({
+    ...old, [value.task_id]: old[value.task_id] ? latestImageTask(old[value.task_id], value) : value,
+  })), []);
   const updateSaved = useCallback((value: SavedDocument) => setSavedResults(old => ({ ...old, [value.save_id]: value })), []);
   items = items.map(item => {
-    const image = item.image_task && (imageResults[item.image_task.task_id] || item.image_task);
-    if (image) return { ...item, summary: image.summary, status: (!image.terminal ? "running" : image.status === "uncertain" ? "uncertain" : ["failed", "save_failed"].includes(image.status) ? "failed" : image.status === "cancelled" ? "cancelled" : "completed") as ConversationActivityItem["status"] };
+    const image = item.image_task && latestImageTask(item.image_task, imageResults[item.image_task.task_id]);
+    if (image) return { ...item, image_task: image, summary: image.summary, status: (!image.terminal ? "running" : image.status === "uncertain" ? "uncertain" : ["failed", "save_failed"].includes(image.status) ? "failed" : image.status === "cancelled" ? "cancelled" : "completed") as ConversationActivityItem["status"] };
     const saved = item.saved_document && (savedResults[item.saved_document.save_id] || item.saved_document);
     return saved ? { ...item, summary: saved.summary,
       status: (saved.document_status === "failed" || saved.document_status === "deleted" ? "failed"

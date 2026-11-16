@@ -198,14 +198,49 @@ def test_uncertain_call_is_never_resubmitted_after_runtime_recreation(runtime, m
     assert fake.creates == fake.starts == 1
 
 
+def test_uncertain_computer_creation_is_not_reported_as_success(runtime):
+    _, _, _, _, _, fake, _, extensions, _ = runtime
+    fake.create_uncertain = True
+    first = extensions().execute("run_command", {"command": "echo synthetic"}, call_id="tool-1-create")
+    assert first["status"] == "uncertain" and first["uncertain"] and first["error"]
+    second = extensions().execute("run_command", {"command": "echo synthetic"}, call_id="tool-1-create")
+    assert second["command_id"] == first["command_id"] and second["uncertain"]
+    assert fake.creates == 1 and fake.starts == 0
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_stop_running_preview_stops_service_or_reports_uncertain(runtime, monkeypatch, confirmed):
+    _, _, _, _, _, fake, _, extensions, _ = runtime
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "preview_enabled", True)
+    stopped = []
+    monkeypatch.setattr(fake, "start_preview", lambda sandbox, identifier, payload:
+        fake.start(sandbox, identifier, payload["command"]), raising=False)
+    def stop_preview(*args):
+        stopped.append(args)
+        if not confirmed:
+            raise TimeoutError("synthetic cancellation lost")
+    monkeypatch.setattr(fake, "stop_preview", stop_preview, raising=False)
+    def check():
+        if fake.starts:
+            raise AgentCancelled()
+    result = extensions().execute("start_preview",
+        {"command": "python -m http.server 8080", "port": 8080, "name": "停止验收"},
+        call_id="tool-1-preview", check_active=check)
+    assert stopped
+    assert result["status"] == ("cancelled" if confirmed else "uncertain")
+    assert result["preview"]["status"] == ("stopped" if confirmed else "uncertain")
+    assert bool(result.get("uncertain")) == (not confirmed)
+
+
 def test_cancelled_call_is_not_reexecuted(runtime, monkeypatch):
     _, db, conversation, access, factory, fake, _, _, request_id = runtime
     monkeypatch.setattr(cloud, "dispatch", lambda _: None)
     key = cloud.tool_request_id(request_id, "tool-1-run")
     def stopped():
         raise AgentCancelled()
-    with pytest.raises(AgentCancelled):
-        cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, stopped)
+    cancelled = cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, stopped)
+    assert cancelled["status"] == "cancelled"
     command = db.scalar(select(cloud.Command))
     cloud.run(command.id, factory)
     result = cloud.execute(db, access, conversation.id, key, {"command": "echo synthetic"}, None)

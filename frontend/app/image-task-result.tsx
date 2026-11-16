@@ -5,15 +5,18 @@ import { Download, FolderOpen, Loader2, RotateCcw, Square } from "lucide-react";
 import { ApiError, downloadFile, request } from "./api";
 import { json } from "./admin/admin-ui";
 import { GeneratedImagePreview } from "./generated-image-preview";
+import { latestImageTask } from "./image-task-state";
 import "./image-tasks.css";
 
 export type ImageTaskResult = {
   task_id: string; status: string; terminal: boolean; summary: string; credits: string;
   cancel_requested: boolean; files: { id: string; path: string; version: number }[];
+  updated_at?: string;
 };
 
 export function ImageTaskActivity({ initial, onUpdate, showStatus = true }: { initial: ImageTaskResult; onUpdate?: (value: ImageTaskResult) => void; showStatus?: boolean }) {
-  const [value, setValue] = useState(initial);
+  const [snapshot, setValue] = useState(initial);
+  const value = latestImageTask(snapshot, initial);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
@@ -26,7 +29,7 @@ export function ImageTaskActivity({ initial, onUpdate, showStatus = true }: { in
       polling = true;
       try {
         const next = await request<ImageTaskResult>(`/image-tasks/${initial.task_id}`);
-        if (!disposed) { setValue(next); onUpdate?.(next); setError(""); terminal = next.terminal; }
+        if (!disposed) { setValue(old => latestImageTask(old, next)); onUpdate?.(next); setError(""); terminal = next.terminal; }
       } catch (cause) {
         if (!disposed) {
           terminal = cause instanceof ApiError && [401, 403, 404].includes(cause.status);

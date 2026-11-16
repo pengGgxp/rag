@@ -81,7 +81,8 @@ def generation_response(response):
 
 def authenticate(http, db):
     """Seed a real server-side session; do not bypass authorization dependencies."""
-    db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="test workspace"))
+    if db.get(Workspace, LEGACY_WORKSPACE_ID) is None:
+        db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="test workspace"))
     user = User(email="owner@example.com", name="Owner")
     db.add(user)
     db.flush()

@@ -262,11 +262,12 @@ def resolve_input(db, access, reference):
     version.content_hash = row.content_hash or ""
     return row, version
 
-def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, check_active=None):
+def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, check_active=None,
+                 **execution):
     check_workspace(access,workspace_id)
     from .cloud_computer import execute
     if name == "run_command":
-        return execute(db, access, conversation_id, request_id, arguments, check_active)
+        return execute(db, access, conversation_id, request_id, arguments, check_active, **execution)
     if name not in {"list_files", "read_file", "write_file", "apply_patch", "delete_file"}:
         return {"error": "未知文件工具"}
     if name not in {"list_files", "read_file"}:
@@ -318,7 +319,7 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
             payload = PatchWrite(patch=arguments["patch"], expected_version=1)
             operation["patch"] = payload.patch
     result = execute(db, access, conversation_id, request_id, {
-        "command": name, "file_operation": operation}, check_active)
+        "command": name, "file_operation": operation}, check_active, **execution)
     file_result = result.get("file_result", {})
     if file_result.get("error"):
         raise HTTPException(file_result["status_code"], file_result["error"])
