@@ -117,16 +117,15 @@ def test_fractional_admin_balance_conflict_and_rollback(auth_postgres):
         assert db.get(CreditAccount, identifier).balance == Decimal("0.1234")
 
 
-def test_downgrade_refuses_to_destroy_fractional_credits(auth_postgres, monkeypatch):
+def test_downgrade_refuses_to_destroy_fractional_credits(auth_postgres):
     identifier = workspace(auth_postgres, "0.0001")
-    monkeypatch.setenv("DATABASE_URL", auth_postgres.url.render_as_string(hide_password=False))
-    from app.config import get_settings
-    get_settings.cache_clear()
-    try:
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from test_tool_runtime_migrations import migration
+    # Exercise this revision without unrelated later downgrade guards intercepting it.
+    with auth_postgres.begin() as connection, Operations.context(MigrationContext.configure(connection)):
         with pytest.raises(RuntimeError, match="Decimal credits exist"):
-            command.downgrade(Config("alembic.ini"), "0035_chat_attachments")
-    finally:
-        get_settings.cache_clear()
+            migration("0036_decimal_credits").downgrade()
     with Session(auth_postgres) as db:
         assert db.get(CreditAccount, identifier).balance == Decimal("0.0001")
         from alembic.script import ScriptDirectory

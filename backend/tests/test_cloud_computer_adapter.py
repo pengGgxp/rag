@@ -200,13 +200,28 @@ def test_missing_launcher_result_does_not_wait_until_session_expiry():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="launcher requires the Linux bash template")
-def test_launcher_bounds_stdout_and_stderr(tmp_path):
+@pytest.mark.parametrize("size", [0, 50000, 524288, 1500000])
+def test_launcher_bounds_stdout_and_stderr(tmp_path, size):
     launcher = tmp_path/"launcher.py"
     launcher.write_text(LAUNCHER)
-    (tmp_path/"input.json").write_text(json.dumps({"cwd": str(tmp_path), "command": "python3 -c \"import sys; sys.stdout.write('a'*50000); sys.stderr.write('b'*50000)\""}))
+    command = f"python3 -c \"import sys; sys.stdout.write('a'*{size}+'OUT-END'); sys.stderr.write('b'*{size}+'ERR-END')\""
+    command += "\n" + "# long script line\n" * 1000
+    (tmp_path/"input.json").write_text(json.dumps({"cwd": str(tmp_path), "command": command}))
     subprocess.run([sys.executable, str(launcher), str(tmp_path)], check=True, timeout=15)
     result = json.loads((tmp_path/"result.json").read_text())
-    assert result == {"exit_code": 0, "stdout": "a"*12000, "stderr": "b"*12000}
+    assert result["exit_code"] == 0
+    for name, prefix, suffix in (("stdout", "a", "OUT-END"), ("stderr", "b", "ERR-END")):
+        meta = result["output_capture"][name]
+        assert meta["received_bytes"] == size + len(suffix)
+        assert meta["retained_bytes"] == min(size + len(suffix), 512 * 1024)
+        assert meta["omitted_bytes"] == max(0, size + len(suffix) - 512 * 1024)
+        assert result[name].endswith(suffix)
+        assert result[name].startswith(prefix if size else suffix)
+        if meta["omitted_bytes"]:
+            assert "discarded output cannot be recovered" in result[name]
+            assert meta["head_bytes"] == meta["tail_bytes"] == 256 * 1024
+        else:
+            assert result[name] == prefix * size + suffix
     assert not (tmp_path/"stdout").exists()
 
 

@@ -19,6 +19,11 @@ from mcp.client.streamable_http import streamable_http_client
 
 from .config import get_settings
 
+CATALOG_MAX_ITEMS = 2048
+CATALOG_MAX_PAGES = 100
+CATALOG_MAX_CURSOR_BYTES = 64 * 1024
+CATALOG_MAX_BYTES = 8 * 1024 * 1024
+
 
 class MCPError(RuntimeError):
     pass
@@ -226,23 +231,29 @@ def redact_credentials(payload, headers):
 async def _tools(client: ClientSession, headers) -> list[dict]:
     result = []
     cursor = None
-    seen = set()
-    while True:
+    seen, names = set(), set()
+    size = 2
+    for _ in range(CATALOG_MAX_PAGES):
         page = await client.list_tools(cursor=cursor)
         for tool in page.tools:
             definition = redact_credentials(tool.model_dump(mode="json", exclude_none=True), headers)
             validate_tool(definition)
-            if len(result) >= 100 or any(item["name"] == definition["name"] for item in result):
+            if len(result) >= CATALOG_MAX_ITEMS or definition["name"] in names:
                 raise MCPError("MCP 工具过多或名称重复，请调整服务")
+            names.add(definition["name"])
+            size += len(json.dumps(definition, ensure_ascii=False).encode("utf-8")) + (2 if result else 0)
             result.append(definition)
-            if len(json.dumps(result, ensure_ascii=True)) > 512000:
+            if size > CATALOG_MAX_BYTES:
                 raise MCPError("MCP 工具定义过大，请调整服务")
         cursor = page.nextCursor
         if not cursor:
             return result
+        if not isinstance(cursor, str) or len(cursor.encode("utf-8")) > CATALOG_MAX_CURSOR_BYTES:
+            raise MCPError("MCP 工具列表分页游标过大或无效")
         if cursor in seen:
             raise MCPError("MCP 工具列表返回了重复分页游标")
         seen.add(cursor)
+    raise MCPError("MCP 工具列表超过 100 页，请调整服务分页")
 
 
 async def _discover(endpoint, transport, headers):
@@ -281,8 +292,6 @@ async def _call(endpoint, transport, headers, tool, arguments, before_call):
             await anyio.to_thread.run_sync(before_call)
         result = await client.call_tool(tool["name"], arguments)
         payload = result.model_dump(mode="json", exclude_none=True)
-        if len(json.dumps(payload, ensure_ascii=True)) > 512000:
-            raise MCPError("MCP 返回内容过大，操作可能已完成；未自动重试，请核对远端执行状态")
         # A remote service may echo authentication values; do not propagate them.
         return redact_credentials(payload, headers)
 

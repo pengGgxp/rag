@@ -39,11 +39,6 @@ def begin(db, request_id, capability, key):
     snapshot = request.billing_context.get("search")
     if not settings or not settings.enabled or not snapshot or capability not in web_search.CAPABILITIES:
         raise web_search.SearchError("联网搜索暂不可用，请稍后重试")
-    calls = db.scalars(select(SearchToolCall).where(SearchToolCall.request_id == request_id,
-        SearchToolCall.capability == capability)).all()
-    limit = snapshot["max_search_calls" if capability == "web_search" else "max_fetch_calls"]
-    if len(calls) >= limit:
-        raise web_search.SearchError("本次联网操作已达上限，请根据已有资料回答")
     price = {**snapshot["prices"][capability], "version": snapshot["version"],
         "source": "platform_search", "source_id": "1"}
     reservations = sum((accrued(db, other) for other in db.scalars(select(ModelUsageRequest).where(

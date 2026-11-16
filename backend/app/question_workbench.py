@@ -213,7 +213,7 @@ METHOD = """先确认用户要求的题型、题量和资料范围。需要依�
 class Runtime:
     def __init__(self, factory, access, selected, request_id, message_id=None):
         self.factory, self.access, self.request_id, self.message_id = factory, access, request_id, message_id
-        self.version, self.calls, self.uncertain = 0, 0, set()
+        self.version = 0
         if selected and configured():
             with factory() as db:
                 user = db.get(User, access.user_id, populate_existing=True)
@@ -227,7 +227,7 @@ class Runtime:
         if not self.version or not row or not row.enabled or row.version != self.version:
             raise HTTPException(403, "题目工作台授权已变更，请重新选择后继续")
 
-    def execute(self, name, arguments, check_active=None):
+    def execute(self, name, arguments, check_active=None, *, call_id=None, agent_tool_execution_id=None):
         from jsonschema import Draft202012Validator, FormatChecker, ValidationError
         definition = next(tool["function"] for tool in TOOLS if tool["function"]["name"] == name)
         try:
@@ -236,12 +236,7 @@ class Runtime:
             return {"error": "工具参数不完整或格式不正确，请修正后重试", "error_code": "tool_arguments"}
         if check_active:
             check_active()
-        self.calls += 1
-        if self.calls > 20:
-            return {"error": "本次题目操作已达上限，请继续发送消息"}
         signature = json.dumps([name, arguments], ensure_ascii=True, sort_keys=True)
-        if signature in self.uncertain:
-            return {"error": "上次操作结果尚未确认，请打开题目工作台核对", "uncertain": True}
         with self.factory() as db:
             self.check(db)
             contents = arguments.get("questions", []) + ([arguments["content"]] if "content" in arguments else []) + [i["content"] for i in arguments.get("items", [])]
@@ -263,29 +258,16 @@ class Runtime:
             verb, path, body = "PUT", ("/questions/" if name == "update_question" else "/papers/") + arguments["id"], {k: v for k, v in arguments.items() if k != "id"}
         elif name == "create_paper": verb, path, body = "POST", "/papers", arguments
         elif name == "export_paper": verb, path, body = "POST", "/exports", arguments
-        key = hashlib.sha256((str(self.request_id) + signature).encode()).hexdigest()
-        execution_id = None
-        if verb != "GET" and self.message_id:
-            from .models import RemoteToolExecution
-            from . import mcp_client
-            from sqlalchemy.exc import IntegrityError
-            with self.factory() as db:
-                prior = db.scalar(select(RemoteToolExecution).where(RemoteToolExecution.message_id == self.message_id,
-                    RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == digest(signature)))
-                if prior:
-                    if prior.status in ("completed", "failed") and prior.encrypted_result:
-                        return json.loads(mcp_client.decrypt_headers(prior.encrypted_result)["tool_result"])
-                    return {"error": "上次操作结果尚未确认，请打开题目工作台核对", "uncertain": True}
-                row = RemoteToolExecution(message_id=self.message_id, workspace_id=self.access.workspace_id,
-                    owner_id=self.access.user_id, request_id=self.request_id, tool_name=name,
-                    authorization_version=self.version, arguments_digest=digest(signature), status="running")
-                db.add(row)
-                try:
-                    db.commit()
-                except IntegrityError:
-                    db.rollback()
-                    return {"error": "该操作正在处理，请到题目工作台核对", "uncertain": True}
-                execution_id = row.id
+        from . import remote_tool_receipts as receipts
+        try:
+            identifier = receipts.invocation_id(self.request_id, call_id, agent_tool_execution_id)
+            execution_id, previous = receipts.claim(self.factory, self.access, self.message_id, self.request_id,
+                identifier, name, signature, self.version, readonly=verb == "GET")
+            if previous is not None:
+                return previous
+        except receipts.ReceiptError as exc:
+            return {"error": str(exc), "uncertain": exc.uncertain, "error_code": "tool_receipt"}
+        key = identifier.hex
         try:
             with httpx.Client(timeout=15, follow_redirects=False, trust_env=False) as client:
                 base_api = get_settings().question_workbench_api_url.rstrip("/") + "/api"
@@ -303,23 +285,13 @@ class Runtime:
                 if len(response.content) > 512 * 1024:
                     raise httpx.ReadError("Oversized workbench response")
         except httpx.HTTPError:
-            if verb != "GET": self.uncertain.add(signature)
-            if execution_id:
-                with self.factory() as db:
-                    db.get(RemoteToolExecution, execution_id).status = "uncertain"
-                    db.commit()
+            receipts.finish(self.factory, execution_id, status="uncertain")
             return {"error": "连接未确认完成，请打开题目工作台核对后继续", "uncertain": verb != "GET"}
         if response.status_code >= 400:
             result = {"error": "题目内容不完整或已更新，请重新读取后修改" if response.status_code in (409, 422) else "操作未完成，请检查题目工作台连接或重新授权", "status": response.status_code}
-            if execution_id:
-                with self.factory() as db:
-                    row = db.get(RemoteToolExecution, execution_id)
-                    row.status = "failed" if response.status_code < 500 else "uncertain"
-                    if row.status == "failed":
-                        row.encrypted_result = mcp_client.encrypt_headers({"tool_result": json.dumps(result)})
-                    db.commit()
+            receipts.finish(self.factory, execution_id, result if response.status_code < 500 else None,
+                status="failed" if response.status_code < 500 else "uncertain")
             if response.status_code >= 500 and verb != "GET":
-                self.uncertain.add(signature)
                 result["uncertain"] = True
             return result
         try:
@@ -327,11 +299,7 @@ class Runtime:
             if not isinstance(result, dict):
                 raise ValueError()
         except ValueError:
-            if verb != "GET": self.uncertain.add(signature)
-            if execution_id:
-                with self.factory() as db:
-                    db.get(RemoteToolExecution, execution_id).status = "uncertain"
-                    db.commit()
+            receipts.finish(self.factory, execution_id, status="uncertain")
             return {"error": "返回结果未能确认，请到题目工作台核对", "uncertain": verb != "GET"}
         base = get_settings().question_workbench_url.rstrip("/")
         if name == "save_questions":
@@ -341,11 +309,8 @@ class Runtime:
         elif name in ("export_paper", "get_export"):
             result["url"] = base + "/papers/" + result["paper_id"]
             if result.get("download_url"): result["download_url"] = base + result["download_url"]
-        if execution_id:
-            from .models import RemoteToolExecution
-            from . import mcp_client
-            with self.factory() as db:
-                row = db.get(RemoteToolExecution, execution_id)
-                row.status, row.encrypted_result = "completed", mcp_client.encrypt_headers({"tool_result": json.dumps(result, ensure_ascii=True)})
-                db.commit()
+        try:
+            receipts.finish(self.factory, execution_id, result)
+        except Exception:
+            return {"error": "操作已返回，但结果未能保存，请先打开题目工作台核对", "uncertain": True}
         return result

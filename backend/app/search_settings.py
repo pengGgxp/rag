@@ -46,7 +46,7 @@ def read(row):
     return {"version": row.version if row else 0, "enabled": bool(row and row.enabled),
         "has_api_key": bool(row and row.encrypted_api_key),
         **{key: getattr(row, key) if row else default for key, default in (
-            ("timeout_seconds", 20), ("result_count", 5), ("max_search_calls", 3), ("max_fetch_calls", 5))},
+            ("timeout_seconds", 20), ("result_count", 5))},
         "policies": [{**(row.prices.get(key) if row and key in row.prices else
             {"capability": key, "unit": "calls", "unit_size": 1, "credits_per_unit": None, "enabled": True}),
             "version": row.version if row else 0,
@@ -61,7 +61,7 @@ def runtime_config(db):
     try:
         return SearchConfig(version=row.version, api_key=reveal(row.encrypted_api_key),
             **{key: getattr(row, key) for key in (
-                "timeout_seconds", "result_count", "max_search_calls", "max_fetch_calls", "prices")})
+                "timeout_seconds", "result_count", "prices")})
     except Exception:
         return None
 
@@ -74,8 +74,6 @@ class SearchSettingsInput(BaseModel):
     clear_api_key: bool = False
     timeout_seconds: int = Field(default=20, ge=5, le=60)
     result_count: int = Field(default=5, ge=1, le=10)
-    max_search_calls: int = Field(default=3, ge=1, le=10)
-    max_fetch_calls: int = Field(default=5, ge=1, le=10)
     policies: list[SearchPrice] = Field(min_length=2, max_length=2)
 
 
@@ -106,7 +104,7 @@ def save_settings(payload: SearchSettingsInput, request: Request, db=Depends(get
     if payload.enabled and (not row.encrypted_api_key or not complete(prices)):
         raise HTTPException(422, "启用前请填写密钥及搜索、网页读取的完整价格")
     row.prices = prices
-    for key in ("enabled", "timeout_seconds", "result_count", "max_search_calls", "max_fetch_calls"):
+    for key in ("enabled", "timeout_seconds", "result_count"):
         setattr(row, key, getattr(payload, key))
     row.version += 1
     record(db, actor, "search.updated", "search_settings", 1, request=request,

@@ -1,7 +1,6 @@
 """Workspace file tools, application methods and authorized remote tools."""
 import json
 from dataclasses import dataclass
-from hashlib import sha256
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -12,7 +11,7 @@ from referencing.exceptions import Unresolvable
 from sqlalchemy import select
 
 from . import mcp_client
-from .models import MCPServer, RemoteToolExecution
+from .models import MCPServer
 from .personal_skills import router as skills_router, owned
 from .personal_mcp import router as mcp_router
 from .site_skills import LOAD_SKILL, catalog_router
@@ -56,8 +55,7 @@ class ExtensionRuntime:
         self.skills = []
         self.message_id, self.request_id = message_id, request_id
         self.provider_config = provider_config
-        self.bindings, self.calls = {}, 0
-        self.uncertain_calls = set()
+        self.bindings = {}
         self.verified_citations = []
         self.mcp_tokens = {}
         with factory() as db:
@@ -93,9 +91,9 @@ class ExtensionRuntime:
         if self.execution_available and get_settings().preview_enabled:
             workspace_tools = workspace_tools + PREVIEW_TOOLS
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
-        self.tools = workspace_tools + [{"type": "function", "function": {"name": alias,
-                "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
-                "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
+        from .mcp_tool_catalog import Catalog, TOOLS as MCP_DISCOVERY_TOOLS
+        self.tools = workspace_tools + (MCP_DISCOVERY_TOOLS if self.bindings else [])
+        self.mcp_catalog = Catalog(self)
         self.versions = sorted(self.mcp_tokens.items())
         from .image_tools import tools as image_tools
         with factory() as db:
@@ -134,7 +132,12 @@ class ExtensionRuntime:
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"],
                 "files": [file_reference(linked)]}
 
+    def model_tools(self, messages):
+        return self.mcp_catalog.prepare(messages)
+
     def label(self, name, arguments=None):
+        if name in ("search_mcp_tools", "load_mcp_tool"):
+            return "查找已授权工具" if name == "search_mcp_tools" else "加载已授权工具"
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
         if name in KNOWLEDGE_LABELS:
             return KNOWLEDGE_LABELS[name]
@@ -164,6 +167,9 @@ class ExtensionRuntime:
             if value is not None}
         if check_active:
             check_active()
+        from .mcp_tool_catalog import NAMES as MCP_DISCOVERY_NAMES
+        if name in MCP_DISCOVERY_NAMES:
+            return self.mcp_catalog.execute(name, arguments)
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
         if name in KNOWLEDGE_LABELS:
             try:
@@ -207,7 +213,8 @@ class ExtensionRuntime:
                     self.question_workbench.check(db)
                 if name == "load_skill":
                     return {"name": "教师出题", "instructions": METHOD, "version": 1}
-                result = self.question_workbench.execute(name, arguments, check_active)
+                result = self.question_workbench.execute(name, arguments, check_active, call_id=call_id,
+                    agent_tool_execution_id=agent_tool_execution_id)
                 return {**result, "_extension": {"tool": name, "version": self.question_workbench.version}}
             except HTTPException as error:
                 return {"error": public_error(error.detail) if error.status_code in (403, 404) else "题目工作台操作未完成"}
@@ -258,12 +265,12 @@ class ExtensionRuntime:
                                 "status_code": error.status_code}
             return {"error": "该能力不可用"}
         item = self.bindings[name]
+        if name not in self.mcp_catalog.offered or name not in self.mcp_catalog.loaded:
+            return {"error": "工具尚未加载或已被移出当前模型预算；请先 load_mcp_tool，在下一模型步骤调用",
+                "error_code": "mcp_tool_not_loaded"}
+        self.mcp_catalog.loaded.move_to_end(name)
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
-        if signature in self.uncertain_calls:
-            return {"error": "上一次操作结果尚未确认，请先到对应服务核对", "uncertain": True}
-        self.calls += 1
-        if self.calls > 20:
-            return {"error": "本次远程工具调用已达上限，请继续发送消息后再试"}
+        from .remote_tool_receipts import ReceiptError
         try:
             mcp_client.validate_tool(item["tool"])
             Draft202012Validator(item["tool"]["inputSchema"], registry=Registry()).validate(arguments)
@@ -278,64 +285,41 @@ class ExtensionRuntime:
                             or (row.url, row.transport, row.encrypted_headers) != (item["url"], item["transport"], item["credentials"])):
                         raise mcp_client.MCPError("连接或授权已变化，本次操作未执行")
             before_call()
-            result = self._remote_call(name, item, arguments, signature, before_call)
-            return {**result, "_extension": {"tool": name, "version": item["authorization"]}}
+            result = self._remote_call(name, item, arguments, signature, before_call,
+                call_id=call_id, agent_tool_execution_id=agent_tool_execution_id)
+            return {**result, "_extension": {"tool": name, "version": item["authorization"],
+                "server_id": str(item["id"])}}
+        except ReceiptError as exc:
+            return {"error": str(exc), "uncertain": exc.uncertain, "error_code": "tool_receipt"}
         except (ValueError, TypeError, ValidationError, Unresolvable):
             return {"error": "工具参数不符合定义，请修正后重试", "error_code": "tool_arguments"}
         except mcp_client.MCPError as exc:
             uncertain = "未自动重试" in str(exc)
-            if uncertain:
-                self.uncertain_calls.add(signature)
             return {"error": public_error(exc), "uncertain": uncertain}
         except HTTPException as exc:
             if exc.status_code in (401, 403):
                 raise
             return {"error": "扩展不存在或授权已撤销"}
 
-    def _remote_call(self, name, item, arguments, signature, before_call):
-        execution_id = None
-        if self.message_id:
-            # Persist intent before contacting the service. A lost response must never
-            # turn a conversation retry into a second external write.
-            from sqlalchemy.exc import IntegrityError
-            with self.factory() as db:
-                previous = db.scalar(select(RemoteToolExecution).where(
-                    RemoteToolExecution.message_id == self.message_id, RemoteToolExecution.tool_name == name,
-                    RemoteToolExecution.arguments_digest == sha256(signature.encode()).hexdigest()))
-                if previous:
-                    if previous.authorization_version != item["authorization"]:
-                        raise mcp_client.MCPError("历史操作授权已变化，请先核对原操作")
-                    if previous.encrypted_result:
-                        return json.loads(mcp_client.decrypt_headers(previous.encrypted_result)["tool_result"])
-                    raise mcp_client.MCPError("此前操作结果尚未确认；未自动重试，请核对远端执行状态")
-                # Verify result encryption is ready before a side effect is possible.
-                mcp_client.encrypt_headers({"tool_result": "{}"})
-                row = RemoteToolExecution(message_id=self.message_id, workspace_id=self.access.workspace_id,
-                    owner_id=self.access.user_id, request_id=self.request_id, tool_name=name,
-                    authorization_version=item["authorization"], arguments_digest=sha256(signature.encode()).hexdigest(),
-                    status="running")
-                db.add(row)
-                try:
-                    db.commit()
-                except IntegrityError:
-                    db.rollback()
-                    raise mcp_client.MCPError("该操作正在处理；未自动重试，请核对远端执行状态") from None
-                execution_id = row.id
+    def _remote_call(self, name, item, arguments, signature, before_call, *, call_id, agent_tool_execution_id):
+        from . import remote_tool_receipts as receipts
+        identifier = receipts.invocation_id(self.request_id, call_id, agent_tool_execution_id)
+        annotations = item["tool"].get("annotations") or {}
+        readonly = annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
+        execution_id, previous = receipts.claim(self.factory, self.access, self.message_id, self.request_id,
+            identifier, name, signature, item["authorization"], readonly=readonly)
+        if previous is not None:
+            return previous
         try:
             result = mcp_client.call(item["url"], item["transport"], mcp_client.decrypt_headers(item["credentials"]),
                 item["tool"], arguments, before_call)
         except BaseException as exc:
-            if execution_id:
-                with self.factory() as db:
-                    db.get(RemoteToolExecution, execution_id).status = "uncertain"
-                    db.commit()
-                if isinstance(exc, mcp_client.MCPError) and "未自动重试" not in str(exc):
-                    raise mcp_client.MCPError(f"{exc}；未自动重试，请核对远端执行状态") from None
+            receipts.finish(self.factory, execution_id, status="uncertain")
+            if isinstance(exc, mcp_client.MCPError) and "未自动重试" not in str(exc):
+                raise mcp_client.MCPError(f"{exc}；未自动重试，请核对远端执行状态") from None
             raise
-        if execution_id:
-            encrypted = mcp_client.encrypt_headers({"tool_result": json.dumps(result, ensure_ascii=True)})
-            with self.factory() as db:
-                row = db.get(RemoteToolExecution, execution_id)
-                row.status, row.encrypted_result = ("failed" if result.get("isError") else "completed"), encrypted
-                db.commit()
+        try:
+            receipts.finish(self.factory, execution_id, result)
+        except Exception:
+            raise receipts.ReceiptError("操作已返回，但结果未能保存；请先核对原操作，不要重复执行", uncertain=True) from None
         return result
