@@ -239,7 +239,7 @@ def tool_definitions():
         ("write_file","创建或覆盖当前工作区文本文件，内容直接写入资源库。",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","直接修改当前文件；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
-        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。预装软件见环境能力说明，缺少依赖可用 pip/npm 安装到工作目录之外。编辑前检查输入，用对应库处理 Word/PDF；完成后重新打开输出核对内容。Skill 就是资源库普通文件，可用 list_files 查找 SKILL.md，read_file 读取，按其所在目录运行脚本；修改和删除使用普通文件工具。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。网页服务用 start_preview 启动，不在此等待服务退出。",{"type":"object","properties":{"command":{"type":"string","maxLength":2000}},"required":["command"],"additionalProperties":False}),
+        ("run_command","在按存续时间计费的云电脑执行 Python、Node 或 bash。工作目录 /home/user/workspace 就是工作区资源库，文件直接操作并持久保存，无需下载或准备输入。同工作区会话共享文件；同一环境保留依赖。预装软件见环境能力说明，缺少依赖可用 pip/npm 安装到工作目录之外。编辑前检查输入，用对应库处理 Word/PDF；完成后重新打开输出核对内容。Skill 就是资源库普通文件，可用 list_files 查找 SKILL.md，read_file 读取，按其所在目录运行脚本；修改和删除使用普通文件工具。图片嵌入应在脚本内读写，不打印 Base64。不要求先列文件或加载 Skill。网页服务用 start_preview 启动，不在此等待服务退出。",{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":False}),
     ]]
 
 
