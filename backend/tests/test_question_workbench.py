@@ -150,6 +150,48 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
     assert reads[0][0].endswith("/operations/" + writes[0]["headers"]["Idempotency-Key"])
 
 
+def test_fresh_reads_observe_updates_and_receipts_survive_runtime_restart(bridge, monkeypatch):
+    (owner, _, _), db = bridge
+    session = register(owner, db)
+    owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
+    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin",
+        auth.digest(owner.cookies.get(auth.COOKIE)))
+    message, request = answer_identity(owner, db)
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    def runtime():
+        return ExtensionRuntime(factory, access, message_id=message, request_id=request, question_workbench=True)
+    engine = runtime()
+    identifier = str(uuid4())
+    current = {"id": identifier, "version": 1,
+        "content": {"kind": "short_answer", "stem": "before", "answer": ["answer"]}}
+    sent = []
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def request(self, verb, url, **kwargs):
+            sent.append((verb, kwargs["headers"]["Idempotency-Key"]))
+            if verb == "PUT":
+                current.update(kwargs["json"])
+                current["version"] += 1
+            return httpx.Response(200, json=current)
+    monkeypatch.setattr(qw.httpx, "Client", Client)
+    args = {"id": identifier}
+    first = engine.execute("read_question", args, call_id="before")
+    assert first["content"]["stem"] == "before"
+    changed = engine.execute("update_question", {**args, "version": 1,
+        "content": {**current["content"], "stem": "after"}}, call_id="modify")
+    assert changed["version"] == 2
+    for index in range(25):
+        observed = engine.execute("read_question", args, call_id=f"observation-{index}")
+        assert observed["content"]["stem"] == "after" and observed["version"] == 2
+    assert len(sent) == len({key for _, key in sent}) == 27
+    assert runtime().execute("read_question", args, call_id="before")["content"]["stem"] == "before"
+    conflict = engine.execute("read_question", {"id": str(uuid4())}, call_id="before")
+    assert conflict["error_code"] == "tool_receipt"
+    assert len(sent) == 27
+
+
 def test_admin_entitlement_gates_login_tools_and_existing_sessions(bridge):
     (admin, member, anonymous), db = bridge
     actor = register_account(admin)
