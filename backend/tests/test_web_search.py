@@ -139,8 +139,8 @@ def test_fetch_returns_bounded_content_and_search_prices_reject_noninteger_units
     transport(monkeypatch, handler)
     monkeypatch.setattr(web_search.socket, "getaddrinfo", lambda *_: [(2, 1, 6, "", ("93.184.216.34", 0))])
     result = web_search.invoke(web_search.SearchConfig(1, "secret"), "web_fetch", {"url": "https://example.com/page"})
-    assert result["effective"] and result["result_count"] == 1 and result["truncated"]
-    assert len(result["content"]) == 16000 and result["source_id"].startswith("web-")
+    assert result["effective"] and result["result_count"] == 1 and not result["truncated"]
+    assert len(result["content"]) == 20000 and result["source_id"].startswith("web-")
     for value in (True, 2, "1000", 1.0):
         with pytest.raises(ValueError):
             search_settings.SearchPrice(capability="web_search", unit_size=value)

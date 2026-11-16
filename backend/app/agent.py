@@ -170,6 +170,9 @@ DISCOVER_TOOL: dict[str, Any] = {
                         "shorten the substring or list the catalog before concluding that no sources are available."
                     ),
                 },
+                "library_offset": {"type": "integer", "minimum": 0},
+                "document_offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 30},
             },
             "additionalProperties": False,
         },
@@ -442,6 +445,7 @@ def stream_retrieval_agent(
                     # for this answer, but never run another model step after stop.
                     stopped_after_result = True
             messages.append(message)
+            return json.loads(message["content"])
 
         def invoke_tool(invoke):
             try:
@@ -503,7 +507,14 @@ def stream_retrieval_agent(
                 if call.name == "discover_knowledge_bases":
                     write(("tool_started", {**activity, "status": "running"}))
                     requested_query = call.arguments.get("query", "")
-                    if not isinstance(requested_query, str) or len(requested_query) > 120:
+                    library_offset = call.arguments.get("library_offset", 0)
+                    document_offset = call.arguments.get("document_offset", 0)
+                    limit = call.arguments.get("limit", 30)
+                    if (not isinstance(requested_query, str) or len(requested_query) > 120
+                            or set(call.arguments) - {"query", "library_offset", "document_offset", "limit"}
+                            or type(library_offset) is not int or library_offset < 0
+                            or type(document_offset) is not int or document_offset < 0
+                            or type(limit) is not int or not 1 <= limit <= 30):
                         result = {"error": "query 必须是不超过 120 个字符的文本", "error_code": "knowledge_arguments"}
                     else:
                         pattern = "%" + requested_query.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -518,28 +529,29 @@ def stream_retrieval_agent(
                                 KnowledgeBase.description.ilike(pattern, escape="\\"),
                             ))
                         rows = db.scalars(select(KnowledgeBase).where(*filters)
-                            .order_by(KnowledgeBase.name, KnowledgeBase.id).limit(30)).all()
-                        results = [{"id": str(row.id), "name": row.name} for row in rows]
-                        if requested_query.strip():
-                            document_filters = [
+                            .order_by(KnowledgeBase.name, KnowledgeBase.id).offset(library_offset).limit(limit + 1)).all()
+                        results = [{"id": str(row.id), "name": row.name} for row in rows[:limit]]
+                        document_filters = [
                                 checked.visible_libraries(),
                                 KnowledgeBase.status != KnowledgeBaseStatus.ARCHIVED,
                                 Document.status == DocumentStatus.READY,
                                 Document.is_active.is_(True),
-                                or_(Document.filename.ilike(pattern, escape="\\"),
-                                    KnowledgeBase.name.ilike(pattern, escape="\\")),
                             ]
-                            documents = db.execute(select(Document, KnowledgeBase)
-                                .join(KnowledgeBase, Document.knowledge_base_id == KnowledgeBase.id)
-                                .where(*document_filters)
-                                .order_by(Document.updated_at.desc(), Document.id).limit(30)).all()
-                        else:
-                            documents = []
+                        if requested_query.strip():
+                            document_filters.append(or_(Document.filename.ilike(pattern, escape="\\"),
+                                KnowledgeBase.name.ilike(pattern, escape="\\")))
+                        documents = db.execute(select(Document, KnowledgeBase)
+                            .join(KnowledgeBase, Document.knowledge_base_id == KnowledgeBase.id)
+                            .where(*document_filters)
+                            .order_by(Document.updated_at.desc(), Document.id).offset(document_offset).limit(limit + 1)).all()
                         result = {"knowledge_bases": results, "documents": [{
                             "id": str(document.id), "filename": document.filename,
                             "knowledge_base_id": str(document.knowledge_base_id),
                             "knowledge_base_name": library.name,
-                        } for document, library in documents]}
+                        } for document, library in documents[:limit]],
+                            "library_offset": library_offset, "document_offset": document_offset,
+                            "next_library_offset": library_offset + limit if len(rows) > limit else None,
+                            "next_document_offset": document_offset + limit if len(documents) > limit else None}
                         if requested_query.strip() and not results and not documents:
                             result["search_hint"] = (
                                 "No metadata matched this literal substring. This does not mean no sources are available. "
@@ -585,7 +597,12 @@ def stream_retrieval_agent(
                             messages.append(_tool_message(call, result))
                             image_inputs.append(image_result)
                     else:
-                        record_result(call, result, image_result)
+                        visible = record_result(call, result, image_result)
+                        if call.name == "read_tool_result" and visible.get("evidence"):
+                            citations.update({item["chunk_id"]: item for item in visible["evidence"]})
+                            if extensions:
+                                extensions.verified_citations = list(citations.values())
+                            write(("sources", {"citations": list(citations.values()), "traces": traces}))
                     candidates = result.get("files", []) or (result.get("generated_files", [])
                         if call.name == "run_command" else [result]
                         if call.name in ("write_file", "apply_patch", "read_file", "get_workspace_file_link") else [])
@@ -766,30 +783,29 @@ def stream_retrieval_agent(
                             "vector_distance": ranking.vector_distance,
                         }))
                 found.sort(key=lambda item: item[0], reverse=True)
-                from .agent_tools import select_evidence
-                all_evidence = [item for _, item in found]
-                selected = select_evidence(all_evidence, top_k, max(100, budget - 300))
+                all_evidence = [item for _, item in found][:top_k]
                 result = {
                     "query": search_query,
-                    "evidence": selected,
-                    "result_count": len(selected),
-                    "omitted_count": len(all_evidence) - len(selected),
-                    "notice": "按数量和输出容量保留完整片段，未改写原文位置；可缩小查询或指定文档继续检索",
+                    "evidence": all_evidence,
+                    "result_count": len(all_evidence),
+                    "notice": "保留原排序的 top_k 候选，按模型预算分页展示，未改写原文位置",
                     **({"errors": retrieval_errors} if retrieval_errors else {}),
-                    **({"error": retrieval_errors[0]["error"]} if retrieval_errors and not selected else {}),
+                    **({"error": retrieval_errors[0]["error"]} if retrieval_errors and not all_evidence else {}),
                 }
-                from .conversation_context import estimate_input
-                while selected and estimate_input([{"content": json.dumps(result, ensure_ascii=False)}]) > budget:
-                    selected.pop()
-                    result.update(result_count=len(selected), omitted_count=len(all_evidence) - len(selected))
-                if retrieval_errors and not selected:
+                if retrieval_errors and not all_evidence:
                     result["error"] = retrieval_errors[0]["error"]
                     result.update({key: retrieval_errors[0][key] for key in ("error_code", "status_code")
                                    if key in retrieval_errors[0]})
+                if context_manager:
+                    visible = record_result(call, result)
+                else:
+                    from .agent_tools import evidence_page
+                    visible = evidence_page(result, "", budget)
+                    record_result(call, visible)
+                selected = visible.get("evidence", [])
                 citations.update({item["chunk_id"]: item for item in selected})
                 if extensions:
                     extensions.verified_citations = list(citations.values())
-                record_result(call, result)
                 tool_results.append({
                     "call_id": call.id, "name": call.name, "kind": "knowledge",
                     "label": "知识库检索", "status": "error" if result.get("error") else "completed",

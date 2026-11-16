@@ -256,8 +256,12 @@ class ContextManager:
         try:
             identifier = UUID(arguments["result_id"])
             offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
-            if (set(arguments) - {"result_id", "offset", "limit"} or type(offset) is not int or offset < 0
-                    or type(limit) is not int or not 1 <= limit <= 8000):
+            if (set(arguments) - {"result_id", "offset", "limit", "field", "find", "candidate_offset"}
+                    or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8000
+                    or ("field" in arguments and not isinstance(arguments["field"], str))
+                    or ("find" in arguments and (not isinstance(arguments["find"], str) or not arguments["find"]))
+                    or ("candidate_offset" in arguments and (type(arguments["candidate_offset"]) is not int
+                        or arguments["candidate_offset"] < 0))):
                 raise ValueError
         except (ValueError, KeyError, TypeError):
             return {"error": "请提供有效的 result_id、offset 和 1 至 8000 的 limit"}
@@ -266,13 +270,16 @@ class ContextManager:
             row = db.get(AgentToolExecution, identifier)
             if not row or row.conversation_id != self.conversation_id or not row.encrypted_result:
                 return {"error": "该工具结果不存在或尚未确认"}
-            content = decrypt_items(row.encrypted_result)[0]["message"].get("content") or ""
-            # Leave space for the page envelope, even for wide Unicode text.
-            limit = min(limit, max(1, (self.output_budget() - 250) // 3))
-            end = min(len(content), offset + limit)
-            return {"result_id": str(identifier), "offset": offset, "text": content[offset:end],
-                "next_offset": end if end < len(content) else None, "total_characters": len(content),
-                "notice": "历史工具观察，未执行原操作；不代表当前资料状态或当前证据"}
+            message = decrypt_items(row.encrypted_result)[0]["message"]
+            content = message.get("content") or ""
+            data = json.loads(content)
+            from .tool_result_reads import authorize, read
+            from fastapi import HTTPException
+            try:
+                authorize(db, self.access, row, message, data)
+            except HTTPException as error:
+                return {"error": str(error.detail), "error_code": "result_access", "status_code": error.status_code}
+            return read(data, content, identifier, arguments, self.output_budget())
 
     def current_plan(self):
         plan = None

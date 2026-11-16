@@ -281,8 +281,6 @@ async def _call(endpoint, transport, headers, tool, arguments, before_call):
             await anyio.to_thread.run_sync(before_call)
         result = await client.call_tool(tool["name"], arguments)
         payload = result.model_dump(mode="json", exclude_none=True)
-        if len(json.dumps(payload, ensure_ascii=True)) > 512000:
-            raise MCPError("MCP 返回内容过大，操作可能已完成；未自动重试，请核对远端执行状态")
         # A remote service may echo authentication values; do not propagate them.
         return redact_credentials(payload, headers)
 

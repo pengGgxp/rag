@@ -127,5 +127,5 @@ def invoke(config, capability, arguments):
     if not isinstance(content, str) or not content.strip():
         return {"result_count": 0, "effective": False, "sources": []}
     title = data.get("title") if isinstance(data.get("title"), str) else ""
-    return {**source(value, title), "content": content[:16000], "truncated": len(content) > 16000,
+    return {**source(value, title), "content": content, "truncated": False,
         "result_count": 1, "effective": True}
