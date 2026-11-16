@@ -39,9 +39,7 @@
 @media (max-width: 700px) {
   .cloud-computer-line { flex-wrap: wrap; gap: 0 8px; }
   .cloud-computer-copy { flex-basis: calc(100% - 28px); }
-  .cloud-computer-controls { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); margin-top: 4px; }
-  .cloud-computer-controls > :first-child { margin-left: -6px; }
-  .cloud-computer-controls > :last-child { margin-right: -6px; }
+  .cloud-computer-controls { width: 100%; justify-content: space-between; border-top: 1px solid var(--line); margin-top: 4px; padding-inline: 6px; }
   .cloud-command-line { padding-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .cloud-computer-panel .spin, .cloud-preview-surface .spin { animation: none; } }

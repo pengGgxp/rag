@@ -23,6 +23,33 @@ async (page) => {
     return response.json();
   };
   const panel = page.getByRole("region", { name: "云电脑", exact: true });
+  const assertInstanceListLayout = async (width, list) => {
+    const metrics = await list.locator(".cloud-computer-rows").evaluate(container => {
+      const left = container.getBoundingClientRect().left + container.clientLeft;
+      const right = left + container.clientWidth;
+      const controls = [...container.querySelectorAll(".cloud-computer-controls > *")].map(control => {
+        const rect = control.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          height: rect.height,
+          outlineWidth: Number.parseFloat(getComputedStyle(control).outlineWidth),
+        };
+      });
+      return {
+        clientWidth: container.clientWidth,
+        scrollWidth: container.scrollWidth,
+        overflowY: getComputedStyle(container).overflowY,
+        controls: controls.map(control => ({ ...control, inside: control.left >= left && control.right <= right })),
+      };
+    });
+    assert(metrics.scrollWidth <= metrics.clientWidth,
+      `${width}px instance list overflows: ${JSON.stringify(metrics)}`);
+    assert(metrics.overflowY === "auto", `${width}px vertical instance scrolling was removed`);
+    assert(metrics.controls.length > 0 && metrics.controls.every(control => control.inside && control.height >= 44),
+      `${width}px instance controls are clipped or too small: ${JSON.stringify(metrics)}`);
+    return metrics;
+  };
   for (const width of [1440, 700, 390]) {
     await page.setViewportSize({ width, height: 950 });
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -30,6 +57,7 @@ async (page) => {
     await page.goto(`${base}/?conversation=${receipt.conversation_id}`);
     const list = panel.locator("details.cloud-computer-list");
     await list.locator("summary").click();
+    await assertInstanceListLayout(width, list);
     for (let index = 0; index < 2; index++) {
       const instance = panel.getByRole("region", { name: receipt.names[index], exact: true });
       await instance.getByText("云电脑运行中", { exact: true }).waitFor();
@@ -39,7 +67,12 @@ async (page) => {
     const second = panel.getByRole("region", { name: receipt.names[1], exact: true });
     await first.getByText(/命令 .* 执行中/).waitFor();
     await first.getByRole("button", { name: /^停止命令/ }).waitFor();
-    await first.getByRole("button", { name: /^费用详情/ }).click();
+    const feeTrigger = first.getByRole("button", { name: /^费用详情/ });
+    await page.keyboard.press("Tab");
+    await feeTrigger.focus();
+    assert(await feeTrigger.evaluate(button => Number.parseFloat(getComputedStyle(button).outlineWidth) >= 2),
+      `${width}px keyboard focus ring is not visible`);
+    await page.keyboard.press("Enter");
     const feeDialog = page.getByRole("dialog", { name: `${receipt.names[0]} · 费用`, exact: true });
     await feeDialog.waitFor();
     await page.keyboard.press("Escape");
@@ -73,8 +106,16 @@ async (page) => {
       && response.request().method() === "POST");
     await first.getByRole("button", { name: `结束云电脑 · ${receipt.names[0]}`, exact: true }).click();
     assert((await ending).ok(), "Ending selected instance should succeed");
-    await first.getByText("正在结束云电脑", { exact: true }).waitFor();
+    await first.getByText("云电脑已结束", { exact: true }).waitFor({ timeout: 45000 });
     await second.getByText("云电脑运行中", { exact: true }).waitFor();
+    await first.getByRole("link", { name: "查看文件", exact: true }).waitFor();
+    await first.getByRole("button", { name: /^费用详情/ }).waitFor();
+    await first.getByRole("button", { name: /^费用详情/ }).click();
+    await page.getByRole("dialog", { name: `${receipt.names[0]} · 费用`, exact: true })
+      .getByText("最终消费", { exact: true }).waitFor();
+    await page.screenshot({ path: `output/playwright/issue112-${width}-ended.png`, fullPage: true });
+    await page.keyboard.press("Escape");
+    await assertInstanceListLayout(width, list);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${width}px horizontal overflow`);
     assert(errors.length === 0, `Browser errors: ${errors.join("; ")}`);
   }
