@@ -14,7 +14,7 @@ export type ImageTaskResult = {
   updated_at?: string;
 };
 
-export function ImageTaskActivity({ initial, onUpdate, showStatus = true }: { initial: ImageTaskResult; onUpdate?: (value: ImageTaskResult) => void; showStatus?: boolean }) {
+export function ImageTaskActivity({ initial, onUpdate, showStatus = true, showFiles = true }: { initial: ImageTaskResult; onUpdate?: (value: ImageTaskResult) => void; showStatus?: boolean; showFiles?: boolean }) {
   const [snapshot, setValue] = useState(initial);
   const value = latestImageTask(snapshot, initial);
   const [error, setError] = useState("");
@@ -56,7 +56,7 @@ export function ImageTaskActivity({ initial, onUpdate, showStatus = true }: { in
     {showStatus && <span className="activity-step-summary" role="status">{!value.terminal && <Loader2 size={14} className="spin" />}{value.summary}</span>}
     {!value.terminal && !value.cancel_requested && <button type="button" className="secondary" disabled={busy} onClick={() => void act("cancel")}><Square size={14} />停止</button>}
     {value.status === "save_failed" && <button type="button" className="secondary" disabled={busy} onClick={() => void act("retry-save")}><RotateCcw size={14} />重试保存</button>}
-    {value.files.map(file => <div key={file.id} className="image-task-files">
+    {showFiles && value.files.map(file => <div key={file.id} className="image-task-files">
       <GeneratedImagePreview id={file.id} name={file.path.split("/").at(-1) || "图片"} />
       <div className="image-result-actions" role="group" aria-label={`${file.path.split("/").at(-1)} 图片操作`}>
         <button type="button" className="image-result-download" disabled={downloading !== null} onClick={async () => {

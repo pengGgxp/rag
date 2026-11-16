@@ -85,7 +85,8 @@ class ExtensionRuntime:
             self.environment_description = environment_description(cloud_settings) if self.execution_available else ""
         definitions = tool_definitions()
         workspace_tools = [item for item in definitions
-            if (self.execution_available and item["function"]["name"] != "read_image")
+            if item["function"]["name"] == "get_workspace_file_link"
+            or (self.execution_available and item["function"]["name"] != "read_image")
             or (item["function"]["name"] == "read_image" and provider_config
                 and provider_config.supports_images)]
         from .cloud_preview import TOOLS as PREVIEW_TOOLS
@@ -128,7 +129,10 @@ class ExtensionRuntime:
             message = db.get(ChatMessage, self.message_id) if self.message_id else None
             image, _ = execute_image(db, access, message.conversation_id if message else None,
                 tool_request_id(self.request_id, call_id), path, check_active, **execution)
-            return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"]}
+            from .workspace_file_links import get_file_link, file_reference
+            linked = get_file_link(db, access, {"path": path})
+            return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"],
+                "files": [file_reference(linked)]}
 
     def label(self, name, arguments=None):
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
@@ -147,7 +151,7 @@ class ExtensionRuntime:
             return "使用「教师出题」"
         binding = self.bindings.get(name)
         if name in self.workspace_tool_names:
-            return {"list_files": "查看工作区", "read_file": "读取文件", "read_image": "查看图片", "write_file": "生成文件",
+            return {"get_workspace_file_link": "获取文件链接", "list_files": "查看工作区", "read_file": "读取文件", "read_image": "查看图片", "write_file": "生成文件",
                 "apply_patch": "修改文件", "delete_file": "删除文件", "run_command": "云电脑执行",
                 "start_preview": "启动成果预览", "stop_preview": "停止成果预览"}[name]
         return f"{binding['name']} · {binding['tool']['name']}" if binding else "读取任务方法"
@@ -238,14 +242,14 @@ class ExtensionRuntime:
                         from .cloud_computer import tool_request_id
                         return execute_tool(name, arguments, db, access, access.workspace_id,
                             conversation_id=message.conversation_id if message else None,
-                            request_id=tool_request_id(self.request_id, call_id),
+                            request_id=tool_request_id(self.request_id, call_id) if name != "get_workspace_file_link" else None,
                             check_active=check_active, **execution)
                     except PayloadValidationError:
                         return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}
                     except HTTPException as error:
                         if error.status_code in (401, 403):
                             raise
-                        if error.status_code in (402, 503) or name == "run_command":
+                        if (error.status_code in (402, 503) and name != "get_workspace_file_link") or name == "run_command":
                             return {"error": public_error(error.detail), "error_code": "cloud_computer_unavailable",
                                     "status_code": error.status_code}
                         code = {404: "file_missing", 409: "file_conflict", 413: "file_capacity",

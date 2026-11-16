@@ -232,9 +232,10 @@ def _apply_unified_patch(original: str, patch: str) -> str:
 
 def tool_definitions():
     return [{"type":"function","function":{"name":n,"description":d,"parameters":p}} for n,d,p in [
+        ("get_workspace_file_link","获取指定工作区文件的真实查看链接。只传 id 或 path；相对路径或 /home/user/workspace/ 下的绝对路径均可。不会启动云电脑、下载正文或挑选成果。命令生成文件后可用其明确路径获取链接，回答中用 [文件名](url) 交付。",{"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"}},"oneOf":[{"required":["id"]},{"required":["path"]}],"additionalProperties":False}),
         ("list_files","在当前会话云电脑列出资源文件，与 run_command 共用文件目录和环境",{"type":"object","properties":{"query":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":False}),
         ("read_file","在云电脑按资源 ID 或路径读取当前文件；二进制返回可直接用于脚本的路径，不代表已识别图片或解析文档正文。Word/PDF 用 run_command 调用对应解析器。",{"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":12000}},"anyOf":[{"required":["path"]},{"required":["id"]}],"additionalProperties":False}),
-        ("read_image","按需把云电脑文件系统中的 PNG、JPEG 或静态 WebP 作为视觉输入读取。提供本地 path；相对路径以 /home/user/workspace 为基准。需要远程图片时，可按任务需要组合 run_command 下载或处理后再读取；工具顺序由你判断。",{"type":"object","properties":{"path":{"type":"string","maxLength":1024}},"required":["path"],"additionalProperties":False}),
+        ("read_image","按需把工作区中的 PNG、JPEG 或静态 WebP 作为视觉输入读取并关联可打开文件。相对 path 以 /home/user/workspace 为基准；临时目录或远程图片先保存到工作区再读取。工具顺序由你判断。",{"type":"object","properties":{"path":{"type":"string","maxLength":1024}},"required":["path"],"additionalProperties":False}),
         ("write_file","创建或覆盖当前工作区文本文件，内容直接写入资源库。",{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False}),
         ("apply_patch","直接修改当前文件；patch 使用含 @@ -旧行号,行数 +新行号,行数 @@ 的 unified diff。嵌入图片请用 run_command 在脚本内读写，不要转抄 Base64。",{"type":"object","properties":{"path":{"type":"string"},"patch":{"type":"string"}},"required":["path","patch"],"additionalProperties":False}),
         ("delete_file","删除当前工作区文件",{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False}),
@@ -265,6 +266,9 @@ def resolve_input(db, access, reference):
 def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None, request_id=None, check_active=None,
                  **execution):
     check_workspace(access,workspace_id)
+    if name == "get_workspace_file_link":
+        from .workspace_file_links import get_file_link
+        return get_file_link(db, access, arguments)
     from .cloud_computer import execute
     if name == "run_command":
         return execute(db, access, conversation_id, request_id, arguments, check_active, **execution)
@@ -337,4 +341,14 @@ def execute_tool(name, arguments, db, access, workspace_id, conversation_id=None
         value = register_operation(db, access, operation, value)
         if name in {"write_file", "apply_patch"}:
             metadata = value
+    if name in {"read_file", "write_file", "apply_patch", "delete_file"}:
+        from .workspace_file_links import file_reference
+        if name == "delete_file":
+            deleted = db.scalar(select(WorkspaceFile).where(
+                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == operation["path"]))
+            if deleted:
+                metadata = read_file(deleted)
+        metadata = {**metadata, "url": f"/resources?file={metadata['id']}"} if metadata.get("id") else metadata
+        if metadata.get("id"):
+            value["files"] = [file_reference(metadata)]
     return {**metadata, **value, "cloud_computer": result["cloud_computer"], "command_id": result["command_id"]}

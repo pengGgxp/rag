@@ -10,6 +10,8 @@ import { bytes, type StorageAllowances } from "./storage-types";
 import { Tooltip } from "../components/ui/tooltip";
 import { ResourceNotice } from "./resource-notice";
 import { ResourcePreview, ResourceThumbnail } from "./resource-preview";
+import { useResourceFilePreview } from "./resource-file-link";
+import { workspaceFileId } from "./workspace-file-link";
 import "./resource-library.css";
 
 export type ResourceFile = { id: string; path: string; content_type: string; size_bytes: number; source: string; updated_at: string; revision?: string; availability?: "pending" | "missing" | "available" };
@@ -82,6 +84,13 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   }
   useEffect(() => () => cancelLongPress(), []);
   const canWrite = role === "admin" || role === "editor", scope = session ? `${session.user.id}:${session.workspace_id}` : "";
+  const linkedFile = useResourceFilePreview(scope);
+  const openLinkedFile = linkedFile.open;
+  useEffect(() => {
+    if (select || !session) return;
+    const id = workspaceFileId(window.location.href, window.location.origin);
+    if (id) void openLinkedFile(id);
+  }, [select, session?.workspace_id, openLinkedFile]);
   const current = `/resources/browse?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}&sort=${sort}&limit=100`;
   useAdminChanges(Boolean(editor && editor.content !== editor.initialContent), busy);
   useEffect(() => { if (!select) setPath(new URLSearchParams(window.location.search).get("path") || ""); }, [select]);
@@ -352,6 +361,8 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
       {editorError && <div role="alert" className="resource-browser-alert"><span>{editorError}</span><button className="secondary" onClick={() => setDiscard("reload")}>重新加载</button></div>}
       {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button className="danger" onClick={() => { const reload = discard === "reload"; setDiscard(false); setDialog(null); setEditor(null); if (reload) void open({ ...editor.item, kind: "file", name: editor.item.path.split("/").pop() || "文件" }); }}>放弃修改</button></div>}
       <div className="modal-footer"><button className="secondary" onClick={closeEditor}>{canWrite ? "取消" : "关闭"}</button>{canWrite && <button className="primary" disabled={busy} onClick={async () => { setBusy(true); setEditorError(""); try { await request(`/workspaces/${session.workspace_id}/files`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: editor.item.path, content: editor.content, revision: editor.revision, request_id: crypto.randomUUID(), content_type: editor.item.content_type }) }); setDialog(null); setEditor(null); await load(); } catch (cause) { setEditorError(cause instanceof Error ? cause.message : "保存失败，内容已保留，请重试"); } finally { setBusy(false); } }}>保存</button>}</div></div></Modal>}
+    {linkedFile.error && <p role="alert" className="resource-error">{linkedFile.error}</p>}
+    {linkedFile.preview}
     {preview && <ResourcePreview key={`${scope}:${preview.id}`} item={preview} scope={scope} onClose={() => setPreview(null)} />}
   </div>;
 }

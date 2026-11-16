@@ -54,6 +54,9 @@ def test_file_tool_dispatch_never_downloads_body(accounts, resource_store, monke
         access.workspace_id, uuid4(), uuid4())
     assert result["content"] == "resource facts"
     assert result["file_path"] == "/home/user/workspace/" + item["path"]
+    assert result["files"][0]["id"] == item["id"]
+    assert result["files"][0]["url"] == f"/resources?file={item['id']}"
+    assert result["files"][0]["availability"] == "available"
     assert calls[0]["path"] == item["path"] and "history" not in calls[0]
     assert not resource_store[1]
 
@@ -93,4 +96,7 @@ def test_file_delete_invalidates_resource(accounts, resource_store, monkeypatch)
     result = workspace_files.execute_tool("delete_file", {"path": item["path"]}, db, access,
         access.workspace_id, uuid4(), uuid4())
     assert result["deleted"] is True
+    assert result["files"][0]["id"] == item["id"]
+    assert result["files"][0]["path"] == item["path"]
+    assert result["files"][0]["availability"] == "missing"
     assert client.get(f"/resources/{item['id']}/download").status_code == 404

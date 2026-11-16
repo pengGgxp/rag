@@ -1,6 +1,7 @@
 import type { ConversationActivityItem, KnowledgeBaseResult, SavedDocument } from "./conversation-activity";
 import type { ImageTaskResult } from "./image-task-result";
 import type { Preview } from "./cloud-preview";
+import type { WorkspaceFileReference } from "./workspace-file-link";
 
 export type DisplayBlock = { id: string; type: "text"; text: string }
   | { id: string; type: "activity"; call_id: string }
@@ -9,7 +10,7 @@ export type ToolEvent = {
   call_id: string; name: string; label: string; kind: string; status: string;
   outcome?: "success" | "feedback" | "blocked" | "failed" | "uncertain";
   summary?: string; result_count?: number;
-  files?: { id: string; path: string; size_bytes: number; version: number }[];
+  files?: WorkspaceFileReference[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
@@ -61,7 +62,9 @@ export function processHeadline(items: ConversationActivityItem[], finished: boo
 
 export function activityFiles(items: ConversationActivityItem[]) {
   const files = new Map<string, NonNullable<ConversationActivityItem["files"]>[number]>();
-  for (const item of items) for (const file of item.files ?? []) files.set(file.id, file);
+  for (const item of items) for (const file of [...(item.files ?? []), ...(item.image_task?.files ?? [])]) {
+    files.set(file.id, { ...files.get(file.id), ...file });
+  }
   return [...files.values()];
 }
 

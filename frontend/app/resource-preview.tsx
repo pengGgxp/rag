@@ -156,7 +156,9 @@ function PdfReader({ path, size, revision, scope }: { path: string; size: number
   </div>;
 }
 
-export function ResourcePreview({ item, scope, onClose }: { item: ResourceFile; scope: string; onClose: () => void }) {
+export function ResourcePreview({ item, scope, onClose, restoreFocusSelector }: {
+  item: ResourceFile; scope: string; onClose: () => void; restoreFocusSelector?: string;
+}) {
   const [info, setInfo] = useState<PreviewInfo | null>(null), [error, setError] = useState(""), [url, setUrl] = useState(""), [text, setText] = useState<string | null>(null);
   const [retry, setRetry] = useState(0), [zoom, setZoom] = useState(1);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
@@ -215,7 +217,7 @@ export function ResourcePreview({ item, scope, onClose }: { item: ResourceFile; 
     return () => { disposed = true; clearTimeout(timer); clearInterval(validation); document.removeEventListener("visibilitychange", foreground); if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [item.id, item.updated_at, scope, retry]);
   const pdfPath = info?.kind === "pdf" ? info.original_url : artifact?.status === "ready" ? artifact.url : null;
-  return <Modal title={item.path.split("/").pop()!} wide restoreFocusSelector={`[data-resource-id="${item.id}"]`} onClose={onClose}>
+  return <Modal title={item.path.split("/").pop()!} wide restoreFocusSelector={restoreFocusSelector ?? `[data-resource-id="${item.id}"]`} onClose={onClose}>
     <div className="resource-reader" aria-label="文件预览">
       <div className="resource-reader-topbar"><span>{item.path.split(".").pop()?.toUpperCase()}<span className="resource-reader-filename"> · {item.path}</span></span>
         <button type="button" className="secondary" onClick={() => void downloadFile(`/resources/${item.id}/download`, item.path.split("/").pop()!).catch(cause => setError(cause.message))}><Download size={15} />下载原文件</button></div>
