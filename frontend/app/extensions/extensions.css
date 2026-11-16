@@ -80,6 +80,11 @@
 .extension-tool { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .extension-tool span { display: grid; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .extension-tool small { color: var(--muted); }
+.extension-tool-search { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; margin: 16px 0 8px; }
+.extension-tool-search label { flex: 1; min-width: 180px; }
+.extension-tool-search > span { padding-bottom: 10px; font-size: 12px; }
+.extension-tool-pagination { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 0; color: var(--muted); font-size: 12px; }
+.extension-tool-pagination > div { display: flex; align-items: center; gap: 12px; }
 .admin-changes-boundary:has(.extension-page) { height: 100dvh; }
 .admin-changes-boundary:has(.extension-page) .admin-inline-confirm { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 16px; background: var(--surface-muted); }
 .admin-changes-boundary:has(.extension-page) .admin-navigation-confirm { position: fixed; z-index: 80; top: 12px; left: 50%; transform: translateX(-50%); width: min(700px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 6px; }

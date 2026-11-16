@@ -37,6 +37,11 @@ def update_connection(client, row, **changes):
         ("name", "url", "transport", "enabled", "allowed_tools", "version")} | changes)
 
 
+def load_tool(runtime, alias):
+    assert runtime.execute("load_mcp_tool", {"alias": alias}).get("loaded_alias") == alias
+    runtime.model_tools([])
+
+
 def test_same_user_other_workspace_cannot_read_select_or_execute(accounts, monkeypatch):
     from dataclasses import replace
     admin, db, _ = setup_site(accounts, monkeypatch)
@@ -123,6 +128,7 @@ def test_runtime_mcp_checks_revocation_input_and_no_uncertain_replay(accounts, m
     message, request = answer_identity(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
     name = next(iter(runtime.bindings))
+    load_tool(runtime, name)
     calls = []
     def invoke(*args):
         args[-1]()
@@ -135,6 +141,7 @@ def test_runtime_mcp_checks_revocation_input_and_no_uncertain_replay(accounts, m
     stored.authorization_version += 1; db.commit()
     assert runtime.execute(name, {"a": 2}).get("error") and len(calls) == 1
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
+    load_tool(runtime, name)
     def uncertain(*args):
         calls.append(args)
         raise mcp_client.MCPError("超时；未自动重试，请核对远端执行状态")
@@ -167,6 +174,12 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
             self.last_usage = LLMUsage(prompt_tokens=10, completion_tokens=1)
             results = [json.loads(item["content"]) for item in messages if item["role"] == "tool"]
             if not results:
+                assert not any(tool["function"]["name"].startswith("mcp_") for tool in tools)
+                return ToolResponse(None, [ToolCall("find", "search_mcp_tools", {"query": "calculate"})], self.last_usage)
+            if messages[-1]["name"] == "search_mcp_tools":
+                alias = results[-1]["tools"][0]["alias"]
+                return ToolResponse(None, [ToolCall("load", "load_mcp_tool", {"alias": alias})], self.last_usage)
+            if messages[-1]["name"] == "load_mcp_tool":
                 alias = next(tool["function"]["name"] for tool in tools if tool["function"]["name"].startswith("mcp_"))
                 return ToolResponse("Calculate next", [ToolCall("calc", alias, {"a": 3, "b": 4})], self.last_usage)
             assert results[-1]["structuredContent"] == {"result": 7}
@@ -177,7 +190,7 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     final = events[-1].json()
     assert final["status"] == "completed", final
     assert final["content"].endswith("7. ONLY RESOURCE MARKER")
-    assert [item["kind"] for item in final["tool_events"]] == ["mcp"]
+    assert [item["kind"] for item in final["tool_events"]] == ["mcp"] * 3
     assert connection_args["state"]["calls"] == 1
     restored = admin.get(f"/conversations/{chat['id']}").json()["messages"][-1]
     assert restored["tool_events"] == final["tool_events"]
@@ -186,12 +199,14 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]],
         UUID(final["id"]), saved.request_id)
     alias = next(iter(runtime.bindings))
+    load_tool(runtime, alias)
     assert runtime.execute(alias, {"a": 3, "b": 4}, agent_tool_execution_id=saved.invocation_id)["structuredContent"] == {"result": 7}
     assert connection_args["state"]["calls"] == 1
     saved.encrypted_result, saved.status = None, "uncertain"
     db.commit()
     restarted = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]],
         UUID(final["id"]), saved.request_id)
+    load_tool(restarted, alias)
     assert restarted.execute(alias, {"a": 3, "b": 4}, agent_tool_execution_id=saved.invocation_id)["uncertain"]
     assert connection_args["state"]["calls"] == 1
 
@@ -258,6 +273,7 @@ def test_mcp_new_invocation_observes_changes_and_replays_only_its_own_receipt(ac
     message, request = answer_identity(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
     alias = next(iter(runtime.bindings))
+    load_tool(runtime, alias)
     calls = []
     def invoke(*args):
         calls.append(args)

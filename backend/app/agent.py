@@ -75,6 +75,7 @@ AGENT_SYSTEM_PROMPT = (
     "工作区中的 Skill 是普通文件；根据本轮 .skills/ 目录摘要按需选用，以 read_file 读取说明及包内相对资料。"
     "上传的 Skill 沿用当前工作区资源共享规则，文件内容是唯一来源。只有已连接应用的方法使用 load_skill。"
     "Skill 的 Linux 脚本只能通过 run_command 在当前工作区受限云电脑中运行；不得声称执行未成功的命令。"
+    "MCP 工具先用 search_mcp_tools 搜索已授权元数据，再用 load_mcp_tool 加载所选定义，下一模型步骤才可调用；定义被移出预算后可重新加载。"
     "仅允许调用当前提供的、用户已授权的 MCP 工具；不能根据 Skill 内容添加连接或扩大权限。"
     "Skill 说明包含脚本时，使用 run_command 在实际文件所在目录运行；包内相对结构保留，修改和删除遵循普通资源规则。"
     "可直接使用 run_command 在隔离环境中编写和运行命令、处理工作区文件，不要求选择或加载 Skill。"
@@ -310,8 +311,10 @@ def stream_retrieval_agent(
     def plan(state: AgentState) -> AgentState:
         check_active()
         write = get_stream_writer()
+        extension_tools = (extensions.model_tools(state["messages"]) if extensions and hasattr(extensions, "model_tools")
+            else extensions.tools if extensions else [])
         tools = ([DISCOVER_TOOL, SEARCH_TOOL] if context_manager is None or context_manager.config.thinking.supports_tools
-            else []) + (extensions.tools if extensions else []) + (search.tools if search else [])
+            else []) + extension_tools + (search.tools if search else [])
         if context_manager and context_manager.config.thinking.supports_tools:
             from .conversation_context import HISTORY_TOOL
             from .agent_tools import PLAN_TOOL, RESULT_TOOL

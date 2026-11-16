@@ -91,9 +91,9 @@ class ExtensionRuntime:
         if self.execution_available and get_settings().preview_enabled:
             workspace_tools = workspace_tools + PREVIEW_TOOLS
         self.workspace_tool_names = {item["function"]["name"] for item in workspace_tools}
-        self.tools = workspace_tools + [{"type": "function", "function": {"name": alias,
-                "description": f"{item['name']} / {item['tool']['name']}: {item['tool'].get('description', '')}"[:4000],
-                "parameters": item["tool"]["inputSchema"]}} for alias, item in self.bindings.items()]
+        from .mcp_tool_catalog import Catalog, TOOLS as MCP_DISCOVERY_TOOLS
+        self.tools = workspace_tools + (MCP_DISCOVERY_TOOLS if self.bindings else [])
+        self.mcp_catalog = Catalog(self)
         self.versions = sorted(self.mcp_tokens.items())
         from .image_tools import tools as image_tools
         with factory() as db:
@@ -132,7 +132,12 @@ class ExtensionRuntime:
             return image.data, {"size_bytes": len(image.data), "sha256": image.image["sha256"],
                 "files": [file_reference(linked)]}
 
+    def model_tools(self, messages):
+        return self.mcp_catalog.prepare(messages)
+
     def label(self, name, arguments=None):
+        if name in ("search_mcp_tools", "load_mcp_tool"):
+            return "查找已授权工具" if name == "search_mcp_tools" else "加载已授权工具"
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
         if name in KNOWLEDGE_LABELS:
             return KNOWLEDGE_LABELS[name]
@@ -162,6 +167,9 @@ class ExtensionRuntime:
             if value is not None}
         if check_active:
             check_active()
+        from .mcp_tool_catalog import NAMES as MCP_DISCOVERY_NAMES
+        if name in MCP_DISCOVERY_NAMES:
+            return self.mcp_catalog.execute(name, arguments)
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
         if name in KNOWLEDGE_LABELS:
             try:
@@ -257,6 +265,10 @@ class ExtensionRuntime:
                                 "status_code": error.status_code}
             return {"error": "该能力不可用"}
         item = self.bindings[name]
+        if name not in self.mcp_catalog.offered or name not in self.mcp_catalog.loaded:
+            return {"error": "工具尚未加载或已被移出当前模型预算；请先 load_mcp_tool，在下一模型步骤调用",
+                "error_code": "mcp_tool_not_loaded"}
+        self.mcp_catalog.loaded.move_to_end(name)
         signature = json.dumps([name, arguments], sort_keys=True, ensure_ascii=True)
         from .remote_tool_receipts import ReceiptError
         try:

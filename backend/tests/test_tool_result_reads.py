@@ -195,3 +195,46 @@ def test_oversized_single_candidate_text_is_readable_and_stale_read_is_rejected(
     assert manager.read_result({"result_id": str(identifier), "field": "credentials"}).get("error")
     missing = manager.read_result({"result_id": str(identifier), "field": "evidence.0.text", "find": "不存在"})
     assert missing["found"] is False and "text" not in missing
+
+
+@pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
+def test_agent_discovers_loads_and_runs_over_20_fresh_mcp_observations(client, monkeypatch, protocol):
+    from datetime import datetime, timezone
+    from app import mcp_client
+    from app.extensions import ExtensionRuntime
+    from app.models import ChatMessage
+    db, manager = fresh_manager(client)
+    manager.config = replace(manager.config, api_protocol=protocol)
+    definition = {"name": "observe", "description": "observe current value", "annotations": {"readOnlyHint": True},
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}
+    server = MCPServer(owner_id=manager.access.user_id, workspace_id=manager.access.workspace_id,
+        name="Remote", url="https://example.test/mcp", transport="sse", tools=[definition],
+        allowed_tools=["observe"], enabled=True, authorization_version=1, version=1,
+        last_checked_at=datetime.now(timezone.utc), header_names=[])
+    message = ChatMessage(conversation_id=manager.conversation_id, sequence=5, role="assistant",
+        request_id=manager.request_id, content="")
+    db.add_all([server, message]); db.commit()
+    runtime = ExtensionRuntime(manager.factory, manager.access, server_ids=[server.id],
+        message_id=message.id, request_id=manager.request_id, provider_config=manager.config)
+    calls = []
+    def remote(*args):
+        calls.append(args)
+        return {"value": len(calls)}
+    monkeypatch.setattr(mcp_client, "call", remote)
+    class Model:
+        def complete_with_tools(self, messages, tools, **kwargs):
+            results = [item for item in messages if item.get("role") == "tool"]
+            if not results:
+                return ToolResponse(None, [ToolCall("discover", "search_mcp_tools", {"query": "observe"})])
+            data = json.loads(results[-1]["content"])
+            if results[-1]["name"] == "search_mcp_tools":
+                return ToolResponse(None, [ToolCall("load", "load_mcp_tool", {"alias": data["tools"][0]["alias"]})])
+            alias = next(tool["function"]["name"] for tool in tools if tool["function"]["name"].startswith("mcp_"))
+            if results[-1]["name"] == alias:
+                assert data["value"] == len(calls)
+                if len(calls) == 25:
+                    return ToolResponse("25 次当前观察完成", [])
+            return ToolResponse(None, [ToolCall("same-provider-id", alias, {})])
+    run = run_retrieval_agent(query="重复观察", knowledge_base_ids=[], history=[], factory=manager.factory,
+        access=manager.access, retrieve=None, provider=Model(), context_manager=manager, extensions=runtime)
+    assert run.answer == "25 次当前观察完成" and len(calls) == 25
