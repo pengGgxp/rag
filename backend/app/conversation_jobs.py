@@ -235,6 +235,8 @@ def queue_title(factory, conversation_id, request_id):
 
 def interrupt_execution(db, row):
     row.status, row.finished_at = "interrupted", datetime.now(timezone.utc)
+    from .agent_tool_jobs import cancel_request
+    cancel_request(db, row.request_id)
     message = db.get(ChatMessage, row.message_id) if row.message_id else None
     if message and message.request_id == row.request_id and message.status == "streaming":
         message.status, message.error_detail = "interrupted", "回答已中断，请检查已有结果后重试"
@@ -293,3 +295,5 @@ def recover(factory=SessionLocal):
             name_conversation.delay(str(identifier))
         except Exception:
             logger.warning("Automatic title remains queued: %s", identifier)
+    from .image_tasks import recover as recover_images
+    recover_images(factory, agent_only=True)

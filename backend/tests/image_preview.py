@@ -1,25 +1,29 @@
 """Disposable image UI acceptance server; no external generation or storage."""
 import io
+import json
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from threading import Lock, Thread
 
 import chat_attachment_preview as fixture
-from app import image_adapters, image_tasks, storage_downloads, workspace_files
+from app import image_adapters, image_tasks, resource_previews, shared_resources, storage_downloads, workspace_files
 from app.config import get_settings
 from app.llm_providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection
 from PIL import Image
 from app.llm import LLMUsage, ToolCall, ToolResponse
+from fastapi.responses import Response
+from test_cloud_computer_mount import MemoryMount
 
-os.environ["FRONTEND_URL"] = "http://127.0.0.1:3113"
+os.environ["FRONTEND_URL"] = os.environ.get("IMAGE_PREVIEW_FRONTEND_URL", "http://127.0.0.1:3113")
 get_settings.cache_clear()
 
 if __name__ == "__main__":
     for middleware in fixture.main.app.user_middleware:
         if middleware.cls.__name__ == "CORSMiddleware":
-            middleware.kwargs["allow_origins"].append("http://127.0.0.1:3113")
+            middleware.kwargs["allow_origins"].append(os.environ["FRONTEND_URL"])
     fixture.Base.metadata.create_all(fixture.engine)
     objects = {}
     delivery_failure = [False]
@@ -30,14 +34,28 @@ if __name__ == "__main__":
         objects[key] = stream.read()
     workspace_files.upload_fileobj = put
     storage_downloads.download_range_fileobj = lambda key, start, end: io.BytesIO(objects[key][start:end + 1])
+    storage = MemoryMount()
+    storage.objects = objects
+    resource_previews.current_storage = lambda *_args, **_kwargs: storage
+    shared_resources.backend = lambda _db: storage
+    from urllib.parse import quote
+    api_url = os.environ.get("IMAGE_PREVIEW_API_URL", "http://127.0.0.1:8128")
+    storage.read_url = lambda key, **_: f"{api_url}/__fixture/object/{quote(key, safe='/')}"
+    resource_previews.dispatch = lambda identifier: Thread(target=resource_previews.run,
+        args=(identifier, fixture.SessionLocal), daemon=True).start()
+    @fixture.main.app.get("/__fixture/object/{key:path}")
+    def object_fixture(key: str):
+        return Response(objects[key], media_type="image/webp" if key.startswith("preview-cache/") else "image/png")
     class ImageProvider(fixture.Provider):
         def stream_with_tools(self, messages, tools, **kwargs):
             usage = LLMUsage(100, 20, 120)
             if messages[-1]["role"] != "tool":
                 yield "complete", ToolResponse(content=None, tool_calls=[ToolCall("image-ui", "generate_image", {"prompt": "合成蓝色方块"})], usage=usage)
             else:
-                yield "delta", {"text": "图片任务已提交。"}
-                yield "complete", ToolResponse(content="图片任务已提交。", tool_calls=[], usage=usage)
+                result = json.loads(messages[-1]["content"])
+                text = result.get("error") or f"图片已生成并保存，共 {len(result['files'])} 张。"
+                yield "delta", {"text": text}
+                yield "complete", ToolResponse(content=text, tool_calls=[], usage=usage)
             self.last_usage = usage
     fixture.conversations.OpenAICompatibleChatProvider = lambda **_: ImageProvider()
     @asynccontextmanager
@@ -45,6 +63,7 @@ if __name__ == "__main__":
         yield
     fixture.main.app.router.lifespan_context = lifespan
     def generate(snapshot, secret, payload, references):
+        time.sleep(3)
         if payload["prompt"] == "synthetic-uncertain":
             raise image_adapters.ImageUncertain("synthetic response lost", "synthetic-uncertain-request")
         if payload["prompt"] == "synthetic-save-failure":
@@ -67,6 +86,13 @@ if __name__ == "__main__":
                     submitted.discard(str(identifier))
         Thread(target=run, daemon=True).start()
     image_tasks.dispatch = dispatch
+    # One outer execution slot; inline Agent images must not queue a child here.
+    from concurrent.futures import ThreadPoolExecutor
+    from app import conversation_jobs, tasks
+    executor = ThreadPoolExecutor(max_workers=1)
+    conversation_jobs.dispatch = lambda identifier: executor.submit(
+        conversation_jobs.run, identifier, factory=fixture.SessionLocal)
+    tasks.name_conversation.delay = lambda *_: None
     with fixture.SessionLocal() as db:
         http = fixture.TestClient(fixture.main.app)
         user = fixture.authenticate(http, db)
@@ -87,4 +113,5 @@ if __name__ == "__main__":
     @fixture.main.app.get("/__fixture/session")
     def session_fixture():
         return {"cookie": cookie, "model_id": model_id}
-    fixture.uvicorn.run(fixture.main.app, host="127.0.0.1", port=8128, log_level="warning")
+    fixture.uvicorn.run(fixture.main.app, host=os.environ.get("IMAGE_PREVIEW_HOST", "127.0.0.1"),
+        port=8128, log_level="warning")

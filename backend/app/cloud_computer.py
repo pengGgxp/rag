@@ -268,8 +268,10 @@ def tool_request_id(request_id, call_id):
     return uuid5(UUID(str(request_id)), "cloud-tool:" + call_id)
 
 
-def submit(db, access, conversation_id, request_id, arguments):
+def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_execution_id=None, dispatch_job=True):
     access = owner(db, access, conversation_id)
+    from .agent_tool_jobs import validate_owner
+    validate_owner(db, agent_tool_execution_id, access, conversation_id)
     file_operation = arguments.get("file_operation")
     if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image"}:
         access.editor()
@@ -291,9 +293,9 @@ def submit(db, access, conversation_id, request_id, arguments):
         Computer.user_id == access.user_id, Computer.conversation_id == conversation_id,
         Command.request_id == request_id))
     if existing:
-        if existing.digest != digest:
+        if existing.digest != digest or existing.agent_tool_execution_id != agent_tool_execution_id:
             raise HTTPException(409, "同一次操作的内容已变化，请先核对执行记录，再重新发起")
-        if existing.status == "queued":
+        if existing.status == "queued" and dispatch_job and existing.agent_tool_execution_id is None:
             dispatch(existing.id)
         return existing
     from .storage_billing import check_capacity
@@ -332,6 +334,7 @@ def submit(db, access, conversation_id, request_id, arguments):
     if db.scalar(select(Command.id).where(Command.session_id == row.id, Command.status.in_(BUSY))):
         raise HTTPException(409, "云电脑已有命令正在执行，请等待完成")
     command = Command(id=uuid4(), session_id=row.id, request_id=request_id, digest=digest, payload=payload,
+                      agent_tool_execution_id=agent_tool_execution_id,
                       status="queued", cancel_requested=False, result={})
     db.add(command)
     db.flush()
@@ -339,7 +342,8 @@ def submit(db, access, conversation_id, request_id, arguments):
         from .cloud_preview import attach
         attach(db, row, command, payload["preview"])
     db.commit()
-    dispatch(command.id)
+    if dispatch_job and agent_tool_execution_id is None:
+        dispatch(command.id)
     return command
 
 
@@ -386,7 +390,7 @@ def recover_mount(db, row):
     return []
 
 
-def run(identifier, factory=SessionLocal):
+def run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
     identifier = UUID(str(identifier))
     with factory() as lease_db, lease_db.get_bind().connect() as connection:
         lock = int.from_bytes(identifier.bytes[-8:], "big", signed=True)
@@ -394,27 +398,58 @@ def run(identifier, factory=SessionLocal):
         if pg and not connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": lock}):
             return
         try:
-            _run(identifier, factory)
+            _run(identifier, factory, agent_tool_execution_id=agent_tool_execution_id,
+                check_active=check_active, on_progress=on_progress)
         finally:
             if pg:
                 connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock})
 
 
-def _run(identifier, factory=SessionLocal):
+def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
     """Claim once; never replay a command whose upstream submission was uncertain."""
     import time
     with factory() as db:
         command = db.get(Command, UUID(str(identifier)), with_for_update=True)
-        if not command or command.status != "queued":
+        if (not command or command.status != "queued"
+                or command.agent_tool_execution_id != agent_tool_execution_id):
             return
         row = db.get(Computer, command.session_id, with_for_update=True)
+        def cancelled():
+            db.refresh(command)
+            if command.agent_tool_execution_id:
+                from .agent_tool_jobs import owner_active
+                if not owner_active(db, command.agent_tool_execution_id):
+                    command.cancel_requested = True
+                    db.commit()
+            if check_active:
+                try:
+                    check_active()
+                except Exception:
+                    command.cancel_requested = True
+                    db.commit()
+            return command.cancel_requested
+
+        def progress():
+            if on_progress:
+                try:
+                    on_progress({"cloud_computer": read(row), "command_id": str(command.id),
+                        "summary": "正在准备云电脑" if command.status == "preparing" else "正在执行"})
+                except Exception:
+                    logger.warning("Cloud progress delivery deferred: %s", command.id)
+
+        cancelled()
         if row.ended_at or row.status in ("stopping", "uncertain") or command.cancel_requested:
             command.status, command.finished_at = "cancelled", now()
+            command.result = {"status": "cancelled", "error": "命令已停止", "error_code": "cloud_cancelled"}
+            if not row.provider_id:
+                reconcile(db, row, now(), final=True)
+                row.status, row.ended_at = "ended", now()
             db.commit()
             return
         command.status, command.started_at, command.heartbeat_at = "preparing", now(), now()
         row.last_activity_at = now()
         db.commit()
+        progress()
         submitted = False
         try:
             provider = adapter(row.snapshot, row.encrypted_api_key)
@@ -429,6 +464,8 @@ def _run(identifier, factory=SessionLocal):
                 except Exception:
                     row.status, row.error = "uncertain", "云电脑启动结果待核对，请勿重复启动"
                     command.status, command.finished_at = "uncertain", now()
+                    command.result = {"status": "uncertain", "uncertain": True, "error": row.error,
+                        "error_code": "cloud_result_uncertain"}
                     db.commit()
                     return
                 row.status = "ready"
@@ -438,7 +475,7 @@ def _run(identifier, factory=SessionLocal):
             stage_mount(db, row, access, command.payload["inputs"], provider, sandbox)
             db.refresh(command)
             db.refresh(row, ["status", "billing_stopped_at"])
-            if command.cancel_requested or row.status == "stopping":
+            if cancelled() or row.status == "stopping":
                 command.status, command.finished_at = "cancelled", now()
                 command.result = {"status": "cancelled", "error": "命令已停止"}
                 db.commit()
@@ -457,6 +494,7 @@ def _run(identifier, factory=SessionLocal):
             row.status = "running"
             command.status = "running"
             db.commit()
+            progress()
             submitted = True
             if command.payload.get("preview"):
                 command.process_id = provider.start_preview(sandbox, command.id, command.payload["preview"])
@@ -469,10 +507,18 @@ def _run(identifier, factory=SessionLocal):
                 db.refresh(command)
                 db.refresh(row)
                 session_access(db, row).editor()
-                if command.cancel_requested or row.status == "stopping" or now() >= aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]):
-                    provider.cancel(sandbox, command.id, command.process_id)
+                if cancelled() or row.status == "stopping" or now() >= aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]):
+                    if command.payload.get("preview"):
+                        from .cloud_preview import stop
+                        preview_result = stop(db, access, preview, row)
+                        if preview_result["status"] != "stopped":
+                            raise RuntimeError("preview cancellation unconfirmed")
+                    else:
+                        provider.cancel(sandbox, command.id, command.process_id)
                     command.status = "cancelled"
                     command.result = {"status": "cancelled", "error": "云电脑命令已停止"}
+                    if command.payload.get("preview"):
+                        command.result = {**command.result, "preview": preview_result}
                     break
                 result = provider.poll(sandbox, command.id)
                 if result is not None:
@@ -509,6 +555,8 @@ def _run(identifier, factory=SessionLocal):
                 if preview:
                     preview.status = "uncertain"
                     preview.error = "正在核对启动状态，请勿重复启动"
+                    from .cloud_preview import read as read_preview
+                    command.result = {**command.result, "preview": read_preview(preview)}
             elif submitted:
                 row.status = "stopping"
                 row.billing_stopped_at = now()
@@ -528,28 +576,28 @@ def _run(identifier, factory=SessionLocal):
             db.commit()
 
 
-def execute(db, access, conversation_id, request_id, arguments, check_active=None):
-    """Agent waits for the durable command; UI and lifecycle do not depend on it."""
+def execute(db, access, conversation_id, request_id, arguments, check_active=None, *,
+            agent_tool_execution_id=None, on_progress=None):
+    """Execute in the Agent worker, without queueing work behind that same worker."""
     if arguments.get("inputs"):
         raise HTTPException(422, "云电脑工作区已直接挂载，请移除旧式文件输入参数")
-    import time
-    command = submit(db, access, conversation_id, request_id, arguments)
-    while command.status in BUSY:
-        if check_active:
-            try:
-                check_active()
-            except BaseException:
-                if not command.payload.get("preview"):
-                    command.cancel_requested = True
-                db.commit()
-                raise
-        time.sleep(.5)
-        db.refresh(command)
+    from sqlalchemy.orm import sessionmaker
+    command = submit(db, access, conversation_id, request_id, arguments,
+        agent_tool_execution_id=agent_tool_execution_id, dispatch_job=False)
+    # End the caller's read transaction before the runner takes ownership.
+    identifier = command.id
+    db.commit()
+    run(identifier, sessionmaker(bind=db.get_bind()), agent_tool_execution_id=agent_tool_execution_id,
+        check_active=check_active, on_progress=on_progress)
+    db.refresh(command)
     row = db.get(Computer, command.session_id, populate_existing=True)
+    if command.status in BUSY:
+        return {"command_id": str(command.id), "uncertain": True, "error": "命令结果尚未确认，请勿重复执行"}
     return {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
 
 
-def execute_image(db, access, conversation_id, request_id, path, check_active):
+def execute_image(db, access, conversation_id, request_id, path, check_active, *,
+                  agent_tool_execution_id=None, on_progress=None):
     """Inspect a mounted image durably, then read its bytes outside command results."""
     from .chat_attachments import MAX_IMAGE_BYTES
     from .image_reading import local_path, workspace_image
@@ -559,18 +607,13 @@ def execute_image(db, access, conversation_id, request_id, path, check_active):
         sandbox_path = local_path(path)
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
-    command = submit(db, access, conversation_id, request_id,
+    result = execute(db, access, conversation_id, request_id,
         {"command": "inspect_image",
-         "file_operation": {"name": "inspect_image", "path": sandbox_path}})
+         "file_operation": {"name": "inspect_image", "path": sandbox_path}}, check_active,
+        agent_tool_execution_id=agent_tool_execution_id, on_progress=on_progress)
+    command = db.get(Command, UUID(result["command_id"]))
     try:
-        while command.status in BUSY:
-            if check_active:
-                check_active()
-            import time
-            time.sleep(.5)
-            db.refresh(command)
         row = db.get(Computer, command.session_id, populate_existing=True)
-        result = {**command.result, "cloud_computer": read(row), "command_id": str(command.id)}
         file_result = result.get("file_result", {})
         if file_result.get("error"):
             raise HTTPException(file_result.get("status_code", 422), file_result["error"])
@@ -647,7 +690,19 @@ def _maintain(db, identifier):
     # Re-dispatch only unclaimed jobs. Claimed execution is never submitted twice.
     for command in commands:
         if command.status == "queued":
-            dispatch(command.id)
+            if command.agent_tool_execution_id is None:
+                dispatch(command.id)
+            else:
+                from .agent_tool_jobs import owner_active
+                if not owner_active(db, command.agent_tool_execution_id):
+                    command.status, command.finished_at, command.cancel_requested = "cancelled", now(), True
+                    command.result = {"status": "cancelled", "error": "执行已中断，命令尚未提交"}
+                    if not row.provider_id:
+                        reconcile(db, row, now(), final=True)
+                        row.status, row.ended_at = "ended", now()
+                    db.commit()
+    if row.ended_at:
+        return
     if row.status in ("starting", "uncertain") and not row.provider_id:
         if (now()-aware(row.created_at)).total_seconds() < 90:
             return

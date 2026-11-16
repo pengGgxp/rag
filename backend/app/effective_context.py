@@ -130,11 +130,11 @@ class ContextManager:
         with self.factory() as db:
             # Save known truth even if stop changed active_request_id while the
             # tool was finishing. Only window appends require the active slot.
-            self.store.lock(db)
-            row = db.get(AgentToolExecution, identifier)
+            row = db.get(AgentToolExecution, identifier, with_for_update=True)
             row.encrypted_result = encrypt_items([raw])
             data = json.loads(message["content"])
-            row.status = "uncertain" if data.get("uncertain") else "failed" if data.get("error") or data.get("isError") else "completed"
+            row.status = ("uncertain" if data.get("uncertain") else "cancelled" if data.get("status") == "cancelled"
+                else "failed" if data.get("error") or data.get("isError") else "completed")
             db.commit()
         visible = bounded_message(message, identifier, budget)
         self.record([visible], "tool", f"tool-result:{identifier}",
@@ -169,6 +169,7 @@ class ContextManager:
                             model_item_id=UUID(model["id"]), call_id=call["id"], name=call["function"]["name"])
                         db.add(row)
                     row.status = result.get("execution_status") or ("uncertain" if result.get("uncertain") else
+                        "cancelled" if result.get("status") == "cancelled" else
                         "failed" if result.get("error") or result.get("isError") else "completed")
                     row.encrypted_result = encrypt_items([make_item(uuid5(identifier, "recovered-result"),
                         message, "tool", self.request_id)])
@@ -192,6 +193,15 @@ class ContextManager:
         if not model.get("request_id"):
             return None
         name, request = call["function"]["name"], UUID(model["request_id"])
+        if name in ("generate_image", "edit_image"):
+            from .models import ImageTask
+            from .image_tasks import TERMINAL, tool_read
+            task = db.scalar(select(ImageTask).where(
+                ImageTask.agent_tool_execution_id == uuid5(UUID(model["id"]), call["id"]),
+                ImageTask.workspace_id == self.access.workspace_id,
+                ImageTask.actor_user_id == self.access.user_id))
+            if task and task.status in TERMINAL:
+                return tool_read(task)
         key = model.get("model_key", "")
         if key.startswith("model:"):
             activity = f"tool-{key.split(':')[1]}-{call['id']}"

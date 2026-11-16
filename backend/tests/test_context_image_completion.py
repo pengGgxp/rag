@@ -82,7 +82,8 @@ def test_image_completion_restore_compact_and_settlement(client, monkeypatch, pr
     db.commit()
     reads, requests = [], []
 
-    def load_image(self, path, check_active, call_id):
+    def load_image(self, path, check_active, call_id, **execution):
+        assert execution["agent_tool_execution_id"]
         check_active()
         reads.append((path, call_id))
         return PNG, {"size_bytes": len(PNG), "sha256": hashlib.sha256(PNG).hexdigest()}

@@ -77,7 +77,24 @@ def read(row):
     return {"task_id": str(row.id), "status": row.status, "summary": row.error or labels[row.status],
         "terminal": row.status in TERMINAL, "files": [o["resource"] for o in row.outputs if o.get("resource")],
         "credits": str(row.charged_credits), "cancel_requested": row.cancel_requested,
-        "view_url": "/resources"}
+        "updated_at": row.updated_at.isoformat(), "view_url": "/resources"}
+
+
+def tool_read(row):
+    result = read(row)
+    if row.status in ("failed", "cancelled", "uncertain", "save_failed"):
+        result.update(error=result["summary"], error_code="image_" + row.status)
+    if row.status not in TERMINAL or row.status == "uncertain":
+        result.update(uncertain=True, error=result["summary"], error_code="image_result_uncertain")
+    return result
+
+
+def notify(row, callback):
+    if callback:
+        try:
+            callback(read(row))
+        except Exception:
+            logger.warning("Image progress delivery deferred: %s", row.id)
 
 
 def owned(db, access, identifier, lock=False):
@@ -96,14 +113,30 @@ def dispatch(identifier):
         pass
 
 
-def recover(factory=None):
+def recover(factory=None, *, agent_only=False):
     """Recover delivery or queued work, never replay an uncertain upstream call."""
     from .db import SessionLocal
     from .auth import aware
     with (factory or SessionLocal)() as db:
-        rows = db.scalars(select(ImageTask).where(ImageTask.status.in_(("queued", "saving", "running"))).with_for_update(skip_locked=True)).all()
+        query = select(ImageTask).where(ImageTask.status.in_(("queued", "saving", "running")))
+        if agent_only:
+            query = query.where(ImageTask.agent_tool_execution_id.is_not(None))
+        rows = db.scalars(query.with_for_update(skip_locked=True)).all()
         pending = []
+        saving = []
         for row in rows:
+            if row.agent_tool_execution_id:
+                from .agent_tool_jobs import owner_active
+                active = owner_active(db, row.agent_tool_execution_id)
+                if row.status == "queued" and not active:
+                    settle(db, row, 0)
+                    row.status, row.cancel_requested = "cancelled", True
+                elif row.status == "saving" and not active:
+                    saving.append(row.id)
+                elif (row.status == "running" and not active and
+                        aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300)):
+                    row.status, row.error = "uncertain", "图片生成结果尚未确认，请联系管理员核对，勿重复生成"
+                continue
             if row.status == "running":
                 if aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
                     row.status, row.error = "uncertain", "图片生成结果尚未确认，请联系管理员核对，勿重复生成"
@@ -112,21 +145,25 @@ def recover(factory=None):
         db.commit()
     for identifier in pending:
         dispatch(identifier)
+    for identifier in saving:
+        save_outputs(identifier, factory)
 
 
-def create(db, access, payload, key):
+def create(db, access, payload, key, *, agent_tool_execution_id=None):
     access = access.revalidate(db)
     access.editor()
+    from .agent_tool_jobs import validate_owner
+    validate_owner(db, agent_tool_execution_id, access)
     # Serialize admission and idempotency through the existing workspace account.
     ensure_account(db, access.workspace_id)
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
     existing = db.scalar(select(ImageTask).where(ImageTask.workspace_id == access.workspace_id,
         ImageTask.actor_user_id == access.user_id, ImageTask.idempotency_key == key))
     if existing:
-        if existing.content_hash != digest:
+        if existing.content_hash != digest or existing.agent_tool_execution_id != agent_tool_execution_id:
             raise HTTPException(409, "此图片请求已提交，请勿更换内容重复提交")
         db.commit()
-        if existing.status == "queued":
+        if existing.status == "queued" and existing.agent_tool_execution_id is None:
             dispatch(existing.id)
         return read(existing)
     model, connection, config = selected_model(db, payload.operation)
@@ -160,6 +197,7 @@ def create(db, access, payload, key):
     snapshot["preset_id"] = config.preset_id
     snapshot["preset_revision"] = config.preset_revision
     row = ImageTask(id=identifier, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        agent_tool_execution_id=agent_tool_execution_id,
         model_id=model.id, session_hash=access.session_hash, idempotency_key=key, content_hash=digest,
         status="queued", payload={**payload.model_dump(mode="json"), "size": size, "quality": quality},
         snapshot=snapshot, encrypted_credentials=connection.encrypted_api_key, held_credits=held,
@@ -169,7 +207,8 @@ def create(db, access, payload, key):
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
                  action="image.created", resource_type="image_task", resource_id=identifier)
     db.commit()
-    dispatch(identifier)
+    if agent_tool_execution_id is None:
+        dispatch(identifier)
     return read(row)
 
 
@@ -193,7 +232,7 @@ def task_access(db, row):
     return Access(row.actor_user_id, row.workspace_id, "editor", row.session_hash).revalidate(db)
 
 
-def run(identifier, factory=None):
+def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
     from .db import SessionLocal
     from .image_adapters import generate, validate_image, ImageRejected, ImageUncertain
     from .llm_providers import _decrypt_api_key, _encrypt_api_key
@@ -209,8 +248,19 @@ def run(identifier, factory=None):
             return
         if not row or row.status != "queued":
             return
+        if row.agent_tool_execution_id != agent_tool_execution_id:
+            return
         preparation_stage = "authorization"
         try:
+            if row.agent_tool_execution_id:
+                from .agent_tool_jobs import owner_active
+                if not owner_active(db, row.agent_tool_execution_id):
+                    row.cancel_requested = True
+            if check_active:
+                try:
+                    check_active()
+                except Exception:
+                    row.cancel_requested = True
             access = task_access(db, row)
             access.editor()
             model = db.get(SiteModelProvider, row.model_id, populate_existing=True)
@@ -243,8 +293,22 @@ def run(identifier, factory=None):
             preparation_stage = "authorization"
             access = task_access(db, row)
             access.editor()
+            if row.agent_tool_execution_id and not owner_active(db, row.agent_tool_execution_id):
+                row.cancel_requested = True
+            if check_active:
+                try:
+                    check_active()
+                except Exception:
+                    row.cancel_requested = True
+            if row.cancel_requested:
+                settle(db, row, 0)
+                row.status = "cancelled"
+                db.commit()
+                notify(row, on_progress)
+                return
             row.status = "running"
             db.commit()
+            notify(row, on_progress)
         except Exception as exc:
             logger.warning("Image task preparation failed: task=%s stage=%s error_type=%s", identifier, preparation_stage, type(exc).__name__)
             db.rollback()
@@ -272,6 +336,7 @@ def run(identifier, factory=None):
             row.status = "saving"
             settle(db, row, len(images))
             db.commit()
+            notify(row, on_progress)
         except ImageRejected as exc:
             db.rollback()
             row = db.get(ImageTask, identifier, with_for_update=True)
@@ -289,6 +354,8 @@ def run(identifier, factory=None):
             db.commit()
             return
     save_outputs(identifier, factory)
+    with factory() as db:
+        notify(db.get(ImageTask, identifier), on_progress)
 
 
 def save_outputs(identifier, factory=None):
@@ -356,7 +423,7 @@ def by_request(key: UUID, db=Depends(get_db), access=Depends(get_access)):
         ImageTask.actor_user_id == access.user_id, ImageTask.idempotency_key == str(key)))
     if row is None:
         raise HTTPException(404, "图片请求尚未提交")
-    if row.status in ("queued", "saving"):
+    if row.status in ("queued", "saving") and row.agent_tool_execution_id is None:
         dispatch(row.id)
     return read(row)
 
@@ -366,12 +433,14 @@ def status(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
     if row.status == "running":
         from .auth import aware
-        if aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
+        from .agent_tool_jobs import owner_active
+        live = row.agent_tool_execution_id and owner_active(db, row.agent_tool_execution_id)
+        if not live and aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
             row = owned(db, access, identifier, True)
             if row.status == "running" and aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
                 row.status, row.error = "uncertain", "图片生成结果尚未确认，请联系管理员核对，勿重复生成"
             db.commit()
-    if row.status in ("queued", "saving"):
+    if row.status in ("queued", "saving") and row.agent_tool_execution_id is None:
         dispatch(identifier)
     return read(row)
 
@@ -395,7 +464,13 @@ def retry_save(identifier: UUID, db=Depends(get_db), access=Depends(get_access))
         raise HTTPException(409, "此任务无需重试保存")
     row.status, row.error = "saving", None
     db.commit()
-    dispatch(identifier)
+    if row.agent_tool_execution_id:
+        # Delivery recovery never resubmits the billable generation.
+        from sqlalchemy.orm import sessionmaker
+        save_outputs(identifier, sessionmaker(bind=db.get_bind()))
+        db.refresh(row)
+    else:
+        dispatch(identifier)
     return read(row)
 
 

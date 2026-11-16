@@ -235,6 +235,7 @@ class ImageTask(Base):
     __tablename__ = "image_tasks"
     __table_args__ = (UniqueConstraint("workspace_id", "actor_user_id", "idempotency_key", name="uq_image_task_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    agent_tool_execution_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     model_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
@@ -1213,6 +1214,7 @@ class CloudComputerCommand(Base):
     __tablename__ = "cloud_computer_commands"
     __table_args__ = (UniqueConstraint("session_id", "request_id", "digest", name="uq_cloud_command_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    agent_tool_execution_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
     session_id: Mapped[UUID] = mapped_column(ForeignKey("cloud_computer_sessions.id"), index=True)
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
     digest: Mapped[str] = mapped_column(String(64))

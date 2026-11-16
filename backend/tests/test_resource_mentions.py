@@ -217,7 +217,8 @@ def test_agent_reads_reference_through_existing_file_tool(client, resource_store
     storage = MemoryMount(); storage.objects = resource_store[0]
     monkeypatch.setattr("app.shared_resources.backend", lambda _: storage)
     operations = []
-    def execute(db, access, conversation_id, request_id, arguments, *_):
+    def execute(db, access, conversation_id, request_id, arguments, *_, **execution):
+        assert execution["agent_tool_execution_id"] and callable(execution["on_progress"])
         access.revalidate(db)
         operations.append(arguments["file_operation"])
         return {"status": "completed", "cloud_computer": {}, "command_id": str(uuid4()),

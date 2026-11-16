@@ -20,10 +20,14 @@ from app.models import Conversation, CreditAccount, CreditLedgerEntry, User, Wor
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_revisions_fit_postgres_version_column():
+def migration_scripts():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "alembic"))
-    scripts = ScriptDirectory.from_config(config)
+    return ScriptDirectory.from_config(config)
+
+
+def test_revisions_fit_postgres_version_column():
+    scripts = migration_scripts()
     limit = MigrationContext.configure(dialect_name="postgresql")._version.c.version_num.type.length
     assert len(scripts.get_heads()) == 1
     assert all(len(revision.revision) <= limit for revision in scripts.walk_revisions())
@@ -87,7 +91,12 @@ def test_postgres_upgrade_preserves_messages_and_billing():
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
             length = next(column["type"].length for column in inspect(connection).get_columns(
                 "alembic_version") if column["name"] == "version_num")
-            assert version == "0067_context_tools_merge" and len(version) <= length == 32
+            assert version == migration_scripts().get_current_head() and len(version) <= length == 32
+            for table in ("image_tasks", "cloud_computer_commands"):
+                columns = {column["name"]: column for column in inspect(connection).get_columns(table)}
+                assert columns["agent_tool_execution_id"]["nullable"]
+                assert any(constraint["column_names"] == ["agent_tool_execution_id"]
+                    for constraint in inspect(connection).get_unique_constraints(table))
             assert connection.scalar(text("SELECT knowledge_base_mentions FROM chat_messages")) == []
             assert connection.scalar(text("SELECT resource_mentions FROM chat_messages")) == []
         current_messages = tables()["chat_messages"]
@@ -135,7 +144,7 @@ def test_postgres_each_existing_head_upgrades_to_combined_schema(starting_revisi
                 capture_output=True, check=True, timeout=60)
         with engine.connect() as connection:
             assert list(connection.scalars(text("SELECT version_num FROM alembic_version"))) == [
-                "0067_context_tools_merge"]
+                migration_scripts().get_current_head()]
             assert {"conversation_contexts", "knowledge_base_tool_executions"} <= set(
                 inspect(connection).get_table_names())
     finally:
