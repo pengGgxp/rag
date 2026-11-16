@@ -113,6 +113,10 @@ def live_mcp(request, monkeypatch):
         await anyio.sleep(2)
         return "late"
 
+    @service.tool()
+    def large_result() -> str:
+        return "长结果" * 70000 + "唯一尾部"
+
     transport = request.param
     app = service.sse_app() if transport == "sse" else service.streamable_http_app()
 
@@ -190,6 +194,15 @@ def test_official_sdk_authentication_and_timeout(live_mcp):
     connection["settings"].mcp_timeout_seconds = 0.5
     with pytest.raises(mcp_client.MCPError, match="未自动重试"):
         mcp_client.call(*args, slow, {})
+
+
+def test_large_successful_mcp_result_is_not_a_serialized_character_failure(live_mcp):
+    connection = live_mcp
+    args = (connection["url"], connection["transport"], connection["headers"])
+    large = next(item for item in mcp_client.discover(*args) if item["name"] == "large_result")
+    result = mcp_client.call(*args, large, {})
+    assert result["isError"] is False
+    assert result["content"][0]["text"].endswith("唯一尾部")
 
 
 def test_redirect_does_not_forward_credentials_to_another_origin(live_mcp, monkeypatch):

@@ -57,16 +57,31 @@ job = Path(sys.argv[1])
 payload = json.loads((job / "input.json").read_text())
 process = subprocess.Popen(["bash", "-lc", payload["command"]], cwd=payload["cwd"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
 (job / "pgid").write_text(str(process.pid))
-tails = {"stdout": bytearray(), "stderr": bytearray()}
+half = 256 * 1024
+streams = {name: {"head": bytearray(), "tail": bytearray(), "received": 0} for name in ("stdout", "stderr")}
 def drain(pipe, name):
     for block in iter(lambda: pipe.read(4096), b""):
-        tails[name].extend(block)
-        del tails[name][:-12000]
+        stream = streams[name]
+        stream["received"] += len(block)
+        take = min(len(block), half - len(stream["head"]))
+        stream["head"].extend(block[:take])
+        stream["tail"].extend(block[take:])
+        del stream["tail"][:-half]
 threads = [threading.Thread(target=drain, args=(pipe, name)) for name, pipe in [("stdout", process.stdout), ("stderr", process.stderr)]]
 for thread in threads: thread.start()
 code = process.wait()
 for thread in threads: thread.join()
-result = {"exit_code": code, **{name: data.decode("utf-8", errors="replace") for name, data in tails.items()}}
+result = {"exit_code": code, "output_capture": {}}
+for name, stream in streams.items():
+    head, tail = bytes(stream["head"]), bytes(stream["tail"])
+    retained = len(head) + len(tail)
+    omitted = stream["received"] - retained
+    result["output_capture"][name] = {"budget_bytes": half * 2, "received_bytes": stream["received"],
+        "retained_bytes": retained, "omitted_bytes": omitted, "head_bytes": len(head), "tail_bytes": len(tail)}
+    if omitted:
+        result[name] = head.decode("utf-8", errors="replace") + "\\n[omitted " + str(omitted) + " bytes; discarded output cannot be recovered]\\n" + tail.decode("utf-8", errors="replace")
+    else:
+        result[name] = (head + tail).decode("utf-8", errors="replace")
 (job / "result.tmp").write_text(json.dumps(result))
 os.replace(job / "result.tmp", job / "result.json")
 '''

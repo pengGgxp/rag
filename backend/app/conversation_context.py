@@ -97,7 +97,7 @@ def scope_digest(db, conversation, access):
         "workspace": str(access.workspace_id), "user": str(access.user_id)})
 
 
-def build_messages(db, conversation, rows, config, extensions, query=None):
+def build_messages(db, conversation, rows, config, extensions, query=None, *, history=()):
     from .skill_discovery import prompt as skill_prompt
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT
         + "\n云电脑环境能力：" + getattr(extensions, "environment_description", "未提供；不要假定具体预装软件或版本。")
@@ -108,7 +108,9 @@ def build_messages(db, conversation, rows, config, extensions, query=None):
     if query is not None:
         messages.append({"role": "user", "content": query})
     from .agent_tools import PLAN_TOOL, RESULT_TOOL
-    tools = ([DISCOVER_TOOL, SEARCH_TOOL, PLAN_TOOL, RESULT_TOOL] if config and config.thinking.supports_tools else []) + extensions.tools
+    extension_tools = (extensions.model_tools(history) if config and config.thinking.supports_tools
+        and hasattr(extensions, "model_tools") else extensions.tools)
+    tools = ([DISCOVER_TOOL, SEARCH_TOOL, PLAN_TOOL, RESULT_TOOL] if config and config.thinking.supports_tools else []) + extension_tools
     return messages, tools
 
 

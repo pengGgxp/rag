@@ -23,7 +23,7 @@ class ConnectionWrite(BaseModel):
     transport: Literal["streamable_http", "sse"] = "streamable_http"
     headers: dict[str, SecretStr] | None = None
     enabled: bool = False
-    allowed_tools: list[str] = Field(default_factory=list, max_length=100)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=mcp_client.CATALOG_MAX_ITEMS)
     acknowledge_external_access: bool = False
 
 

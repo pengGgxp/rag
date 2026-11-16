@@ -82,7 +82,7 @@ def test_empty_and_failed_calls_never_charge(paid, monkeypatch, result):
     assert row.units == 0 and row.status in ("empty", "failed")
 
 
-def test_balance_limit_disable_and_call_count_prevent_upstream(paid, monkeypatch):
+def test_balance_and_disable_prevent_upstream_without_task_call_cap(paid, monkeypatch):
     _, db, workspace, _, request, runtime = paid
     called = []
     monkeypatch.setattr(web_search, "invoke", lambda *_: called.append(True) or {"effective": True})
@@ -92,13 +92,53 @@ def test_balance_limit_disable_and_call_count_prevent_upstream(paid, monkeypatch
     assert not called
     db.get(CreditAccount, workspace).balance = 1000
     db.commit()
-    for i in range(3):
+    for i in range(25):
         assert runtime.execute("web_search", {"query": "x"}, str(i), lambda: None)["effective"]
-    assert "上限" in runtime.execute("web_search", {"query": "x"}, "four", lambda: None)["error"]
+    for i in range(12):
+        assert runtime.execute("web_fetch", {"url": "https://example.com"}, f"fetch-{i}", lambda: None)["effective"]
     db.get(SiteSearchSettings, 1).enabled = False
     db.commit()
     assert "暂不可用" in runtime.execute("web_fetch", {"url": "https://example.com"}, "off", lambda: None)["error"]
-    assert len(called) == 3
+    assert len(called) == 37
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_agent_finishes_after_repeated_empty_or_failed_searches_and_fresh_fetches(paid, monkeypatch, failure):
+    import json
+    from app.agent import run_retrieval_agent
+    from app.llm import ToolCall, ToolResponse
+    _, db, _, _, request, runtime = paid
+    calls = []
+    def invoke(config, name, arguments):
+        calls.append(name)
+        if len(calls) <= 24:
+            if failure:
+                raise web_search.SearchError("synthetic provider failure")
+            return {"effective": False, "result_count": 0, "results": []}
+        source = web_search.source("https://example.test/page", "Observation")
+        return {"effective": True, "result_count": 1, "results": [source]} if name == "web_search" else {
+            **source, "effective": True, "result_count": 1, "content": "current observation"}
+    monkeypatch.setattr(web_search, "invoke", invoke)
+    class Model:
+        def complete_with_tools(self, messages, tools, **kwargs):
+            if calls:
+                data = json.loads(messages[-1]["content"])
+                if len(calls) <= 24:
+                    assert data.get("error") if failure else data["result_count"] == 0
+                else:
+                    assert data["result_count"] == 1
+            if len(calls) == 37:
+                return ToolResponse("已完成全部观察", [])
+            name = "web_search" if len(calls) < 25 else "web_fetch"
+            arguments = {"query": "public"} if name == "web_search" else {"url": "https://example.test/page"}
+            return ToolResponse(None, [ToolCall("same-provider-id", name, arguments)])
+    run = run_retrieval_agent(query="继续查询", knowledge_base_ids=[], history=[], factory=runtime.factory,
+        access=runtime.access, retrieve=None, provider=Model(), search=runtime)
+    assert run.answer == "已完成全部观察" and calls == ["web_search"] * 25 + ["web_fetch"] * 12
+    assert model_billing.finalize_request(db, request, "completed") == Decimal("0.0813")
+    db.commit()
+    rows = db.scalars(select(SearchToolCall).where(SearchToolCall.request_id == request)).all()
+    assert len(rows) == 37 and sum(row.units for row in rows) == 13
 
 
 def test_started_call_is_not_replayed_and_recovery_retains_confirmed_usage(paid, monkeypatch):

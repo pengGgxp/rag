@@ -51,13 +51,11 @@ class SearchConfig:
     api_key: str = field(repr=False)
     timeout_seconds: int = 20
     result_count: int = 5
-    max_search_calls: int = 3
-    max_fetch_calls: int = 5
     prices: dict = field(default_factory=dict)
 
     def snapshot(self):
         return {key: deepcopy(getattr(self, key)) for key in (
-            "version", "timeout_seconds", "result_count", "max_search_calls", "max_fetch_calls", "prices")}
+            "version", "timeout_seconds", "result_count", "prices")}
 
 
 def tools():
@@ -129,5 +127,5 @@ def invoke(config, capability, arguments):
     if not isinstance(content, str) or not content.strip():
         return {"result_count": 0, "effective": False, "sources": []}
     title = data.get("title") if isinstance(data.get("title"), str) else ""
-    return {**source(value, title), "content": content[:16000], "truncated": len(content) > 16000,
+    return {**source(value, title), "content": content, "truncated": False,
         "result_count": 1, "effective": True}

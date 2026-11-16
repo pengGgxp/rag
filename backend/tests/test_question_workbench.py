@@ -12,6 +12,7 @@ from app import auth, question_workbench as qw
 from app.extensions import ExtensionRuntime
 from app.models import AuthenticationFlow, LoginSession, Membership, QuestionWorkbenchGrant, User, Workspace
 from test_auth import register as register_account
+from remote_receipt_helpers import answer_identity
 
 
 def register(client, db):
@@ -94,7 +95,9 @@ def test_tools_scope_no_owner_parameters_and_safe_timeout(bridge, monkeypatch):
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
     access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
-    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access, question_workbench=True)
+    message, request = answer_identity(owner, db)
+    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
+        message_id=message, request_id=request, question_workbench=True)
     assert runtime.execute("save_questions", {"user_id": str(uuid4()), "questions": []}).get("error")
     assert runtime.execute("read_question", {"id": "../../private"}).get("error")
     sent = []
@@ -109,8 +112,8 @@ def test_tools_scope_no_owner_parameters_and_safe_timeout(bridge, monkeypatch):
             raise httpx.ReadTimeout("result unavailable")
     monkeypatch.setattr(qw.httpx, "Client", Client)
     args = {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]}
-    assert runtime.execute("save_questions", args)["uncertain"] is True
-    assert runtime.execute("save_questions", args)["uncertain"] is True
+    assert runtime.execute("save_questions", args, call_id="save")["uncertain"] is True
+    assert runtime.execute("save_questions", args, call_id="save")["uncertain"] is True
     assert len(sent) == 1
     assert "user_id" not in sent[0]["json"]
     assert "Authorization" in sent[0]["headers"]
@@ -121,7 +124,9 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
     access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
-    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access, question_workbench=True)
+    message, request = answer_identity(owner, db)
+    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
+        message_id=message, request_id=request, question_workbench=True)
     writes, reads = [], []
     identifier = str(uuid4())
 
@@ -137,12 +142,54 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
             return httpx.Response(200, json={"items": [{"id": identifier}]})
 
     monkeypatch.setattr(qw.httpx, "Client", Client)
-    result = runtime.execute("save_questions", {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]})
+    result = runtime.execute("save_questions", {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]}, call_id="save")
     assert result["items"][0]["id"] == identifier
     assert result["items"][0]["url"].endswith("/questions/" + identifier)
     assert len(writes) == len(reads) == 1
     assert reads[0][1]["params"] == {"operation": "questions"}
     assert reads[0][0].endswith("/operations/" + writes[0]["headers"]["Idempotency-Key"])
+
+
+def test_fresh_reads_observe_updates_and_receipts_survive_runtime_restart(bridge, monkeypatch):
+    (owner, _, _), db = bridge
+    session = register(owner, db)
+    owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
+    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin",
+        auth.digest(owner.cookies.get(auth.COOKIE)))
+    message, request = answer_identity(owner, db)
+    factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+    def runtime():
+        return ExtensionRuntime(factory, access, message_id=message, request_id=request, question_workbench=True)
+    engine = runtime()
+    identifier = str(uuid4())
+    current = {"id": identifier, "version": 1,
+        "content": {"kind": "short_answer", "stem": "before", "answer": ["answer"]}}
+    sent = []
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): pass
+        def request(self, verb, url, **kwargs):
+            sent.append((verb, kwargs["headers"]["Idempotency-Key"]))
+            if verb == "PUT":
+                current.update(kwargs["json"])
+                current["version"] += 1
+            return httpx.Response(200, json=current)
+    monkeypatch.setattr(qw.httpx, "Client", Client)
+    args = {"id": identifier}
+    first = engine.execute("read_question", args, call_id="before")
+    assert first["content"]["stem"] == "before"
+    changed = engine.execute("update_question", {**args, "version": 1,
+        "content": {**current["content"], "stem": "after"}}, call_id="modify")
+    assert changed["version"] == 2
+    for index in range(25):
+        observed = engine.execute("read_question", args, call_id=f"observation-{index}")
+        assert observed["content"]["stem"] == "after" and observed["version"] == 2
+    assert len(sent) == len({key for _, key in sent}) == 27
+    assert runtime().execute("read_question", args, call_id="before")["content"]["stem"] == "before"
+    conflict = engine.execute("read_question", {"id": str(uuid4())}, call_id="before")
+    assert conflict["error_code"] == "tool_receipt"
+    assert len(sent) == 27
 
 
 def test_admin_entitlement_gates_login_tools_and_existing_sessions(bridge):

@@ -12,7 +12,7 @@ import { formatCredits } from "../../credit-format";
 import "../../billing.css";
 
 type Settings = { version: number; enabled: boolean; has_api_key: boolean; timeout_seconds: number;
-  result_count: number; max_search_calls: number; max_fetch_calls: number; policies: Policy[] };
+  result_count: number; policies: Policy[] };
 type TestResult = { completed: boolean; credits: number; result_count?: number; error?: string };
 
 export default function SearchSettingsPage() {
@@ -72,7 +72,7 @@ export default function SearchSettingsPage() {
                 <label className="provider-enabled provider-form-wide"><input type="checkbox" checked={form.enabled} onChange={e => setForm({ ...form, enabled: e.target.checked })} />启用联网搜索</label>
                 <label className="provider-form-wide">DeepSeek API Key<input type="password" autoComplete="new-password" value={key} disabled={clear} placeholder={clear ? "保存后清除" : form.has_api_key ? "已配置，留空保留" : "填写独立搜索密钥"} onChange={e => setKey(e.target.value)} /></label>
                 {form.has_api_key && <div className="provider-form-wide"><button type="button" className="secondary" onClick={() => clear ? setClear(false) : setConfirmClear(true)}>{clear ? "撤销清除" : "清除密钥"}</button></div>}
-                {([['timeout_seconds', '超时（秒）', 5, 60], ['result_count', '每次搜索结果数', 1, 10], ['max_search_calls', '每个问题最多搜索次数', 1, 10], ['max_fetch_calls', '每个问题最多读取页数', 1, 10]] as const).map(([field, label, min, max]) => <label key={field}>{label}<input required type="number" min={min} max={max} step={1} value={form[field]} onChange={e => setForm({ ...form, [field]: Number(e.target.value) })} /></label>)}
+                {([['timeout_seconds', '超时（秒）', 5, 60], ['result_count', '每次搜索结果数', 1, 10]] as const).map(([field, label, min, max]) => <label key={field}>{label}<input required type="number" min={min} max={max} step={1} value={form[field]} onChange={e => setForm({ ...form, [field]: Number(e.target.value) })} /></label>)}
               </div>
             </section>
             <section className="model-form-section"><h2>工具基准价</h2>

@@ -495,7 +495,7 @@ def chat_router(get_db, retrieve):
             skill_versions=runtime.versions if config.thinking.supports_tools else [])
         history = manager.history(db, conversation)
         db.commit()
-        messages, tools = build_messages(db, conversation, [], config, runtime)
+        messages, tools = build_messages(db, conversation, [], config, runtime, history=history)
         messages.extend(history)
         if web_search and config.thinking.supports_tools and model_billing.enabled(db):
             from .search_settings import runtime_config
@@ -935,7 +935,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             conversation = live_conversation(db, conversation_id, access.revalidate(db))
             history = manager.history(db, conversation)
             db.commit()
-            initial_messages, context_tools = build_messages(db, conversation, [], provider_config, extension_runtime, query)
+            initial_messages, context_tools = build_messages(db, conversation, [], provider_config, extension_runtime, query, history=history)
             initial_messages = initial_messages[:1] + history + initial_messages[1:]
         manager.current_message_id = user_message.id if user_message else None
         manager.current_sequence = user_message.sequence if user_message else None

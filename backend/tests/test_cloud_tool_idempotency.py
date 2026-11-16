@@ -107,6 +107,19 @@ def test_runtime_recreation_and_worker_replay_preserve_command_and_ledger(runtim
     assert fake.creates == fake.starts == 1
 
 
+def test_long_command_reaches_executor_without_length_gate(runtime, monkeypatch):
+    _, _, _, _, _, fake, _, extensions, _ = runtime
+    commands = []
+    original = fake.start
+    def start(sandbox, identifier, command):
+        commands.append(command)
+        return original(sandbox, identifier, command)
+    monkeypatch.setattr(fake, "start", start)
+    script = "printf 'long script completed'\n" + "# synthetic script\n" * 1000
+    result = extensions().execute("run_command", {"computer_id": fake.computer_id, "command": script}, call_id="long-script")
+    assert result["status"] == "completed" and commands == [script]
+
+
 def test_identical_commands_in_one_model_response_have_distinct_invocations(runtime):
     _, db, _, access, factory, fake, _, extensions, _ = runtime
     class Provider:
@@ -156,7 +169,7 @@ def test_same_call_conflicting_parameters_never_dispatches(runtime, monkeypatch,
 
 @pytest.mark.parametrize("tool", ["read_image", "start_preview"])
 def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypatch, tool):
-    _, _, _, _, _, fake, _, extensions, request_id = runtime
+    client, _, _, _, _, fake, _, extensions, request_id = runtime
     from app.config import get_settings
     from app.image_reading import workspace_image
     from test_chat_attachments import PNG
@@ -166,6 +179,7 @@ def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypat
         "availability": "available", "url": "/resources?file=synthetic-file"})
     captured = []
     if tool == "read_image":
+        upload(client, "chart.png", PNG)
         image = workspace_image("/home/user/workspace/chart.png", "image/png", 1, 1,
             hashlib.sha256(PNG).hexdigest(), PNG)
         def execute_image(db, access, conversation, request, path, check, **kwargs):

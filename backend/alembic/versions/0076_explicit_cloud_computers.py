@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0074_explicit_cloud_computers"
-down_revision = "0073_cloud_stop_reason"
+revision = "0076_explicit_cloud_computers"
+down_revision = "0075_tool_cloud_merge"
 branch_labels = depends_on = None
 
 

@@ -6,6 +6,7 @@ import { ArrowLeft, Loader2, Plus, RefreshCw, Save, Trash2 } from "lucide-react"
 import { ApiError, request } from "../../../api";
 import { WorkspaceHeader, WorkspaceSkeleton } from "../../../workspace-header";
 import { useAdminChanges } from "../../../admin/admin-changes";
+import { Pagination } from "../../../admin/admin-ui";
 import { json, useExtensionResource, type MCPConnection } from "../../extension-data";
 
 type Form = { name: string; url: string; transport: "streamable_http" | "sse"; enabled: boolean; allowed_tools: string[] };
@@ -28,6 +29,8 @@ export default function MCPPage({ params }: { params: Promise<{ id: string }> })
   const [notice, setNotice] = useState("");
   const [conflict, setConflict] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [toolQuery, setToolQuery] = useState("");
+  const [toolPage, setToolPage] = useState(1);
   const changedConnection = form.url !== saved.url || form.transport !== saved.transport || auth !== "keep";
   const dirty = JSON.stringify(form) !== JSON.stringify(saved) || auth !== "keep";
   useAdminChanges(dirty, busy);
@@ -74,6 +77,10 @@ export default function MCPPage({ params }: { params: Promise<{ id: string }> })
     } finally { setBusy(false); }
   }
   const tools = !changedConnection ? connection?.tools ?? [] : [];
+  const filteredTools = tools.filter(tool => `${tool.name} ${tool.description ?? ""}`.toLocaleLowerCase().includes(toolQuery.trim().toLocaleLowerCase()));
+  const pageSize = 20;
+  const currentPage = Math.min(toolPage, Math.max(1, Math.ceil(filteredTools.length / pageSize)));
+  const visibleTools = filteredTools.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   return <>
     <WorkspaceHeader title={id === "new" ? "添加 MCP" : saved.name || "编辑 MCP"} />
     <div className="workspace-body extension-page"><Link href="/extensions?tab=mcp" className="extension-back"><ArrowLeft size={16} />MCP</Link>
@@ -102,10 +109,17 @@ export default function MCPPage({ params }: { params: Promise<{ id: string }> })
         <section className="extension-section">
           <div className="extension-actions"><h2>工具授权</h2><button className="secondary" type="button" disabled={busy || conflict || !form.name.trim() || !form.url.trim()} onClick={() => void save(true)}>{busy ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}测试并获取工具</button></div>
           {changedConnection && connection && <p className="extension-warning">连接已更改，测试后请重新选择工具。</p>}
-          {tools.map(tool => <label className="extension-check extension-tool" key={tool.name}>
+          {!!tools.length && <div className="extension-tool-search">
+            <label>搜索工具<input type="search" value={toolQuery} onChange={e => { setToolQuery(e.target.value); setToolPage(1); }} /></label>
+            <span className="muted">已选择 {form.allowed_tools.length} 项</span>
+          </div>}
+          {visibleTools.map(tool => <label className="extension-check extension-tool" key={tool.name}>
             <input type="checkbox" checked={form.allowed_tools.includes(tool.name)} onChange={e => { setForm({ ...form, allowed_tools: e.target.checked ? [...form.allowed_tools, tool.name] : form.allowed_tools.filter(name => name !== tool.name) }); setAck(false); }} />
             <span><strong>{tool.name}</strong><small>{tool.description || "未提供用途说明"}</small></span>
           </label>)}
+          {!!tools.length && !filteredTools.length && <p className="extension-warning">未找到匹配工具</p>}
+          {!!tools.length && <Pagination className="extension-tool-pagination" total={filteredTools.length}
+            page={currentPage} pageSize={pageSize} change={setToolPage} />}
           {!tools.length && connection?.last_checked_at && !changedConnection && <p className="extension-warning">此服务尚未提供工具。</p>}
           {!!form.allowed_tools.length && !changedConnection && <label className="extension-check extension-warning">
             <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} />

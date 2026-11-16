@@ -128,18 +128,21 @@ export function Pagination({
   page,
   pageSize,
   change,
+  className = "",
 }: {
   total: number;
   page: number;
   pageSize: number;
   change: (page: number) => void;
+  className?: string;
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   return (
-    <div className="admin-pagination">
+    <div className={`admin-pagination ${className}`}>
       <span>共 {number(total)} 条</span>
       <div>
         <button
+          type="button"
           className="icon-button"
           aria-label="上一页"
           title="上一页"
@@ -152,6 +155,7 @@ export function Pagination({
           {page} / {pages}
         </span>
         <button
+          type="button"
           className="icon-button"
           aria-label="下一页"
           title="下一页"
