@@ -62,8 +62,9 @@ async (page) => {
   await rail.getByText("云电脑未能启动", { exact: true }).waitFor({ timeout: 8000 });
   await page.screenshot({ path: "output/playwright/cloud107-390-start-failed.png", fullPage: true });
   // A new environment can follow a terminal one; the previous terminal ID cannot be revived.
-  computer = { ...initial, id: "mock-env-2", status: "stopping", summary: "积分不足，云电脑正在结束" };
-  await rail.getByText("积分不足，云电脑正在结束", { exact: true }).waitFor({ timeout: 8000 });
+  computer = { ...initial, id: "mock-env-2", status: "stopping", summary: "正在结束云电脑",
+    stop_reason: "insufficient_balance", stop_reason_text: "可用积分不足以继续运行", renewal_required_credits: "20" };
+  await rail.getByText("可用积分不足以继续运行", { exact: true }).waitFor({ timeout: 8000 });
   assert(await rail.getByRole("button", { name: "正在结束", exact: true }).isDisabled(), "余额不足仍等待结束确认");
   await page.screenshot({ path: "output/playwright/cloud107-390-balance.png", fullPage: true });
   computer = { ...initial, id: "mock-env-3" }; previewValue = preview;
