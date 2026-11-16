@@ -12,6 +12,7 @@ from app import auth, question_workbench as qw
 from app.extensions import ExtensionRuntime
 from app.models import AuthenticationFlow, LoginSession, Membership, QuestionWorkbenchGrant, User, Workspace
 from test_auth import register as register_account
+from remote_receipt_helpers import answer_identity
 
 
 def register(client, db):
@@ -94,7 +95,9 @@ def test_tools_scope_no_owner_parameters_and_safe_timeout(bridge, monkeypatch):
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
     access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
-    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access, question_workbench=True)
+    message, request = answer_identity(owner, db)
+    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
+        message_id=message, request_id=request, question_workbench=True)
     assert runtime.execute("save_questions", {"user_id": str(uuid4()), "questions": []}).get("error")
     assert runtime.execute("read_question", {"id": "../../private"}).get("error")
     sent = []
@@ -109,8 +112,8 @@ def test_tools_scope_no_owner_parameters_and_safe_timeout(bridge, monkeypatch):
             raise httpx.ReadTimeout("result unavailable")
     monkeypatch.setattr(qw.httpx, "Client", Client)
     args = {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]}
-    assert runtime.execute("save_questions", args)["uncertain"] is True
-    assert runtime.execute("save_questions", args)["uncertain"] is True
+    assert runtime.execute("save_questions", args, call_id="save")["uncertain"] is True
+    assert runtime.execute("save_questions", args, call_id="save")["uncertain"] is True
     assert len(sent) == 1
     assert "user_id" not in sent[0]["json"]
     assert "Authorization" in sent[0]["headers"]
@@ -121,7 +124,9 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
     access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
-    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access, question_workbench=True)
+    message, request = answer_identity(owner, db)
+    runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
+        message_id=message, request_id=request, question_workbench=True)
     writes, reads = [], []
     identifier = str(uuid4())
 
@@ -137,7 +142,7 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
             return httpx.Response(200, json={"items": [{"id": identifier}]})
 
     monkeypatch.setattr(qw.httpx, "Client", Client)
-    result = runtime.execute("save_questions", {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]})
+    result = runtime.execute("save_questions", {"questions": [{"kind": "short_answer", "stem": "题干", "answer": ["答案"]}]}, call_id="save")
     assert result["items"][0]["id"] == identifier
     assert result["items"][0]["url"].endswith("/questions/" + identifier)
     assert len(writes) == len(reads) == 1

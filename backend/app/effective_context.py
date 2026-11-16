@@ -222,15 +222,30 @@ class ContextManager:
                     return ({"error": file_result["error"], "status_code": file_result.get("status_code")}
                         if file_result.get("error") else file_result.get("value") or result)
                 return result
-        if name.startswith("mcp_"):
+        from .question_workbench import LABELS as WORKBENCH_NAMES
+        if name.startswith("mcp_") or name in WORKBENCH_NAMES:
             try:
                 args = json.loads(call["function"]["arguments"])
             except (TypeError, ValueError):
                 return None
             signature = json.dumps([name, args], sort_keys=True, ensure_ascii=True)
-            receipt = db.scalar(select(RemoteToolExecution).where(RemoteToolExecution.request_id == request,
+            identifier = uuid5(UUID(model["id"]), call["id"])
+            fingerprint = sha256(signature.encode()).hexdigest()
+            scope = (
+                RemoteToolExecution.request_id == request,
                 RemoteToolExecution.owner_id == self.access.user_id, RemoteToolExecution.workspace_id == self.access.workspace_id,
-                RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == sha256(signature.encode()).hexdigest()))
+                RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == fingerprint)
+            receipt = db.scalar(select(RemoteToolExecution).where(*scope,
+                RemoteToolExecution.invocation_id == identifier))
+            if receipt is None:
+                from .models import AgentToolExecution
+                executions = db.scalars(select(AgentToolExecution.id).where(
+                    AgentToolExecution.request_id == request, AgentToolExecution.name == name)).all()
+                legacy = db.scalars(select(RemoteToolExecution).where(*scope,
+                    RemoteToolExecution.invocation_id.is_(None))).all()
+                # Parameter equality alone never identifies an invocation.
+                if executions == [identifier] and len(legacy) == 1:
+                    receipt = legacy[0]
             if receipt and receipt.encrypted_result:
                 return json.loads(decrypt_headers(receipt.encrypted_result)["tool_result"])
         return None

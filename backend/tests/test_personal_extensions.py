@@ -20,6 +20,7 @@ from test_shared_providers import setup_site, provider
 from test_request_models import send
 from test_site_skill_packages import zipped
 from test_mcp_client import live_mcp
+from remote_receipt_helpers import answer_identity
 
 TOOL = {"name": "calculate", "description": "Calculate", "inputSchema": {"type": "object",
     "properties": {"a": {"type": "integer"}}, "required": ["a"], "additionalProperties": False}}
@@ -119,7 +120,8 @@ def test_runtime_mcp_checks_revocation_input_and_no_uncertain_replay(accounts, m
     stored.tools, stored.allowed_tools, stored.enabled = [TOOL], ["calculate"], True
     stored.last_checked_at = datetime.now(timezone.utc)
     db.commit()
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]])
+    message, request = answer_identity(admin, db)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
     name = next(iter(runtime.bindings))
     calls = []
     def invoke(*args):
@@ -128,17 +130,17 @@ def test_runtime_mcp_checks_revocation_input_and_no_uncertain_replay(accounts, m
         return {"content": [{"type": "text", "text": "result"}]}
     monkeypatch.setattr(mcp_client, "call", invoke)
     assert runtime.execute(name, {"a": "wrong"}).get("error") and not calls
-    assert runtime.execute(name, {"a": 1})["_extension"]["tool"] == name
+    assert runtime.execute(name, {"a": 1}, call_id="first")["_extension"]["tool"] == name
     assert len(calls) == 1
     stored.authorization_version += 1; db.commit()
     assert runtime.execute(name, {"a": 2}).get("error") and len(calls) == 1
-    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]])
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
     def uncertain(*args):
         calls.append(args)
         raise mcp_client.MCPError("超时；未自动重试，请核对远端执行状态")
     monkeypatch.setattr(mcp_client, "call", uncertain)
-    assert runtime.execute(name, {"a": 3})["uncertain"]
-    assert runtime.execute(name, {"a": 3})["uncertain"]
+    assert runtime.execute(name, {"a": 3}, call_id="unknown")["uncertain"]
+    assert runtime.execute(name, {"a": 3}, call_id="unknown")["uncertain"]
     assert len(calls) == 2
     with pytest.raises(AgentCancelled):
         runtime.execute(name, {"a": 4}, lambda: (_ for _ in ()).throw(AgentCancelled()))
@@ -182,15 +184,15 @@ def test_real_http_mcp_in_runtime_and_streaming_conversation(accounts, monkeypat
     saved = db.scalar(select(RemoteToolExecution))
     assert saved.status == "completed" and "result" not in saved.encrypted_result
     runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]],
-        UUID(final["id"]), uuid4())
+        UUID(final["id"]), saved.request_id)
     alias = next(iter(runtime.bindings))
-    assert runtime.execute(alias, {"a": 3, "b": 4})["structuredContent"] == {"result": 7}
+    assert runtime.execute(alias, {"a": 3, "b": 4}, agent_tool_execution_id=saved.invocation_id)["structuredContent"] == {"result": 7}
     assert connection_args["state"]["calls"] == 1
     saved.encrypted_result, saved.status = None, "uncertain"
     db.commit()
     restarted = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]],
-        UUID(final["id"]), uuid4())
-    assert restarted.execute(alias, {"a": 3, "b": 4})["uncertain"]
+        UUID(final["id"]), saved.request_id)
+    assert restarted.execute(alias, {"a": 3, "b": 4}, agent_tool_execution_id=saved.invocation_id)["uncertain"]
     assert connection_args["state"]["calls"] == 1
 
 
@@ -221,7 +223,7 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
         def complete_with_tools(self, messages, tools, tool_choice):
             self.last_usage = LLMUsage(prompt_tokens=10, completion_tokens=5)
             assert any(item["function"]["name"] == "write_file" for item in tools)
-            assert "点击该次工具活动下方的下载入口" in messages[0]["content"]
+            assert "get_workspace_file_link" in messages[0]["content"]
             previous = [item for item in messages if item["role"] == "tool"]
             if not previous:
                 return ToolResponse(None, [ToolCall("write", "write_file", {
@@ -243,3 +245,26 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     (_, other, _), _ = accounts
     register(other, "output-isolation@example.com")
     assert other.get(f"/workspaces/{session['workspace_id']}/files/{artifact['id']}/download").status_code == 404
+
+
+def test_mcp_new_invocation_observes_changes_and_replays_only_its_own_receipt(accounts, monkeypatch):
+    admin, db, _ = setup_site(accounts, monkeypatch)
+    row = connection(admin)
+    stored = db.get(MCPServer, UUID(row["id"]))
+    stored.tools = [{**TOOL, "annotations": {"readOnlyHint": True}}]
+    stored.allowed_tools, stored.enabled = ["calculate"], True
+    stored.last_checked_at = datetime.now(timezone.utc)
+    db.commit()
+    message, request = answer_identity(admin, db)
+    runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(admin, db), [], [row["id"]], message, request)
+    alias = next(iter(runtime.bindings))
+    calls = []
+    def invoke(*args):
+        calls.append(args)
+        return {"value": len(calls)}
+    monkeypatch.setattr(mcp_client, "call", invoke)
+    for index in range(25):
+        assert runtime.execute(alias, {"a": 1}, call_id=str(index))["value"] == index + 1
+    assert runtime.execute(alias, {"a": 1}, call_id="0")["value"] == 1
+    assert runtime.execute(alias, {"a": 2}, call_id="0")["error_code"] == "tool_receipt"
+    assert len(calls) == 25

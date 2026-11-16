@@ -1258,8 +1258,9 @@ class CloudPreviewGrant(Base):
 
 class RemoteToolExecution(Base):
     __tablename__ = "remote_tool_executions"
-    __table_args__ = (UniqueConstraint("message_id", "tool_name", "arguments_digest"),)
+    __table_args__ = (UniqueConstraint("invocation_id", name="uq_remote_tool_invocation"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    invocation_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
