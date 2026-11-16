@@ -56,7 +56,8 @@ def authorize(db, access, row, message, data):
         if not grant or not grant.enabled or grant.version != extension.get("version"):
             raise HTTPException(403, "题目工作台授权已变化，不能读取此结果")
     # Reading serialized JSON is also reading its embedded document text.
-    for evidence in data.get("evidence", []):
+    knowledge = row.name == "search_knowledge_base"
+    for evidence in data.get("evidence", []) if knowledge else []:
         try:
             chunk = db.get(Chunk, UUID(evidence["chunk_id"]), populate_existing=True)
             document = db.get(Document, UUID(evidence["version_id"]), populate_existing=True)
@@ -68,12 +69,14 @@ def authorize(db, access, row, message, data):
             raise HTTPException(403, "文档已删除、更新或不可检索，请重新查询当前资料")
         if access.library(db, document.knowledge_base_id).status == KnowledgeBaseStatus.ARCHIVED:
             raise HTTPException(403, "知识库当前不可用")
+    return knowledge
 
 
-def read(data, content, identifier, arguments, budget):
+def read(data, content, identifier, arguments, budget, *, knowledge=False):
     offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
     if "candidate_offset" in arguments:
-        if "field" in arguments or "find" in arguments or "offset" in arguments or not isinstance(data.get("evidence"), list):
+        if (not knowledge or "field" in arguments or "find" in arguments or "offset" in arguments
+                or not isinstance(data.get("evidence"), list)):
             return {"error": "候选分页仅适用于知识库结果，不能与文本分页参数混用"}
         return {**evidence_page(data, identifier, budget, arguments["candidate_offset"]),
             "_origin_result_id": str(identifier)}
@@ -99,7 +102,7 @@ def read(data, content, identifier, arguments, budget):
         "notice": "历史工具观察，未执行原操作；不代表当前资料状态或当前证据"}
     if "find" in arguments:
         result["found"] = True
-    if field and field.startswith("evidence.") and end > offset:
+    if knowledge and field and field.startswith("evidence.") and end > offset:
         index = int(field.split(".")[1])
         evidence = {**data["evidence"][index], "text": content[offset:end]}
         result["evidence"] = [evidence]

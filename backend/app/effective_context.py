@@ -276,10 +276,10 @@ class ContextManager:
             data = metadata(content)
             from fastapi import HTTPException
             try:
-                authorize(db, self.access, row, message, data)
+                knowledge = authorize(db, self.access, row, message, data)
             except HTTPException as error:
                 return {"error": str(error.detail), "error_code": "result_access", "status_code": error.status_code}
-            return read(data, content, identifier, arguments, self.output_budget())
+            return read(data, content, identifier, arguments, self.output_budget(), knowledge=knowledge)
 
     def current_plan(self):
         plan = None

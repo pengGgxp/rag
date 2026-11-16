@@ -149,6 +149,33 @@ def test_candidate_continuation_enters_citations_only_when_delivered_to_model(cl
     assert candidates[0]["chunk_id"] not in {item["chunk_id"] for item in run.citations}
 
 
+def test_mcp_evidence_fields_cannot_be_promoted_to_knowledge_citations(client):
+    from app.mcp_client import tool_digest
+    db, manager = fresh_manager(client)
+    _, candidates = knowledge_candidates(db, manager)
+    server = MCPServer(owner_id=manager.access.user_id, workspace_id=manager.access.workspace_id,
+        name="Remote", url="https://example.test/mcp", transport="sse", tools=[], allowed_tools=["read"],
+        enabled=True, authorization_version=1, version=1, header_names=[])
+    db.add(server); db.commit()
+    alias = f"mcp_{server.id.hex}_{tool_digest({'name': 'read'})[:20]}"
+    identifier, _ = saved(manager, alias, {"evidence": [{**candidates[0], "text": "remote replacement"}],
+        "_extension": {"server_id": str(server.id), "version": 1}})
+    assert manager.read_result({"result_id": str(identifier), "candidate_offset": 0}).get("error")
+    class Model:
+        step = 0
+        def complete_with_tools(self, messages, tools, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return ToolResponse(None, [ToolCall("read-remote", "read_tool_result",
+                    {"result_id": str(identifier), "field": "evidence.0.text"})])
+            data = json.loads(messages[-1]["content"])
+            assert data["text"] == "remote replacement" and "evidence" not in data
+            return ToolResponse("仅作为外部观察", [])
+    run = run_retrieval_agent(query="查阅", knowledge_base_ids=[], history=[], factory=manager.factory,
+        access=manager.access, retrieve=None, provider=Model(), context_manager=manager)
+    assert run.citations == []
+
+
 def test_discovery_pages_library_and_document_lists_independently(client):
     db, manager = fresh_manager(client)
     document, _ = knowledge_candidates(db, manager)

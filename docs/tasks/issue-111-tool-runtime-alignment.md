@@ -90,6 +90,10 @@ $env:RAG_MOUNT_LIVE_ACCEPT='0'
 工具/Agent/上下文/MCP/账务主线 219 项复测通过，新增账务完整链路另有 11 项通过。
 没有把复测结果表述为再次执行完整扫描。
 
+提交后复核补强引用来源：只有原 `search_knowledge_base` 回执的续读可进入知识库引用集合。
+MCP 返回同名 `evidence` 字段，即便携带有效文档 ID，也只能作为外部观察读取。
+新增完整 Agent 断言与工具/续接/压缩相关 78 项复测通过。
+
 其余两项是 Windows 的 ZIP 路径归一化与 POSIX shell 测试环境差异，未修改相关产品代码；
 同一 Skill 测试文件在 Linux 容器中 13 项全部通过。旧 checkout/knowledge_mentions
 迁移套件会操作其他历史迁移路径，本轮完整扫描未运行；本次两个迁移已在隔离 PostgreSQL
