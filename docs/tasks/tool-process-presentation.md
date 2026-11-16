@@ -50,7 +50,7 @@
 - 已逐张检查 1440、700、390px 收起/展开截图、图片完成截图和手机错误截图，共 8 张；
   无横向溢出、遮挡或浏览器异常，手机入口至少 44px，并覆盖 reduced motion。
 - 浏览器复现脚本：`frontend/tests/browser/tool-process.acceptance.js`。
-  构建时使用 `NEXT_PUBLIC_API_URL=http://localhost:8127`、`NEXT_DIST_DIR=.next-tool-process`；
+  构建时使用 `NEXT_PUBLIC_API_URL=http://localhost:8127`、`NEXT_DIST_DIR=.next-cloud-experience`；
   从仓库根目录执行 `playwright-cli --session tool-process run-code --filename frontend/tests/browser/tool-process.acceptance.js`。
   脚本通过 Playwright 读取静态构建文件，无须本地 HTTP 服务，全部 API 数据均为夹具。
 - 本地预览服务启动被自动审批拦截，工具未返回具体原因；改用浏览器拦截读取本地生产构建完成验收。

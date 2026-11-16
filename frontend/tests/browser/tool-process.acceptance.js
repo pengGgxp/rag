@@ -4,7 +4,7 @@ async (page) => {
   const assert = (condition, text) => { if (!condition) throw new Error(text); };
   const base = "http://localhost:3127";
   const api = "http://localhost:8127";
-  const build = "frontend/.next-tool-process";
+  const build = "frontend/.next-cloud-experience";
   const stamp = "2026-11-14T10:00:00Z";
   const errors = [], unexpected = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -42,6 +42,9 @@ async (page) => {
     updated_at: stamp, active_request_id: null, knowledge_bases: [], compactions: [],
     skill_ids: [], mcp_server_ids: [], question_workbench: false, messages: [user, assistant] };
   let current = structuredClone(initial);
+  const computer = { id: "fixture-computer", status: "ready", terminal: false, summary: "云电脑运行中",
+    credits: "0.5", credits_per_minute: "0.5", seconds: 60, idle_ends_at: null, max_ends_at: null };
+  const preview = tools.find(item => item.call_id === "preview").preview;
   // Serve the actual prerendered app and chunks in-browser, without a listening service.
   await page.route(`${base}/**`, async route => {
     const path = new URL(route.request().url()).pathname;
@@ -81,8 +84,10 @@ async (page) => {
     if (path.endsWith("/events")) return route.fulfill({ contentType: "text/event-stream", headers,
       body: 'event: heartbeat\ndata: {}\n\n' });
     if (path === "/cloud-computer/catalog") return send({ available: true, credits_per_minute: 0.5, idle_seconds: 600 });
-    if (path === "/conversations/fixture/cloud-computer") return send({ computer: null });
-    if (path === "/conversations/fixture/preview") return send({ preview: null });
+    if (path === "/conversations/fixture/cloud-computer") return send({ computer });
+    if (path === "/conversations/fixture/cloud-computer/commands") return send({ items: [] });
+    if (path === "/conversations/fixture/preview") return send({ preview });
+    if (path === "/previews/preview") return send({ preview, computer, conversation_id: "fixture" });
     if (path === "/image-tasks/image") return send(imageState);
     if (path.endsWith("/image-preview-link")) return send({ status: "ready", url: `${base}/icon.svg`, revision: "fixture", width: 192, height: 192 });
     if (path.endsWith("/download")) return route.fulfill({ headers: { ...headers, "content-disposition": "attachment; filename=fixture.html" },
