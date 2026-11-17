@@ -67,7 +67,7 @@ PREVIEW_CACHE_MAX_BYTES PREVIEW_CACHE_IDLE_SECONDS CONFIG_CONTRACT DEPLOYMENT_RO
 | `S3_ENDPOINT` | 未连接生产内网旧 S3；保留本地默认值。当前活动存储为数据库配置的 OSS，不走旧 S3 |
 | `MCP_CREDENTIAL_KEY` | 独立凭据加密密钥，8 个连接已重加密且可解密 |
 | `QUESTION_WORKBENCH_URL`、`QUESTION_WORKBENCH_API_URL`、`QUESTION_WORKBENCH_SECRET` | 用户要求不启用题库，三项均为空；测试用户题库权限关闭 |
-| `FRONTEND_URL`、`API_PUBLIC_URL` | 使用用户约定的测试域名与公网 HTTP 8080；支付 HTTPS 条件未满足 |
+| `FRONTEND_URL`、`API_PUBLIC_URL` | 使用用户最新确认的 `http://test.zk.moonlitstarway.top`，主站端口 80；支付 HTTPS 条件未满足 |
 | `PREVIEW_DOMAIN` | 使用约定测试预览泛域名；HTTPS 入口仍阻塞 |
 | `AUTH_COOKIE_SECURE` | 适配约定 HTTP 主站，预览网关的 Secure Cookie 要求保留 |
 | `AUTH_SECRET_KEY`、`SITE_CONFIG_ENCRYPTION_KEY`、`DEPLOY_CONTROL_TOKEN` | 测试独立密钥；数据库配置已重加密，生产密钥不复用 |
@@ -91,13 +91,13 @@ Redis 连接字符串相同，但所在 Compose 网络、服务实例和卷独�
 | 配置凭据 | 搜索、SMTP、微信、云电脑、存储、模型连接和支付凭据在测试端可解密 |
 | 预览鉴权 | 网关对未授权访问及无效票据返回 401 |
 | 题库 | 状态接口 200，入口和工具均未启用，符合用户最新要求 |
+| 新域名公网登录 | `http://test.zk.moonlitstarway.top` 真实浏览器密码登录 200，知识库首页正常，刷新后会话和知识库接口 200；页面和静态资源 200，错误 Origin 登录 403，公开 internal 路径 404 |
 
 ## 未完成与阻塞
 
 | 项目 | 证据与剩余工作 |
 | --- | --- |
-| 公网浏览器登录 | Playwright 的 `/auth/login` 返回 403，标题为 `Non-compliance ICP Filing`，正文指向阿里云备案拦截页；部分静态资源同样被拦截。源站对应页面和资源 200。需解除该域名公网访问阻塞后按正常浏览器流程复验 |
-| 成果预览入口 | 泛域名已解析，HTTPS 握手失败；测试服务器现有证书只覆盖旧 `.localhost`。生产证书只覆盖生产预览泛域名，不覆盖测试预览域名。需接通匹配证书及网关后验证票据兑换、Cookie、刷新与结束运行 |
+| 成果预览入口 | 已改用 `*.test-zk-preview.moonlitstarway.top`，解析直达 fsl1。已发起独立 Let's Encrypt DNS-01 申请，等待用户发布 TXT；接通证书及网关后仍需验证票据兑换、Cookie、刷新与结束运行 |
 | 支付 | 生产充值目录可用，测试目录不可用。配置字段一致，但 `payments.validate_provider` 要求 API、回调和前端均为 HTTPS，约定的 HTTP 入口不满足；未放宽校验，未创建订单 |
 | 邮件与微信 | 配置及解密通过，未发信、未触发外部授权回调；测试域名回调还需在公网入口恢复后验证 |
 | 搜索、解析、图片、真实问答与云电脑 | 配置对照已完成，未触发可能收费的真实任务；不能由健康检查推断这些任务成功 |
