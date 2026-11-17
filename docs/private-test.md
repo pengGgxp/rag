@@ -18,10 +18,11 @@ Nginx 拒绝公开访问 `/api/internal/`。
 
 成果预览已恢复 `PREVIEW_ENABLED=true`，
 `PREVIEW_DOMAIN=test-zk-preview.moonlitstarway.top`。这仅表示功能开关与生产一致：
-截至 2026-11-17，真实 HTTPS 入口尚未接通，不能视为预览验收通过。
+2026-11-17 已签发并安装匹配证书，真实域名 HTTPS 和未授权拒绝验证通过；
+真实任务的票据兑换、Cookie、刷新和结束运行仍待验收。
 网关仍执行票据、会话、工作区及所有权校验，不降低鉴权要求。
-`deploy/testing/nginx-preview.conf` 已准备独立 HTTPS 网关配置，匹配证书
-就绪后才能安装；该文件当前未在服务器启用，不代表预览入口已接通。
+`deploy/testing/nginx-preview.conf` 对应的独立 HTTPS 网关配置已在服务器启用，
+证书与私钥路径链接到独立的 Certbot 证书目录。
 
 ## 构建与启动
 
@@ -106,10 +107,23 @@ Playwright 已通过正常页面输入测试账号并登录，登录请求 200�
 错误 Origin 的登录请求仍返回 403。截图保存在忽略的
 `output/playwright/fsl1-moonlitstarway-login.png`。
 
-测试服务器已安装 Certbot，申请
+用户添加 TXT 后，Certbot 已成功签发
 `*.test-zk-preview.moonlitstarway.top` 的独立 Let's Encrypt 证书。
-DNS 验证记录位于服务器受限目录
-`/opt/zhiku-test/certificate-issuance/challenge.json`，已将 TXT 值提供给用户。
-后台认证钩子最多等待 24 小时，两个公共解析器均能读到挑战值后自动继续申请。
-当前等待 TXT，证书尚未签发，HTTPS 网关尚未安装。
-此证书使用人工 DNS 验证；后续续期仍需发布新的 TXT，不能宣称自动续期已完成。
+证书目录为 `/etc/letsencrypt/live/zhiku-test-preview/`，
+有效期至 2027-02-15 09:57:05（Asia/Shanghai）。私钥在测试服务器独立生成，
+权限 600，由 root 持有，没有复制生产私钥。
+
+Nginx 配置 `/etc/nginx/conf.d/zhiku-private-test-preview.conf` 已启用，
+监听 443 并代理到本机 18181。配置中的
+`/opt/zhiku-test/config/test-preview.fullchain.pem` 和 `test-preview.key`
+分别链接到 Certbot 的 `fullchain.pem` 和 `privkey.pem`。
+`nginx -t` 通过后已重载；续期部署钩子会在该证书成功更新后校验并重载 Nginx。
+此证书使用人工 DNS 验证，后续续期仍需执行 DNS 验证并发布新的 TXT；
+现有 Certbot 定时任务和重载钩子不代表无人值守续期已经接通。
+
+源站及外部 curl 均通过真实域名证书校验，未授权访问和无效票据返回 401，
+响应包含 `Cache-Control: no-store`、`Referrer-Policy: no-referrer`。
+Playwright 对真实预览泛域名的 HTTPS 访问同样返回预期 401，没有证书错误；
+截图为忽略的 `output/playwright/fsl1-preview-https-unauthorized.png`。
+主站重载后仍返回 200。尚未创建收费沙箱，不能将 TLS 与拒绝鉴权验证
+描述为真实预览的票据兑换、Cookie、刷新与结束运行全部验收通过。

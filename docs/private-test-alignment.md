@@ -68,7 +68,7 @@ PREVIEW_CACHE_MAX_BYTES PREVIEW_CACHE_IDLE_SECONDS CONFIG_CONTRACT DEPLOYMENT_RO
 | `MCP_CREDENTIAL_KEY` | 独立凭据加密密钥，8 个连接已重加密且可解密 |
 | `QUESTION_WORKBENCH_URL`、`QUESTION_WORKBENCH_API_URL`、`QUESTION_WORKBENCH_SECRET` | 用户要求不启用题库，三项均为空；测试用户题库权限关闭 |
 | `FRONTEND_URL`、`API_PUBLIC_URL` | 使用用户最新确认的 `http://test.zk.moonlitstarway.top`，主站端口 80；支付 HTTPS 条件未满足 |
-| `PREVIEW_DOMAIN` | 使用约定测试预览泛域名；HTTPS 入口仍阻塞 |
+| `PREVIEW_DOMAIN` | 使用 `test-zk-preview.moonlitstarway.top`；已接通独立证书和 HTTPS 网关 |
 | `AUTH_COOKIE_SECURE` | 适配约定 HTTP 主站，预览网关的 Secure Cookie 要求保留 |
 | `AUTH_SECRET_KEY`、`SITE_CONFIG_ENCRYPTION_KEY`、`DEPLOY_CONTROL_TOKEN` | 测试独立密钥；数据库配置已重加密，生产密钥不复用 |
 | `APP_VERSION`、`GIT_COMMIT` | 标识 PR 测试构建，与生产版本不同 |
@@ -92,12 +92,13 @@ Redis 连接字符串相同，但所在 Compose 网络、服务实例和卷独�
 | 预览鉴权 | 网关对未授权访问及无效票据返回 401 |
 | 题库 | 状态接口 200，入口和工具均未启用，符合用户最新要求 |
 | 新域名公网登录 | `http://test.zk.moonlitstarway.top` 真实浏览器密码登录 200，知识库首页正常，刷新后会话和知识库接口 200；页面和静态资源 200，错误 Origin 登录 403，公开 internal 路径 404 |
+| 预览 HTTPS | 独立 Let's Encrypt 泛域名证书已签发并安装，有效期至 2027-02-15；外部 curl 及 Playwright 均通过证书校验，缺少授权和无效票据返回 401，主站保持 HTTP 80 |
 
 ## 未完成与阻塞
 
 | 项目 | 证据与剩余工作 |
 | --- | --- |
-| 成果预览入口 | 已改用 `*.test-zk-preview.moonlitstarway.top`，解析直达 fsl1。已发起独立 Let's Encrypt DNS-01 申请，等待用户发布 TXT；接通证书及网关后仍需验证票据兑换、Cookie、刷新与结束运行 |
+| 真实成果预览 | `*.test-zk-preview.moonlitstarway.top` 的证书与网关已接通；未创建收费沙箱，真实任务的票据兑换、Cookie、刷新与结束运行仍待验证。证书续期仍需人工添加新的 DNS TXT |
 | 支付 | 生产充值目录可用，测试目录不可用。配置字段一致，但 `payments.validate_provider` 要求 API、回调和前端均为 HTTPS，约定的 HTTP 入口不满足；未放宽校验，未创建订单 |
 | 邮件与微信 | 配置及解密通过，未发信、未触发外部授权回调；测试域名回调还需在公网入口恢复后验证 |
 | 搜索、解析、图片、真实问答与云电脑 | 配置对照已完成，未触发可能收费的真实任务；不能由健康检查推断这些任务成功 |
