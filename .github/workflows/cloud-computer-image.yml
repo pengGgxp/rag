@@ -1,6 +1,8 @@
 name: cloud-computer-image
 on:
   push:
+    branches-ignore:
+      - test
     paths:
       - backend/cloud-computer.Dockerfile
       - .github/workflows/cloud-computer-image.yml
