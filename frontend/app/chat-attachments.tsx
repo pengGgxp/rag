@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Download, FileImage, FileText, Files, Loader2, Paperclip, RotateCw, X } from "lucide-react";
-import { API_URL, downloadFile, request, sessionHeaders } from "./api";
+import { downloadFile, request } from "./api";
 import { Tooltip } from "../components/ui/tooltip";
 import { Modal } from "./modal";
 import { ResourceLibrary, type ResourceFile } from "./resource-library";
 import { ResourceNotice } from "./resource-notice";
+import { FilePreview, InlineFileImage } from "./resource-preview";
 import { attachmentAccept } from "./attachment-formats";
 import { useAuth } from "./auth";
 import "./chat-attachments.css";
@@ -138,43 +139,23 @@ export function DraftAttachments({ items, disabled, onRemove, onRetry }: {
 }
 
 function SentAttachment({ item }: { item: ChatAttachment }) {
-  const [url, setUrl] = useState("");
+  const { session } = useAuth();
   const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
   const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (item.kind !== "image" || item.available === false) return;
-    const controller = new AbortController();
-    let source = "";
-    setError("");
-    fetch(`${API_URL}/chat/attachments/${item.id}/content`, { credentials: "include", headers: sessionHeaders(), signal: controller.signal })
-      .then(async response => {
-        if (!response.ok) throw new Error("图片加载失败");
-        const blob = await response.blob();
-        if (!controller.signal.aborted) { source = URL.createObjectURL(blob); setUrl(source); }
-      }).catch(() => { if (!controller.signal.aborted) setError("图片加载失败"); });
-    return () => { controller.abort(); if (source) URL.revokeObjectURL(source); };
-  }, [item.id, item.kind, item.available, attempt]);
+  const file = { type: "attachment" as const, id: item.id, name: item.filename };
+  const scope = `${session.user.id}:${session.workspace_id}`;
   async function download() {
     try { await downloadFile(`/chat/attachments/${item.id}/content`, item.filename); }
     catch (e) { setError(e instanceof Error ? e.message : "下载失败，请重试"); }
   }
-  return <li>
-    <button type="button" className="chat-attachment-open" disabled={item.available === false} onClick={() => {
-      if (error && item.kind === "image") setAttempt(value => value + 1);
-      else if (item.kind === "image" && url) setOpen(true);
-      else if (item.kind !== "image") void download();
-    }} aria-label={error ? `${error}，重试` : `${item.kind === "image" ? "查看" : "下载"} ${item.filename}`}>
-      <span className="chat-attachment-thumb">{item.kind === "image" && url ? <img src={url} alt={item.filename} /> :
-        item.kind === "image" && !error && item.available !== false ? <Loader2 size={18} className="spin" /> : <FileText size={22} />}</span>
+  return <li className={item.kind === "image" ? "chat-sent-image" : ""} data-attachment-preview={item.id}>
+    {item.kind === "image" && item.available !== false && <InlineFileImage file={file} scope={scope} onOpen={() => setOpen(true)} />}
+    <button type="button" className="chat-attachment-open" disabled={item.available === false} onClick={() => setOpen(true)} aria-label={`查看 ${item.filename}`}>
+      <span className="chat-attachment-thumb"><FileText size={22} /></span>
       <span className="chat-attachment-copy"><strong>{item.filename}</strong><small>{item.available === false ? "资源已删除" : error || size(item.size_bytes)}</small></span>
-      {item.kind !== "image" && <Download size={16} />}
     </button>
-    {open && <Modal title={item.filename} onClose={() => setOpen(false)} wide>
-      <img className="chat-image-preview" src={url} alt={item.filename} />
-      <div className="modal-footer"><button className="secondary" onClick={() => void download()}><Download size={16} />下载图片</button></div>
-      {error && <p className="form-error" role="alert">{error}</p>}
-    </Modal>}
+    <Tooltip content={`下载 ${item.filename}`}><button type="button" className="icon-button" disabled={item.available === false} aria-label={`下载 ${item.filename}`} onClick={() => void download()}><Download size={17} /></button></Tooltip>
+    {open && <FilePreview file={file} scope={scope} onClose={() => setOpen(false)} restoreFocusSelector={`[data-attachment-preview="${item.id}"] .chat-attachment-open`} />}
   </li>;
 }
 

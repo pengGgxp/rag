@@ -1,12 +1,9 @@
 "use client";
 
-import { API_URL, sessionHeaders } from "./api";
-
 const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_AGE = 7 * 86400000;
 type Entry = { key: string; user: string; blob: Blob; size: number; at: number };
 const memory = new Map<string, Entry>();
-const pending = new Map<string, Promise<Blob>>();
 let database: Promise<IDBDatabase> | undefined;
 let epoch = 0;
 let writes: Promise<void> = Promise.resolve();
@@ -64,7 +61,6 @@ function persist(entry: Entry, expectedEpoch: number) {
 export async function clearPreviewCache(user?: string) {
   epoch++;
   for (const [key, value] of memory) if (!user || value.user === user) memory.delete(key);
-  pending.clear();
   try {
     await serialize(async () => {
       const all = await entries(user), db = await open();
@@ -80,17 +76,15 @@ export async function clearPreviewCache(user?: string) {
   } catch { /* Private browsing and full disks fall back to memory. */ }
 }
 
-export async function cachedPreview(scope: string, revision: string, path: string, range?: [number, number]): Promise<Blob> {
+export async function cachedPreview(scope: string, revision: string, identity: string, loadContent: () => Promise<Blob>, range?: [number, number]): Promise<Blob> {
   const user = scope.split(":")[0];
-  const key = `${scope}:${revision}:${path}:${range?.join("-") ?? "all"}`;
+  const key = `${scope}:${revision}:${identity}:${range?.join("-") ?? "all"}`;
   const operationEpoch = epoch;
   const hit = memory.get(key);
   if (hit && Date.now() - hit.at < MAX_AGE) {
     hit.at = Date.now(); memory.delete(key); memory.set(key, hit);
     void persist(hit, operationEpoch).catch(() => {}); return hit.blob;
   }
-  const waiting = pending.get(key);
-  if (waiting) return waiting;
   const load = async () => {
     try {
       const db = await open();
@@ -101,17 +95,8 @@ export async function cachedPreview(scope: string, revision: string, path: strin
       if (entry && Date.now() - entry.at < MAX_AGE && epoch === operationEpoch) {
         entry.at = Date.now(); void persist(entry, operationEpoch).catch(() => {}); return entry.blob;
       }
-    } catch { /* Use the same authenticated endpoint when persistent storage is unavailable. */ }
-    const headers = sessionHeaders();
-    if (range) headers.set("Range", `bytes=${range[0]}-${range[1]-1}`);
-    const response = await fetch(`${API_URL}${path}`, { credentials: "include", headers, cache: "no-store" });
-    if (!response.ok) {
-      if (response.status === 401) window.dispatchEvent(new Event("rag-session-expired"));
-      const error = await response.json().catch(() => null);
-      throw new Error(typeof error?.detail === "string" ? error.detail : "预览加载失败，请重试");
-    }
-    if (range && response.status !== 206) throw new Error("文件读取范围不匹配，请重新打开");
-    const blob = await response.blob();
+    } catch { /* Persistent storage is optional; authorization happens before this function. */ }
+    const blob = await loadContent();
     if (range && blob.size !== range[1]-range[0]) throw new Error("文件未完整接收，请重试");
     if (blob.size <= MAX_BYTES && operationEpoch === epoch) {
       const entry = { key, user, blob, size: blob.size, at: Date.now() };
@@ -125,6 +110,5 @@ export async function cachedPreview(scope: string, revision: string, path: strin
     }
     return blob;
   };
-  const promise = load().finally(() => { if (pending.get(key) === promise) pending.delete(key); });
-  pending.set(key, promise); return promise;
+  return load();
 }

@@ -359,8 +359,13 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   >("login");
   const [resetToken, setResetToken] = useState("");
   const [setupToken, setSetupToken] = useState("");
+  const previewScope = useRef<Session | null>(null);
   const accept = useCallback((value: Session | null) => {
+    const previous = previewScope.current;
     if (!value) void clearPreviewCache();
+    else if (previous && (previous.user.id !== value.user.id || previous.workspace_id !== value.workspace_id))
+      void clearPreviewCache(previous.user.id);
+    previewScope.current = value;
     setSession(value);
     setCsrfToken(value?.csrf_token ?? "");
   }, []);

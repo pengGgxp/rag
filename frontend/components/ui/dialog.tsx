@@ -16,6 +16,8 @@ export function Dialog({
   settingsWindow = false,
   restoreFocusSelector,
   anchor,
+  headerActions,
+  initialFocusSelector,
 }: {
   title: string;
   children: ReactNode;
@@ -27,6 +29,8 @@ export function Dialog({
   settingsWindow?: boolean;
   restoreFocusSelector?: string;
   anchor?: HTMLElement | null;
+  headerActions?: ReactNode;
+  initialFocusSelector?: string;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
@@ -78,6 +82,11 @@ export function Dialog({
           className={anchor ? "selection-surface" : `modal ${wide ? "modal-wide" : ""} ${fullScreen ? "modal-fullscreen" : ""} ${sidePanel ? "modal-side-panel" : ""} ${settingsWindow ? "modal-settings" : ""}`}
           style={anchor ? position : undefined}
           onOpenAutoFocus={event => {
+            if (initialFocusSelector) {
+              const target = contentRef.current?.querySelector<HTMLElement>(initialFocusSelector);
+              if (target) { event.preventDefault(); target.focus({ preventScroll: true }); }
+              return;
+            }
             if (!anchor) return;
             event.preventDefault();
             const content = contentRef.current;
@@ -136,6 +145,7 @@ export function Dialog({
           >
             <div className={anchor ? "sr-only" : settingsWindow ? "settings-dialog-heading" : "modal-heading"}>
               <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
+              {headerActions}
               {!anchor && closeButton}
             </div>
             <DialogPrimitive.Description className="sr-only">

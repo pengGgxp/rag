@@ -48,6 +48,7 @@ export function SkillImport({ id }: { id?: string }) {
     {!!items.length && <><p role="status">已导入 {items.length} 个资源文件</p>
       <ul>{items.map(item => <li key={item.id}><button type="button" className="text-button" data-resource-id={item.id} onClick={() => setPreview(item)}>{item.path}</button></li>)}</ul></>}
     <Link href={`/resources${directory ? `?path=${encodeURIComponent(directory)}` : ""}`}>在工作区查看</Link>
-    {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)} />}
+    {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)}
+      restoreFocusSelector={`[data-resource-id="${preview.id}"]`} />}
   </section>;
 }

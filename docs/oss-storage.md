@@ -34,11 +34,15 @@ use the PutObject authorization. Check the current official action mapping when
 setting the policy. No bucket creation, public ACL, lifecycle or CORS mutation is
 performed by the app. Anonymous reads must remain denied.
 
-Configure exact browser origins in the OSS console, production
-`https://zk.str1ct.top`, allowed method `PUT`, allowed headers `Content-Type` and
-`Content-Length`, exposed header `ETag`, max-age 600 seconds. Add explicit local
-origins only if needed; do not grant anonymous reads or use wildcard origins.
-Connection tests run server-side and do not prove browser CORS readiness.
+For browser file previews, configure the exact production and local web origins
+in the OSS console. Preview CORS allows `GET` and `HEAD`, request headers
+`Range` and `If-Match`, and exposes `ETag`, `Content-Range`, `Accept-Ranges` and
+`Content-Length`. Preserve the existing upload rule for `PUT`, `Content-Type`
+and `Content-Length`; combine rules without widening origins or granting
+anonymous reads. Preview URLs are short-lived signed capabilities for private
+objects. Browser requests omit application cookies, authorization and referrer.
+Connection tests run server-side and do not prove browser CORS readiness; verify
+the actual web origin in a browser before enabling a production release.
 
 SDK V2 1.4.1 does not propagate additional signed headers into its presign context.
 The adapter uses the public OSS V4 signer to bind Content-Length on part URLs;

@@ -1142,6 +1142,8 @@ from .resources import router as resources_router
 app.include_router(resources_router)
 from .resource_previews import router as resource_previews_router
 app.include_router(resource_previews_router)
+from .file_preview_access import router as file_preview_access_router
+app.include_router(file_preview_access_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(payment_settings_router)

@@ -1,235 +1,247 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, File, FileText, ImageIcon, Loader2, Maximize, Minus, Plus, RotateCcw } from "lucide-react";
-import { request, downloadFile } from "./api";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, Download, File, FileText, ImageIcon, Info, Loader2, Maximize, Minus, Plus, RotateCcw } from "lucide-react";
+import { downloadFile } from "./api";
 import { Modal } from "./modal";
 import { Tooltip } from "../components/ui/tooltip";
-import { cachedPreview } from "./resource-preview-cache";
+import { FileReaderSession, fileDownload, type FileReference } from "./file-preview-access";
 import type { ResourceFile } from "./resource-library";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
+import type { OfficePages } from "./office-preview";
 import "./resource-preview.css";
 
-type Artifact = { id: string; kind: string; status: string; error: string | null; url: string | null; size_bytes: number; width: number | null; height: number | null };
-export type PreviewInfo = { revision: string; kind: string; size_bytes: number; original_url: string; previews: Artifact[] };
-const jobs = new Map<string, Promise<PreviewInfo>>();
-
-export function inspectPreview(id: string): Promise<PreviewInfo> {
-  if (jobs.has(id)) return jobs.get(id)!;
-  const job = request<PreviewInfo>(`/resources/${id}/preview`).finally(() => jobs.delete(id));
-  jobs.set(id, job); return job;
-}
-
-let thumbnailActive = 0;
-const thumbnailWaiters: (() => void)[] = [];
-async function limited<T>(operation: () => Promise<T>): Promise<T> {
-  if (thumbnailActive >= 3) await new Promise<void>(resolve => thumbnailWaiters.push(resolve));
-  thumbnailActive++;
-  try { return await operation(); }
-  finally { thumbnailActive--; thumbnailWaiters.shift()?.(); }
-}
-
-export function ResourceThumbnail({ item, scope, compact = false }: { item: ResourceFile; scope: string; compact?: boolean }) {
-  const element = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  const [url, setUrl] = useState("");
-  const [ratio, setRatio] = useState(item.content_type.startsWith("image/") ? 1.2 : 0.77);
-  const [state, setState] = useState("");
-  const [generation, setGeneration] = useState(0);
-  const extension = item.path.split(".").pop()?.toUpperCase() || "FILE";
-  const image = item.content_type.startsWith("image/");
-  const document = /pdf|word|officedocument/.test(item.content_type) || /\.(docx?|pdf)$/i.test(item.path);
+function useFileSession(file: FileReference, scope: string, attempt: number, enabled = true) {
+  const identity = `${scope}:${file.type}:${file.id}:${attempt}`;
+  const [state, setState] = useState<{ identity: string; reader: FileReaderSession | null; error: string }>({ identity, reader: null, error: "" });
   useEffect(() => {
-    const refresh = (event: Event) => {
-      if ((event as CustomEvent<string>).detail === item.id) setGeneration(value => value + 1);
+    setState({ identity, reader: null, error: "" });
+    if (!enabled) return;
+    const controller = new AbortController();
+    const session = new FileReaderSession(file, scope, controller.signal);
+    let checking = false;
+    const validate = async () => {
+      if (checking || controller.signal.aborted) return;
+      checking = true;
+      try { await session.validate(); if (!controller.signal.aborted) setState({ identity, reader: session, error: "" }); }
+      catch (cause) {
+        if (!controller.signal.aborted) { setState({ identity, reader: null, error: cause instanceof Error ? cause.message : "文件未能加载，请重试" }); controller.abort(); }
+      } finally { checking = false; }
     };
-    window.addEventListener("resource-preview-ready", refresh);
-    return () => window.removeEventListener("resource-preview-ready", refresh);
-  }, [item.id]);
+    const foreground = () => { if (!document.hidden) void validate(); };
+    void validate();
+    const interval = setInterval(foreground, 30_000);
+    document.addEventListener("visibilitychange", foreground);
+    return () => { controller.abort(); clearInterval(interval); document.removeEventListener("visibilitychange", foreground); };
+  }, [identity, enabled]);
+  return state.identity === identity && enabled ? state : { reader: null, error: "" };
+}
+
+function Tool({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: ReactNode }) {
+  return <Tooltip content={label}><button className="icon-button" type="button" aria-label={label} disabled={disabled} onClick={onClick}>{children}</button></Tooltip>;
+}
+
+type InlineImageProps = { file: FileReference; scope: string; onOpen: (element: HTMLElement) => void };
+export function InlineFileImage(props: InlineImageProps) {
+  return <InlineImage key={`${props.scope}:${props.file.type}:${props.file.id}`} {...props} />;
+}
+
+function InlineImage({ file, scope, onOpen }: InlineImageProps) {
+  const element = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false), [attempt, setAttempt] = useState(0), [url, setUrl] = useState(""), [error, setError] = useState("");
+  const { reader, error: accessError } = useFileSession(file, scope, attempt, visible);
   useEffect(() => {
-    const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) setVisible(true); }, { rootMargin: "160px" });
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "160px" });
     if (element.current) observer.observe(element.current);
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    if (!visible || item.availability === "missing" || (!image && !document)) return;
-    let disposed = false, objectUrl = "", timer: ReturnType<typeof setTimeout> | undefined;
-    setUrl("");
-    async function load() {
-      await limited(async () => {
-        if (disposed) return;
+    setUrl(""); setError("");
+    if (!reader) return;
+    let disposed = false, source = "";
+    void reader.read().then(blob => { if (!disposed) { source = URL.createObjectURL(blob); setUrl(source); } })
+      .catch(() => { if (!disposed && !reader.signal.aborted) setError("图片未能加载，请重试"); });
+    return () => { disposed = true; if (source) URL.revokeObjectURL(source); };
+  }, [reader]);
+  return <div ref={element} className="inline-file-image">
+    {accessError || error ? <div className="inline-image-failed"><ImageIcon size={24} /><span>{accessError || error}</span><button type="button" className="secondary" onClick={() => setAttempt(value => value + 1)}>重试</button></div>
+      : url ? <button type="button" className="inline-image-open" aria-label={`放大图片 ${file.name}`} onClick={event => onOpen(event.currentTarget)}><img src={url} alt={file.name} onError={() => setError("图片未能加载，请重试")} /></button>
+        : <div className="inline-image-loading" role="status"><Loader2 className="spin" size={20} /><span>正在加载图片</span></div>}
+  </div>;
+}
+
+let active = 0;
+const waiters: (() => void)[] = [];
+async function limited<T>(action: () => Promise<T>): Promise<T> {
+  if (active >= 3) await new Promise<void>(resolve => waiters.push(resolve));
+  active++;
+  try { return await action(); } finally { active--; waiters.shift()?.(); }
+}
+
+type ThumbnailProps = { item: ResourceFile; scope: string; compact?: boolean };
+export function ResourceThumbnail(props: ThumbnailProps) {
+  return <Thumbnail key={`${props.scope}:${props.item.id}`} {...props} />;
+}
+
+function Thumbnail({ item, scope, compact = false }: ThumbnailProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false), [url, setUrl] = useState(""), [ratio, setRatio] = useState(1.2);
+  const image = item.content_type.startsWith("image/") && !/svg/i.test(item.content_type);
+  const pdf = /\.pdf$/i.test(item.path), documentFile = /\.(pdf|docx?|pptx?)$/i.test(item.path);
+  const { reader } = useFileSession({ type: "resource", id: item.id, name: item.path }, scope, 0, visible && (image || pdf) && item.availability !== "missing");
+  useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: "160px" });
+    if (ref.current) observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    setUrl(""); if (!reader) return;
+    let disposed = false, source = "";
+    void limited(async () => {
+      if (disposed) return;
+      let blob: Blob;
+      if (image) blob = await reader.read();
+      else {
+        const { loadPdf } = await import("./resource-pdf");
+        const loading = await loadPdf(reader);
         try {
-          const info = await inspectPreview(item.id);
-          let cover = info.previews.find(value => value.kind === "thumbnail");
-          if ((!cover || cover.status === "expired") && info.kind !== "word") cover = await request<Artifact>(`/resources/${item.id}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "thumbnail", retry: true }) });
-          if (disposed) return;
-          setState(cover?.status || "");
-          if (cover?.status === "ready" && cover.url) {
-            const blob = await cachedPreview(scope, info.revision, cover.url);
-            if (disposed) return;
-            objectUrl = URL.createObjectURL(blob); setUrl(objectUrl);
-            if (cover.width && cover.height) setRatio(cover.width / cover.height);
-          } else if (cover && ["queued", "running"].includes(cover.status)) timer = setTimeout(() => void load(), 2000);
-        } catch { if (!disposed) setState("failed"); }
-      });
-    }
-    void load();
-    return () => { disposed = true; clearTimeout(timer); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [visible, item.id, item.updated_at, scope, image, document, item.availability, generation]);
-  return <div ref={element} className={`resource-cover ${image ? "resource-cover-image" : document ? "resource-cover-document" : "resource-cover-other"} ${compact ? "resource-cover-compact" : ""}`}
-    style={!compact ? { aspectRatio: Math.max(0.55, Math.min(1.8, ratio)) } : undefined}>
-    {url ? <img src={url} alt="" loading="lazy" /> : <div className="resource-cover-placeholder">
-      {image ? <ImageIcon size={compact ? 22 : 40} strokeWidth={1.2} /> : document ? <FileText size={compact ? 22 : 44} strokeWidth={1.15} /> : <File size={compact ? 22 : 40} strokeWidth={1.2} />}
-      {!compact && <><span>{extension}</span>{["queued", "running"].includes(state) && <Loader2 size={14} className="spin" />}</>}
+          const doc = await loading.promise, page = await doc.getPage(1);
+          const viewport = page.getViewport({ scale: 240 / page.getViewport({ scale: 1 }).width });
+          const canvas = window.document.createElement("canvas"); canvas.width = viewport.width; canvas.height = viewport.height;
+          await page.render({ canvas, viewport }).promise;
+          blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(), "image/webp"));
+        } finally { await loading.destroy(); }
+      }
+      if (!disposed) { source = URL.createObjectURL(blob); setUrl(source); }
+    }).catch(() => {});
+    return () => { disposed = true; if (source) URL.revokeObjectURL(source); };
+  }, [reader, image]);
+  return <div ref={ref} className={`resource-cover ${image ? "resource-cover-image" : documentFile ? "resource-cover-document" : "resource-cover-other"} ${compact ? "resource-cover-compact" : ""}`}
+    style={!compact ? { aspectRatio: image ? Math.max(.55, Math.min(1.8, ratio)) : .77 } : undefined}>
+    {url ? <img src={url} alt="" onLoad={event => setRatio(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight)} /> : <div className="resource-cover-placeholder">
+      {image ? <ImageIcon size={compact ? 22 : 40} strokeWidth={1.2} /> : documentFile ? <FileText size={compact ? 22 : 40} strokeWidth={1.2} /> : <File size={compact ? 22 : 40} strokeWidth={1.2} />}
+      {!compact && <span>{item.path.split(".").pop()?.toUpperCase()}</span>}
     </div>}
   </div>;
 }
 
-function Tool({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <Tooltip content={label}><button className="icon-button" type="button" aria-label={label} disabled={disabled} onClick={onClick}>{children}</button></Tooltip>;
-}
+type PageProps = { reader: FileReaderSession; page: number; zoom: number; onCount: (count: number) => void; onError: (error: string) => void };
 
-function PdfReader({ path, size, revision, scope }: { path: string; size: number; revision: string; scope: string }) {
-  const container = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
-  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
-  const [page, setPage] = useState(1), [zoom, setZoom] = useState(1), [width, setWidth] = useState(700);
-  const [error, setError] = useState(""), [rendering, setRendering] = useState(true);
+function PdfPage({ reader, page, zoom, onCount, onError }: PageProps) {
+  const host = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
+  const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null), [width, setWidth] = useState(700), [busy, setBusy] = useState(true);
   useEffect(() => {
-    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
-    if (container.current) observer.observe(container.current);
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(100, entry.contentRect.width - 48)));
+    if (host.current) observer.observe(host.current);
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
     let disposed = false, loading: PDFDocumentLoadingTask | undefined;
-    setDocument(null); setPage(1); setError("");
-    void (async () => {
-      try {
-        const pdf = await import("pdfjs-dist");
-        pdf.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-        const first = new Uint8Array(await (await cachedPreview(scope, revision, path, [0, Math.min(size, 65536)])).arrayBuffer());
-        if (disposed) return;
-        class Transport extends pdf.PDFDataRangeTransport {
-          requestDataRange(begin: number, end: number) {
-            void cachedPreview(scope, revision, path, [begin, Math.min(end, size)]).then(blob => blob.arrayBuffer()).then(data => {
-              if (!disposed) this.onDataRange(begin, new Uint8Array(data));
-            }).catch(cause => { if (!disposed) { setError(cause.message); void loading?.destroy(); } });
-          }
-        }
-        loading = pdf.getDocument({ range: new Transport(size, first, true), length: size,
-          rangeChunkSize: 65536, disableAutoFetch: true, disableStream: true, isEvalSupported: false });
-        const value = await loading.promise;
-        if (disposed) { await value.destroy(); return; }
-        setDocument(value);
-      } catch (cause) { if (!disposed) setError(cause instanceof Error ? cause.message : "文档无法打开，请下载查看"); }
-    })();
+    void import("./resource-pdf").then(module => module.loadPdf(reader, () => {
+      if (!disposed) onError("页面未能加载，请重试或下载查看");
+    })).then(task => {
+      loading = task; if (disposed) { void task.destroy(); return; }
+      return task.promise.then(value => { if (!disposed) { setPdf(value); onCount(value.numPages); } });
+    }).catch(() => { if (!disposed && !reader.signal.aborted) onError("PDF 未能打开，请重试或下载查看"); });
     return () => { disposed = true; void loading?.destroy(); };
-  }, [path, revision, scope, size]);
+  }, [reader, onCount, onError]);
   useEffect(() => {
-    if (!document || !canvas.current) return;
+    if (!pdf || !canvas.current) return;
     let disposed = false, task: ReturnType<Awaited<ReturnType<PDFDocumentProxy["getPage"]>>["render"]> | undefined;
-    setRendering(true);
-    void document.getPage(page).then(value => {
+    setBusy(true);
+    void pdf.getPage(page).then(value => {
       if (disposed || !canvas.current) return;
-      const viewport = value.getViewport({ scale: 1 });
-      const scale = Math.max(0.2, width / viewport.width) * zoom;
-      const display = value.getViewport({ scale });
-      const ratio = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.current.width = Math.ceil(display.width * ratio); canvas.current.height = Math.ceil(display.height * ratio);
-      canvas.current.style.width = `${display.width}px`; canvas.current.style.height = `${display.height}px`;
+      const scale = width / value.getViewport({ scale: 1 }).width * zoom;
+      const viewport = value.getViewport({ scale }), ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.current.width = Math.ceil(viewport.width * ratio); canvas.current.height = Math.ceil(viewport.height * ratio);
+      canvas.current.style.width = `${viewport.width}px`; canvas.current.style.height = `${viewport.height}px`;
       task = value.render({ canvas: canvas.current, viewport: value.getViewport({ scale: scale * ratio }) });
       return task.promise;
-    }).then(() => { if (!disposed) setRendering(false); }).catch(cause => { if (!disposed && cause.name !== "RenderingCancelledException") setError("页面加载失败，请重新打开或下载"); });
+    }).then(() => { if (!disposed) setBusy(false); }).catch(cause => {
+      if (!disposed && cause.name !== "RenderingCancelledException") onError("页面未能加载，请重试");
+    });
     return () => { disposed = true; task?.cancel(); };
-  }, [document, page, zoom, width]);
-  return <div className="resource-pdf-reader">
-    <div className="resource-reader-tools">
-      <Tool label="上一页" disabled={!document || page <= 1} onClick={() => setPage(value => value - 1)}><ChevronLeft size={17} /></Tool>
-      <span className="resource-page-count">{page} / {document?.numPages ?? "—"}</span>
-      <Tool label="下一页" disabled={!document || page >= document.numPages} onClick={() => setPage(value => value + 1)}><ChevronRight size={17} /></Tool>
-      <i /><Tool label="缩小" onClick={() => setZoom(value => Math.max(0.5, value - 0.25))}><Minus size={17} /></Tool>
-      <span>{Math.round(zoom * 100)}%</span><Tool label="放大" onClick={() => setZoom(value => Math.min(3, value + 0.25))}><Plus size={17} /></Tool>
-      <Tool label="适应宽度" onClick={() => setZoom(1)}><Maximize size={17} /></Tool>
-    </div>
-    <div className="resource-pdf-pages" ref={container}>
-      {error ? <p role="alert" className="resource-reader-error">{error}</p> : <>{(!document || rendering) && <div className="resource-page-loading" role="status"><Loader2 size={21} className="spin" />正在加载页面</div>}<canvas ref={canvas} aria-label={`第 ${page} 页`} /></>}
-    </div>
-  </div>;
+  }, [pdf, page, width, zoom, onError]);
+  return <div ref={host} className="file-page-stage">{busy && <div className="file-page-loading" role="status"><Loader2 size={18} className="spin" />正在加载页面</div>}<canvas ref={canvas} aria-label={`第 ${page} 页`} /></div>;
 }
 
-export function ResourcePreview({ item, scope, onClose, restoreFocusSelector }: {
-  item: ResourceFile; scope: string; onClose: () => void; restoreFocusSelector?: string;
-}) {
-  const [info, setInfo] = useState<PreviewInfo | null>(null), [error, setError] = useState(""), [url, setUrl] = useState(""), [text, setText] = useState<string | null>(null);
-  const [retry, setRetry] = useState(0), [zoom, setZoom] = useState(1);
+function OfficePage({ reader, page, zoom, onCount, onError }: PageProps) {
+  const [doc, setDoc] = useState<OfficePages | null>(null), [width, setWidth] = useState(700);
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(100, entry.contentRect.width - 32)));
+    if (host.current) observer.observe(host.current);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    let disposed = false, result: OfficePages | undefined;
+    void reader.read().then(async blob => (await import("./office-preview")).renderOffice(blob, reader.access.kind as "docx" | "pptx", reader.signal))
+      .then(value => { result = value; if (disposed) value.dispose(); else { setDoc(value); onCount(value.pages.length); } })
+      .catch(cause => {
+        if (disposed || reader.signal.aborted) return;
+        const known = ["文件较大，请下载后查看", "文档内容较大，请下载后查看", "文档已加密或格式不受支持，请下载后查看",
+          "文档已加密，请解密后重试或下载查看", "文档无法安全读取，请下载后查看", "文档内容损坏，请重新导出"];
+        onError(cause instanceof Error && known.includes(cause.message) ? cause.message : "文档未能打开，可能已加密或损坏，请下载查看");
+      });
+    return () => { disposed = true; result?.dispose(); };
+  }, [reader, onCount, onError]);
+  const scale = doc ? Math.min(1, width / doc.width) * zoom : 1;
+  return <div ref={host} className="file-page-stage">{doc ? <div className="office-page-size" style={{ width: doc.width * scale, height: doc.height * scale }}>
+    <iframe title={`第 ${page} 页`} sandbox="" referrerPolicy="no-referrer" srcDoc={doc.pages[page - 1]} style={{ width: doc.width, height: doc.height, transform: `scale(${scale})`, transformOrigin: "top left" }} />
+  </div> : <div className="resource-reader-empty" role="status"><Loader2 size={22} className="spin" />正在打开文档</div>}</div>;
+}
+
+type ViewerProps = { file: FileReference; scope: string; onClose: () => void; restoreFocusSelector?: string; alternate?: ReactNode };
+export function FilePreview(props: ViewerProps) {
+  return <FileViewer key={`${props.scope}:${props.file.type}:${props.file.id}`} {...props} />;
+}
+
+function FileViewer({ file, scope, onClose, restoreFocusSelector, alternate }: ViewerProps) {
+  const [attempt, setAttempt] = useState(0), [error, setError] = useState(""), [url, setUrl] = useState(""), [text, setText] = useState<string | null>(null), [truncated, setTruncated] = useState(false);
+  const [page, setPage] = useState(1), [count, setCount] = useState(0), [zoom, setZoom] = useState(1), [details, setDetails] = useState(false), [downloadError, setDownloadError] = useState("");
+  const { reader, error: accessError } = useFileSession(file, scope, attempt);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number; baseX: number; baseY: number } | null>(null);
-  const [artifact, setArtifact] = useState<Artifact | null>(null);
   useEffect(() => {
-    let disposed = false, objectUrl = "", timer: ReturnType<typeof setTimeout> | undefined;
-    let loading = false, announced = false;
-    setError(""); setUrl(""); setText(null); setInfo(null); setArtifact(null);
-    async function load(first = false) {
-      if (loading || disposed) return;
-      loading = true;
-      try {
-        const next = await inspectPreview(item.id);
-        if (disposed) return;
-        setInfo(next);
-        if (next.kind === "word") {
-          let document = next.previews.find(value => value.kind === "document");
-          if (!document || document.status === "expired" || (first && retry && document.status === "failed")) {
-            document = await request<Artifact>(`/resources/${item.id}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "document", retry: true }) });
-          }
-          if (disposed) return;
-          if (document.status === "failed") throw new Error(document.error || "预览准备失败，请重试或下载");
-          setArtifact(document);
-          if (document.status === "ready" && !announced) {
-            announced = true;
-            window.dispatchEvent(new CustomEvent("resource-preview-ready", { detail: item.id }));
-          }
-          if (document.status !== "ready") timer = setTimeout(() => void load(), 2000);
-        } else if (next.kind === "image" || next.kind === "text") {
-          if (next.kind === "image" && !objectUrl) {
-            const cover = next.previews.find(value => value.kind === "thumbnail" && value.status === "ready");
-            if (cover?.url) {
-              const thumbnail = await cachedPreview(scope, next.revision, cover.url);
-              if (disposed) return;
-              objectUrl = URL.createObjectURL(thumbnail); setUrl(objectUrl);
-            }
-          }
-          const blob = await cachedPreview(scope, next.revision, next.original_url);
-          if (disposed) return;
-          if (next.kind === "text") {
-            const value = await blob.text();
-            if (!disposed) setText(value.slice(0, 1000000));
-          } else {
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
-            objectUrl = URL.createObjectURL(blob); setUrl(objectUrl);
-          }
-        }
-      } catch (cause) { if (!disposed) setError(cause instanceof Error ? cause.message : "预览加载失败"); }
-      finally { loading = false; }
-    }
-    const foreground = () => { if (!document.hidden) { clearTimeout(timer); void load(); } };
-    document.addEventListener("visibilitychange", foreground);
-    const validation = setInterval(() => { if (!document.hidden) void load(); }, 30000);
-    void load(true);
-    return () => { disposed = true; clearTimeout(timer); clearInterval(validation); document.removeEventListener("visibilitychange", foreground); if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [item.id, item.updated_at, scope, retry]);
-  const pdfPath = info?.kind === "pdf" ? info.original_url : artifact?.status === "ready" ? artifact.url : null;
-  return <Modal title={item.path.split("/").pop()!} wide restoreFocusSelector={restoreFocusSelector ?? `[data-resource-id="${item.id}"]`} onClose={onClose}>
-    <div className="resource-reader" aria-label="文件预览">
-      <div className="resource-reader-topbar"><span>{item.path.split(".").pop()?.toUpperCase()}<span className="resource-reader-filename"> · {item.path}</span></span>
-        <button type="button" className="secondary" onClick={() => void downloadFile(`/resources/${item.id}/download`, item.path.split("/").pop()!).catch(cause => setError(cause.message))}><Download size={15} />下载原文件</button></div>
-      {error ? <div className="resource-reader-empty" role="alert"><FileText size={36} strokeWidth={1.2} /><p>{error}</p><button type="button" className="secondary" onClick={() => setRetry(value => value + 1)}><RotateCcw size={15} />重试</button></div>
-        : pdfPath && info ? <PdfReader path={pdfPath} size={info.kind === "pdf" ? info.size_bytes : artifact!.size_bytes} revision={info.revision} scope={scope} />
-        : url ? <><div className="resource-reader-tools"><Tool label="缩小" onClick={() => setZoom(value => Math.max(0.25, value - 0.25))}><Minus size={17} /></Tool><span>{Math.round(zoom * 100)}%</span><Tool label="放大" onClick={() => setZoom(value => Math.min(4, value + 0.25))}><Plus size={17} /></Tool><Tool label="适应窗口" onClick={() => { setZoom(1); setDrag({ x: 0, y: 0 }); }}><Maximize size={17} /></Tool></div>
-          <div className="resource-image-stage" onPointerDown={event => { if (zoom <= 1) return; event.currentTarget.setPointerCapture(event.pointerId); pointer.current = { x: event.clientX, y: event.clientY, baseX: drag.x, baseY: drag.y }; }}
-            onPointerMove={event => { if (pointer.current) setDrag({ x: pointer.current.baseX + event.clientX - pointer.current.x, y: pointer.current.baseY + event.clientY - pointer.current.y }); }} onPointerUp={() => { pointer.current = null; }} onPointerCancel={() => { pointer.current = null; }}>
-            <img src={url} alt={item.path} draggable={false} style={{ transform: `translate(${drag.x}px,${drag.y}px) scale(${zoom})` }} /></div></>
-        : text !== null ? <pre className="resource-plain-text">{text}</pre>
-        : info?.kind === "unsupported" ? <div className="resource-reader-empty"><File size={38} strokeWidth={1.2} /><p>该格式暂不支持预览</p></div>
-        : <div className="resource-reader-empty" role="status"><Loader2 size={26} className="spin" /><p>{info?.kind === "word" ? "正在准备文档预览" : "正在打开文件"}</p></div>}
+    setUrl(""); setText(null); setError(""); setPage(1); setCount(0); setZoom(1); setDrag({ x: 0, y: 0 });
+    if (!reader || !["image", "text"].includes(reader.access.kind)) return;
+    let disposed = false, source = "";
+    const textLimit = 4 * 1024 * 1024;
+    const partial = reader.access.kind === "text" && reader.access.size_bytes > textLimit;
+    void reader.read(partial ? [0, textLimit] : undefined).then(async blob => {
+      if (disposed) return;
+      if (reader.access.kind === "text") { const value = await blob.text(); if (!disposed) { setText(value.slice(0, 1_000_000)); setTruncated(partial || value.length > 1_000_000); } }
+      else { source = URL.createObjectURL(blob); setUrl(source); }
+    }).catch(() => { if (!disposed && !reader.signal.aborted) setError("文件未能加载，请重试或下载查看"); });
+    return () => { disposed = true; if (source) URL.revokeObjectURL(source); };
+  }, [reader]);
+  const kind = reader?.access.kind, paged = kind === "pdf" || kind === "docx" || kind === "pptx";
+  const failure = accessError || error;
+  const download = <Tooltip content="下载原文件"><button type="button" className="file-download icon-button" aria-label="下载原文件" onClick={() => void downloadFile(fileDownload(file), file.name).catch(() => setDownloadError("下载失败，请重试"))}><Download size={18} /><span>下载原文件</span></button></Tooltip>;
+  const tools = <div className="file-viewer-tools">
+    {paged && <><Tool label="上一页" disabled={page <= 1 || !count} onClick={() => setPage(value => value - 1)}><ChevronLeft size={18} /></Tool><span className="file-page-count">{page} / {count || "—"}</span><Tool label="下一页" disabled={page >= count} onClick={() => setPage(value => value + 1)}><ChevronRight size={18} /></Tool></>}
+    {(paged || kind === "image") && <><Tool label="缩小" disabled={zoom <= .25} onClick={() => setZoom(value => Math.max(.25, value - .25))}><Minus size={18} /></Tool><span className="file-zoom">{Math.round(zoom * 100)}%</span><Tool label="放大" disabled={zoom >= 4} onClick={() => setZoom(value => Math.min(4, value + .25))}><Plus size={18} /></Tool><Tool label="适应窗口" onClick={() => { setZoom(1); setDrag({ x: 0, y: 0 }); }}><Maximize size={18} /></Tool></>}
+  </div>;
+  return <Modal title={file.name.split("/").pop() || file.name} wide onClose={onClose} restoreFocusSelector={restoreFocusSelector}
+    initialFocusSelector='.modal-heading button[aria-label="关闭"]'
+    headerActions={<div className="file-viewer-header-actions">{tools}<Tool label="文件信息" onClick={() => setDetails(value => !value)}><Info size={18} /></Tool>{download}</div>}>
+    <div className={`file-viewer ${kind === "unsupported" ? "file-viewer-unsupported" : ""}`}>
+      {details && <div className="file-viewer-info">{reader ? `${reader.access.filename} · ${reader.access.content_type} · ${(reader.access.size_bytes / 1024).toFixed(1)} KB` : file.name}</div>}
+      {alternate}
+      {failure ? <div className="resource-reader-empty" role="alert"><FileText size={36} strokeWidth={1.2} /><p>{failure}</p><button className="secondary" type="button" onClick={() => { setError(""); setAttempt(value => value + 1); }}><RotateCcw size={16} />重试</button></div>
+        : reader && kind === "pdf" ? <PdfPage reader={reader} page={page} zoom={zoom} onCount={setCount} onError={setError} />
+          : reader && (kind === "docx" || kind === "pptx") ? <OfficePage reader={reader} page={page} zoom={zoom} onCount={setCount} onError={setError} />
+            : reader && url ? <div className="resource-image-stage" onPointerDown={event => { if (zoom <= 1) return; event.currentTarget.setPointerCapture(event.pointerId); pointer.current = { x: event.clientX, y: event.clientY, baseX: drag.x, baseY: drag.y }; }}
+              onPointerMove={event => { if (pointer.current) setDrag({ x: pointer.current.baseX + event.clientX - pointer.current.x, y: pointer.current.baseY + event.clientY - pointer.current.y }); }} onPointerUp={() => { pointer.current = null; }} onPointerCancel={() => { pointer.current = null; }}>
+              <img src={url} alt={file.name} draggable={false} onError={() => setError("图片未能加载，请重试")} style={{ transform: `translate(${drag.x}px, ${drag.y}px) scale(${zoom})` }} /></div>
+              : reader && text !== null ? <>{truncated && <div className="file-viewer-info">仅显示部分文字，完整内容请下载查看</div>}<pre className="resource-plain-text">{text}</pre></>
+                : kind === "unsupported" ? <div className="resource-reader-empty"><File size={36} strokeWidth={1.2} /><p>此格式请下载后查看</p></div>
+                  : <div className="resource-reader-empty" role="status"><Loader2 size={24} className="spin" />正在打开文件</div>}
+      {downloadError && <p className="file-download-error" role="alert">{downloadError}</p>}
     </div>
   </Modal>;
+}
+
+export function ResourcePreview({ item, ...props }: { item: ResourceFile; scope: string; onClose: () => void; restoreFocusSelector?: string }) {
+  return <FilePreview file={{ type: "resource", id: item.id, name: item.path }} {...props} />;
 }

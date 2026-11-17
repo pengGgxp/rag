@@ -172,7 +172,8 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
           {discard && <Modal title="重新加载文件" restoreFocusSelector="#skill-reload, #skill-content" onClose={() => setDiscard(false)}><div className="skill-detail-confirm"><p>放弃尚未保存的修改并重新加载？</p><div className="extension-actions"><button className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button className="danger" onClick={() => { setDiscard(false); setError(""); setNotice(""); void resource.reload(); }}>放弃修改</button></div></div></Modal>}
           {choosingDirectory && <Modal title="选择工作区目录" restoreFocusSelector="#skill-choose-directory" onClose={() => setChoosingDirectory(false)}><div className="skill-detail-confirm"><p>当前工作区有 {directories.length} 个同名 Skill，请选择要查看的位置。</p><ul className="skill-detail-directory-list">{directories.map(directory => <li key={directory}><Link href={workspaceUrl(directory)}><FolderOpen size={18} /><span>{directory}</span><ChevronRight size={16} /></Link></li>)}</ul></div></Modal>}
           {packagePath && <Modal title="包内文件" wide restoreFocusSelector={packageOrigin} onClose={() => setPackagePath(null)}><div className="skill-detail-package-preview"><SkillResources files={packageFiles} review={resource.data.review} path={packagePath} onSelect={setPackagePath} personal /></div></Modal>}
-          {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)} />}
+          {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)}
+            restoreFocusSelector={`[data-resource-id="${preview.id}"], [data-skill-reference="${encodeURIComponent(preview.path.slice((resource.data.directory?.length || 0) + 1))}"]`} />}
         </>}
       </div>
     </div>
