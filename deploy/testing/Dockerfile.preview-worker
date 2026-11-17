@@ -1,0 +1,6 @@
+FROM rag-preview-worker:local
+ARG GIT_COMMIT
+LABEL org.opencontainers.image.revision=$GIT_COMMIT
+COPY backend/app /app/app
+COPY backend/alembic /app/alembic
+COPY backend/alembic.ini /app/alembic.ini

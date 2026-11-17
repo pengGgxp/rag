@@ -44,7 +44,7 @@ import { ConversationActivity } from "./conversation-activity";
 import { MessageFileProvider, MessageFiles, useMessageFiles } from "./conversation-files";
 import { workspaceFileId } from "./workspace-file-link";
 import { plainLinkClick } from "./resource-file-link";
-import { CloudComputerPanel } from "./cloud-computer";
+import { ConversationPreview } from "./cloud-preview";
 import { CloudComputerProvider } from "./cloud-computer-context";
 import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
@@ -1354,7 +1354,7 @@ export function ChatWorkspace({
           follow.current = true; setLatest(false);
         }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
-          <CloudComputerPanel key={`${session.user.id}:${session.workspace_id}:${conversation?.id ?? "new"}`} />
+          <ConversationPreview key={`${session.user.id}:${session.workspace_id}:${conversation?.id ?? "new"}`} />
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
           </div>}

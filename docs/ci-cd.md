@@ -4,6 +4,10 @@ This document is the single operational contract for continuous integration,
 production releases, migrations and rollback. Other documents should link here
 instead of describing their own deployment procedure.
 
+The test environment uses a separate `test` branch and manually invoked local
+image builds and deployment. It does not use GitHub Actions for publishing or
+deploying test images. See [the test release runbook](../deploy/testing/README.md).
+
 ## Release contract
 
 - Production configuration is server-owned. The authoritative files are

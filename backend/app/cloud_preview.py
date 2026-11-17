@@ -76,7 +76,7 @@ def owned(db, access, identifier, live=False):
     if live and (row.status != "ready" or row.ended_at or computer.ended_at or computer.status in ("stopping", "uncertain")
             or computer.billing_stopped_at or not computer.started_at
             or now() >= aware(computer.started_at) + timedelta(seconds=computer.snapshot["max_seconds"])):
-        raise HTTPException(410, "预览已停止，请回到对话查看云电脑状态")
+        raise HTTPException(410, "预览已结束，请查看已保存的文件")
     return row, computer
 
 
@@ -208,8 +208,8 @@ def maintain(db, computer, provider, alive):
 
 
 def idle_anchor(db, computer):
-    lease = db.scalar(select(Preview.lease_until).where(Preview.session_id == computer.id, Preview.status == "ready", Preview.ended_at.is_(None)))
-    return max(aware(computer.last_activity_at), aware(lease)) if lease else aware(computer.last_activity_at)
+    # Heartbeats already record last_activity_at; the access lease is not extra idle time.
+    return aware(computer.last_activity_at)
 
 
 def execute(runtime, name, arguments, check_active, *, call_id=None, **execution):

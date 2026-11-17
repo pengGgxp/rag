@@ -31,6 +31,39 @@
 - 不得擅自撤销用户已有的修改。
 - 文件编辑使用补丁或项目现有工具，不使用破坏性命令覆盖未知改动。
 
+## 按用户目标执行，避免擅自加码
+
+- 用户已确认的目标、范围和取舍是执行依据。不得把自己的偏好、假设中的风险或未来需求，变成未经确认的新功能、限制、审批步骤或交付条件。
+- 先完成用户要求的完整流程。不得为了省事或让检查通过，擅自停用能力、替换真实服务为模拟服务、改用其他访问方式，或交付功能缺失的环境。
+- 必要的实现细节可自主决定；会改变用户体验、功能可用性、收费行为、访问方式或验收范围的偏离，必须先说明具体影响并取得用户确认。已有授权继续有效，不因这条规范重复询问常规操作。
+- 安全措施应针对已确认的具体风险，并采用满足目标的最小措施；不以泛化的“安全”“生产规范”理由增加隔离层、开关、兼容路径或管理界面。
+- 用户要求测试环境对齐生产时，应复制并核对实际生效的环境变量、数据库配置、功能开关及外部服务接入；仅按已确认的测试域名、独立账号、数据库、队列和文件目录等必要差异调整，不擅自关闭其他能力。无法保持一致的项目逐项说明，不能把“已启动”或“健康检查通过”称为对齐完成。
+- 完成前按用户要求逐项核对实际结果，明确已完成、未完成及经确认的差异；不得以未启用、未接通或未经真实验证的功能冒充交付。
+
+## Figma 本地插件工作流
+
+涉及 Figma 设计读取、设计稿实现或画布修改时，优先使用本机 [`figma_bridge_agent`](https://github.com/Lancasteerr/figma_bridge_agent) 的 **Local Figma Agent** 插件及桌面开发插件，不默认使用官方 Figma MCP。它们是两套独立连接方式，不要同时注册同名 `figma-local-agent` MCP Server。此本地桥接依赖当前机器上的 Figma Desktop 和 loopback 服务；远程执行环境不能直接访问。
+
+### 安装与连接
+
+仅在插件未安装或连接失效时执行安装：
+
+1. 从 [GitHub Releases](https://github.com/Lancasteerr/figma_bridge_agent/releases) 选择稳定版本；Codex Agent Plugin、MCP 包和 Figma 插件 ZIP 必须使用同一版本。
+2. 在 Codex 的 `/plugins` 中添加该仓库对应版本的 marketplace，并安装 `Local Figma Agent`。仓库安装命令为 `codex plugin marketplace add Lancasteerr/figma_bridge_agent --ref v<VERSION>`。
+3. 下载同版本的 `figma-agent-bridge-plugin-v<VERSION>.zip` 并解压到稳定目录。在 Figma Desktop 打开 Design 文件，使用 `Plugins → Development → Import plugin from manifest` 导入其中的 `manifest.json`，然后运行 `Local Figma Agent Bridge` 并保持插件窗口打开。
+4. 首次配对时在 PowerShell 运行 `npx -y figma-local-agent-mcp@<VERSION> pair`。只有终端与 Figma 插件显示的六位码完全相同时，才点击 `Codes match`；不一致就停止配对，检查版本并重新发起配对，不要猜测或复用旧码。
+5. 重启 Codex 或新建 Agent 会话，调用 `figma_status` 验证当前文件、页面、选区和连接状态。必要时用 `npx -y figma-local-agent-mcp@<VERSION> doctor` 检查本机桥接。
+
+版本更新时同时更新 Codex 插件和 Figma 桌面插件。出现重复工具时，移除手工注册的同名 MCP Server；出现 `PLUGIN_NOT_CONNECTED` 时，先确认桌面插件窗口仍打开且配对和版本一致。若本地插件不可用，应说明阻塞并询问是否改用其他路径，不要悄悄切换到官方 Figma MCP。
+
+### 使用边界
+
+- 每次设计操作先调用 `figma_status`，确认目标文件、页面和选区；只读取当前任务需要的节点与字段。
+- 修改已有画布内容时先创建隔离的 Proposal，在 Proposal 内修改并让用户审查；不得直接覆盖源稿。新设计也先以可审查的 Proposal 呈现。
+- 将 Figma 设计实现到代码时，先用 `figma_frontend_bind_workspace` 绑定当前任务的真实工作区。大范围页面先建立结构索引，每个实施范围准备独立 Workunit；按需读取节点事实并通过对应 Workunit 导出素材。
+- 编码前确认设计来源仍为 `FRESH`，把重要节点与代码文件建立映射；完成后检查来源新鲜度、桌面及移动端布局，并明确说明与设计稿的适配差异。
+- Bridge 提供结构化设计事实和受控设计操作，不替代本仓库的设计系统规范、组件检索、工程判断和视觉验收。
+
 ## 项目阶段与复杂度控制
 
 - 当前项目按开发版推进，不因部署到服务器、有线上域名或存在测试用户，就默认采用成熟生产系统的发布和兼容策略。项目阶段以用户明确说明和实际使用情况为准。

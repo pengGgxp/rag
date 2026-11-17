@@ -303,6 +303,7 @@ function AccountPage({
               <StoragePanel onBusyChange={setBusy} />
             ) : tab === "billing" ? (
               <BillingPanel
+                key={`${session.user.id}:${session.workspace_id}`}
                 workspaceName={
                   session.workspaces.find(
                     (item) => item.id === session.workspace_id,

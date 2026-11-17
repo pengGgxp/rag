@@ -1,6 +1,29 @@
 .billing-panel {
   min-width: 0;
 }
+.cloud-usage-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.cloud-usage-heading h3 { margin: 0; }
+.cloud-usage-heading .icon-button, .cloud-usage .billing-pagination .icon-button { width: 44px; height: 44px; }
+.cloud-usage-list { border-top: 1px solid var(--line); }
+.cloud-usage-record { border-bottom: 1px solid var(--line); }
+.cloud-usage-record > summary { display: flex; align-items: center; gap: 12px; padding: 16px 0; cursor: pointer; min-height: 76px; list-style: none; }
+.cloud-usage-record > summary::-webkit-details-marker { display: none; }
+.cloud-usage-record > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.cloud-usage-name { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.cloud-usage-name strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.cloud-usage-name > span, .cloud-usage-charge > span { color: var(--muted); font-size: 12px; }
+.cloud-usage-name > span { display: flex; flex-wrap: wrap; }
+.cloud-usage-name time::after { content: " · "; white-space: pre; }
+.cloud-usage-charge { display: grid; gap: 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.cloud-usage-charge strong { font-size: 14px; font-weight: 500; }
+.cloud-usage-charge small { font-size: 12px; font-weight: 400; color: var(--muted); }
+.cloud-usage-chevron { flex: 0 0 16px; color: var(--muted); }
+.cloud-usage-record[open] .cloud-usage-chevron { transform: rotate(180deg); }
+.cloud-usage-record dl { display: grid; gap: 12px; padding: 12px 28px 20px 0; margin: 0; font-size: 12px; }
+.cloud-usage-record dl > div { display: flex; justify-content: space-between; gap: 20px; }
+.cloud-usage-record dt { color: var(--muted); flex-shrink: 0; }
+.cloud-usage-record dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .cloud-usage-record > summary { gap: 8px; } .cloud-usage-name time { flex-basis: 100%; } .cloud-usage-name time::after { content: none; } .cloud-usage-name > span > span { margin-top: 4px; } }
 .checkout-scroll { flex: 1; min-height: 0; overflow: auto; padding: var(--workspace-content-padding); }
 .checkout-content { max-width: 560px; margin: 0 auto; min-width: 0; }
 .checkout-back { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--muted); text-decoration: none; }
