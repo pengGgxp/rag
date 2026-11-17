@@ -59,6 +59,17 @@ class ContractTests(unittest.TestCase):
             "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}",
         )
 
+    def test_production_worker_is_limited_for_small_hosts(self):
+        compose = yaml.safe_load((ROOT / "compose.production.yml").read_text(encoding="utf-8"))
+        self.assertEqual(
+            compose["services"]["worker"]["command"][-2:],
+            ["--concurrency=5", "--max-tasks-per-child=20"],
+        )
+        self.assertEqual(
+            compose["services"]["preview-worker"]["command"][-2:],
+            ["--concurrency=1", "--max-tasks-per-child=20"],
+        )
+
     def test_chat_services_require_the_protected_workbench_environment(self):
         for service in ("api", "worker"):
             with self.subTest(service=service), tempfile.TemporaryDirectory() as tmp:

@@ -83,7 +83,7 @@ services:
 
   worker:
     image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
-    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=5", "--max-tasks-per-child=20"]
     env_file:
       - path: ${ZHIKU_APP_ENV_FILE:-app.env}
         required: false
