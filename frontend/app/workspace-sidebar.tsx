@@ -9,6 +9,7 @@ import type { WorkspaceScreen } from "./workspace-types";
 import { UploadTaskEntry } from "./document-uploads";
 import { SiteAnnouncementEntry } from "./site-announcement";
 import { SuggestionEntry } from "./suggestion";
+import { Dialog } from "../components/ui/dialog";
 
 const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
@@ -25,6 +26,7 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
   const mode = screen === "knowledge" ? "catalog" : screen;
   const { session } = useAuth();
   const [workbenchAvailable, setWorkbenchAvailable] = useState(false);
+  const [versionOpen, setVersionOpen] = useState(false);
   useEffect(() => {
     let live = true;
     setWorkbenchAvailable(false);
@@ -53,6 +55,17 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
       </Link>}
     </nav>
     {children}
-    <div className="sidebar-footer"><SuggestionEntry onOpen={onNavigate} /><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton /></div>
+    <div className="sidebar-footer">
+      {process.env.NEXT_PUBLIC_TEST_VERSION && <button type="button"
+        className="test-environment-version"
+        onClick={() => setVersionOpen(true)}>
+        测试环境 · {process.env.NEXT_PUBLIC_TEST_VERSION} · {process.env.NEXT_PUBLIC_GIT_COMMIT?.slice(0, 7)}
+      </button>}
+      <SuggestionEntry onOpen={onNavigate} /><SiteAnnouncementEntry onOpen={onNavigate} /><UploadTaskEntry onOpen={onNavigate} /><AccountButton />
+    </div>
+    {versionOpen && <Dialog title="测试环境" onClose={() => setVersionOpen(false)}>
+      <p>{process.env.NEXT_PUBLIC_TEST_VERSION}</p>
+      <p style={{ overflowWrap: "anywhere" }}>{process.env.NEXT_PUBLIC_GIT_COMMIT}</p>
+    </Dialog>}
   </>;
 }
