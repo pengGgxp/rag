@@ -34,7 +34,7 @@ API 容器为 `rag-platform-api-1`。测试运行应用提交
 | 模型 `SiteModelProvider` | 12 条，字段一致 |
 | 连接 `ModelConnection` | 8 条，业务字段及解密后的凭据一致，重加密导入导致 `updated_at` 不同 |
 
-环境配置 64 个键相同：
+环境配置 65 个键相同（主站启用 HTTPS 后，`AUTH_COOKIE_SECURE` 已对齐生产）：
 
 ```text
 REDIS_URL
@@ -44,7 +44,7 @@ EMBEDDING_TIMEOUT_SECONDS LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_TIMEOUT_SECONDS
 MCP_ALLOWED_PRIVATE_HOSTS MCP_TIMEOUT_SECONDS
 PDF_PARSER ALIYUN_ACCESS_KEY_ID ALIYUN_ACCESS_KEY_SECRET
 DOCMIND_TIMEOUT_SECONDS DOCMIND_POLL_SECONDS
-PREVIEW_ENABLED AUTH_SESSION_HOURS
+PREVIEW_ENABLED AUTH_SESSION_HOURS AUTH_COOKIE_SECURE
 OIDC_NAME OIDC_METADATA_URL OIDC_CLIENT_ID OIDC_CLIENT_SECRET
 SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_STARTTLS
 ZHIFUX_ENABLED ZHIFUX_API_BASE_URL ZHIFUX_MERCHANT_NUM ZHIFUX_SECRET
@@ -59,7 +59,7 @@ WORKSPACE_RUNNER_IMAGE WORKSPACE_FILE_RETENTION_DAYS WORKSPACE_FILE_QUOTA_MB
 PREVIEW_CACHE_MAX_BYTES PREVIEW_CACHE_IDLE_SECONDS CONFIG_CONTRACT DEPLOYMENT_ROLLBACK
 ```
 
-环境配置 15 个差异键：
+环境配置 14 个差异键：
 
 | 键 | 差异原因及实际影响 |
 | --- | --- |
@@ -67,9 +67,8 @@ PREVIEW_CACHE_MAX_BYTES PREVIEW_CACHE_IDLE_SECONDS CONFIG_CONTRACT DEPLOYMENT_RO
 | `S3_ENDPOINT` | 未连接生产内网旧 S3；保留本地默认值。当前活动存储为数据库配置的 OSS，不走旧 S3 |
 | `MCP_CREDENTIAL_KEY` | 独立凭据加密密钥，8 个连接已重加密且可解密 |
 | `QUESTION_WORKBENCH_URL`、`QUESTION_WORKBENCH_API_URL`、`QUESTION_WORKBENCH_SECRET` | 用户要求不启用题库，三项均为空；测试用户题库权限关闭 |
-| `FRONTEND_URL`、`API_PUBLIC_URL` | 使用用户最新确认的 `http://test.zk.moonlitstarway.top`，主站端口 80；支付 HTTPS 条件未满足 |
+| `FRONTEND_URL`、`API_PUBLIC_URL` | 使用测试主站 `https://test.zk.moonlitstarway.top` 和同源 `/api`，HTTP 80 跳转到 HTTPS；支付 HTTPS 条件已满足 |
 | `PREVIEW_DOMAIN` | 使用 `test-zk-preview.moonlitstarway.top`；已接通独立证书和 HTTPS 网关 |
-| `AUTH_COOKIE_SECURE` | 适配约定 HTTP 主站，预览网关的 Secure Cookie 要求保留 |
 | `AUTH_SECRET_KEY`、`SITE_CONFIG_ENCRYPTION_KEY`、`DEPLOY_CONTROL_TOKEN` | 测试独立密钥；数据库配置已重加密，生产密钥不复用 |
 | `APP_VERSION`、`GIT_COMMIT` | 标识 PR 测试构建，与生产版本不同 |
 
@@ -92,14 +91,16 @@ Redis 连接字符串相同，但所在 Compose 网络、服务实例和卷独�
 | 预览鉴权 | 网关对未授权访问及无效票据返回 401 |
 | 题库 | 状态接口 200，入口和工具均未启用，符合用户最新要求 |
 | 新域名公网登录 | `http://test.zk.moonlitstarway.top` 真实浏览器密码登录 200，知识库首页正常，刷新后会话和知识库接口 200；页面和静态资源 200，错误 Origin 登录 403，公开 internal 路径 404 |
-| 预览 HTTPS | 独立 Let's Encrypt 泛域名证书已签发并安装，有效期至 2027-02-15；外部 curl 及 Playwright 均通过证书校验，缺少授权和无效票据返回 401，主站保持 HTTP 80 |
+| 预览 HTTPS | 独立 Let's Encrypt 泛域名证书已签发并安装，有效期至 2027-02-15；外部 curl 及 Playwright 均通过证书校验，缺少授权和无效票据返回 401 |
+| 主站 HTTPS | 独立证书有效期至 2027-02-15，HTTP 308 保留路径及查询参数；HTTPS 重新登录与刷新通过，Cookie Secure/HttpOnly=true；主站模拟自动续期和重载钩子通过 |
+| HTTPS 充值目录 | 200、enabled=true、3 个套餐；未创建订单 |
 
 ## 未完成与阻塞
 
 | 项目 | 证据与剩余工作 |
 | --- | --- |
 | 真实成果预览 | `*.test-zk-preview.moonlitstarway.top` 的证书与网关已接通；未创建收费沙箱，真实任务的票据兑换、Cookie、刷新与结束运行仍待验证。证书续期仍需人工添加新的 DNS TXT |
-| 支付 | 生产充值目录可用，测试目录不可用。配置字段一致，但 `payments.validate_provider` 要求 API、回调和前端均为 HTTPS，约定的 HTTP 入口不满足；未放宽校验，未创建订单 |
+| 支付 | HTTPS 配置已满足现有校验，测试充值目录已启用；未创建真实订单，支付跳转及回调尚未验收 |
 | 邮件与微信 | 配置及解密通过，未发信、未触发外部授权回调；测试域名回调还需在公网入口恢复后验证 |
 | 搜索、解析、图片、真实问答与云电脑 | 配置对照已完成，未触发可能收费的真实任务；不能由健康检查推断这些任务成功 |
 | 知识库 RAG 闭环 | 本轮验证资源读写，不等同于文档解析、索引、检索、引用及无证据拒答验收；未新建收费 Embedding/解析任务 |
