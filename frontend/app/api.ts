@@ -64,7 +64,11 @@ export async function request<T>(
 ): Promise<T> {
   const controller = new AbortController();
   let timedOut = false;
-  const timeout = path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
+  const skillImport = path === "/site/admin/skills/import"
+    || path === "/agent/skills/import" || path === "/agent/skills/import-folder";
+  const timeout = skillImport
+    ? 30 * 60_000
+    : path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
     || /\/models\/discover$/.test(path) || path === "/site/admin/search/test"
     || path === "/chat/attachments" || (path === "/resources" && options?.body instanceof FormData)
     || path.startsWith("/site/admin/skills")
