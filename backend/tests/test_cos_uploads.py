@@ -129,6 +129,34 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     assert owner.post(f"/uploads/{row.id}/complete").json()["document_id"] == str(document.id)
 
 
+def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct):
+    from pdf_fixtures import make_pdf
+
+    owner, outsider, db, _, kb, storage, _, processed = direct
+    versions = []
+    for content in (make_pdf(), make_pdf(password="")):
+        previous = versions[-1][0] if versions else None
+        upload = create(owner, kb, content, "evidence.pdf", **({"version_of": str(previous.id)} if previous else {}))
+        row = send(owner, db, storage, upload, content)
+        assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+        uploads.finalize_upload(str(row.id))
+        db.expire_all()
+        document = db.get(Document, db.get(DocumentUpload, row.id).document_id)
+        assert document.content_hash == hashlib.sha256(content).hexdigest()
+        assert document.size_bytes == len(content)
+        assert storage.objects[document.object_key] == content
+        assert processed[-1][1]["prepared_content"] == content
+        assert document.version_number == len(versions) + 1
+        if previous:
+            assert document.supersedes_id == previous.id
+            assert document.version_group_id == previous.version_group_id
+            assert not document.is_active  # Existing version remains active until indexing succeeds.
+        assert outsider.get(f"/uploads/{row.id}").status_code == 404
+        versions.append((document, content))
+    assert versions[0][0].object_key != versions[1][0].object_key
+    assert all(storage.objects[document.object_key] == content for document, content in versions)
+
+
 def test_scope_size_parts_fingerprint_and_expiry(direct):
     owner, outsider, db, _, kb, storage, _, _ = direct
     assert outsider.post(f"/knowledge-bases/{kb}/uploads", json={"filename": "x.txt", "size_bytes": 1}).status_code == 404

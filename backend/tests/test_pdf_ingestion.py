@@ -14,6 +14,7 @@ from app.models import (
 )
 from test_auth import library, register
 from test_retrieval import add_document
+from pdf_fixtures import make_pdf
 
 
 @pytest.fixture
@@ -48,7 +49,7 @@ def pdf_job(accounts, monkeypatch):
     return owner, outsider, db, kb, doc.id, job.id, embedded
 
 
-def fake_provider(monkeypatch, *, collect=None, submit=None):
+def fake_provider(monkeypatch, *, collect=None, submit=None, original=None):
     calls = []
 
     class Provider:
@@ -56,6 +57,8 @@ def fake_provider(monkeypatch, *, collect=None, submit=None):
             pass
 
         def submit(self, content, page_count):
+            if original is not None:
+                assert content == original
             calls.append(("submit", page_count))
             return submit() if submit else "known-remote-job"
 
@@ -184,13 +187,89 @@ def test_mixed_pdf_ingestion_is_idempotent_and_page_metadata_reaches_retrieval(p
     assert owner.post(f"/knowledge-bases/{kb}/retrieval", json={"query": "needle"}).json()["results"] == []
 
 
-def test_timeout_retry_reuses_remote_task_instead_of_submitting_again(pdf_job, monkeypatch):
+@pytest.mark.parametrize("parser", ["local", "aliyun"])
+@pytest.mark.parametrize("password", [None, ""], ids=["plain", "empty-password-aes128"])
+def test_pdf_ingestion_preserves_original_version_and_single_processing(pdf_job, monkeypatch, parser, password):
+    import hashlib
+
+    owner, outsider, db, _, doc_id, job_id, embedded = pdf_job
+    content = make_pdf(password=password)
+    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
+    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    document = db.get(Document, doc_id)
+    document.size_bytes, document.content_hash = len(content), hashlib.sha256(content).hexdigest()
+    db.commit()
+    def identity(document):
+        return (document.object_key, document.size_bytes, document.content_hash, document.version_group_id,
+                document.version_number, document.supersedes_id, document.is_active)
+    before = identity(document)
+    calls = fake_provider(monkeypatch, original=content)
+    tasks.process_document.run(str(job_id))
+    tasks.process_document.run(str(job_id))
+    db.expire_all()
+    document = db.get(Document, doc_id)
+    assert identity(document) == before
+    assert db.get(IngestionJob, job_id).state == JobState.SUCCEEDED
+    assert len(embedded) == 1
+    chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    assert [chunk.page_number for chunk in chunks] == [1, 2]
+    for chunk in chunks:
+        assert document.parsed_text[chunk.char_start:chunk.char_end] == chunk.text
+    assert outsider.get(f"/jobs/{job_id}").status_code == 404
+    assert outsider.post(f"/jobs/{job_id}/retry").status_code == 404
+    events = db.scalars(select(UsageEvent).where(UsageEvent.capability == "ocr_pages")).all()
+    assert len(events) == (1 if parser == "aliyun" else 0)
+    assert calls == ([("submit", 2), ("collect", "known-remote-job")] if parser == "aliyun" else [])
+    if events:
+        assert events[0].units == 2
+
+
+@pytest.mark.parametrize("parser", ["local", "aliyun"])
+@pytest.mark.parametrize("content,reason", [
+    (make_pdf(password="secret"), "需要打开密码"),
+    (b"%PDF-1.7\nbroken", "已损坏或格式无效"),
+    (b"", "为空或没有页面"),
+    (make_pdf(page_count=0), "为空或没有页面"),
+])
+def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatch, parser, content, reason):
+    from app.models import CreditAccount, CreditLedgerEntry
+
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
+    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
+    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    before = [(row.workspace_id, row.balance, row.lifetime_spent) for row in db.scalars(select(CreditAccount))]
+    ledger_before = list(db.scalars(select(CreditLedgerEntry.id)))
+    calls = fake_provider(monkeypatch)
+    with pytest.raises(ValueError, match=reason):
+        tasks.process_document.run(str(job_id))
+    db.expire_all()
+    document = db.get(Document, doc_id)
+    assert document.status == DocumentStatus.FAILED
+    assert document.error_detail == db.get(IngestionJob, job_id).error_detail
+    assert reason in owner.get(f"/jobs/{job_id}").json()["error_detail"]
+    next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
+    with pytest.raises(ValueError, match=reason):
+        tasks.process_document.run(str(next_id))
+    db.expire_all()
+    assert db.get(IngestionJob, next_id).state == JobState.FAILED
+    assert reason in db.get(Document, doc_id).error_detail
+    assert not calls and not embedded and not db.scalars(select(UsageEvent)).all()
+    assert [(row.workspace_id, row.balance, row.lifetime_spent) for row in db.scalars(select(CreditAccount))] == before
+    assert list(db.scalars(select(CreditLedgerEntry.id))) == ledger_before
+
+
+@pytest.mark.parametrize("password", [None, ""], ids=["plain", "empty-password-aes128"])
+def test_timeout_retry_reuses_remote_task_instead_of_submitting_again(pdf_job, monkeypatch, password):
+    owner, _, db, _, doc_id, job_id, embedded = pdf_job
+    content = make_pdf(password=password)
+    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
 
     def timeout(_):
         raise DocMindError("wait timed out")
 
-    calls = fake_provider(monkeypatch, collect=timeout)
+    calls = fake_provider(monkeypatch, collect=timeout, original=content)
     with pytest.raises(DocMindError):
         tasks.process_document.run(str(job_id))
     db.expire_all()

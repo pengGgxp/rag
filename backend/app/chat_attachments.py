@@ -90,7 +90,7 @@ def image_size(data, suffix):
 
 
 def extract_document(data, filename):
-    from .parsers import parse_document
+    from .parsers import PdfParsingError, parse_document
     def bounded(lines):
         parts, count = [], 0
         for line in lines:
@@ -143,6 +143,8 @@ def extract_document(data, filename):
             text, _ = parse_document(filename, "", data)
     except HTTPException:
         raise
+    except PdfParsingError as exc:
+        raise HTTPException(415, str(exc)) from None
     except Exception:
         raise HTTPException(415, "文件无法读取，请检查格式或重新导出") from None
     if not text.strip():
