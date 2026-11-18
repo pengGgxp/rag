@@ -128,7 +128,10 @@ def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(acc
 @pytest.mark.parametrize("path", ["../escape", "/absolute", "a/../escape", "a//file", "a\\file", "C:/file"])
 def test_unsafe_unpack_paths_are_rejected(accounts, monkeypatch, resource_store, path):
     client, _, _ = setup_site(accounts, monkeypatch)
-    result = client.post("/agent/skills/import", files={"file": ("bad.zip", zipped({"SKILL.md": b"ok", path: b"bad"}))})
+    # ZipInfo normalizes Windows separators on Windows; preserve the malicious bytes.
+    normalized = path.replace("\\", "/")
+    data = zipped({"SKILL.md": b"ok", normalized: b"bad"}).replace(normalized.encode(), path.encode())
+    result = client.post("/agent/skills/import", files={"file": ("bad.zip", data)})
     assert result.status_code == 422
     assert resource_store[0] == {}
 
@@ -144,7 +147,8 @@ def test_unpack_rejects_links_duplicate_roots_and_limits(accounts, monkeypatch, 
     assert client.post("/agent/skills/import", files={"file": ("bad.zip", output.getvalue())}).status_code == 422
     for files in ({"a/SKILL.md": b"one", "b/SKILL.md": b"two"}, {"SKILL.md": b"one", "skill.md": b"two"}, {"README.md": b"none"}):
         assert client.post("/agent/skills/import", files={"file": ("bad.zip", zipped(files))}).status_code == 422
-    assert client.post("/agent/skills/import", files={"file": ("large.zip", zipped({"SKILL.md": b"x" * (5*1024*1024+1)}))}).status_code == 413
+    monkeypatch.setattr("app.skill_files.MAX_FILE_BYTES", 1024)
+    assert client.post("/agent/skills/import", files={"file": ("large.zip", zipped({"SKILL.md": b"x" * 1025}))}).status_code == 413
     assert resource_store[0] == {}
 
 

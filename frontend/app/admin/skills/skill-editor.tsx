@@ -10,6 +10,7 @@ import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
 import type { PackageReview, Skill } from "./page";
 import { SkillResources } from "./skill-resources";
+import { skillUploadError } from "../../extensions/skill-upload";
 import "../../billing.css";
 import "../platform-content.css";
 
@@ -61,7 +62,8 @@ export function SkillEditor({ id }: { id?: string }) {
     <AdminHeading title={id ? saved.name || "编辑 Skill" : "新建 Skill"}>
       <input ref={input} type="file" accept=".md,.zip" hidden onChange={async event => {
         const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-        if (file.size > 25 * 1024 * 1024) { setError("Skill 包不能超过 25 MiB"); return; }
+        const error = skillUploadError([file]);
+        if (error) { setError(error); return; }
         setBusy(true); setError(""); setNotice("");
         try {
           const data = new FormData(); data.append("file", file);

@@ -13,9 +13,9 @@ from hashlib import sha256
 from fastapi import HTTPException
 
 MAX_FILES = 200
-MAX_FILE_BYTES = 5 * 1024 * 1024
-MAX_BUNDLE_BYTES = 20 * 1024 * 1024
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_SIZE_MIB = 200
+MAX_FILE_BYTES = MAX_BUNDLE_BYTES = MAX_UPLOAD_BYTES = MAX_SIZE_MIB * 1024 * 1024
+MAX_ENCODED_FILE_CHARS = 4 * ((MAX_FILE_BYTES + 2) // 3)
 
 SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
 WINDOWS_RESOURCE_SUFFIXES = (".bat", ".cmd", ".com", ".exe", ".msi", ".ps1")
@@ -80,12 +80,12 @@ def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
             raise HTTPException(422, "Skill 存在大小写冲突的重复路径")
         seen.add(key)
         if len(content) > MAX_FILE_BYTES:
-            raise HTTPException(413, "单个 Skill 文件不能超过 5 MiB")
+            raise HTTPException(413, f"单个 Skill 文件不能超过 {MAX_SIZE_MIB} MiB")
         total += len(content)
     if any("/".join(key.split("/")[:i]) in seen for key in seen for i in range(1, len(key.split("/")))):
         raise HTTPException(422, "Skill 路径存在文件与目录冲突")
     if total > MAX_BUNDLE_BYTES:
-        raise HTTPException(413, "Skill 总大小不能超过 20 MiB")
+        raise HTTPException(413, f"Skill 总大小不能超过 {MAX_SIZE_MIB} MiB")
     if "SKILL.md" not in files or text_content(files["SKILL.md"]) is None:
         raise HTTPException(422, "Skill 根目录必须包含 UTF-8 编码的 SKILL.md")
     return files
@@ -135,7 +135,7 @@ def imported_files(entries: list[tuple[str, bytes]]) -> tuple[dict[str, bytes], 
 
 def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "ZIP 不能超过 25 MiB")
+        raise HTTPException(413, f"ZIP 不能超过 {MAX_SIZE_MIB} MiB")
     try:
         _reject_raw_zip_paths(content)
         with zipfile.ZipFile(io.BytesIO(content)) as archive:

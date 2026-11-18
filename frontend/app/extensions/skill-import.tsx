@@ -10,6 +10,7 @@ import { ResourceNotice } from "../resource-notice";
 import { ResourcePreview } from "../resource-preview";
 import type { ResourceFile } from "../resource-library";
 import { useExtensionResource } from "./extension-data";
+import { skillUploadError } from "./skill-upload";
 
 export function SkillImport({ id }: { id?: string }) {
   const { session, role } = useAuth();
@@ -22,6 +23,8 @@ export function SkillImport({ id }: { id?: string }) {
   const canWrite = role === "admin" || role === "editor";
   async function upload(files: File[], isFolder: boolean) {
     if (!files.length || busy) return;
+    const error = skillUploadError(files, isFolder);
+    if (error) { setError(error); return; }
     setBusy(true); setError(""); setItems([]); setDirectory("");
     try {
       const body = new FormData();

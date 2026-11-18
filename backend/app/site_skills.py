@@ -17,6 +17,7 @@ from .db import get_db
 from .auth import get_access
 from .models import SiteSkill, SiteSkillFile
 from .site_skill_packages import decode_files, encode_files, review
+from . import skill_files
 from .skill_files import text_content, unzip
 from .site_auth import site_admin
 from .site_audit import record
@@ -28,7 +29,7 @@ catalog_router = APIRouter(prefix="/agent/skills/platform", tags=["platform-skil
 class SkillFileWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = Field(min_length=1, max_length=512)
-    content: str = Field(max_length=7_000_000)
+    content: str = Field(max_length=skill_files.MAX_ENCODED_FILE_CHARS)
 
 
 class SkillWrite(BaseModel):
@@ -91,9 +92,9 @@ async def import_markdown(file: UploadFile = File(...), actor=Depends(site_admin
     suffix = (file.filename or "").lower()
     if not suffix.endswith((".md", ".zip")):
         raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
-    data = await file.read(25 * 1024 * 1024 + 1)
-    if len(data) > 25 * 1024 * 1024:
-        raise HTTPException(413, "Skill 包不能超过 25 MiB")
+    data = await file.read(skill_files.MAX_UPLOAD_BYTES + 1)
+    if len(data) > skill_files.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"Skill 包不能超过 {skill_files.MAX_SIZE_MIB} MiB")
     try:
         files, folder = ({"SKILL.md": data}, None) if suffix.endswith(".md") else unzip(data)
         if len(files["SKILL.md"]) > 210000:

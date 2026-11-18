@@ -70,7 +70,7 @@ def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(g
         raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
     data = file.file.read(skill_files.MAX_UPLOAD_BYTES + 1)
     if len(data) > skill_files.MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "Skill 包不能超过 25 MiB")
+        raise HTTPException(413, f"Skill 包不能超过 {skill_files.MAX_SIZE_MIB} MiB")
     files = {"SKILL.md": data} if name.endswith(".md") else skill_files.unzip(data)[0]
     return save_package(files, db, access)
 
@@ -85,8 +85,10 @@ def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = For
     for file, path in zip(files, paths):
         data = file.file.read(skill_files.MAX_FILE_BYTES + 1)
         total += len(data)
-        if len(data) > skill_files.MAX_FILE_BYTES or total > skill_files.MAX_BUNDLE_BYTES:
-            raise HTTPException(413, "Skill 文件超过大小限制")
+        if len(data) > skill_files.MAX_FILE_BYTES:
+            raise HTTPException(413, f"单个 Skill 文件不能超过 {skill_files.MAX_SIZE_MIB} MiB")
+        if total > skill_files.MAX_BUNDLE_BYTES:
+            raise HTTPException(413, f"Skill 总大小不能超过 {skill_files.MAX_SIZE_MIB} MiB")
         entries.append((path, data))
     return save_package(skill_files.imported_files(entries)[0], db, access)
 
