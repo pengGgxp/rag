@@ -98,7 +98,6 @@ class ManifestTests(unittest.TestCase):
                 "api": IMAGE,
                 "preview": IMAGE,
                 "worker": IMAGE,
-                "preview-worker": IMAGE,
                 "web": IMAGE,
             }
             calls = iter(
@@ -127,7 +126,7 @@ class ManifestTests(unittest.TestCase):
             release = make_release(Path(tmp))
             calls = iter(
                 item
-                for service in ("api", "preview", "worker", "preview-worker", "web")
+                for service in ("api", "preview", "worker", "web")
                 for item in (
                     f"{service}-container-id\n",
                     "registry.example.test/org/zhiku-api:latest\n",
@@ -568,8 +567,6 @@ class RollbackTests(unittest.TestCase):
                         "AUTH_COOKIE_SECURE=true",
                         "PREVIEW_ENABLED=true",
                         "PREVIEW_DOMAIN=preview.str1ct.top",
-                        "PREVIEW_CACHE_MAX_BYTES=67108864",
-                        "PREVIEW_CACHE_IDLE_SECONDS=3600",
                         "S3_ACCESS_KEY=rustfs",
                         "S3_SECRET_KEY=rustfs-secret",
                         "",
@@ -586,8 +583,6 @@ class RollbackTests(unittest.TestCase):
             self.assertNotIn("postgresql+psycopg", compose_env)
             self.assertIn("DEPLOY_CONTROL_TOKEN", values)
             self.assertEqual(values["DATABASE_URL"], "postgresql+psycopg://rag:secret@db:5432/rag")
-            self.assertIn("PREVIEW_CACHE_MAX_BYTES=67108864", compose_env)
-            self.assertIn("PREVIEW_CACHE_IDLE_SECONDS=3600", compose_env)
 
     def test_nginx_gate_blocks_all_public_api_writes(self):
         with tempfile.TemporaryDirectory() as tmp:

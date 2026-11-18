@@ -110,33 +110,6 @@ services:
     networks:
       - backend
 
-  preview-worker:
-    image: ${WORKER_IMAGE:?WORKER_IMAGE is required}
-    command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--queues=previews", "--concurrency=1", "--max-tasks-per-child=20"]
-    env_file:
-      - path: ${ZHIKU_APP_ENV_FILE:-app.env}
-        required: false
-    environment:
-      RESOURCE_CACHE_DIR: /var/cache/rag-resources
-      APP_VERSION: ${APP_VERSION:-dev}
-      GIT_COMMIT: ${GIT_COMMIT:-unknown}
-      CONFIG_CONTRACT: ${CONFIG_CONTRACT:-1}
-      DEPLOYMENT_ROLLBACK: ${DEPLOYMENT_ROLLBACK:-automatic-app-rollback}
-      PREVIEW_CACHE_MAX_BYTES: ${PREVIEW_CACHE_MAX_BYTES:-5368709120}
-      PREVIEW_CACHE_IDLE_SECONDS: ${PREVIEW_CACHE_IDLE_SECONDS:-604800}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 | grep -q 'pong'"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-      start_period: 60s
-    depends_on:
-      api:
-        condition: service_healthy
-    networks:
-      - backend
-
   preview:
     image: ${API_IMAGE:?API_IMAGE is required}
     command: ["uvicorn", "app.preview_gateway:app", "--host", "0.0.0.0", "--port", "8001", "--no-access-log", "--no-proxy-headers"]

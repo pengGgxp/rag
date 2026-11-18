@@ -98,8 +98,6 @@
 | `RESOURCE_CACHE_DIR` | 可选 | API/Worker 读取资源时使用的临时缓存目录，默认 `/tmp/rag-resource-cache`；不是云电脑工作目录。 |
 | `RESOURCE_CACHE_MAX_BYTES` | 可选 | 资源缓存容量上限，默认 5 GiB。 |
 | `RESOURCE_CACHE_IDLE_SECONDS` | 可选 | 资源缓存闲置清理时间，默认 24 小时。 |
-| `PREVIEW_CACHE_MAX_BYTES` | 可选 | 资源预览 Worker 缓存上限，默认 5 GiB；发布器派生为 Compose 参数。 |
-| `PREVIEW_CACHE_IDLE_SECONDS` | 可选 | 资源预览缓存闲置清理时间，默认 7 天；发布器派生为 Compose 参数。 |
 | `WORKSPACE_EXECUTOR_URL` | 历史兼容 | 旧执行器 URL，默认不配置；不是阿里云沙箱连接配置。 |
 | `WORKSPACE_RUNNER_IMAGE` | 历史兼容 | 本地 Docker 执行器镜像默认值；当前云电脑模板由后台配置。 |
 | `WORKSPACE_FILE_RETENTION_DAYS` | 历史兼容 | 旧执行器文件保留期，默认 3 天。 |

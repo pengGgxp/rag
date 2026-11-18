@@ -5,7 +5,7 @@ User authorized push and production deployment after local acceptance.
 - Application revision: `35b3dd0`, branch `codex/resource-library`.
 - Release directory: `/root/rag-releases/chat76-35b3dd0`.
 - API/worker/preview image: `rag-platform-api:chat76-35b3dd0`.
-- Preview worker: `rag-preview-worker:chat76-35b3dd0`.
+- Historical note: the dedicated server-side conversion image from this release belonged to a retired path and is no longer part of the deployment contract.
 - Web: `rag-platform-web:chat76-35b3dd0`, production API URL, `.next-chat76-release`.
 - Database upgraded from `0061_resource_previews` to `0062_conversation_management`.
 

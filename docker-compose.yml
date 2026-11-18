@@ -158,17 +158,6 @@ services:
       api:
         condition: service_healthy
 
-  preview-worker:
-    extends:
-      service: worker
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.preview-worker
-    command: celery -A app.tasks.celery_app worker --loglevel=info --queues=previews --concurrency=1 --max-tasks-per-child=20
-    environment:
-      PREVIEW_CACHE_MAX_BYTES: ${PREVIEW_CACHE_MAX_BYTES:-5368709120}
-      PREVIEW_CACHE_IDLE_SECONDS: ${PREVIEW_CACHE_IDLE_SECONDS:-604800}
-
   preview:
     build:
       context: ./backend

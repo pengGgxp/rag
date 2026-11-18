@@ -44,7 +44,6 @@ python deploy/testing/release.py publish
 `--registry`、`--organization` 覆盖。依次构建并推送 `linux/amd64`：
 
 - `zhiku-api`：API、普通任务 Worker、预览网关共用。
-- `zhiku-preview-worker`：包括 LibreOffice、字体和沙箱依赖。
 - `zhiku-web`：干净安装前端依赖，输出 standalone，API 地址为 `/api`。
 
 每次执行分配带提交号与 UTC 时间的独立 `test-...` 镜像标签，
