@@ -1,4 +1,5 @@
 import unittest
+import json
 import tempfile
 import ast
 import subprocess
@@ -14,6 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ContractTests(unittest.TestCase):
+    def test_api_start_commands_preserve_transport_peer(self):
+        dockerfile = (ROOT.parent / "backend/Dockerfile").read_text()
+        command = json.loads(next(line[4:] for line in dockerfile.splitlines() if line.startswith("CMD ")))
+        self.assertIn("--no-proxy-headers", command)
+        for path in ("compose.production.yml", "testing/compose.yml"):
+            compose = yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
+            self.assertIn("--no-proxy-headers", compose["services"]["api"]["command"])
+
     def test_production_contract(self):
         keys = validate(
             ROOT / "compose.production.yml",
