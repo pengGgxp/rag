@@ -8,6 +8,11 @@ The test environment uses a separate `test` branch and manually invoked local
 image builds and deployment. It does not use GitHub Actions for publishing or
 deploying test images. See [the test release runbook](../deploy/testing/README.md).
 
+Current public endpoints:
+
+- Production: `https://syfc.moonlitstarway.top/`
+- Test: `https://zk.str1ct.top/`
+
 ## Release contract
 
 - Production configuration is server-owned. The authoritative files are
@@ -36,7 +41,7 @@ upload a release. They are not application runtime configuration:
 | Variable | `SWR_REGISTRY` | Regional Huawei Cloud SWR hostname |
 | Variable | `SWR_ORGANIZATION` | SWR organization containing the three repositories |
 | Variable | `SWR_REGION` | SWR region used by the cleanup API, for example `cn-south-1` |
-| Variable | `NEXT_PUBLIC_API_URL` | Public production API URL, normally `https://zk.str1ct.top/api` |
+| Variable | `NEXT_PUBLIC_API_URL` | Public production API URL, normally `https://syfc.moonlitstarway.top/api` |
 | Secret | `SWR_USERNAME` | SWR Docker login username |
 | Secret | `SWR_PASSWORD` | SWR Docker login password |
 | Secret | `SWR_ACCESS_KEY` | Huawei Cloud AccessKey ID used only by the SWR cleanup API |
@@ -130,9 +135,9 @@ REDIS_URL=redis://...
 AUTH_SECRET_KEY=...
 SITE_CONFIG_ENCRYPTION_KEY=...
 MCP_CREDENTIAL_KEY=...
-NEXT_PUBLIC_API_URL=https://zk.str1ct.top/api
-FRONTEND_URL=https://zk.str1ct.top
-API_PUBLIC_URL=https://zk.str1ct.top/api
+NEXT_PUBLIC_API_URL=https://syfc.moonlitstarway.top/api
+FRONTEND_URL=https://syfc.moonlitstarway.top
+API_PUBLIC_URL=https://syfc.moonlitstarway.top/api
 AUTH_COOKIE_SECURE=true
 PREVIEW_ENABLED=true
 PREVIEW_DOMAIN=preview.str1ct.top
@@ -310,7 +315,7 @@ docker buildx build --platform linux/amd64 --file backend/Dockerfile \
   --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-worker:sha-$release_commit" \
   --push backend
 docker buildx build --platform linux/amd64 --file frontend/Dockerfile \
-  --build-arg NEXT_PUBLIC_API_URL=https://zk.str1ct.top/api \
+  --build-arg NEXT_PUBLIC_API_URL=https://syfc.moonlitstarway.top/api \
   --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:$release_version" \
   --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:sha-$release_commit" \
   --push frontend

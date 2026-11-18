@@ -4,6 +4,7 @@
 
 PR 先合并到 `test`，再由开发者在本地显式执行镜像构建和推送，
 最后更新 `103.97.177.61` 的测试服务，沿用 `https://zk.str1ct.top`。
+生产入口为 `https://syfc.moonlitstarway.top/`，本手册不用于生产部署。
 当前不新增、触发或配置 GitHub Actions CD。
 为避免测试路径消耗 Actions 额度，现有 CI 跳过目标为 `test` 的 PR，
 现有云电脑镜像工作流也跳过 `test` 的推送；检查在本地执行。
