@@ -6,7 +6,7 @@
 
 - 管理端导入预览、检查、创建和更新，以及工作区 ZIP、SKILL.md、文件夹导入共用容量策略。
 - 不限制 Skill 文件数量或 ZIP/TAR 条目数量；保留 200 MiB 单文件/总量/上传包容量上限，以及路径、链接、特殊文件、加密条目等完整性校验。
-- SKILL.md 的管理端正文长度和工作区发现大小约束保持现状。
+- 列表发现只读取 `.skills/**/SKILL.md` 的元数据头；正文和资源按需读取，不设置额外的清单字符或文件数量上限。
 - 不涉及 #124、部署、合并、数据迁移或存储额度调整。
 
 ## 实现
@@ -16,6 +16,7 @@
 - 两个前端入口共用 `skill-upload.ts`，在传输前拒绝超限包、单文件及文件夹总量，保留已导入内容。
 - 主站、主站脚本副本及测试站 Nginx 模板预留 268 MiB 请求体，容纳 200 MiB 文件的 Base64/JSON 和 multipart 开销；应用容量上限仍为 200 MiB。
 - 原来使用旧 5 MiB 阈值的超限测试改为缩小测试边界，另用真实 200 MiB 数据验证产品上限。恶意 ZIP 夹具保留原始反斜杠，避免 Windows 的 ZipInfo 自动规范化后失去测试意义。
+- Skill 列表刷新限定当前工作区的 `.skills/` 前缀，并允许 Starlette multipart 文件夹导入超过默认 1000 文件/字段限制；索引只更新 `SKILL.md` 条目。
 
 ## 验证记录
 
@@ -23,7 +24,7 @@
 
 - 前端 `npm test`：52 项通过，包含上传边界、文件夹总量/数量及代理编码开销回归。
 - 前端 `npx tsc --noEmit` 通过。`npm run build` 的编译、类型检查和页面生成完成，但最终 Next.js 16.4.2 安全检查报 `SecurityFatalError: Your version of Next.js is affected by a known security vulnerability`，进程退出码为 1，不能算构建通过。此次未更改依赖和锁文件，也未绕过安全检查或扩大范围升级依赖。
-- 后端新增容量用例 14 项：真实 200 MiB 文件集合和 ZIP、上限加 1 字节、Base64 padding/清单计量、ZIP/TAR 解压约束、两个 HTTP 上传入口、文件夹失败前置校验。
+- 后端新增容量用例覆盖真实 200 MiB 文件集合和 ZIP、上限加 1 字节、Base64 padding/清单计量、ZIP/TAR 解压约束、超过 1000 条 ZIP 条目、两个 HTTP 上传入口、文件夹失败前置校验。
 - 26 MiB 未压缩 ZIP 及文件夹经工作区真实路由导入、下载并校验 SHA-256；管理端经导入、检查、创建、更新、下载和安装路由验证资源字节不变。
 - Linux 原基线镜像挂载本次后端代码执行扩展回归：81 项通过，1 项失败；后续增加的真实 200 MiB ZIP 用例另验通过，合计 82 项通过。范围为 `test_skill_upload_limits.py`、`test_site_skill_packages.py`、`test_skill_resources.py`、`test_workspace_mutations.py`、`test_issue_100_skill_library.py`、`test_personal_extensions.py`、`test_skill_context_integration.py`。
 - 唯一失败为 `test_each_message_and_compact_recovery_uses_current_skill_metadata`：会话返回 failed，模型夹具未被调用。在未挂载本次代码的原始 `ed037b3` 镜像中单独复现相同失败，未纳入 #125 修复范围。未将整组回归描述为全绿。
@@ -35,6 +36,6 @@
 
 ## 验证边界
 
-没有部署或修改线上生效的 Nginx 配置，没有使用真实云存储验证，也没有进行多并发大包压力测试。当前保留有界内存处理及管理端 Base64 传输方式，单请求内存占用会随包大小增加。线上启用时需同步应用 API、Web 和对应 Nginx 模板，不能只改页面提示。
+没有部署或修改线上生效的 Nginx 配置，没有使用真实云存储验证，也没有进行多并发大包压力测试。当前保留有界内存处理及管理端 Base64 传输方式，单请求内存占用会随包大小增加。列表发现依赖存储对象清单提供当前 `.skills/` 文件名；线上启用时需同步应用 API、Web 和对应 Nginx 模板，不能只改页面提示。
 
 Issue 保持打开，供后续代码审查与交付核对。

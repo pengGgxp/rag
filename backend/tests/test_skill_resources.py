@@ -78,6 +78,19 @@ def test_folder_import_preserves_nested_structure_and_does_not_start_cloud(accou
         f"{body['directory']}/SKILL.md", f"{body['directory']}/assets/data.csv"}
 
 
+def test_folder_import_accepts_more_than_one_thousand_files(accounts, monkeypatch, resource_store):
+    client, _, _ = setup_site(accounts, monkeypatch)
+    files = [("files", ("SKILL.md", FILES["SKILL.md"]))]
+    paths = ["package/SKILL.md"]
+    for index in range(1000):
+        path = f"package/data/{index}.txt"
+        files.append(("files", (f"{index}.txt", b"x")))
+        paths.append(path)
+    response = client.post("/agent/skills/import-folder", files=files, data={"paths": paths})
+    assert response.status_code == 201, response.text
+    assert len(response.json()["items"]) == 1001
+
+
 def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(accounts, monkeypatch, resource_store):
     client, db, _ = setup_site(accounts, monkeypatch)
     result = importing(client)
@@ -95,6 +108,46 @@ def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(ac
     (_, other, _), _ = accounts
     register(other, "skill-file-list-outsider@example.com")
     assert other.get(f"/agent/skills/{item['id']}/files").status_code == 404
+
+
+def test_skill_catalog_indexes_only_manifests_and_reads_only_their_headers(accounts, monkeypatch, resource_store):
+    client, db, _ = setup_site(accounts, monkeypatch)
+    access = access_for(client, db)
+    store = shared_resources.backend(db)
+    prefix = shared_resources.prefix(access.workspace_id)
+    manifest = prefix + ".skills/external/SKILL.md"
+    unrelated = prefix + "documents/large.md"
+    resource_store[0][manifest] = b"---\nname: external\ndescription: found\n---\n" + b"x" * 1_000_000
+    resource_store[0][unrelated] = b"unrelated"
+    ranged = []
+    original = store.download_range
+    def read_range(key, start, end):
+        ranged.append(key)
+        return original(key, start, end)
+    monkeypatch.setattr(store, "download_range", read_range)
+    catalog = client.get("/agent/skills")
+    assert catalog.status_code == 200
+    assert [item["name"] for item in catalog.json()] == ["external"]
+    assert ranged == [manifest]
+    indexed = {row.path for row in db.scalars(select(WorkspaceFile)).all()}
+    assert ".skills/external/SKILL.md" in indexed
+    assert "documents/large.md" not in indexed
+    resource_store[0].pop(manifest)
+    assert client.get("/agent/skills").json() == []
+    assert db.scalar(select(WorkspaceFile).where(WorkspaceFile.path == ".skills/external/SKILL.md")).deleted_at
+
+
+def test_skill_manifest_over_five_megabytes_can_be_imported_and_opened(accounts, monkeypatch, resource_store):
+    from app import skill_files
+    monkeypatch.setattr(skill_files, "MAX_FILE_BYTES", 6 * 1024 * 1024)
+    monkeypatch.setattr(skill_files, "MAX_BUNDLE_BYTES", 6 * 1024 * 1024)
+    markdown = b"---\nname: large\n---\n" + b"x" * (5 * 1024 * 1024)
+    client, _, _ = setup_site(accounts, monkeypatch)
+    result = importing(client, files={"SKILL.md": markdown})
+    item = next(row for row in result["items"] if row["path"].endswith("/SKILL.md"))
+    detail = client.get(f"/agent/skills/{item['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["markdown"].encode() == markdown
 
 
 def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(accounts, monkeypatch, resource_store):

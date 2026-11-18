@@ -1,7 +1,8 @@
 """Skill import is an ordinary workspace resource upload, with no published copy."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/agent/skills", tags=["workspace-skills"])
 
 
 class SkillContentUpdate(BaseModel):
-    content: str = Field(min_length=1, max_length=5_000_000)
+    content: str
     version: int = Field(default=1, ge=1, strict=True)
     revision: str | None = None
     request_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -59,7 +60,7 @@ def save_package(files, db, access):
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
     from .skill_discovery import discover
-    return discover(db, access)
+    return discover(db, access, refresh=True)
 
 
 @router.post("/import", status_code=201)
@@ -76,8 +77,16 @@ def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(g
 
 
 @router.post("/import-folder", status_code=201)
-def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = Form(...),
-                           db=Depends(get_db), access=Depends(get_access)):
+async def importing_folder(request: Request, db=Depends(get_db), access=Depends(get_access)):
+    access.editor()
+    async with request.form(max_files=float("inf"), max_fields=float("inf")) as form:
+        files, paths = form.getlist("files"), form.getlist("paths")
+        if not files or not all(hasattr(file, "file") and hasattr(file, "filename") for file in files) or not all(isinstance(path, str) for path in paths):
+            raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
+        return await run_in_threadpool(save_folder, files, paths, db, access)
+
+
+def save_folder(files, paths, db, access):
     access.editor()
     if len(files) != len(paths):
         raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
@@ -108,13 +117,10 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
         if version is None:
             raise HTTPException(404, "Skill 文件已删除")
         from .shared_resources import backend
-        from .skill_discovery import MAX_MANIFEST_BYTES
         with backend(db).download(version.object_key) as handle:
-            raw = handle.read(MAX_MANIFEST_BYTES + 1)
-        if len(raw) > MAX_MANIFEST_BYTES:
-            value.update(name=None, description="", manifest_path=row.path,
-                directory=row.path.rsplit("/", 1)[0], manifest_error="清单超过 5 MB，请在工作区替换文件后重试")
-            return value
+            raw = handle.read(skill_files.MAX_FILE_BYTES + 1)
+        if len(raw) > skill_files.MAX_FILE_BYTES:
+            raise HTTPException(413, f"Skill 文件不能超过 {skill_files.MAX_SIZE_MIB} MiB")
         content = raw.decode("utf-8")
         from .skill_discovery import parse
         value.update(**parse(content, row.path), markdown=content)

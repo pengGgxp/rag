@@ -42,6 +42,13 @@ def test_file_count_is_not_an_upload_limit():
     assert skill_files.validate_files(files) is files
 
 
+def test_zip_entry_count_is_not_an_upload_limit(monkeypatch):
+    monkeypatch.setattr(skill_files, "MAX_UPLOAD_BYTES", 2 * 1024 * 1024)
+    files = {"SKILL.md": b"ok", **{f"assets/{index}.txt": b"x" for index in range(1001)}}
+    data = zipped(files)
+    assert skill_files.unzip(data)[0] == files
+
+
 def test_real_200_mib_zip_upload_boundary_and_one_extra_byte():
     files = {"SKILL.md": b"ok", "assets/data.bin": b""}
     overhead = len(zipped(files))

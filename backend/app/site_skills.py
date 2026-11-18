@@ -216,7 +216,7 @@ def catalog(q: str = Query(default="", max_length=200), db=Depends(get_db), acce
         query = query.where(SiteSkill.name.icontains(q.strip(), autoescape=True))
     rows = db.scalars(query.order_by(SiteSkill.name, SiteSkill.id)).all()
     from .skill_discovery import discover
-    found = discover(db, access, refresh=False)
+    found = discover(db, access, refresh=True)
     return [{**catalog_read(row), "installed": any(item["name"] == row.name for item in found),
         "installed_directories": [item["directory"] for item in found if item["name"] == row.name]} for row in rows]
 
@@ -225,7 +225,7 @@ def catalog(q: str = Query(default="", max_length=200), db=Depends(get_db), acce
 def catalog_detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = _catalog_skill(db, identifier, detail=True)
     from .skill_discovery import discover
-    installed = [item["directory"] for item in discover(db, access, refresh=False) if item["name"] == row.name]
+    installed = [item["directory"] for item in discover(db, access, refresh=True) if item["name"] == row.name]
     value = catalog_read(row, True)
     value["installed"] = bool(installed)
     value["installed_directory"] = installed[0] if installed else None
@@ -265,7 +265,7 @@ def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), acce
         raise HTTPException(422, "请求标识过长，请重新发起")
     with workspace_lock(db, access.workspace_id):
         row = _catalog_skill(db, identifier, detail=True)
-        found = [item for item in discover(db, access, refresh=False) if item["name"] == row.name]
+        found = [item for item in discover(db, access, refresh=True) if item["name"] == row.name]
         if found:
             directories = [item["directory"] for item in found]
             return {"installed": True, "already_installed": True, "directory": directories[0],
@@ -278,7 +278,7 @@ def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), acce
         result = save_files(db, access, {f"{directory}/{path}": (content,
             mimetypes.guess_type(path)[0] or "application/octet-stream") for path, content in files.items()},
             request_id=request_id, source="platform")
-        if not any(item["name"] == row.name for item in discover(db, access, refresh=False)):
+        if not any(item["name"] == row.name for item in discover(db, access, refresh=True)):
             raise HTTPException(409, "上次安装后的文件已被修改或移除，请重新发起安装")
         return {"installed": True, "already_installed": False, "directory": directory,
             **result, "source": catalog_read(row)}
