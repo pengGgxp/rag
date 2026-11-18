@@ -61,6 +61,7 @@ from .storage import upload_fileobj
 from .document_ingestion import MAX_DOCUMENT_BYTES, inspect_file as inspect_upload, stage_upload, commit_upload, dispatch_ingestion
 from .storage_settings import router as storage_settings_router
 from .document_uploads import router as document_uploads_router
+from .skill_uploads import router as skill_uploads_router
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router
@@ -1114,6 +1115,7 @@ app.include_router(site_auth_router)
 app.include_router(site_admin_router)
 app.include_router(storage_settings_router)
 app.include_router(document_uploads_router)
+app.include_router(skill_uploads_router)
 from .chat_attachments import router as chat_attachments_router
 app.include_router(chat_attachments_router)
 app.include_router(permissions_router)

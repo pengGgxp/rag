@@ -162,6 +162,61 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
         raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持") from exc
 
 
+def unzip_packages(content: bytes) -> list[tuple[str, dict[str, bytes]]]:
+    """Read a ZIP once and split it into packages by each SKILL.md directory."""
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"ZIP 不能超过 {MAX_SIZE_MIB} MiB")
+    try:
+        _reject_raw_zip_paths(content)
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            entries, total = [], 0
+            for info in archive.infolist():
+                safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
+                safe_path(info.filename.rstrip("/") if info.is_dir() else info.filename)
+                mode = info.external_attr >> 16
+                kind = stat.S_IFMT(mode)
+                if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or info.flag_bits & 1:
+                    raise HTTPException(422, "ZIP 不允许链接、特殊文件或加密条目")
+                if info.is_dir():
+                    continue
+                total += info.file_size
+                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, "ZIP 超出 Skill 文件大小限制")
+                with archive.open(info) as source:
+                    data = source.read(MAX_FILE_BYTES + 1)
+                if len(data) != info.file_size:
+                    raise HTTPException(422, "ZIP 文件大小不一致")
+                entries.append((info.filename, data))
+        if len({path.casefold() for path, _ in entries}) != len(entries):
+            raise HTTPException(422, "ZIP 存在重复文件路径")
+        manifests = [path for path, _ in entries if path.rsplit("/", 1)[-1].casefold() == "skill.md"]
+        if not manifests:
+            raise HTTPException(422, "ZIP 中没有找到 SKILL.md")
+        roots = [(path.rsplit("/", 1)[0] + "/" if "/" in path else "") for path in manifests]
+        packages = []
+        for root in roots:
+            files = {}
+            for path, data in entries:
+                if not path.startswith(root):
+                    continue
+                if any(other.startswith(root) and path.startswith(other) for other in roots if other != root):
+                    continue
+                relative = path[len(root):]
+                if not relative:
+                    continue
+                if relative.casefold() == "skill.md":
+                    relative = "SKILL.md"
+                elif relative.rsplit("/", 1)[-1].casefold() == "skill.md":
+                    continue
+                files[relative] = data
+            files = validate_files(files)
+            label = root.rstrip("/").rsplit("/", 1)[-1] if root else "SKILL.md"
+            packages.append((label, files))
+        return packages
+    except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, RuntimeError, NotImplementedError, EOFError, ValueError) as exc:
+        raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持") from exc
+
+
 def archive_entries(path: str, content: bytes) -> list[dict]:
     """Inspect archive members in memory without extracting or recursing."""
     name = path.lower()

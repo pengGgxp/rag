@@ -131,6 +131,28 @@
 .skill-import .text-button { min-height: 44px; text-align: left; overflow-wrap: anywhere; max-width: 100%; }
 .skill-import > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); }
 .skill-import .extension-actions button { min-height: 44px; }
+.skill-package-review { display: grid; gap: 16px; border-top: 1px solid var(--line); padding-top: 20px; min-width: 0; }
+.skill-package-review > header, .skill-package-review > footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.skill-package-review > header span { color: var(--muted); font-size: 13px; }
+.skill-package-review-body { display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); min-height: 420px; border: 1px solid var(--line); }
+.skill-package-review-body nav { border-right: 1px solid var(--line); overflow-y: auto; }
+.skill-package-choice { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.skill-package-choice label { display: flex; align-items: flex-start; gap: 9px; flex: 1; min-width: 0; cursor: pointer; }
+.skill-package-choice label span { display: grid; gap: 4px; min-width: 0; }
+.skill-package-choice small { color: var(--muted); overflow-wrap: anywhere; }
+.skill-package-choice button { min-height: 36px; }
+.skill-package-choice button[aria-current="true"] { color: var(--accent); }
+.skill-package-review-body article { min-width: 0; padding: 18px; overflow-y: auto; }
+.skill-package-review-body article h3 { margin: 0 0 6px; }
+.skill-package-review-body article > p { color: var(--muted); }
+.skill-package-markdown { overflow-wrap: anywhere; }
+.skill-package-markdown pre { max-width: 100%; overflow: auto; }
+.skill-package-review-body details { margin-top: 16px; }
+@media (max-width: 680px) {
+  .skill-package-review-body { grid-template-columns: minmax(0, 1fr); }
+  .skill-package-review-body nav { border-right: 0; border-bottom: 1px solid var(--line); max-height: 240px; }
+  .skill-package-review-body article { max-height: 50vh; }
+}
 
 /* Detail pages share the shell; reading and editing have distinct content layouts. */
 .skill-detail-content { width: 100%; max-width: 960px; margin: 0 auto; min-width: 0; padding-bottom: 32px; }

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, Loader2, Save, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Save, Trash2, Upload, X } from "lucide-react";
 import * as Tabs from "../../../components/ui/tabs";
 import { ApiError, request } from "../../api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
@@ -11,6 +11,7 @@ import { useAdminChanges } from "../admin-changes";
 import type { PackageReview, Skill } from "./page";
 import { SkillResources } from "./skill-resources";
 import { skillUploadError } from "../../extensions/skill-upload";
+import { uploadSkillPackage, type SkillPackagePreview } from "../../extensions/skill-package-upload";
 import "../../billing.css";
 import "../platform-content.css";
 
@@ -34,6 +35,10 @@ export function SkillEditor({ id }: { id?: string }) {
   const [tab, setTab] = useState("edit");
   const [resourcePath, setResourcePath] = useState("");
   const [checked, setChecked] = useState<ReturnType<typeof checkedPackage>>();
+  const [packages, setPackages] = useState<SkillPackagePreview[]>([]);
+  const [uploadId, setUploadId] = useState("");
+  const [selectedPackages, setSelectedPackages] = useState<number[]>([]);
+  const [activePackage, setActivePackage] = useState(0);
   const packageReview = checked?.markdown === form.markdown && checked?.files === form.files ? checked.result : undefined;
   const input = useRef<HTMLInputElement>(null);
   const dirty = form.name !== saved.name || form.description !== saved.description ||
@@ -66,11 +71,10 @@ export function SkillEditor({ id }: { id?: string }) {
         if (error) { setError(error); return; }
         setBusy(true); setError(""); setNotice("");
         try {
-          const data = new FormData(); data.append("file", file);
-          const value = await request<Draft & { package_review: PackageReview }>("/site/admin/skills/import", { method: "POST", body: data });
-          const draft = { name: value.name, description: value.description, markdown: value.markdown, files: value.files, enabled: false };
-          setForm(draft); setChecked(checkedPackage(draft, value.package_review));
-          setResourcePath(""); setTab(value.files.length ? "files" : "edit"); setNotice("已导入草稿，请检查内容后保存");
+          const result = await uploadSkillPackage(file, "site");
+          setPackages(result.items); setUploadId(result.uploadId);
+          setSelectedPackages(result.items.map(item => item.id)); setActivePackage(result.items[0]?.id ?? 0);
+          setNotice(`识别到 ${result.items.length} 个 Skill，请检查正文并确认导入`);
         } catch (reason) { setError(reason instanceof Error ? reason.message : "导入失败，请重试"); }
         finally { setBusy(false); }
       }} />
@@ -82,9 +86,47 @@ export function SkillEditor({ id }: { id?: string }) {
     <AdminLoad loading={resource.loading} error={resource.error} retry={resource.reload}>
       {error && <p className="admin-error" role="alert">{error}</p>}
       {notice && <p className="billing-notice" role="status">{notice}</p>}
-      {replacing && <div className="admin-inline-confirm" role="alert"><span>导入将替换当前草稿，保存后才会更新 Skill。</span>
+      {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill">
+        <header><strong>识别到 {packages.length} 个 Skill</strong><span>检查每个 Skill 的名称、描述和完整正文</span></header>
+        <div className="skill-package-review-body">
+        <nav aria-label="Skill 列表">{packages.map(item => <div className="skill-package-choice" key={item.id}>
+            <label><input type="checkbox" checked={selectedPackages.includes(item.id)} aria-label={`导入${item.name}`}
+              onChange={event => setSelectedPackages(values => event.target.checked
+                ? [...values, item.id] : values.filter(value => value !== item.id))} />
+            <span><strong>{item.name}</strong><small>{item.description || item.folder}</small></span>
+            </label><button type="button" aria-current={item.id === activePackage ? "true" : undefined}
+              aria-label={`查看${item.name}正文`} onClick={() => setActivePackage(item.id)}>预览</button>
+          </div>)}</nav>
+          {packages.find(item => item.id === activePackage) && <article>
+            <h3>{packages[activePackage]?.name}</h3>
+            <p>{packages[activePackage]?.description}</p>
+            <div className="skill-package-markdown"><ReactMarkdown skipHtml>{packages[activePackage]?.markdown}</ReactMarkdown></div>
+            {!!packages[activePackage]?.resources.length && <details><summary>附属文件 · {packages[activePackage].resources.length}</summary>
+              <ul>{packages[activePackage].resources.map(file => <li key={file.path}>{file.path}</li>)}</ul>
+            </details>}
+          </article>}
+        </div>
+        <footer><button type="button" className="secondary" disabled={busy} onClick={async () => {
+          await request(`/site/admin/skills/uploads/${uploadId}`, { method: "DELETE" }).catch(() => undefined);
+          setPackages([]); setUploadId(""); setSelectedPackages([]);
+        }}><X size={15} />取消</button>
+          <button type="button" className="primary" disabled={busy || !selectedPackages.length} onClick={async () => {
+            setBusy(true); setError("");
+            try {
+              const result = await request<{ items: { id: string; name: string }[] }>(
+                `/site/admin/skills/uploads/${uploadId}/import`,
+                json({ items: selectedPackages }),
+              );
+              setNotice(`已导入 ${result.items.length} 个 Skill`);
+              router.replace("/admin/skills");
+            } catch (reason) { setError(reason instanceof Error ? reason.message : "导入失败，请重试"); }
+            finally { setBusy(false); }
+          }}><Check size={15} />导入所选 {selectedPackages.length} 个 Skill</button>
+        </footer>
+      </section>}
+      {replacing && <div className="admin-inline-confirm" role="alert"><span>导入会新建独立 Skill，当前草稿不会被修改。</span>
         <button className="secondary" disabled={busy} onClick={() => setReplacing(false)}>继续编辑</button>
-        <button className="secondary" disabled={busy} onClick={() => { setReplacing(false); input.current?.click(); }}>选择文件并替换</button>
+        <button className="secondary" disabled={busy} onClick={() => { setReplacing(false); input.current?.click(); }}>选择 Skill 包</button>
       </div>}
       {conflict && <div className="admin-inline-confirm"><span>重新加载会放弃当前修改。</span><button className="secondary" onClick={() => {
         setConflict(false); setError(""); setDeleting(false); void resource.reload();

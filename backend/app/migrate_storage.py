@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 from .db import SessionLocal
 from .models import (
     ChatAttachment, CloudComputerCommand, CloudComputerSession, Conversation, Document,
-    DocumentUpload, ImageTask, IngestionJob, JobState, SiteStorageSettings,
+    DocumentUpload, SkillUpload, ImageTask, IngestionJob, JobState, SiteStorageSettings,
     StorageMigration, StorageMigrationObject, WorkspaceExecutionJob, WorkspaceFileVersion, WorkspaceFile,
 )
 from .migrate_cos import fingerprint
@@ -48,6 +48,7 @@ def manifest(db):
 def assert_drained(db):
     checks = [
         select(DocumentUpload.id).where(DocumentUpload.state.in_(("uploading", "completing", "verifying"))),
+        select(SkillUpload.id).where(SkillUpload.state.not_in(("cleaned", "cancelled"))),
         select(IngestionJob.id).where(IngestionJob.state.in_((JobState.QUEUED, JobState.RUNNING))),
         select(Conversation.id).where(Conversation.active_request_id.is_not(None)),
         select(CloudComputerSession.id).where(CloudComputerSession.ended_at.is_(None)),

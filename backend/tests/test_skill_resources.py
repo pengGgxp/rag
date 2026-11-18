@@ -205,6 +205,31 @@ def test_unpack_rejects_links_duplicate_roots_and_limits(accounts, monkeypatch, 
     assert resource_store[0] == {}
 
 
+def test_zip_splits_multiple_skills_and_keeps_each_resource_with_its_manifest():
+    from app.skill_files import unzip_packages
+    packages = unzip_packages(zipped({
+        "collection/one/SKILL.md": b"---\nname: one\n---\nOne body",
+        "collection/one/data.txt": b"one resource",
+        "collection/two/SKILL.md": b"---\nname: two\n---\nTwo body",
+        "collection/two/data.txt": b"two resource",
+    }))
+    assert [folder for folder, _ in packages] == ["one", "two"]
+    assert packages[0][1] == {"SKILL.md": b"---\nname: one\n---\nOne body", "data.txt": b"one resource"}
+    assert packages[1][1] == {"SKILL.md": b"---\nname: two\n---\nTwo body", "data.txt": b"two resource"}
+
+
+def test_nested_skill_files_do_not_leak_into_parent_package():
+    from app.skill_files import unzip_packages
+    packages = unzip_packages(zipped({
+        "parent/SKILL.md": b"---\nname: parent\n---\nParent",
+        "parent/parent.txt": b"parent resource",
+        "parent/child/SKILL.md": b"---\nname: child\n---\nChild",
+        "parent/child/child.txt": b"child resource",
+    }))
+    assert packages[0][1] == {"SKILL.md": b"---\nname: parent\n---\nParent", "parent.txt": b"parent resource"}
+    assert packages[1][1] == {"SKILL.md": b"---\nname: child\n---\nChild", "child.txt": b"child resource"}
+
+
 def test_capacity_is_checked_before_writes_and_failed_import_removes_partial_objects(accounts, monkeypatch, resource_store):
     from app.storage_models import StorageQuotaSettings
     client, db, _ = setup_site(accounts, monkeypatch)
