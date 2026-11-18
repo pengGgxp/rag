@@ -67,6 +67,14 @@ def parse(content, path):
     return value
 
 
+def markdown_body(content):
+    """Return the instructions after frontmatter for readable package previews."""
+    try:
+        return frontmatter.loads(content.lstrip("\ufeff")).content
+    except Exception:
+        return content
+
+
 def discover(db, access, *, refresh=False):
     store = shared.backend(db)
     if store is None:

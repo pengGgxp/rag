@@ -66,7 +66,8 @@ export async function request<T>(
   let timedOut = false;
   const skillImport = path === "/site/admin/skills/import"
     || path === "/agent/skills/import" || path === "/agent/skills/import-folder";
-  const timeout = skillImport
+  const skillPackageProcessing = /^\/(?:agent\/skills|site\/admin\/skills)\/uploads\/[^/]+\/(?:preview|import)$/.test(path);
+  const timeout = skillImport || skillPackageProcessing
     ? 30 * 60_000
     : path.startsWith("/site/admin/storage") || /\/thinking\/test$/.test(path)
     || /\/models\/discover$/.test(path) || path === "/site/admin/search/test"

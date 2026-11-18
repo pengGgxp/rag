@@ -163,7 +163,7 @@ def preview(db, identifier, user_id, workspace_id, scope):
     if row.state != "completed":
         raise HTTPException(409, "请先完成上传")
     from .skill_files import text_content
-    from .skill_discovery import parse
+    from .skill_discovery import markdown_body, parse
     from .site_skill_packages import review
 
     packages = load_packages(db, row)
@@ -174,7 +174,7 @@ def preview(db, identifier, user_id, workspace_id, scope):
             raise HTTPException(422, f"{folder} 中的 SKILL.md 需要是 UTF-8 文本")
         metadata = parse(manifest, "SKILL.md")
         result.append({"id": index, "folder": folder, "name": metadata["name"] or folder,
-            "description": metadata["description"], "markdown": manifest,
+            "description": metadata["description"], "markdown": markdown_body(manifest),
             "resources": [{"path": path, "size": len(content)}
                 for path, content in sorted(files.items()) if path != "SKILL.md"],
             "package_review": review(files)})
@@ -188,8 +188,8 @@ def import_personal(identifier: UUID, payload: ImportSelection, db=Depends(get_d
     row = owned(db, identifier, access.user_id, access.workspace_id, "workspace")
     packages = load_packages(db, row)
     selected = select_packages(packages, payload.items)
-    from .personal_skills import save_package
-    results = [save_package(files, db, access) for _, files in selected]
+    from .personal_skills import save_packages
+    results = save_packages(selected, db, access)
     remove_upload(db, row)
     return {"items": results}
 

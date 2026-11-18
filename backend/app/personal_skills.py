@@ -57,6 +57,40 @@ def save_package(files, db, access):
         return {"directory": directory, **result}
 
 
+def save_packages(packages, db, access):
+    """Import selected packages in one workspace preflight and one journaled write."""
+    from .skill_discovery import parse, directory_name
+    from .workspace_mutations import save_files, snapshot, unique_name
+    from .file_operations import workspace_lock
+    import mimetypes
+
+    access.editor()
+    with workspace_lock(db, access.workspace_id):
+        state = snapshot(db, access)
+        current, directories, _ = state
+        occupied = set(current) | directories
+        files_to_save, targets = {}, []
+        for folder, files in packages:
+            skill_files.validate_files(files)
+            metadata = parse(files["SKILL.md"].decode("utf-8"), "SKILL.md")
+            directory = ".skills/" + directory_name(metadata.get("name") or folder or "skill")
+            if directory in occupied:
+                directory = unique_name(directory, occupied)
+            occupied.add(directory)
+            paths = []
+            for path, content in files.items():
+                target = f"{directory}/{path}"
+                paths.append(target)
+                files_to_save[target] = (
+                    content, mimetypes.guess_type(path)[0] or "application/octet-stream")
+            targets.append((directory, paths))
+
+        result = save_files(db, access, files_to_save, preflight_snapshot=state)
+        saved = {item["path"]: item for item in result["items"]}
+        return [{"directory": directory, "items": [saved[path] for path in paths]}
+                for directory, paths in targets]
+
+
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
     from .skill_discovery import discover

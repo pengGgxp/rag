@@ -4,7 +4,7 @@ import "./extensions.css";
 import "../resource-library.css";
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Check, FolderUp, Upload, X } from "lucide-react";
+import { Check, FolderUp, Loader2, Upload, X } from "lucide-react";
 import { request } from "../api";
 import { useAuth } from "../auth";
 import { ResourceNotice } from "../resource-notice";
@@ -17,7 +17,8 @@ import { uploadSkillPackage, zipSkillFolder, type SkillPackagePreview } from "./
 export function SkillImport({ id }: { id?: string }) {
   const { session, role } = useAuth();
   const input = useRef<HTMLInputElement>(null), folder = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [operation, setOperation] = useState<"upload" | "import" | null>(null), [error, setError] = useState("");
+  const busy = operation !== null;
   const [items, setItems] = useState<ResourceFile[]>([]);
   const [directory, setDirectory] = useState("");
   const [preview, setPreview] = useState<ResourceFile | null>(null);
@@ -31,7 +32,7 @@ export function SkillImport({ id }: { id?: string }) {
     if (!files.length || busy) return;
     const error = skillUploadError(files, isFolder);
     if (error) { setError(error); return; }
-    setBusy(true); setError(""); setItems([]); setDirectory("");
+    setOperation("upload"); setError(""); setItems([]); setDirectory("");
     try {
       const file = isFolder ? await zipSkillFolder(files) : files[0];
       const result = await uploadSkillPackage(file, "agent");
@@ -39,11 +40,11 @@ export function SkillImport({ id }: { id?: string }) {
       setSelected(result.items.map(item => item.id)); setActivePackage(0);
       if (!result.items.length) throw new Error("没有识别到 SKILL.md");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导入失败，请重试"); }
-    finally { setBusy(false); }
+    finally { setOperation(null); }
   }
   async function confirmImport() {
     if (!uploadId || !selected.length || busy) return;
-    setBusy(true); setError("");
+    setOperation("import"); setError("");
     try {
       const result = await request<{ items: { items: ResourceFile[]; directory: string }[] }>(
         `/agent/skills/uploads/${uploadId}/import`,
@@ -53,7 +54,7 @@ export function SkillImport({ id }: { id?: string }) {
       setItems(imported); setDirectory(result.items[0]?.directory ?? "");
       setPackages([]); setUploadId(""); setSelected([]);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导入失败，请重试"); }
-    finally { setBusy(false); }
+    finally { setOperation(null); }
   }
   async function discardPreview() {
     if (uploadId) await request(`/agent/skills/uploads/${uploadId}`, { method: "DELETE" }).catch(() => undefined);
@@ -65,10 +66,10 @@ export function SkillImport({ id }: { id?: string }) {
     {canWrite && <div className="extension-actions">
       <input ref={input} hidden type="file" accept=".md,.zip" onChange={event => { void upload(Array.from(event.target.files ?? []), false); event.target.value = ""; }} />
       <input ref={folder} hidden type="file" multiple {...{ webkitdirectory: "" }} onChange={event => { void upload(Array.from(event.target.files ?? []), true); event.target.value = ""; }} />
-      <button type="button" className="primary" disabled={busy || !!uploadId} onClick={() => input.current?.click()}><Upload size={16} />{busy ? "正在上传并识别" : "选择 Skill 包"}</button>
+      <button type="button" className="primary" disabled={busy || !!uploadId} onClick={() => input.current?.click()}><Upload size={16} />{operation === "upload" ? "正在上传并识别" : "选择 Skill 包"}</button>
       <button type="button" className="secondary" disabled={busy || !!uploadId} onClick={() => folder.current?.click()}><FolderUp size={16} />选择文件夹</button>
     </div>}
-    {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill">
+    {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill" aria-busy={busy}>
       <header><strong>识别到 {packages.length} 个 Skill</strong><span>选择要导入的项目并查看正文</span></header>
       <div className="skill-package-review-body">
         <nav aria-label="Skill 列表">{packages.map(item => <div className="skill-package-choice" key={item.id}>
@@ -90,7 +91,8 @@ export function SkillImport({ id }: { id?: string }) {
       </div>
       <footer><button type="button" className="secondary" disabled={busy} onClick={() => void discardPreview()}><X size={15} />取消</button>
         <button type="button" className="primary" disabled={busy || !selected.length} onClick={() => void confirmImport()}>
-          <Check size={15} />导入所选 {selected.length} 个 Skill
+          {operation === "import" ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
+          {operation === "import" ? "正在导入" : `导入所选 ${selected.length} 个 Skill`}
         </button></footer>
     </section>}
     {(error || resource.error) && <p className="extension-error" role="alert">{error || resource.error}</p>}

@@ -70,13 +70,15 @@ def test_direct_upload_previews_and_imports_selected_skill_only(accounts, monkey
     assert preview.status_code == 200, preview.text
     items = preview.json()["items"]
     assert [item["name"] for item in items] == ["one", "two"]
-    assert "One full instruction body" in items[0]["markdown"]
+    assert items[0]["markdown"] == "One full instruction body"
+    assert "name: one" not in items[0]["markdown"]
     assert items[0]["resources"][0]["path"] == "a.txt"
-    imported = client.post(f"/agent/skills/uploads/{upload_id}/import", json={"items": [1]})
+    imported = client.post(f"/agent/skills/uploads/{upload_id}/import", json={"items": [0, 1]})
     assert imported.status_code == 201, imported.text
     saved = imported.json()["items"]
-    assert len(saved) == 1
-    assert saved[0]["directory"].endswith("two")
+    assert len(saved) == 2
+    assert saved[0]["directory"].endswith("one")
+    assert saved[1]["directory"].endswith("two")
     assert db.get(SkillUpload, UUID(upload_id)).state == "cleaned"
     paths = {row.path for row in db.query(WorkspaceFile).all()}
     assert any(path.endswith("/SKILL.md") for path in paths)
