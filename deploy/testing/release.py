@@ -64,7 +64,7 @@ def validate_manifest(document):
         raise ReleaseError("invalid test release version")
     images = document.get("images")
     if not isinstance(images, dict) or set(images) != set(IMAGES):
-        raise ReleaseError("test release requires API, preview Worker and Web images")
+        raise ReleaseError("test release requires API and Web images")
     if any(not isinstance(image, str) or not DIGEST_IMAGE.fullmatch(image) for image in images.values()):
         raise ReleaseError("all test images must be pinned by digest")
     if not isinstance(document.get("alembic_head"), str) or not re.fullmatch(r"[a-zA-Z0-9_]+", document["alembic_head"]):
