@@ -27,7 +27,7 @@ DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 REQUIRED_SERVICES = ("api", "worker", "web")
 ROLLBACK_POLICIES = {"automatic-app-rollback", "restore-backup-required"}
 ALEMBIC_HEAD_SUFFIX = re.compile(r"\s+\(head\)$")
-NGINX_FILES = ("zk.str1ct.top.conf", "http-preview.conf")
+NGINX_FILES = ("syfc.moonlitstarway.top.conf", "preview-syfc.moonlitstarway.top.conf")
 APPLICATION_SERVICES = ("api", "worker", "preview", "web")
 WORKER_SERVICES = ("worker",)
 DRAIN_TIMEOUT_SECONDS = 120
@@ -46,8 +46,8 @@ REQUIRED_PACKAGE_FILES = {
     "release-policy.json",
 }
 REQUIRED_PACKAGE_FILE_NAMES = {
-    "nginx/zk.str1ct.top.conf",
-    "nginx/http-preview.conf",
+    "nginx/syfc.moonlitstarway.top.conf",
+    "nginx/preview-syfc.moonlitstarway.top.conf",
     "bin/deploy-release",
     "bin/health",
     "bin/maintenance",
@@ -65,7 +65,7 @@ class ReleaseError(RuntimeError):
 @dataclass(frozen=True)
 class Paths:
     root: Path = Path("/opt/zhiku")
-    nginx_root: Path = Path("/www/server/panel/vhost/nginx")
+    nginx_root: Path = Path("/etc/nginx/sites-enabled")
 
     @property
     def releases(self) -> Path:
@@ -168,7 +168,13 @@ def verify_checksums(release_dir: Path) -> None:
         raise ReleaseError(f"invalid checksum file: {exc}") from exc
     if not entries:
         raise ReleaseError("release checksum file is empty")
-    missing = (REQUIRED_PACKAGE_FILES | REQUIRED_PACKAGE_FILE_NAMES) - set(entries)
+    missing = REQUIRED_PACKAGE_FILES - set(entries)
+    nginx_pairs = (
+        {"nginx/syfc.moonlitstarway.top.conf", "nginx/preview-syfc.moonlitstarway.top.conf"},
+        {"nginx/zk.str1ct.top.conf", "nginx/http-preview.conf"},
+    )
+    if not any(pair <= set(entries) for pair in nginx_pairs):
+        missing.update(REQUIRED_PACKAGE_FILE_NAMES)
     for prefix in REQUIRED_PACKAGE_PREFIXES:
         if not any(Path(name).parts[: len(Path(prefix).parts)] == Path(prefix).parts for name in entries):
             missing.add(prefix.rstrip("/"))
@@ -970,48 +976,31 @@ def stop_current_workers(paths: Paths, runner: CommandRunner) -> None:
 
 def stop_legacy_producers(runner: CommandRunner) -> None:
     """Stop legacy producers before both stacks share the production database."""
-    compose_files = [
-        Path("/data1/rag-platform/docker-compose.yml"),
-        Path("/data1/rag-platform/docker-compose.deploy.yml"),
-        Path("/data1/rag-platform/docker-compose.override.yml"),
-        Path("/tmp/web-image-override.yml"),
-        Path("/data1/rag-platform/scripts/question-workbench.compose.yml"),
-    ]
+    compose_file = Path("/opt/zhiku/releases/v0.1.29/compose.yml")
+    env_file = Path("/opt/zhiku/releases/v0.1.29/.env.release")
     args = [
         "docker", "compose",
-        "--project-directory", "/data1/rag-platform",
+        "--project-directory", str(compose_file.parent),
+        "--env-file", str(env_file),
+        "-f", str(compose_file),
     ]
-    for path in compose_files:
-        if path.is_file():
-            args.extend(["-f", str(path)])
-    # The legacy stack did not define a separate preview worker.
     args.extend(["stop", "worker", "preview"])
     runner.run(args)
 
 
 def start_legacy_producers(runner: CommandRunner) -> None:
     """Best-effort recovery before a first takeover has replaced containers."""
-    compose_files = [
-        Path("/data1/rag-platform/docker-compose.yml"),
-        Path("/data1/rag-platform/docker-compose.deploy.yml"),
-        Path("/data1/rag-platform/docker-compose.override.yml"),
-        Path("/tmp/web-image-override.yml"),
-        Path("/data1/rag-platform/scripts/question-workbench.compose.yml"),
-    ]
+    compose_file = Path("/opt/zhiku/releases/v0.1.29/compose.yml")
+    env_file = Path("/opt/zhiku/releases/v0.1.29/.env.release")
     args = [
         "docker", "compose",
-        "--project-directory", "/data1/rag-platform",
+        "--project-directory", str(compose_file.parent),
+        "--env-file", str(env_file),
+        "-f", str(compose_file),
     ]
-    for path in compose_files:
-        if path.is_file():
-            args.extend(["-f", str(path)])
     args.extend(["start", "worker"])
     runner.run(args)
-    # The preview gateway was stopped above but is not a task producer for the
-    # new stack. Restart it independently so a failed pre-switch attempt leaves
-    # the legacy environment as it was.
-    preview_args = list(args[:-1]) + ["start", "preview"]
-    runner.run(preview_args)
+    runner.run([*args[:-1], "start", "preview"])
 
 
 def rollback(paths: Paths, previous: Path, runner: CommandRunner) -> None:

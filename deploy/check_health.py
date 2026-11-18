@@ -232,7 +232,7 @@ def check_all(
     expected_version: str = "",
     expected_commit: str = "",
     expected_alembic: str = "",
-    public_base_url: str = "https://zk.str1ct.top",
+    public_base_url: str = "https://syfc.moonlitstarway.top",
 ) -> dict:
     current = Path("/opt/zhiku/current")
     api = probe(f"{base_url}:8000/ready", expect_json=True, require_status=True)
@@ -287,7 +287,7 @@ def check_all(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1")
-    parser.add_argument("--public-base-url", default="https://zk.str1ct.top")
+    parser.add_argument("--public-base-url", default="https://syfc.moonlitstarway.top")
     parser.add_argument("--expected-version", default="")
     parser.add_argument("--expected-commit", default="")
     parser.add_argument("--expected-alembic", default="")
