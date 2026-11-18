@@ -27,8 +27,8 @@ COPIES = {
     "app.env.example": "app.env.example",
     "deployment.env.example": "deployment.env.example",
     "production.env.reference.md": "production.env.reference.md",
-    "nginx/syfc.moonlitstarway.top.conf": "nginx/syfc.moonlitstarway.top.conf",
-    "nginx/preview-syfc.moonlitstarway.top.conf": "nginx/preview-syfc.moonlitstarway.top.conf",
+    "nginx/syfc.moonlitstarway.top": "nginx/syfc.moonlitstarway.top",
+    "nginx/preview-syfc.moonlitstarway.top": "nginx/preview-syfc.moonlitstarway.top",
     "nginx/zk.str1ct.top.conf": "nginx/zk.str1ct.top.conf",
     "nginx/http-preview.conf": "nginx/http-preview.conf",
     "bin/deploy-release": "bin/deploy-release",
@@ -86,8 +86,8 @@ def build(
         source = deploy_root / source_name
         if not source.is_file():
             legacy_names = {
-                "nginx/syfc.moonlitstarway.top.conf": "nginx/zk.str1ct.top.conf",
-                "nginx/preview-syfc.moonlitstarway.top.conf": "nginx/http-preview.conf",
+                "nginx/syfc.moonlitstarway.top": "nginx/zk.str1ct.top.conf",
+                "nginx/preview-syfc.moonlitstarway.top": "nginx/http-preview.conf",
             }
             source = deploy_root / legacy_names.get(source_name, source_name)
         if not source.is_file():

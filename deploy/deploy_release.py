@@ -27,7 +27,7 @@ DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 REQUIRED_SERVICES = ("api", "worker", "web")
 ROLLBACK_POLICIES = {"automatic-app-rollback", "restore-backup-required"}
 ALEMBIC_HEAD_SUFFIX = re.compile(r"\s+\(head\)$")
-NGINX_FILES = ("syfc.moonlitstarway.top.conf", "preview-syfc.moonlitstarway.top.conf")
+NGINX_FILES = ("syfc.moonlitstarway.top", "preview-syfc.moonlitstarway.top")
 APPLICATION_SERVICES = ("api", "worker", "preview", "web")
 WORKER_SERVICES = ("worker",)
 DRAIN_TIMEOUT_SECONDS = 120
@@ -46,8 +46,8 @@ REQUIRED_PACKAGE_FILES = {
     "release-policy.json",
 }
 REQUIRED_PACKAGE_FILE_NAMES = {
-    "nginx/syfc.moonlitstarway.top.conf",
-    "nginx/preview-syfc.moonlitstarway.top.conf",
+    "nginx/syfc.moonlitstarway.top",
+    "nginx/preview-syfc.moonlitstarway.top",
     "bin/deploy-release",
     "bin/health",
     "bin/maintenance",
@@ -170,7 +170,7 @@ def verify_checksums(release_dir: Path) -> None:
         raise ReleaseError("release checksum file is empty")
     missing = REQUIRED_PACKAGE_FILES - set(entries)
     nginx_pairs = (
-        {"nginx/syfc.moonlitstarway.top.conf", "nginx/preview-syfc.moonlitstarway.top.conf"},
+        {"nginx/syfc.moonlitstarway.top", "nginx/preview-syfc.moonlitstarway.top"},
         {"nginx/zk.str1ct.top.conf", "nginx/http-preview.conf"},
     )
     if not any(pair <= set(entries) for pair in nginx_pairs):
