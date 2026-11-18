@@ -2,7 +2,7 @@ name: rag-platform
 
 services:
   db:
-    image: pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    image: pgvector/pgvector@sha256:89890cf83cff20ff007285125c4a53b4d1371ec7287a214db587e663d90e0698
     environment:
       POSTGRES_DB: rag
       POSTGRES_USER: rag
@@ -19,7 +19,7 @@ services:
       - backend
 
   redis:
-    image: redis@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
+    image: redis@sha256:05e48490521099f37144adb0d0d4bef5330f4f4c3f592f971b6549b0e081e732
     command: ["redis-server", "--appendonly", "yes"]
     restart: unless-stopped
     healthcheck:
@@ -31,7 +31,7 @@ services:
       - backend
 
   minio:
-    image: rustfs/rustfs@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
+    image: rustfs/rustfs@sha256:53682f2b7b79e22e3b4b9fcc6677a3aeb7d9ef9fe46b609b2879e02a7f2a9a1b
     command: server /data --console-enable --console-address ":9001"
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-minioadmin}
