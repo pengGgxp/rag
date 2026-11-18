@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     ezfp_recharge_packages_json: str = "[]"
     ezfp_custom_recharge_enabled: bool = False
     ezfp_custom_credits_per_yuan: int = Field(default=100, ge=1, le=1_000_000)
+    payment_trusted_proxy_ips: str = ""
     usage_authorization_hold_credits: int = Field(default=1, ge=1, le=100000)
     workspace_executor_url: str | None = None
     resource_cache_dir: str = "/tmp/rag-resource-cache"
@@ -86,6 +87,13 @@ class Settings(BaseSettings):
     git_commit: str = "unknown"
     config_contract: int = 1
     deployment_rollback: str = "automatic-app-rollback"
+
+    @field_validator("payment_trusted_proxy_ips")
+    @classmethod
+    def validate_payment_trusted_proxy_ips(cls, value: str) -> str:
+        from .client_ip import trusted_proxy_networks
+        trusted_proxy_networks(value)
+        return value
 
     @property
     def oidc_configured(self) -> bool:

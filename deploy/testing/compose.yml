@@ -31,6 +31,7 @@ services:
     restart: unless-stopped
   api:
     <<: *app
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --no-proxy-headers]
     ports: ["127.0.0.1:18180:8000"]
   worker:
     <<: *app

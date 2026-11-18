@@ -94,6 +94,7 @@
 | `EZFP_RECHARGE_PACKAGES_JSON` | 历史兼容 | 易支付旧版套餐 JSON。 |
 | `EZFP_CUSTOM_RECHARGE_ENABLED` | 历史兼容 | 易支付旧版自定义充值开关。 |
 | `EZFP_CUSTOM_CREDITS_PER_YUAN` | 历史兼容 | 易支付旧版每元积分数，默认 100。 |
+| `PAYMENT_TRUSTED_PROXY_IPS` | 代理支付必需 | 可信代理 IP/CIDR，逗号分隔；默认空，不接受转发头。宿主机 Nginx → Docker API 按实际连接来源填写精确网关地址，不能使用所有地址或整个私网。详见 `docs/payment-client-ip.md`。 |
 | `USAGE_AUTHORIZATION_HOLD_CREDITS` | 可选 | 模型计量请求最低预留积分，默认 1；不是图片价格或沙箱单价。 |
 | `RESOURCE_CACHE_DIR` | 可选 | API/Worker 读取资源时使用的临时缓存目录，默认 `/tmp/rag-resource-cache`；不是云电脑工作目录。 |
 | `RESOURCE_CACHE_MAX_BYTES` | 可选 | 资源缓存容量上限，默认 5 GiB。 |

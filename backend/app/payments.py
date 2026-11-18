@@ -28,6 +28,7 @@ from . import auth
 from .audit_log import record_audit
 from .auth import Access, aware, get_access, now
 from .config import Settings, get_settings
+from .client_ip import payment_client_ip
 from .credits import recharge
 from .models import RechargeOrder, SitePaymentConfig, Workspace
 
@@ -705,7 +706,7 @@ def build_router(get_db):
         db.commit()
         order_id = order.id
         try:
-            client_ip = request.client.host if request.client else ""
+            client_ip = payment_client_ip(request, get_settings().payment_trusted_proxy_ips)
             checkout = adapter.create_checkout(settings, order, client_ip)
             next_status = "pending"
         except GatewayError as exc:

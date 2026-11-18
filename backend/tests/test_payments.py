@@ -105,7 +105,7 @@ def test_order_is_immutable_idempotent_and_does_not_credit_before_payment(accoun
     assert owner.get("/payments/orders?page=0").status_code == 422
     assert owner.get("/payments/orders?page_size=9999").status_code == 422
 
-    for extra in ({"amount_fen": 1}, {"credits": 9999999}, {"status": "paid"}):
+    for extra in ({"amount_fen": 1}, {"credits": 9999999}, {"status": "paid"}, {"clientip": "192.0.2.99"}):
         assert owner.post("/payments/orders", json={
             "package_id": "test", "idempotency_key": str(uuid4()), **extra,
         }).status_code == 422
@@ -558,10 +558,24 @@ def sign_ezfp(values, private_key):
     return {**values, "sign_type": "RSA", "sign": base64.b64encode(signature).decode("ascii")}
 
 
-def test_ezfp_catalog_order_and_signed_callback_are_isolated_and_idempotent(accounts, gateway, monkeypatch):
+@pytest.mark.parametrize("peer,trusted,forwarded,expected_ip", [
+    ("10.0.0.1", "10.0.0.1,10.1.0.2", "192.0.2.99, 198.51.100.10, 10.1.0.2", "198.51.100.10"),
+    ("198.51.100.20", "10.0.0.1", "192.0.2.99", "198.51.100.20"),
+    ("fd00::1", "fd00::1", "2001:db8::10", "2001:db8::10"),
+])
+def test_ezfp_catalog_order_and_signed_callback_are_isolated_and_idempotent(
+        accounts, gateway, monkeypatch, peer, trusted, forwarded, expected_ip):
     (owner, _, anonymous), db = accounts
     session = register(owner)
     settings, _ = gateway
+    settings.payment_trusted_proxy_ips = trusted
+    original_app = owner._transport.app
+
+    async def proxy_connection(scope, receive, send):
+        scope["client"] = (peer, 1234)
+        await original_app(scope, receive, send)
+
+    monkeypatch.setattr(owner._transport, "app", proxy_connection)
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_pem = private.public_key().public_bytes(serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo).decode()
@@ -579,11 +593,21 @@ def test_ezfp_catalog_order_and_signed_callback_are_isolated_and_idempotent(acco
     assert "providers" not in catalog
     body = {"package_id": "ezfp-basic", "payment_method_id": "ezfp_wxpay", "idempotency_key": uuid4().hex,
         "quote": catalog["packages"][0]["quote"]}
-    monkeypatch.setattr(payments.EzfpAdapter, "create_checkout", lambda self, config, order, client_ip="":
-        Checkout("API-123", "https://checkout.example/ezfp"))
-    created = owner.post("/payments/orders", json=body)
+    checkout_ips = []
+
+    def checkout(self, config, order, client_ip=""):
+        checkout_ips.append(client_ip)
+        return Checkout("API-123", "https://checkout.example/ezfp")
+
+    monkeypatch.setattr(payments.EzfpAdapter, "create_checkout", checkout)
+    created = owner.post("/payments/orders", json=body, headers={
+        "X-Forwarded-For": forwarded, "X-Real-IP": "192.0.2.88"})
     assert created.status_code == 201, created.text
     order = created.json()
+    repeated = owner.post("/payments/orders", json=body, headers={"X-Forwarded-For": "192.0.2.77"})
+    assert repeated.json()["id"] == order["id"]
+    assert checkout_ips == [expected_ip]
+    assert expected_ip not in created.text
     row = db.get(RechargeOrder, UUID(order["id"]))
     assert row.provider_key == "ezfp" and row.merchant_num == "100100" and row.credits == 800
     callback = sign_ezfp({"pid": "100100", "trade_no": "API-123", "out_trade_no": order["order_no"],
@@ -631,7 +655,8 @@ def test_ezfp_invalid_channel_does_not_hide_payment_fm(accounts, gateway):
     assert preview.json()["payment_methods"] == [{"id": "zhifux_wxpay", "label": "wxpay"}]
 
 
-def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response(monkeypatch):
+@pytest.mark.parametrize("client_ip", ["192.0.2.1", "2001:db8::10"])
+def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response(monkeypatch, client_ip):
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     platform_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_pem = platform_private.public_key().public_bytes(serialization.Encoding.PEM,
@@ -650,6 +675,7 @@ def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response
         assert request.method == "POST" and request.url == "https://www.ezfp.cn/api/pay/create"
         sent = dict(__import__("urllib.parse", fromlist=["parse_qsl"]).parse_qsl(request.content.decode()))
         assert sent["pid"] == "100100" and sent["money"] == "10.00" and sent["method"] == "jump"
+        assert sent["clientip"] == client_ip
         unsigned = {key: value for key, value in sent.items() if key not in ("sign", "sign_type")}
         public = private.public_key()
         public.verify(base64.b64decode(sent["sign"]), payments._signed_fields(unsigned).encode(),
@@ -660,7 +686,7 @@ def test_ezfp_adapter_signs_fixed_create_endpoint_and_rejects_untrusted_response
 
     monkeypatch.setattr(payments.httpx, "Client", lambda **kwargs: original_client(**kwargs,
         transport=httpx.MockTransport(handle)))
-    assert payments.EzfpAdapter().create_checkout(settings, order, "192.0.2.1") == Checkout(
+    assert payments.EzfpAdapter().create_checkout(settings, order, client_ip) == Checkout(
         "PLAT-1", "https://checkout.example/pay")
     assert observed
 
