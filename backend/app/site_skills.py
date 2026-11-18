@@ -36,9 +36,9 @@ class SkillWrite(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(min_length=1, max_length=1024)
-    markdown: str = Field(min_length=1, max_length=50000)
+    markdown: str = Field(min_length=1)
     enabled: bool = False
-    files: list[SkillFileWrite] = Field(default_factory=list, max_length=200)
+    files: list[SkillFileWrite] = Field(default_factory=list)
 
 
 class SkillUpdate(SkillWrite):
@@ -97,15 +97,11 @@ async def import_markdown(file: UploadFile = File(...), actor=Depends(site_admin
         raise HTTPException(413, f"Skill 包不能超过 {skill_files.MAX_SIZE_MIB} MiB")
     try:
         files, folder = ({"SKILL.md": data}, None) if suffix.endswith(".md") else unzip(data)
-        if len(files["SKILL.md"]) > 210000:
-            raise HTTPException(413, "SKILL.md 过大，请缩短指令或将补充说明放入独立文字文件")
         skill_text = text_content(files["SKILL.md"])
         if skill_text is None:
             raise ValueError("SKILL.md must be UTF-8 text")
         post = frontmatter.loads(skill_text.lstrip("\ufeff"))
         markdown = post.content
-        if len(markdown) > 50000:
-            raise HTTPException(413, "SKILL.md 正文不能超过 50000 个字符")
         resources = {path: content for path, content in files.items() if path != "SKILL.md"}
         package_review = review(files)
         return ImportedSkill(name=post.get("name") or folder or (file.filename or "SKILL.md").rsplit("/", 1)[-1].rsplit(".", 1)[0],
@@ -119,8 +115,8 @@ async def import_markdown(file: UploadFile = File(...), actor=Depends(site_admin
 
 class SkillPackageReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    markdown: str = Field(min_length=1, max_length=50000)
-    files: list[SkillFileWrite] = Field(default_factory=list, max_length=200)
+    markdown: str = Field(min_length=1)
+    files: list[SkillFileWrite] = Field(default_factory=list)
 
 
 @router.post("/review")
@@ -220,7 +216,7 @@ def catalog(q: str = Query(default="", max_length=200), db=Depends(get_db), acce
         query = query.where(SiteSkill.name.icontains(q.strip(), autoescape=True))
     rows = db.scalars(query.order_by(SiteSkill.name, SiteSkill.id)).all()
     from .skill_discovery import discover
-    found = discover(db, access)
+    found = discover(db, access, refresh=False)
     return [{**catalog_read(row), "installed": any(item["name"] == row.name for item in found),
         "installed_directories": [item["directory"] for item in found if item["name"] == row.name]} for row in rows]
 
@@ -229,7 +225,7 @@ def catalog(q: str = Query(default="", max_length=200), db=Depends(get_db), acce
 def catalog_detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = _catalog_skill(db, identifier, detail=True)
     from .skill_discovery import discover
-    installed = [item["directory"] for item in discover(db, access) if item["name"] == row.name]
+    installed = [item["directory"] for item in discover(db, access, refresh=False) if item["name"] == row.name]
     value = catalog_read(row, True)
     value["installed"] = bool(installed)
     value["installed_directory"] = installed[0] if installed else None
@@ -269,7 +265,7 @@ def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), acce
         raise HTTPException(422, "请求标识过长，请重新发起")
     with workspace_lock(db, access.workspace_id):
         row = _catalog_skill(db, identifier, detail=True)
-        found = [item for item in discover(db, access) if item["name"] == row.name]
+        found = [item for item in discover(db, access, refresh=False) if item["name"] == row.name]
         if found:
             directories = [item["directory"] for item in found]
             return {"installed": True, "already_installed": True, "directory": directories[0],
@@ -282,7 +278,7 @@ def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), acce
         result = save_files(db, access, {f"{directory}/{path}": (content,
             mimetypes.guess_type(path)[0] or "application/octet-stream") for path, content in files.items()},
             request_id=request_id, source="platform")
-        if not any(item["name"] == row.name for item in discover(db, access)):
+        if not any(item["name"] == row.name for item in discover(db, access, refresh=False)):
             raise HTTPException(409, "上次安装后的文件已被修改或移除，请重新发起安装")
         return {"installed": True, "already_installed": False, "directory": directory,
             **result, "source": catalog_read(row)}

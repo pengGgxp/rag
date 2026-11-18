@@ -12,7 +12,6 @@ from hashlib import sha256
 
 from fastapi import HTTPException
 
-MAX_FILES = 200
 MAX_SIZE_MIB = 200
 MAX_FILE_BYTES = MAX_BUNDLE_BYTES = MAX_UPLOAD_BYTES = MAX_SIZE_MIB * 1024 * 1024
 MAX_ENCODED_FILE_CHARS = 4 * ((MAX_FILE_BYTES + 2) // 3)
@@ -69,8 +68,8 @@ def manifest(files: dict[str, bytes]) -> list[dict]:
 
 
 def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
-    if not files or len(files) > MAX_FILES:
-        raise HTTPException(422, f"Skill 必须包含 1–{MAX_FILES} 个文件")
+    if not files:
+        raise HTTPException(422, "Skill 至少需要包含一个文件")
     seen = set()
     total = 0
     for path, content in files.items():
@@ -140,8 +139,6 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
         _reject_raw_zip_paths(content)
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             infos = archive.infolist()
-            if len(infos) > MAX_FILES * 3:
-                raise HTTPException(413, "ZIP 条目过多")
             entries, total = [], 0
             for info in infos:
                 safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
@@ -153,8 +150,8 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
                 if info.is_dir():
                     continue
                 total += info.file_size
-                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                    raise HTTPException(413, "ZIP 超出 Skill 文件数量或大小限制")
+                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, "ZIP 超出 Skill 文件大小限制")
                 with archive.open(info) as source:
                     data = source.read(MAX_FILE_BYTES + 1)
                 if len(data) != info.file_size:
@@ -173,8 +170,6 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
             _reject_raw_zip_paths(content)
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 infos = archive.infolist()
-                if len(infos) > MAX_FILES * 3:
-                    raise HTTPException(413, "压缩包条目过多")
                 entries, total = [], 0
                 for info in infos:
                     member = info.filename.rstrip("/") if info.is_dir() else info.filename
@@ -186,8 +181,8 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
                     if info.is_dir():
                         continue
                     total += info.file_size
-                    if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                        raise HTTPException(413, "压缩包超出 Skill 文件数量或大小限制")
+                    if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                        raise HTTPException(413, "压缩包超出 Skill 文件大小限制")
                     with archive.open(info) as source:
                         data = source.read(MAX_FILE_BYTES + 1)
                     if len(data) != info.file_size:
@@ -195,20 +190,17 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
                     entries.append({"path": member, "size": info.file_size})
                 return entries
         if name.endswith((".tar", ".tar.gz", ".tgz")):
-            entries, total, members = [], 0, 0
+            entries, total = [], 0
             with tarfile.open(fileobj=io.BytesIO(content), mode="r:*") as archive:
                 for info in archive:
-                    members += 1
-                    if members > MAX_FILES * 3:
-                        raise HTTPException(413, "压缩包条目过多")
                     safe_path(info.name.rstrip("/") if info.isdir() else info.name)
                     if not (info.isfile() or info.isdir()):
                         raise HTTPException(422, "TAR 不允许链接或特殊文件")
                     if info.isdir():
                         continue
                     total += info.size
-                    if info.size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                        raise HTTPException(413, "TAR 超出 Skill 文件数量或大小限制")
+                    if info.size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                        raise HTTPException(413, "TAR 超出 Skill 文件大小限制")
                     source = archive.extractfile(info)
                     if source is None or len(source.read(MAX_FILE_BYTES + 1)) != info.size:
                         raise HTTPException(422, "压缩包文件大小不一致")

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { MAX_SKILL_BYTES, MAX_SKILL_FILES, skillUploadError } from "../app/extensions/skill-upload.ts";
+import { MAX_SKILL_BYTES, skillUploadError } from "../app/extensions/skill-upload.ts";
 
 test("Skill uploads accept 200 MiB and reject one extra byte", () => {
   assert.equal(MAX_SKILL_BYTES, 200 * 1024 * 1024);
@@ -10,13 +10,11 @@ test("Skill uploads accept 200 MiB and reject one extra byte", () => {
   assert.equal(skillUploadError([{ size: MAX_SKILL_BYTES + 1 }]), "Skill 包不能超过 200 MiB");
 });
 
-test("folder uploads check individual files, total bytes and the existing file count", () => {
+test("folder uploads check individual files and total bytes without a file-count cap", () => {
   assert.equal(skillUploadError([{ size: MAX_SKILL_BYTES - 1 }, { size: 1 }], true), null);
   assert.equal(skillUploadError([{ size: MAX_SKILL_BYTES }, { size: 1 }], true), "Skill 总大小不能超过 200 MiB");
   assert.equal(skillUploadError([{ size: MAX_SKILL_BYTES + 1 }], true), "单个 Skill 文件不能超过 200 MiB");
-  assert.equal(MAX_SKILL_FILES, 200);
-  assert.equal(skillUploadError(Array.from({ length: MAX_SKILL_FILES }, () => ({ size: 1 })), true), null);
-  assert.equal(skillUploadError(Array.from({ length: MAX_SKILL_FILES + 1 }, () => ({ size: 1 })), true), "Skill 最多包含 200 个文件");
+  assert.equal(skillUploadError(Array.from({ length: 1000 }, () => ({ size: 1 })), true), null);
 });
 
 test("main and test proxy templates allow encoded 200 MiB Skill saves", () => {

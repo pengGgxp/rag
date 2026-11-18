@@ -79,7 +79,7 @@ def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(g
 def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = Form(...),
                            db=Depends(get_db), access=Depends(get_access)):
     access.editor()
-    if len(files) != len(paths) or len(files) > skill_files.MAX_FILES:
+    if len(files) != len(paths):
         raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
     entries, total = [], 0
     for file, path in zip(files, paths):

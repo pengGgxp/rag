@@ -48,7 +48,7 @@ def parse(content, path):
     return value
 
 
-def discover(db, access, *, refresh=True):
+def discover(db, access, *, refresh=False):
     if refresh:
         from .workspace_mutations import snapshot
         snapshot(db, access)

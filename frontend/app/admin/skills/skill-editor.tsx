@@ -98,7 +98,7 @@ export function SkillEditor({ id }: { id?: string }) {
           </div>
           <Tabs.Root value={tab} onValueChange={setTab} className="skill-content">
             <Tabs.List className="skill-content-tabs" aria-label="指令内容"><Tabs.Trigger value="edit">编辑指令</Tabs.Trigger><Tabs.Trigger value="preview">预览</Tabs.Trigger><Tabs.Trigger value="files">补充资料{form.files.length ? ` (${form.files.length})` : ""}</Tabs.Trigger></Tabs.List>
-            <Tabs.Content value="edit" forceMount className="skill-text-panel"><label>指令正文<textarea required maxLength={50000} rows={18} value={form.markdown} onInvalid={event => {
+            <Tabs.Content value="edit" forceMount className="skill-text-panel"><label>指令正文<textarea required rows={18} value={form.markdown} onInvalid={event => {
               if (tab !== "edit") { const textarea = event.currentTarget; event.preventDefault(); setTab("edit"); requestAnimationFrame(() => textarea.focus()); }
             }} onChange={event => setForm({ ...form, markdown: event.target.value })} /></label></Tabs.Content>
             <Tabs.Content value="preview"><div className="answer-markdown skill-preview"><ReactMarkdown skipHtml components={{

@@ -23,7 +23,6 @@ from test_skill_resources import FILES, zipped
 def test_capacity_and_encoded_schema_share_200_mib():
     assert skill_files.MAX_UPLOAD_BYTES == skill_files.MAX_FILE_BYTES == skill_files.MAX_BUNDLE_BYTES == 200 * 1024**2
     assert SkillFileWrite.model_json_schema()["properties"]["content"]["maxLength"] == 4 * ((200 * 1024**2 + 2) // 3)
-    assert skill_files.MAX_FILES == 200
 
 
 def test_real_200_mib_bundle_boundary_and_one_extra_byte():
@@ -36,6 +35,11 @@ def test_real_200_mib_bundle_boundary_and_one_extra_byte():
     with pytest.raises(HTTPException, match="单个 Skill") as error:
         skill_files.validate_files({"SKILL.md": b"", "assets/data.bin": data + b"x"})
     assert error.value.status_code == 413
+
+
+def test_file_count_is_not_an_upload_limit():
+    files = {"SKILL.md": b"ok", **{f"assets/{index}.txt": b"x" for index in range(1000)}}
+    assert skill_files.validate_files(files) is files
 
 
 def test_real_200_mib_zip_upload_boundary_and_one_extra_byte():
@@ -67,7 +71,7 @@ def test_decoded_limits_include_manifest_and_base64_padding(monkeypatch):
 
 
 @pytest.mark.parametrize("suffix", [".zip", ".tar.gz"])
-def test_archive_expansion_limit_is_inclusive_and_preserves_file_limit(monkeypatch, suffix):
+def test_archive_expansion_limit_is_inclusive_without_entry_limit(monkeypatch, suffix):
     files = {"SKILL.md": b"ok", "data.bin": b"\xff" * 8}
     if suffix == ".zip":
         data = zipped(files)
