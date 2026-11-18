@@ -90,7 +90,7 @@ class SourceTests(unittest.TestCase):
         self.git("push", "origin", "test")
         (self.repo / ".env").write_text("SECRET=ignored-private-fixture\n", encoding="utf-8")
 
-    def test_publish_builds_frozen_commit_and_packages_all_three_digests(self):
+    def test_publish_builds_frozen_commit_and_packages_application_digests(self):
         self.prepare_publisher()
         original_run = release.run
         builds = []
@@ -110,10 +110,10 @@ class SourceTests(unittest.TestCase):
         output = Path(self.temporary.name) / "published"
         with patch.object(release, "run", side_effect=fake_build):
             archive = release.publish(self.repo, output, "registry.example.test", "team")
-        self.assertEqual(len(builds), 3)
+        self.assertEqual(len(builds), 2)
         document = release.verify_package(archive.parent / archive.name.removesuffix(".tar.gz"))
         self.assertEqual(document["commit"], self.git("rev-parse", "HEAD"))
-        self.assertEqual(set(document["images"]), {"api", "preview-worker", "web"})
+        self.assertEqual(set(document["images"]), {"api", "web"})
         self.assertTrue(all("linux/amd64" in command for command in builds))
         self.assertTrue(archive.with_name(archive.name + ".sha256").is_file())
 

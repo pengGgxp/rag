@@ -35,10 +35,6 @@ services:
   worker:
     <<: *app
     command: [celery, -A, app.tasks.celery_app, worker, --loglevel=warning, --pool=solo, --concurrency=1, --hostname=tasks@%h]
-  preview-worker:
-    <<: *app
-    image: ${PREVIEW_WORKER_IMAGE:?}
-    command: [celery, -A, app.tasks.celery_app, worker, --loglevel=warning, --queues=previews, --pool=solo, --concurrency=1, --hostname=previews@%h]
   preview:
     <<: *app
     command: [uvicorn, app.preview_gateway:app, --host, 0.0.0.0, --port, "8001", --no-access-log, --no-proxy-headers]

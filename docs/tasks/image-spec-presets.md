@@ -30,5 +30,5 @@
 - 新代码校验全部 11 个现存模型配置成功；切换前后 `site_model_providers.image_config` 的逐模型摘要一致。
 - 公网检查：`/admin/models/new` 及其 15 个脚本资源返回正常，脚本包含新规格表单；匿名访问能力目录返回 401，短期管理员会话读取目录返回 6 个预设，现存模型列表可读取。检查后已删除临时会话。
 - 当前发布使用原有 Compose 文件组合，最后叠加发布目录的 `release.yml`；相同配置已保存为项目目录的 `docker-compose.image-specs.yml`。
-- 回滚：用相同 Compose 文件组合去掉最后的 image-specs 覆盖，重新创建 api/worker/preview/preview-worker/web 即恢复上一组保留镜像；如需恢复服务器源文件，使用 `backup/source.tar.gz`。本次无结构变更，不为应用回滚覆盖用户的新数据。
+- 回滚：用相同 Compose 文件组合去掉最后的 image-specs 覆盖，重新创建 api/worker/preview/web 即恢复上一组保留镜像；如需恢复服务器源文件，使用 `backup/source.tar.gz`。本次无结构变更，不为应用回滚覆盖用户的新数据。
 - 未调用真实生图模型，未进行付费接口测试；真实供应商能力仍未验收。

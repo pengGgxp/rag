@@ -2,6 +2,7 @@
 
 import { ChatWorkspace } from "./chat-workspace";
 import { Modal } from "./modal";
+import { FilePreview } from "./resource-preview";
 import { request } from "./api";
 import { LibraryAccess, useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
@@ -78,7 +79,7 @@ export default function KnowledgeWorkspace() {
   // Intercepted settings routes keep the workspace mounted beneath the dialog.
   if (pathname === "/") workspaceParams.current = searchParams;
   const params = workspaceParams.current;
-  const { role } = useAuth();
+  const { role, session } = useAuth();
   const uploads = useDocumentUploads();
   const canEdit = role === "admin" || role === "editor";
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
@@ -131,6 +132,7 @@ export default function KnowledgeWorkspace() {
     error?: boolean;
   } | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [sourcePreview, setSourcePreview] = useState<SourceDocument | null>(null);
   const selectedRef = useRef(selectedId);
   const documentRequest = useRef(0);
   selectedRef.current = selectedId;
@@ -216,6 +218,7 @@ export default function KnowledgeWorkspace() {
     setDocuments([]);
     setDocumentError("");
     setPreview(null);
+    setSourcePreview(null);
     setDocumentSearch("");
     setTrash(false);
     if (selectedId) loadDocuments(selectedId).catch(notifyError);
@@ -394,6 +397,9 @@ export default function KnowledgeWorkspace() {
     }
   }
   async function showDocument(doc: SourceDocument) {
+    setSourcePreview(doc);
+  }
+  async function showParsedDocument(doc: SourceDocument) {
     setPreview({
       id: doc.id,
       filename: doc.filename,
@@ -891,6 +897,7 @@ export default function KnowledgeWorkspace() {
                                   <button
                                     className="icon-button preview-action"
                                     title="查看原文"
+                                    data-document-preview={doc.id}
                                     aria-label={`查看 ${doc.filename}`}
                                     onClick={() => showDocument(doc)}
                                   >
@@ -1203,6 +1210,10 @@ export default function KnowledgeWorkspace() {
           </div>
         </Modal>
       )}
+      {sourcePreview && <FilePreview key={`${session.workspace_id}:${sourcePreview.id}`} file={{ type: "document", id: sourcePreview.id, name: sourcePreview.filename }}
+        restoreFocusSelector={`[data-document-preview="${sourcePreview.id}"]`}
+        scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setSourcePreview(null)}
+        alternate={<div className="file-viewer-info"><button type="button" className="secondary" onClick={() => { const doc = sourcePreview; setSourcePreview(null); void showParsedDocument(doc); }}>查看解析文本</button></div>} />}
       {preview && (
         <Modal title="原文详情" onClose={() => setPreview(null)} wide>
           <div className="preview-heading">

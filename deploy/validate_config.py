@@ -16,7 +16,6 @@ REQUIRED_SERVICES = {
     "minio",
     "api",
     "worker",
-    "preview-worker",
     "preview",
     "web",
     "migrate",
@@ -26,7 +25,6 @@ REQUIRED_SERVICES = {
 APPLICATION_SERVICES = {
     "api",
     "worker",
-    "preview-worker",
     "preview",
     "web",
     "migrate",
@@ -109,8 +107,6 @@ APP_KEYS = {
     "WORKSPACE_RUNNER_IMAGE",
     "WORKSPACE_FILE_RETENTION_DAYS",
     "WORKSPACE_FILE_QUOTA_MB",
-    "PREVIEW_CACHE_MAX_BYTES",
-    "PREVIEW_CACHE_IDLE_SECONDS",
     "DEPLOY_CONTROL_TOKEN",
     "APP_VERSION",
     "GIT_COMMIT",
@@ -166,10 +162,7 @@ GENERATED_COMPOSE_KEYS = {
     "MIGRATION_DATABASE_URL",
 }
 
-COMPOSE_KEYS = DEPLOYMENT_KEYS | GENERATED_COMPOSE_KEYS | {
-    "PREVIEW_CACHE_MAX_BYTES",
-    "PREVIEW_CACHE_IDLE_SECONDS",
-}
+COMPOSE_KEYS = DEPLOYMENT_KEYS | GENERATED_COMPOSE_KEYS
 
 COMPOSE_VARIABLE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
 DIGEST_IMAGE = re.compile(
@@ -283,12 +276,7 @@ def validate(
 
     # deploy_release.py derives these from app.env while generating
     # .env.release. They must not be duplicated in the operator template.
-    generated_compose_values = {
-        key: app_values[key]
-        for key in ("PREVIEW_CACHE_MAX_BYTES", "PREVIEW_CACHE_IDLE_SECONDS")
-        if key in app_values
-    }
-    effective_compose_values = {**deployment_values, **generated_compose_values}
+    effective_compose_values = dict(deployment_values)
     missing_compose = COMPOSE_KEYS - set(effective_compose_values) - GENERATED_COMPOSE_KEYS
     if missing_compose:
         fail(f"deployment env table does not cover Compose: {sorted(missing_compose)}")

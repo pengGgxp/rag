@@ -1,51 +1,27 @@
 # 资源库内容预览
 
-任务范围与验收记录见 `tasks/resource-content-preview.md`。2026-11-07 已完成线上部署与隔离账号验收。
+本页描述当前用户文件预览行为。Issue #120 的实现及验收记录见 [`tasks/direct-file-preview-120.md`](tasks/direct-file-preview-120.md)。
 
 ## 用户流程
 
-`/resources` 是当前工作区的 Windows 式目录浏览器，支持卡片/列表偏好、路径导航、搜索、来源筛选、上传、预览、编辑、复制、剪切、粘贴与删除。聊天附件选择保持紧凑列表，不改变工作区权限或附件引用。
+工作区资源、聊天附件和成果、Skill 工作区文件、知识库原文件共用浏览器文件查看器。图片可在聊天中直接显示；文件入口默认打开预览，下载是独立操作。知识库保留“查看解析文本”作为原文件阅读的另一种方式。HTML、SVG、Markdown 等文字内容均以惰性文本显示，不执行文件携带的脚本或活动内容。
 
-图片使用真实 WebP 缩略图，打开后显示原图并支持缩放拖动。PDF 在浏览器内按页阅读，采用 64 KiB Range 读取，不先接收完整文件。Word（`.doc`、`.docx`）仅在首次打开时由 LibreOffice 转为 PDF，后续使用相同阅读器；列表不触发 Word 转换。保留原文件下载。HTML/SVG/脚本不以同源活动内容执行，文字按纯文本展示。
+支持 PNG、JPEG、WebP、GIF、AVIF、BMP 图片，PDF、DOCX、PPTX，以及 Markdown、文本和常见代码格式。图片按原比例显示，支持缩放；PDF 使用 PDF.js 分段读取，支持分页和缩放；DOCX/PPTX 在浏览器内解析为可读页面。Office 以内容可读为目标，不承诺和桌面 Office 像素一致。`.doc`、`.ppt`、加密、损坏或超限文件提供明确错误和下载入口。Office 原文件上限 50 MiB，解压资源总量上限 150 MiB、最多 4000 个 ZIP 条目；Office 依赖按需加载。
 
-## 接口与数据
+## 访问与计量
 
-所有接口沿用当前登录用户和工作区资源权限；viewer 也可以请求生成预览。模型不参与预览生成。
+OSS 保持私有。`POST /resources/{id}/preview-access`、`POST /chat/attachments/{id}/preview-access` 和 `POST /documents/{id}/preview-access` 在服务端执行资源、工作区、会话附件或知识库权限检查，HEAD 校验当前对象元数据，然后签发五分钟有效的短期读取链接。知识库链接指向确切文档版本。客户端不能提交对象键或存储地址。
 
-| 方法 | 路径 | 行为 |
-| --- | --- | --- |
-| GET | `/resources/{id}/preview` | 重新鉴权、HEAD 原对象，返回当前指纹、类型、大小与预览状态 |
-| POST | `/resources/{id}/preview` | `{kind: "thumbnail"或"document", retry: boolean}`；202 返回持久化任务，重复调用复用同一记录 |
-| GET/HEAD | `/resources/{id}/preview/original?revision=…` | 当前原文件；支持单段 Range，指纹变化返回 409 |
-| GET/HEAD | `/resources/{id}/preview/{preview_id}/content` | 当前缩略图或转换 PDF；校验资源、工作区、指纹与缓存状态 |
+预览正文由浏览器直接从 OSS 读取，不经过应用 API、不调用转换 Worker；预览链接不写入聊天或普通日志。OSS CORS 应允许实际站点 Origin 的 GET/HEAD、Range 和 If-Match，并暴露 ETag、Content-Range、Accept-Ranges 和 Content-Length。浏览器请求不携带应用 Cookie、Authorization 或 Referer。生产桶的 CORS 配置须在部署前按该契约确认；代码测试不会代替线上 CORS 验收。
 
-迁移 `0061_resource_previews` 只增加可重建的预览任务，不更新原资源、知识库或账单。唯一约束为 `(resource_id, revision, kind)`。指纹包含资源 ID、对象 ETag、Last-Modified、大小和渲染器版本；它只用于缓存失效，不是资源历史版本。修改原文件后无法通过旧指纹获取内容；删除后所有入口立即拒绝访问。
+预览签发、OSS 读取和本地缓存命中都不预留或扣减用户下载额度及积分，相关存储流量成本由平台承担。主动下载继续通过现有鉴权下载服务，按实际发送字节计量；HEAD 不收费，中断不对未发送字节结算。知识库原文件的下载也使用同一下载计量链路。
 
-任务记录 queued/running/ready/failed/expired。API 每分钟向 `previews` 队列投递维护任务，重新投递超过五分钟的中断任务；转换进程最长 125 秒。对象上传前记录目标键，中断恢复时清理未提交产物，失败不重复生成收费任务。原资源更新或删除期间生成的结果丢弃。
+签名链接临近过期或 OSS 返回 401/403 时最多重新鉴权签发一次。对象 ETag 或版本变化、删除、撤权时拒绝旧内容，并清除本地预览缓存。PDF Range 读取绑定同一 ETag，读取失败会终止查看而不继续展示混合版本。
 
-## 缓存与费用
+## 缓存与资源释放
 
-- 产物保存在当前主存储的 `preview-cache/` 独立前缀，不进入资源目录，不生成资源条目，不占用户存储额度。临时转换目录结束即回收，服务器不永久存放缩略图。
-- `PREVIEW_CACHE_MAX_BYTES` 默认 5 GiB，`PREVIEW_CACHE_IDLE_SECONDS` 默认七天，维护任务按最近访问时间淘汰。资源删除后异步回收相关缓存；对象在存储侧消失时可重新准备。
-- 转换读取原文件由平台承担，不记 model_read，不运行云电脑、不收工具费、不触发 OCR 或 Embedding。平台承担预览缓存存储费用。
-- 缩略图、阅读器分段和原图发送给浏览器时，沿用鉴权下载服务，预留额度并按 ASGI 实际发送字节结算；HEAD 免费，中断释放剩余额度。
-- 浏览器使用内存和 IndexedDB，按账号、工作区、指纹、URL、范围隔离；每账号最多 200 MiB、闲置七天淘汰。同一块并发请求合并，接收完整后才缓存。命中本地缓存不发文件请求，不重复扣下载额度；原文件下载按钮仍走正常下载计量。
-- 打开、切回前台及阅读期间每 30 秒重新校验状态。撤权后无法再从服务端取得内容，活动阅读器在下一次校验时隐藏预览。浏览器已接收的文件无法被远程撤回。登出/登录失效清理本地预览缓存；禁用 IndexedDB 时退回受限内存缓存。
+内存和 IndexedDB 缓存按账号、工作区、文件类型/身份、修订标识和字节范围隔离。200 MiB 上限，七天未访问淘汰。每次打开、缓存读取和阅读期间均重新核验权限与对象修订；签名 URL 不作为缓存键。退出或切换身份/工作区清理缓存。关闭、切换文件或组件卸载时取消读取，释放图片对象 URL、PDF 任务和 Office 页面资源。
 
-## Worker 与隔离
+## 后台职责
 
-`docker compose build preview-worker` 构建专用镜像，`docker compose up -d preview-worker` 启动 `previews` 队列。部署前执行 Alembic 迁移，并协调更新 API、Web 和 Worker；普通解析 Worker 不消费该队列。不需要真实模型或云电脑凭据。
-
-镜像包含 LibreOffice Writer、Noto 中文字体、Pillow 和固定版本 PDFium。每次转换使用独立目录和清空的环境变量，Linux 下以非特权 UID 运行，Landlock 只允许读取系统库、字体及必要的 Office 配置，只有本次目录可写；seccomp 拒绝 IPv4/IPv6 socket。禁用宏和链接更新，并限制 CPU、地址空间、文件尺寸、打开文件数及进程时间。Office IPC 仅使用本次临时目录，镜像 `/tmp`、`/var/tmp` 不向转换 UID 开放写入。
-
-预览 Worker 所在内核须支持 Landlock；不可用时拒绝转换，不降低隔离运行。Word 单文件上限 50 MiB，其他源文件 200 MiB，图片解码上限 4000 万像素。加密、损坏、超限或不支持的文件返回下载/重试提示。Word 的精确字体和分页仍取决于模板字体与 LibreOffice 的格式兼容能力，不修改原文档。
-
-## 当前线上发布
-
-发布目录 `/root/rag-releases/resource-preview-20261107` 保存数据库自定义格式备份、源码及配置备份、迁移前后账务核对、候选构建与验收日志。部署代码对应 `8e47173`，数据库为 `0061_resource_previews`。原 API/Web 镜像保留 `before-resource-preview` 标签。
-
-生产 Compose 延续此前 HTTP 网页预览配置，并最后叠加 `/data1/rag-platform/docker-compose.resource-preview.yml`。完整文件顺序为 `docker-compose.yml`、`docker-compose.override.yml`、`docker-compose.deploy.yml`、`/data1/releases/http-preview-20261106/output/http-preview-compose.yml`、`docker-compose.resource-preview.yml`，项目名为 `rag-platform`。该覆盖显式传入专用 Worker 的数据库、Redis、加密密钥和站点地址，避免跨文件 extends 丢失连接环境；不得输出解析后的完整配置以免暴露凭据。
-
-专用 Worker 并发为 1，容器内存 512 MiB、内存加 Swap 上限 768 MiB、进程数上限 128；实际中文 Word 转换已在这些限制下通过。镜像标签分别为 `rag-platform-api:resource-preview-20261107`、`rag-platform-web:resource-preview-20261107` 和 `rag-preview-worker:resource-preview-20261107`。现有云电脑 HTTP 网关同时更新到相同 API 镜像。
-
-回退时停止专用预览 Worker，将 API、普通 Worker、HTTP 网关与 Web 恢复之前的镜像，并移除本次 Compose 覆盖。新增预览缓存表可保留，不能为了代码回退恢复整库而丢失上线后的用户数据。OSS 原文件未搬迁，本次不删除任何用户对象。数据盘发布后剩余约 1.5 GiB；镜像与备份均保留，后续发布前应核对磁盘空间。
+文件预览不启动、轮询或等待资源转换任务。旧资源转换接口和 Preview Worker 已移除；历史 `resource_previews` 表及迁移记录仅作为历史数据结构保留，不再创建新的转换缓存或清理任务。它与云电脑启动的用户 HTTP 服务预览是不同功能，后者继续使用独立的 `preview` 网关。

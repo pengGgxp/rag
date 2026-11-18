@@ -18,11 +18,10 @@ import urllib.request
 
 PROJECT = "zhiku-private-test"
 PUBLIC_URL = "https://test.zk.moonlitstarway.top"
-SERVICES = ("api", "worker", "preview-worker", "preview", "web")
-IMAGES = {"api": "API_IMAGE", "preview-worker": "PREVIEW_WORKER_IMAGE", "web": "WEB_IMAGE"}
+SERVICES = ("api", "worker", "preview", "web")
+IMAGES = {"api": "API_IMAGE", "web": "WEB_IMAGE"}
 BUILDS = {
     "api": ("backend", "backend/Dockerfile", "zhiku-api"),
-    "preview-worker": ("backend", "backend/Dockerfile.preview-worker", "zhiku-preview-worker"),
     "web": ("frontend", "deploy/testing/Dockerfile.web", "zhiku-web"),
 }
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -65,7 +64,7 @@ def validate_manifest(document):
         raise ReleaseError("invalid test release version")
     images = document.get("images")
     if not isinstance(images, dict) or set(images) != set(IMAGES):
-        raise ReleaseError("test release requires API, preview Worker and Web images")
+        raise ReleaseError("test release requires API and Web images")
     if any(not isinstance(image, str) or not DIGEST_IMAGE.fullmatch(image) for image in images.values()):
         raise ReleaseError("all test images must be pinned by digest")
     if not isinstance(document.get("alembic_head"), str) or not re.fullmatch(r"[a-zA-Z0-9_]+", document["alembic_head"]):
@@ -241,7 +240,7 @@ class Deployment:
                 raise ReleaseError(f"existing test {service} volume does not match")
         run(["docker", "volume", "inspect", PROJECT + "_cache"])
         self.record(previous_alembic=self.revision(), status="pulling")
-        self.compose("pull", "api", "preview-worker", "web", timeout=1800)
+        self.compose("pull", "api", "web", timeout=1800)
         heads = self.compose("run", "--rm", "--no-deps", "migrate", "alembic", "heads")
         if heads.split() != [self.manifest["alembic_head"], "(head)"]:
             raise ReleaseError("API image Alembic head does not match the release")
@@ -284,7 +283,7 @@ class Deployment:
                     image = run(["docker", "inspect", "--format", "{{.Config.Image}}", container])
                     if image != self.manifest["images"][key]:
                         raise ReleaseError(f"{service} image does not match")
-                    if service in ("worker", "preview-worker"):
+                    if service == "worker":
                         hostname = run(["docker", "inspect", "--format", "{{.Config.Hostname}}", container])
                         node = ("tasks" if service == "worker" else "previews") + "@" + hostname
                         replies = json.loads(self.compose(

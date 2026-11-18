@@ -122,7 +122,7 @@ def verify_worker_heartbeat() -> str:
         raise RuntimeError("worker heartbeat cannot be read") from exc
     if ttl <= 0:
         raise RuntimeError("worker heartbeat is missing or expired")
-    if not compose_ps("worker") or not compose_ps("preview-worker"):
+    if not compose_ps("worker"):
         raise RuntimeError("worker containers are not running")
     return "fresh"
 

@@ -147,6 +147,9 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     if (busyRef.current || loading) return;
     if (item.kind === "directory") { setPath(item.path); setQuery(""); return; }
     if (select) { setBusy(true); try { await select(item); } catch (cause) { setError(cause instanceof Error ? cause.message : "选择失败，请重试"); } finally { setBusy(false); } return; }
+    setPreview(item);
+  }
+  async function edit(item: ResourceFile) {
     if (item.content_type.startsWith("text/") || /\.(md|txt|csv|json|py|js|ts|tsx|jsx|html|css|sh|yaml|yml)$/i.test(item.path)) {
       try { const value = await request<{ content: string; revision: string }>(`/workspaces/${session.workspace_id}/files/${item.id}/text`); setEditor({ item, content: value.content, initialContent: value.content, revision: value.revision }); setEditorError(""); setDiscard(false); setDialog("edit"); } catch (cause) { setError(cause instanceof Error ? cause.message : "文件无法打开"); }
     } else setPreview(item);
@@ -348,7 +351,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     {newMenu && <Modal title="新建" anchor={newMenu} restoreFocusSelector=".resource-inline-input" onClose={() => setNewMenu(null)}><div className="workspace-new-options"><button className="workspace-command" onClick={() => createNew("directory")}><Folder size={17} />文件夹</button><button className="workspace-command" onClick={() => createNew("file")}><Edit3 size={17} />文本文档</button></div></Modal>}
     {menu && <div ref={menuRef} data-workspace-menu className="workspace-context-menu" style={{ left: menu.x, top: menu.y }} role="menu" onClick={event => event.stopPropagation()}>
       <button role="menuitem" onClick={() => { setMenu(null); void open(menu.item); }}><FolderOpen size={15} />打开</button>
-      {menu.item.kind === "file" && <><button role="menuitem" disabled={!canWrite} onClick={() => { setMenu(null); void open(menu.item); }}><Edit3 size={15} />编辑</button><button role="menuitem" onClick={() => { const file = menu.item as ResourceFile; setMenu(null); void downloadFile(`/resources/${file.id}/download`, file.path.split("/").pop() || "文件").catch(cause => setError(String(cause))); }}><Download size={15} />下载</button></>}
+      {menu.item.kind === "file" && <><button role="menuitem" disabled={!canWrite} onClick={() => { setMenu(null); void edit(menu.item as ResourceFile); }}><Edit3 size={15} />编辑</button><button role="menuitem" onClick={() => { const file = menu.item as ResourceFile; setMenu(null); void downloadFile(`/resources/${file.id}/download`, file.path.split("/").pop() || "文件").catch(cause => setError(String(cause))); }}><Download size={15} />下载</button></>}
       <button role="menuitem" disabled={!canWrite || selected.size !== 1} onClick={() => startRename(menu.item)}><Pencil size={15} />重命名（F2）</button>
       <button role="menuitem" onClick={() => copySelection("copy")}><Copy size={15} />复制{selected.size > 1 ? ` ${selected.size} 项` : ""}</button>
       <button role="menuitem" disabled={!canWrite} onClick={() => copySelection("cut")}><Clipboard size={15} />剪切</button>
@@ -363,6 +366,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
       <div className="modal-footer"><button className="secondary" onClick={closeEditor}>{canWrite ? "取消" : "关闭"}</button>{canWrite && <button className="primary" disabled={busy} onClick={async () => { setBusy(true); setEditorError(""); try { await request(`/workspaces/${session.workspace_id}/files`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: editor.item.path, content: editor.content, revision: editor.revision, request_id: crypto.randomUUID(), content_type: editor.item.content_type }) }); setDialog(null); setEditor(null); await load(); } catch (cause) { setEditorError(cause instanceof Error ? cause.message : "保存失败，内容已保留，请重试"); } finally { setBusy(false); } }}>保存</button>}</div></div></Modal>}
     {linkedFile.error && <p role="alert" className="resource-error">{linkedFile.error}</p>}
     {linkedFile.preview}
-    {preview && <ResourcePreview key={`${scope}:${preview.id}`} item={preview} scope={scope} onClose={() => setPreview(null)} />}
+    {preview && <ResourcePreview key={`${scope}:${preview.id}`} item={preview} scope={scope} onClose={() => setPreview(null)}
+      restoreFocusSelector={`.resource-item[aria-label="${CSS.escape(preview.path)}"]`} />}
   </div>;
 }

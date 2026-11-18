@@ -28,8 +28,8 @@ REQUIRED_SERVICES = ("api", "worker", "web")
 ROLLBACK_POLICIES = {"automatic-app-rollback", "restore-backup-required"}
 ALEMBIC_HEAD_SUFFIX = re.compile(r"\s+\(head\)$")
 NGINX_FILES = ("zk.str1ct.top.conf", "http-preview.conf")
-APPLICATION_SERVICES = ("api", "worker", "preview-worker", "preview", "web")
-WORKER_SERVICES = ("worker", "preview-worker")
+APPLICATION_SERVICES = ("api", "worker", "preview", "web")
+WORKER_SERVICES = ("worker",)
 DRAIN_TIMEOUT_SECONDS = 120
 DRAIN_POLL_SECONDS = 5
 REQUIRED_PACKAGE_FILES = {
@@ -358,12 +358,6 @@ def render_environment(release_dir: Path, paths: Paths | None = None) -> dict[st
         "POSTGRES_PASSWORD": urllib.parse.unquote(database.password),
         "RUSTFS_ACCESS_KEY": values.get("S3_ACCESS_KEY", "minioadmin"),
         "RUSTFS_SECRET_KEY": values.get("S3_SECRET_KEY", "minioadmin"),
-        "PREVIEW_CACHE_MAX_BYTES": values.get(
-            "PREVIEW_CACHE_MAX_BYTES", str(5 * 1024**3)
-        ),
-        "PREVIEW_CACHE_IDLE_SECONDS": values.get(
-            "PREVIEW_CACHE_IDLE_SECONDS", str(7 * 86400)
-        ),
         "ZHIKU_APP_ENV_FILE": "app.env",
     }
     release_env = release_dir / ".env.release"
@@ -592,7 +586,6 @@ def verify_running_digests(release_dir: Path, runner: CommandRunner) -> None:
         "api": manifest["images"]["api"],
         "preview": manifest["images"]["api"],
         "worker": manifest["images"]["worker"],
-        "preview-worker": manifest["images"]["worker"],
         "web": manifest["images"]["web"],
     }
     for service, image in expected.items():
@@ -833,19 +826,6 @@ def drain_workers(paths: Paths, runner: CommandRunner) -> None:
             "cancel_consumer",
         ]
     )
-    runner.run(
-        [
-            *current_compose_args(paths),
-            "exec",
-            "-T",
-            "preview-worker",
-            "celery",
-            "-A",
-            "app.tasks.celery_app",
-            "control",
-            "cancel_consumer",
-        ]
-    )
     while time.monotonic() < deadline:
         active = sum(celery_active_tasks(paths, runner, service) for service in WORKER_SERVICES)
         if active == 0:
@@ -919,7 +899,7 @@ def compose_up(
     ensure_release_images(paths.current.resolve(), runner)
     targets = list(services or APPLICATION_SERVICES)
     if force_workers:
-        targets = list(dict.fromkeys((*targets, "worker", "preview-worker")))
+        targets = list(dict.fromkeys((*targets, "worker")))
     runner.run(
         [
             *compose,
@@ -942,14 +922,13 @@ def confirm_running_digests(paths: Paths, runner: CommandRunner) -> None:
         "api": manifest["images"]["api"],
         "preview": manifest["images"]["api"],
         "worker": manifest["images"]["worker"],
-        "preview-worker": manifest["images"]["worker"],
         "web": manifest["images"]["web"],
     }
     compose = current_compose_args(paths)
     for service, image in expected.items():
         identifier = runner.run([*compose, "ps", "-q", service]).strip()
         if not identifier:
-            if service in {"preview", "preview-worker"}:
+            if service == "preview":
                 continue
             raise ReleaseError(f"{service} container is not running")
         inspected = runner.run(
@@ -976,7 +955,7 @@ def changed_services(previous: Path | None, release_dir: Path) -> tuple[str, ...
     if before["api"] != after["api"]:
         changed.extend(("api", "preview"))
     if before["worker"] != after["worker"]:
-        changed.extend(("worker", "preview-worker"))
+        changed.append("worker")
     if before["web"] != after["web"]:
         changed.append("web")
     return tuple(changed)
