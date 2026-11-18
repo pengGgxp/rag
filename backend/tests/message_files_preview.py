@@ -53,7 +53,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--create":
     sys.exit(0)
 
 import chat_attachment_preview as fixture
-from app import cloud_computer as cloud, conversation_jobs, deployment, resource_previews
+from app import cloud_computer as cloud, conversation_jobs, deployment
 from app import shared_resources, storage_downloads, tasks, workspace_files
 from app.config import get_settings
 from app.llm import ToolCall, ToolResponse, LLMUsage
@@ -77,10 +77,7 @@ if __name__ == "__main__":
     storage = MemoryMount()
     workspace_files.upload_fileobj = storage.put
     storage_downloads.download_range_fileobj = lambda key, start, end: io.BytesIO(storage.objects[key][start:end + 1])
-    resource_previews.current_storage = lambda *_: storage
     shared_resources.backend = lambda *_: storage
-    resource_previews.dispatch = lambda identifier: Thread(target=resource_previews.run,
-        args=(identifier, fixture.SessionLocal), daemon=True).start()
     deployment.is_active = lambda: False
     executor = ThreadPoolExecutor(max_workers=1)
     conversation_jobs.dispatch = lambda identifier: executor.submit(

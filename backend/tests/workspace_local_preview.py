@@ -142,12 +142,11 @@ def build_app():
     if (os.environ.get("ISSUE100_LOCAL_PREVIEW") != "1" or database.host != "db"
             or not (database.database or "").startswith("rag_auth_test_issue100_browser_")):
         raise RuntimeError("refusing non-disposable preview database")
-    from app import main, shared_resources, storage_backend, storage, storage_downloads, resource_cache, resource_previews
+    from app import main, shared_resources, storage_backend, storage, storage_downloads, resource_cache
     from app import skill_discovery, cloud_computer
     local = LocalFiles() if os.environ.get("ISSUE100_LOCAL_STORE") == "filesystem" else LocalS3()
     shared_resources.backend = lambda db: local
     storage_backend.current_storage = lambda db: local
-    resource_previews.current_storage = lambda db: local
     storage.download_fileobj = local.download
     storage.head_object = local.head
     storage_downloads.download_range_fileobj = local.download_range

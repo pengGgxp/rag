@@ -133,15 +133,6 @@ async def lifespan(_: FastAPI):
                 logging.getLogger(__name__).warning("Cloud computer maintenance deferred")
             await asyncio.sleep(15)
     computer_recovery = asyncio.create_task(cloud_maintenance())
-    async def preview_maintenance():
-        from .tasks import maintain_resource_previews
-        while True:
-            try:
-                await asyncio.to_thread(maintain_resource_previews.apply_async, queue="previews", expires=120)
-            except Exception:
-                logging.getLogger(__name__).warning("Resource preview recovery deferred")
-            await asyncio.sleep(60)
-    preview_recovery = asyncio.create_task(preview_maintenance())
     async def conversation_maintenance():
         from .conversation_jobs import recover
         while True:
@@ -157,7 +148,6 @@ async def lifespan(_: FastAPI):
         retention.cancel()
         document_recovery.cancel()
         computer_recovery.cancel()
-        preview_recovery.cancel()
         conversation_recovery.cancel()
         with suppress(asyncio.CancelledError):
             await retention
@@ -165,8 +155,6 @@ async def lifespan(_: FastAPI):
             await document_recovery
         with suppress(asyncio.CancelledError):
             await computer_recovery
-        with suppress(asyncio.CancelledError):
-            await preview_recovery
         with suppress(asyncio.CancelledError):
             await conversation_recovery
 
@@ -1140,8 +1128,6 @@ app.include_router(search_settings_router)
 app.include_router(workspace_files_router)
 from .resources import router as resources_router
 app.include_router(resources_router)
-from .resource_previews import router as resource_previews_router
-app.include_router(resource_previews_router)
 from .file_preview_access import router as file_preview_access_router
 app.include_router(file_preview_access_router)
 app.include_router(storage_billing_router)

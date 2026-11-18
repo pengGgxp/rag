@@ -163,7 +163,7 @@ async page => {
   const finalBalance = await (await page.request.get(`${api}/usage`)).json();
   assert(balance.balance === finalBalance.balance && balance.lifetime_spent === finalBalance.lifetime_spent
     && JSON.stringify(balance.entries) === JSON.stringify(finalBalance.entries), "Preview changed credits/ledger");
-  assert(!requests.some(request => request.host === "localhost" && /\/(preview|image-preview-link|content)$/.test(request.path)), "Preview transferred/converted through API");
+  assert(!requests.some(request => request.host === "localhost" && /\/(preview|content)$/.test(request.path)), "Preview transferred/converted through API");
   await Promise.all(pendingRequests);
   const bodies = requests.filter(request => request.host.endsWith("aliyuncs.com"));
   assert(bodies.length && bodies.some(request => request.range), "No real OSS range reads observed");

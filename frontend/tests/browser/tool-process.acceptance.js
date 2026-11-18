@@ -94,7 +94,6 @@ async (page) => {
     if (/^\/resources\/[^/]+\/preview$/.test(path)) return send({
       revision: "fixture", kind: "unsupported", size_bytes: 2048, original_url: "", previews: [],
     });
-    if (path.endsWith("/image-preview-link")) return send({ status: "ready", url: `${base}/icon.svg`, revision: "fixture", width: 192, height: 192 });
     if (path.endsWith("/download")) return route.fulfill({ headers: { ...headers, "content-disposition": "attachment; filename=fixture.html" },
       contentType: "text/html", body: "<!doctype html><title>local fixture</title>" });
     unexpected.push(path);

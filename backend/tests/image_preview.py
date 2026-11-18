@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from threading import Lock, Thread
 
 import chat_attachment_preview as fixture
-from app import image_adapters, image_tasks, resource_previews, shared_resources, storage_downloads, workspace_files
+from app import image_adapters, image_tasks, shared_resources, storage_downloads, workspace_files
 from app.config import get_settings
 from app.llm_providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection
@@ -36,16 +36,13 @@ if __name__ == "__main__":
     storage_downloads.download_range_fileobj = lambda key, start, end: io.BytesIO(objects[key][start:end + 1])
     storage = MemoryMount()
     storage.objects = objects
-    resource_previews.current_storage = lambda *_args, **_kwargs: storage
     shared_resources.backend = lambda _db: storage
     from urllib.parse import quote
     api_url = os.environ.get("IMAGE_PREVIEW_API_URL", "http://127.0.0.1:8128")
     storage.read_url = lambda key, **_: f"{api_url}/__fixture/object/{quote(key, safe='/')}"
-    resource_previews.dispatch = lambda identifier: Thread(target=resource_previews.run,
-        args=(identifier, fixture.SessionLocal), daemon=True).start()
     @fixture.main.app.get("/__fixture/object/{key:path}")
     def object_fixture(key: str):
-        return Response(objects[key], media_type="image/webp" if key.startswith("preview-cache/") else "image/png")
+        return Response(objects[key], media_type="image/png")
     class ImageProvider(fixture.Provider):
         def stream_with_tools(self, messages, tools, **kwargs):
             usage = LLMUsage(100, 20, 120)

@@ -24,4 +24,4 @@ OSS 保持私有。`POST /resources/{id}/preview-access`、`POST /chat/attachmen
 
 ## 后台职责
 
-文件预览不启动、轮询或等待资源转换任务。历史 Preview Worker、预览缓存和相关数据仅在仍有其他明确调用方时保留，不因本次改造批量停用、清理镜像、数据库记录或 OSS 对象。它与云电脑启动的用户 HTTP 服务预览是不同功能。
+文件预览不启动、轮询或等待资源转换任务。旧资源转换接口和 Preview Worker 已移除；历史 `resource_previews` 表及迁移记录仅作为历史数据结构保留，不再创建新的转换缓存或清理任务。它与云电脑启动的用户 HTTP 服务预览是不同功能，后者继续使用独立的 `preview` 网关。

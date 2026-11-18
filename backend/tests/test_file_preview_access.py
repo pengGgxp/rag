@@ -7,7 +7,7 @@ from app import auth, file_preview_access as preview
 from app.models import ChatAttachment, Document, DocumentStatus, KnowledgeBase, UsageEvent
 from app.storage_models import StorageTransfer
 from test_auth import library, register, share, switch
-from test_resource_previews import resource, store
+from test_preview_fixtures import resource, store
 
 
 def signed_storage(monkeypatch, store):
