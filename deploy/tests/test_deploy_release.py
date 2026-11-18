@@ -36,7 +36,7 @@ def manifest(version="v1.2.3", policy="automatic-app-rollback"):
 def make_release(root: Path, payload: dict | None = None) -> Path:
     payload = payload or manifest()
     source = Path(__file__).resolve().parents[1]
-    for name in ("check_health.py", "deploy_release.py", "maintenance.py", "alembic_head.py",
+    for name in ("check_health.py", "deploy_release.py", "payment_proxy.py", "maintenance.py", "alembic_head.py",
                  "run_release.sh", "bootstrap.sh", "validate_config.py", "app.env.example",
                  "deployment.env.example", "production.env.reference.md", "prune_registry.py"):
         shutil.copy2(source / name, root / name)
@@ -206,6 +206,9 @@ class ManifestTests(unittest.TestCase):
 class RollbackTests(unittest.TestCase):
     def setUp(self):
         self.runner = deploy_release.CommandRunner()
+        proxy = patch.object(deploy_release, "verify_payment_proxy")
+        proxy.start()
+        self.addCleanup(proxy.stop)
 
     def test_deploy_renders_release_environment_before_migration_head_check(self):
         with tempfile.TemporaryDirectory() as tmp:

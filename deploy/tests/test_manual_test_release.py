@@ -81,6 +81,7 @@ class SourceTests(unittest.TestCase):
         (self.repo / "deploy" / "testing").mkdir(parents=True)
         for name in ("compose.yml", "release.py"):
             shutil.copy2(SOURCE / name, self.repo / "deploy" / "testing" / name)
+        shutil.copy2(SOURCE.parent / "payment_proxy.py", self.repo / "deploy" / "payment_proxy.py")
         (self.repo / "deploy" / "alembic_head.py").write_text(
             "print('0076_explicit_cloud_computers')\n", encoding="utf-8",
         )
@@ -152,12 +153,13 @@ class PackageTests(unittest.TestCase):
             root.mkdir()
             for name in ("release.py", "compose.yml"):
                 shutil.copy2(SOURCE / name, root / name)
+            shutil.copy2(SOURCE.parent / "payment_proxy.py", root / "payment_proxy.py")
             release.write_json(root / "release.json", manifest())
             (root / ".env").write_text("AUTH_SECRET_KEY=not-for-upload\n", encoding="utf-8")
             archive = release.package(root)
             with tarfile.open(archive) as stream:
                 names = {Path(member.name).name for member in stream.getmembers()}
-            self.assertEqual(names, {"release.py", "compose.yml", "release.json", "SHA256SUMS"})
+            self.assertEqual(names, {"release.py", "payment_proxy.py", "compose.yml", "release.json", "SHA256SUMS"})
             self.assertEqual(release.verify_package(root), manifest())
             (root / "compose.yml").write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(release.ReleaseError, "checksum mismatch"):
@@ -215,8 +217,27 @@ class DeploymentTests(unittest.TestCase):
 
         deployment.compose = compose
         deployment.preflight = Mock()
+        deployment.verify_proxy = Mock()
         deployment.health = Mock()
         return deployment
+
+    def test_proxy_preflight_failure_does_not_stop_apps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            deployment = self.make_deployment(Path(tmp))
+            deployment.preflight = Mock(side_effect=release.ReleaseError("payment proxy mismatch"))
+            with self.assertRaisesRegex(release.ReleaseError, "proxy mismatch"):
+                deployment.execute()
+            self.assertEqual(deployment.commands, [])
+
+    def test_runtime_proxy_failure_prevents_healthy_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            deployment = self.make_deployment(Path(tmp))
+            deployment.verify_proxy.side_effect = release.ReleaseError("running proxy mismatch")
+            with self.assertRaisesRegex(release.ReleaseError, "running proxy mismatch"):
+                deployment.execute()
+            deployment.verify_proxy.assert_called_once_with(running=True)
+            deployment.health.assert_not_called()
+            self.assertEqual(deployment.evidence["status"], "failed")
 
     def test_migration_failure_keeps_verified_backup_and_does_not_start_new_apps(self):
         with tempfile.TemporaryDirectory() as tmp:

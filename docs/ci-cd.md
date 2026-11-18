@@ -194,6 +194,12 @@ Subsequent releases use the normal managed-release path.
 
 ## Normal tag release
 
+Every managed release checks the payment proxy topology before maintenance or
+migration, and checks the installed API/Nginx configuration before acceptance.
+Empty/stale gateway trust, an exposed API port or an unexpected transport peer
+blocks the release even when `/health` succeeds. The check never adds observed
+sources to trust. See [payment proxy checks and recovery](payment-client-ip.md).
+
 1. Merge the change to `main` with green CI.
 2. Create an annotated semver tag on that exact commit and push the tag.
 3. GitHub verifies the tag regex, commit identity, `main` ancestry and clean
@@ -541,6 +547,12 @@ sudo /opt/zhiku/bin/rollback <failed-version>
 starts the previous Compose release and repeats health checks. Never delete the
 current or previous release directory or their images before a later release
 is verified.
+
+Before changing `current`, rollback validates the saved previous configuration
+against the current Docker network. A network rebuild may therefore block an
+old snapshot. Back up and explicitly correct its gateway setting as described
+in [payment proxy recovery](payment-client-ip.md); do not bypass the check with
+an older release script or broaden the trusted range.
 
 For `restore-backup-required`, do not run application rollback:
 

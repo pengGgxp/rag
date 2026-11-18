@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from payment_proxy import ProxyError, validate_release as validate_payment_proxy
+
 VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 DIGEST_RE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 REQUIRED_SERVICES = ("api", "worker", "web")
@@ -37,6 +39,7 @@ REQUIRED_PACKAGE_FILES = {
     "compose.yml",
     "check_health.py",
     "deploy_release.py",
+    "payment_proxy.py",
     "maintenance.py",
     "prune_registry.py",
     "alembic_head.py",
@@ -60,6 +63,26 @@ REQUIRED_PACKAGE_PREFIXES = ("alembic/", "nginx/", "bin/")
 
 class ReleaseError(RuntimeError):
     pass
+
+
+def verify_payment_proxy(
+    release_dir: Path, runner, *, running: bool = False, candidate_only: bool = False,
+) -> None:
+    """Check effective routing as well as the candidate before any cutover."""
+    candidate = release_dir / "nginx" / NGINX_FILES[0]
+    if not candidate.is_file():
+        candidate = release_dir / "nginx" / "zk.str1ct.top.conf"
+    try:
+        candidate_text = candidate.read_text(encoding="utf-8")
+        validate_payment_proxy(
+            runner.run, compose_args(release_dir), running=running,
+            candidate_nginx=candidate_text,
+            nginx_text=candidate_text if candidate_only else None,
+        )
+    except ProxyError as exc:
+        raise ReleaseError(str(exc)) from None
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise ReleaseError("payment proxy: incomplete Docker/Nginx inspection; inspect local diagnostics and retry") from None
 
 
 @dataclass(frozen=True)
@@ -765,6 +788,7 @@ def recover_first_takeover(paths: Paths, release_dir: Path, runner: CommandRunne
     manifest = load_manifest(release_dir)
     health = health_check(paths)
     install_nginx(paths, release_dir, runner)
+    verify_payment_proxy(release_dir, runner, running=True)
     write_evidence(
         release_dir,
         status="healthy",
@@ -903,6 +927,9 @@ def compose_up(
 ) -> None:
     compose = current_compose_args(paths)
     ensure_release_images(paths.current.resolve(), runner)
+    # During first takeover the effective Nginx location deliberately returns
+    # 503. Validate the candidate here, then the installed entry before acceptance.
+    verify_payment_proxy(paths.current.resolve(), runner, candidate_only=True)
     targets = list(services or APPLICATION_SERVICES)
     if force_workers:
         targets = list(dict.fromkeys((*targets, "worker")))
@@ -918,6 +945,7 @@ def compose_up(
         ]
     )
     confirm_running_digests(paths, runner)
+    verify_payment_proxy(paths.current.resolve(), runner, running=True, candidate_only=True)
 
 
 def confirm_running_digests(paths: Paths, runner: CommandRunner) -> None:
@@ -1006,6 +1034,7 @@ def start_legacy_producers(runner: CommandRunner) -> None:
 def rollback(paths: Paths, previous: Path, runner: CommandRunner) -> None:
     if not previous.exists():
         raise ReleaseError("no previous release is available")
+    verify_payment_proxy(previous, runner)
     restore_current(paths, previous)
     compose_up(paths, runner)
 
@@ -1302,6 +1331,7 @@ def transactional_deploy(
     manifest = load_manifest(release_dir)
     verify_checksums(release_dir)
     values = render_environment(release_dir, paths)
+    verify_payment_proxy(release_dir, runner)
     previous = paths.current.resolve() if paths.current.exists() else None
     migration = None
     backup = None
@@ -1365,6 +1395,7 @@ def transactional_deploy(
         )
         verify_migration_heads(release_dir, runner)
         install_nginx(paths, release_dir, runner)
+        verify_payment_proxy(release_dir, runner, running=True)
         if maintenance_active:
             maintenance_off(manifest, failed=False)
             maintenance_active = False
@@ -1577,6 +1608,7 @@ def shadow_release(
     runner.run([*compose, "config", "--quiet"])
     if inspect_runtime:
         ensure_release_images(target, runner)
+        verify_payment_proxy(target, runner)
         verify_migration_heads(target, runner)
     else:
         # The shadow package must be inspectable without starting the release
@@ -1798,6 +1830,10 @@ def main(argv: list[str]) -> int:
             current = paths.current.resolve()
             current_manifest = load_manifest(current)
             previous_manifest = load_manifest(previous)
+            # Validate saved rollback configuration against today's topology,
+            # before changing maintenance state or the current symlink.
+            ensure_release_images(previous, runner)
+            verify_payment_proxy(previous, runner)
             maintenance_request(current, True, current_manifest)
             restore_current(paths, previous)
             compose_up(paths, runner)

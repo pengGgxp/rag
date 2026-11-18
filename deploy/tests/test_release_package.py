@@ -37,7 +37,7 @@ class ReleasePackageTests(unittest.TestCase):
             output.mkdir()
             source = Path(__file__).resolve().parents[1]
             for name in (
-                "compose.production.yml", "check_health.py", "deploy_release.py",
+                "compose.production.yml", "check_health.py", "deploy_release.py", "payment_proxy.py",
                 "alembic_head.py", "run_release.sh", "bootstrap.sh", "maintenance.py",
                 "prune_registry.py", "validate_config.py", "app.env.example",
                 "deployment.env.example", "production.env.reference.md",
