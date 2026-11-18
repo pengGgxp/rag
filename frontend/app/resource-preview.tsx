@@ -6,6 +6,7 @@ import { downloadFile } from "./api";
 import { Modal } from "./modal";
 import { Tooltip } from "../components/ui/tooltip";
 import { FileReaderSession, fileDownload, type FileReference } from "./file-preview-access";
+import { pdfPreviewError } from "./pdf-preview-error";
 import type { ResourceFile } from "./resource-library";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
 import type { OfficePages } from "./office-preview";
@@ -141,8 +142,12 @@ function PdfPage({ reader, page, zoom, onCount, onError }: PageProps) {
       if (!disposed) onError("页面未能加载，请重试或下载查看");
     })).then(task => {
       loading = task; if (disposed) { void task.destroy(); return; }
-      return task.promise.then(value => { if (!disposed) { setPdf(value); onCount(value.numPages); } });
-    }).catch(() => { if (!disposed && !reader.signal.aborted) onError("PDF 未能打开，请重试或下载查看"); });
+      return task.promise.then(value => {
+        if (disposed) return;
+        if (value.numPages === 0) { onError("PDF 文件为空或没有页面，请重新导出后上传"); return; }
+        setPdf(value); onCount(value.numPages);
+      });
+    }).catch(cause => { if (!disposed && !reader.signal.aborted) onError(pdfPreviewError(cause)); });
     return () => { disposed = true; void loading?.destroy(); };
   }, [reader, onCount, onError]);
   useEffect(() => {

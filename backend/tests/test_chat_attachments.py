@@ -109,6 +109,24 @@ def test_pdf_scan_no_paid_ocr_and_office_text(accounts, objects):
     assert upload(owner, "facts.xlsx", data.getvalue()).status_code == 201
 
 
+def test_encrypted_pdf_attachment_preserves_original_and_reports_password(accounts, objects):
+    from pdf_fixtures import make_pdf
+    (owner, _, _), _db = accounts
+    register(owner)
+    content = make_pdf(password="")
+    result = upload(owner, "permissions.pdf", content)
+    assert result.status_code == 201, result.text
+    identifier = result.json()["id"]
+    assert owner.get(f"/chat/attachments/{identifier}/content").content == content
+    locked = upload(owner, "locked.pdf", make_pdf(password="secret"))
+    assert locked.status_code == 415
+    assert "需要打开密码" in locked.json()["detail"]
+    assert "损坏" not in locked.json()["detail"]
+    broken = upload(owner, "broken.pdf", b"%PDF-1.7\ninvalid")
+    assert broken.status_code == 415
+    assert "已损坏或格式无效" in broken.json()["detail"]
+
+
 def test_model_capability_is_explicit_and_multimodal_protocols(objects):
     assert attachments.image_size(PNG, ".png") == (1, 1)
     row = SimpleNamespace(id=uuid4(), filename="image.png", kind="image", object_key="private-key",
