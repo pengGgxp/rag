@@ -38,4 +38,6 @@
 
 没有部署或修改线上生效的 Nginx 配置，没有使用真实云存储验证，也没有进行多并发大包压力测试。当前保留有界内存处理及管理端 Base64 传输方式，单请求内存占用会随包大小增加。列表发现依赖存储对象清单提供当前 `.skills/` 文件名；线上启用时需同步应用 API、Web 和对应 Nginx 模板，不能只改页面提示。
 
+2026-11-18 后续修正验证：ZIP 超过 1000 条目、文件夹超过 1000 文件、5 MiB 以上清单导入并打开、列表只读取清单头及外部新增/删除刷新等 5 项针对性回归通过。技能相关回归共 50 项通过；`test_existing_file_tools_read_run_modify_delete_same_files_in_container` 在 Windows 上因该测试调用 Bash 命令而失败，不代表文件列表断言失败。`test_each_message_and_compact_recovery_uses_current_skill_metadata` 仍失败，已在原始 `ed037b3` 基线上复现，不能算本轮通过。
+
 Issue 保持打开，供后续代码审查与交付核对。
