@@ -18,6 +18,7 @@ COPIES = {
     "compose.production.yml": "compose.yml",
     "check_health.py": "check_health.py",
     "deploy_release.py": "deploy_release.py",
+    "payment_proxy.py": "payment_proxy.py",
     "alembic_head.py": "alembic_head.py",
     "run_release.sh": "run_release.sh",
     "bootstrap.sh": "bootstrap.sh",

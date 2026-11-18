@@ -16,6 +16,12 @@ import tarfile
 import time
 import urllib.request
 
+module_root = Path(__file__).resolve().parent
+if not (module_root / "payment_proxy.py").is_file():
+    module_root = module_root.parent  # Source checkout; packaged copy is a sibling.
+sys.path.insert(0, str(module_root))
+from payment_proxy import ProxyError, validate_release as validate_payment_proxy
+
 PROJECT = "zhiku-private-test"
 PUBLIC_URL = "https://test.zk.moonlitstarway.top"
 SERVICES = ("api", "worker", "preview", "web")
@@ -96,7 +102,7 @@ def checksum(path):
 
 
 def package(release):
-    names = ("compose.yml", "release.py", "release.json")
+    names = ("compose.yml", "release.py", "payment_proxy.py", "release.json")
     lines = [
         f"{checksum(release / name)}  {name}"
         for name in names
@@ -152,6 +158,7 @@ def publish(repo, output, registry, organization):
     validate_manifest(document)
     for name in ("compose.yml", "release.py"):
         shutil.copy2(source / "deploy" / "testing" / name, release / name)
+    shutil.copy2(source / "deploy" / "payment_proxy.py", release / "payment_proxy.py")
     write_json(release / "release.json", document)
     archive = package(release)
     print(f"Published {version}\nPackage: {archive}\nChecksum: {archive}.sha256")
@@ -159,7 +166,7 @@ def publish(repo, output, registry, organization):
 
 
 def verify_package(release):
-    expected = {"compose.yml", "release.py", "release.json"}
+    expected = {"compose.yml", "release.py", "payment_proxy.py", "release.json"}
     rows = (release / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
     found = set()
     for row in rows:
@@ -205,14 +212,25 @@ class Deployment:
         self.root, self.release, self.manifest = root, release, manifest
         self.evidence = {"version": manifest["version"], "commit": manifest["commit"], "status": "pending"}
 
+    def compose_args(self):
+        return [
+            "docker", "compose", "--project-name", PROJECT,
+            "--project-directory", self.release, "--env-file", self.release / ".env",
+            "--file", self.release / "compose.yml",
+        ]
+
     def compose(self, *args, **kwargs):
         kwargs.setdefault("log", self.release / "deploy.log")
         kwargs.setdefault("timeout", 120)
-        return run([
-            "docker", "compose", "--project-name", PROJECT,
-            "--project-directory", self.release, "--env-file", self.release / ".env",
-            "--file", self.release / "compose.yml", *args,
-        ], **kwargs)
+        return run([*self.compose_args(), *args], **kwargs)
+
+    def verify_proxy(self, *, running=False):
+        try:
+            validate_payment_proxy(run, self.compose_args(), running=running)
+        except ProxyError as exc:
+            raise ReleaseError(str(exc)) from None
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise ReleaseError("payment proxy: incomplete Docker/Nginx inspection; inspect local diagnostics and retry") from None
 
     def record(self, **values):
         self.evidence.update(values)
@@ -241,6 +259,7 @@ class Deployment:
         run(["docker", "volume", "inspect", PROJECT + "_cache"])
         self.record(previous_alembic=self.revision(), status="pulling")
         self.compose("pull", "api", "web", timeout=1800)
+        self.verify_proxy()
         heads = self.compose("run", "--rm", "--no-deps", "migrate", "alembic", "heads")
         if heads.split() != [self.manifest["alembic_head"], "(head)"]:
             raise ReleaseError("API image Alembic head does not match the release")
@@ -316,6 +335,7 @@ class Deployment:
                 raise ReleaseError("migration did not reach the release head")
             self.record(status="starting")
             self.compose("up", "-d", "--no-deps", "--pull", "never", *SERVICES)
+            self.verify_proxy(running=True)
             self.health()
             self.record(status="healthy")
         except BaseException:
