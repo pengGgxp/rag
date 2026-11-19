@@ -262,6 +262,8 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
     )
     db.add(knowledge_base)
     db.flush()
+    from .knowledge_workspace import materialize_workspace_roots
+    materialize_workspace_roots(db, access)
     record_audit(
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="knowledge_base.created", resource_type="knowledge_base",
@@ -1031,7 +1033,7 @@ def answer_knowledge_base(
                 chunk_id=result.chunk.id,
                 filename=result.filename,
                 version_id=result.chunk.document_id,
-                workspace_path=result.chunk.document.workspace_path,
+                workspace_path=result.workspace_path,
                 content_origin=result.chunk.content_origin,
                 text=result.chunk.text,
                 char_start=result.chunk.char_start,

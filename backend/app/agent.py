@@ -785,7 +785,7 @@ def stream_retrieval_agent(
                             "document_id": str(result.chunk.version_group_id or result.chunk.document_id),
                             "version_id": str(result.chunk.document_id),
                             "filename": result.filename,
-                            "workspace_path": result.chunk.document.workspace_path,
+                            "workspace_path": result.workspace_path,
                             "content_origin": getattr(result.chunk, "content_origin", "uploaded"),
                             "text": result.chunk.text,
                             "char_start": result.chunk.char_start,

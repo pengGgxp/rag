@@ -15,7 +15,7 @@ from app import auth, chat_attachments, resource_cache, resources, storage_billi
 from app.config import get_settings
 from app.models import ChatAttachment, ChatMessage, Conversation, Document, KnowledgeBase, WorkspaceFile, WorkspaceFileVersion
 from app.storage_models import StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
-from test_auth import register, share, switch
+from test_auth import library, register, share, switch
 from test_chat_attachments import PNG
 
 
@@ -76,6 +76,29 @@ def test_upload_shared_reuse_and_conversation_deletion(accounts, resource_store)
     assert member.post(f"/resources/{item['id']}/attachment?version=1").status_code == 404
     db.expire_all()
     assert chat_attachments.attachment_read(messages[0].attachments[0])["available"] is False
+
+
+def test_knowledge_base_roots_are_visible_in_workspace_browser(accounts, resource_store):
+    (client, _, _), db = accounts
+    register(client)
+    knowledge_base_id = library(client)
+    root = "知识库/Product docs"
+
+    listing = client.get("/resources/browse")
+    assert listing.status_code == 200, listing.text
+    knowledge_folder = next(item for item in listing.json()["items"] if item["path"] == "知识库")
+    assert knowledge_folder["kind"] == "directory"
+
+    nested = client.get("/resources/browse", params={"path": "知识库"})
+    assert nested.status_code == 200, nested.text
+    assert any(item["path"] == root and item["kind"] == "directory" for item in nested.json()["items"])
+
+    opened = client.get("/resources/browse", params={"path": root})
+    assert opened.status_code == 200, opened.text
+    row = db.get(KnowledgeBase, knowledge_base_id)
+    from app.shared_resources import directory_marker_key
+    assert row.workspace_path == root
+    assert directory_marker_key(row.workspace_id, root) in resource_store[0]
 
 
 def test_current_file_and_object_inventory_dedup(accounts, resource_store):

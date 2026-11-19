@@ -127,10 +127,14 @@ def browse(path: str = "", q: str = "", sort: str = Query("name", pattern="^(nam
     from .workspace_mutations import snapshot
     from .file_operations import workspace_lock
     with workspace_lock(db, access.workspace_id):
-        _, directories, _ = snapshot(db, access)
+        snapshot(db, access)
+        from .knowledge_workspace import materialize_workspace_roots
+        materialize_workspace_roots(db, access, refresh=False)
+        _, directories, _ = snapshot(db, access, refresh=False)
         if current and current not in directories:
             raise HTTPException(404, "文件夹不存在或已移动，请返回上级后重新选择")
         items = _children(db, access, current, q, sort, direction, source)
+        db.commit()
     return {"path": current, "parent_path": current.rsplit("/", 1)[0] if "/" in current else None,
         "breadcrumbs": _breadcrumbs(current), "items": items[offset:offset + limit],
         "offset": offset, "limit": limit, "has_more": len(items) > offset + limit, "total": len(items)}

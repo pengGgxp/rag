@@ -1,5 +1,6 @@
 """Synchronize supported knowledge documents with the shared workspace mount."""
 import hashlib
+import io
 import mimetypes
 from pathlib import PurePosixPath
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -77,6 +78,39 @@ def ensure_roots(db, workspace_id, access=None):
                 root = f"{base} ({library.id})"
         library.workspace_path = root
         occupied.add(root)
+    db.flush()
+    return libraries
+
+
+def materialize_workspace_roots(db, access, *, refresh=True):
+    """Expose every knowledge-base root as a normal workspace directory."""
+    from .models import WorkspaceDirectory
+    from .shared_resources import backend, directory_marker_key
+
+    libraries = ensure_roots(db, access.workspace_id, access if refresh else None)
+    store = backend(db)
+    if store is None:
+        return libraries
+    directories = set(db.scalars(select(WorkspaceDirectory.path).where(
+        WorkspaceDirectory.workspace_id == access.workspace_id)).all())
+    files = set(db.scalars(select(WorkspaceFile.path).where(
+        WorkspaceFile.workspace_id == access.workspace_id,
+        WorkspaceFile.deleted_at.is_(None))).all())
+    for library in libraries:
+        path = library.workspace_path
+        if not path or path in files:
+            continue
+        if path not in directories:
+            marker = directory_marker_key(access.workspace_id, path)
+            if store.head(marker) is None:
+                options = {"create": True} if getattr(store, "conditional_create", False) else {}
+                store.put(marker, io.BytesIO(b""), "application/x-directory", **options)
+            db.add(WorkspaceDirectory(
+                workspace_id=access.workspace_id,
+                path=path,
+                created_by=access.user_id,
+            ))
+            directories.add(path)
     db.flush()
     return libraries
 

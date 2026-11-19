@@ -178,9 +178,9 @@ def execute(runtime, name, arguments, *, call_id=None):
         elif name == "create_knowledge_base":
             library = KnowledgeBase(workspace_id=access.workspace_id, **payload.model_dump())
             db.add(library)
-            from .knowledge_workspace import ensure_roots
+            from .knowledge_workspace import materialize_workspace_roots
             db.flush()
-            ensure_roots(db, access.workspace_id, access)
+            materialize_workspace_roots(db, access)
             action, summary = "created", "已创建"
         else:
             library = access.library(db, payload.knowledge_base_id, write=True, allow_archived=True)
