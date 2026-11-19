@@ -338,7 +338,7 @@ def test_images_reach_actual_http_stream_and_usage_is_authoritative(objects, pro
 def test_compaction_treats_images_as_images_and_retains_original(client, objects, monkeypatch):
     from test_conversation_streaming import context_fixture, summary_provider, compact
     from app.models import ChatMessage, ContextCheckpoint
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=26000)
     db.get(SiteModelProvider, UUID(provider)).supports_images = True
     item = upload(http, "image.png", PNG).json()
     original = db.scalar(select(ChatMessage).where(
