@@ -12,6 +12,15 @@ import release_package
 
 
 class ReleasePackageTests(unittest.TestCase):
+    def test_production_nginx_allows_base64_overhead_for_skill_uploads(self):
+        deploy_root = Path(__file__).resolve().parents[1]
+        nginx = (deploy_root / "nginx" / "syfc.moonlitstarway.top").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(nginx.count("client_max_body_size 268m;"), 2)
+        self.assertNotIn("client_max_body_size 201m;", nginx)
+
     def test_fixed_release_entrypoint_uses_verified_runner_and_holds_lock(self):
         deploy_root = Path(__file__).resolve().parents[1]
         deploy_entrypoint = (deploy_root / "bin" / "deploy-release").read_text(
