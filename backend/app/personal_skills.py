@@ -1,7 +1,8 @@
 """Skill import is an ordinary workspace resource upload, with no published copy."""
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -16,7 +17,7 @@ router = APIRouter(prefix="/agent/skills", tags=["workspace-skills"])
 
 
 class SkillContentUpdate(BaseModel):
-    content: str = Field(min_length=1, max_length=5_000_000)
+    content: str
     version: int = Field(default=1, ge=1, strict=True)
     revision: str | None = None
     request_id: str | None = Field(default=None, min_length=1, max_length=100)
@@ -56,10 +57,44 @@ def save_package(files, db, access):
         return {"directory": directory, **result}
 
 
+def save_packages(packages, db, access):
+    """Import selected packages in one workspace preflight and one journaled write."""
+    from .skill_discovery import parse, directory_name
+    from .workspace_mutations import save_files, snapshot, unique_name
+    from .file_operations import workspace_lock
+    import mimetypes
+
+    access.editor()
+    with workspace_lock(db, access.workspace_id):
+        state = snapshot(db, access)
+        current, directories, _ = state
+        occupied = set(current) | directories
+        files_to_save, targets = {}, []
+        for folder, files in packages:
+            skill_files.validate_files(files)
+            metadata = parse(files["SKILL.md"].decode("utf-8"), "SKILL.md")
+            directory = ".skills/" + directory_name(metadata.get("name") or folder or "skill")
+            if directory in occupied:
+                directory = unique_name(directory, occupied)
+            occupied.add(directory)
+            paths = []
+            for path, content in files.items():
+                target = f"{directory}/{path}"
+                paths.append(target)
+                files_to_save[target] = (
+                    content, mimetypes.guess_type(path)[0] or "application/octet-stream")
+            targets.append((directory, paths))
+
+        result = save_files(db, access, files_to_save, preflight_snapshot=state)
+        saved = {item["path"]: item for item in result["items"]}
+        return [{"directory": directory, "items": [saved[path] for path in paths]}
+                for directory, paths in targets]
+
+
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
     from .skill_discovery import discover
-    return discover(db, access)
+    return discover(db, access, refresh=True)
 
 
 @router.post("/import", status_code=201)
@@ -70,23 +105,33 @@ def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(g
         raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
     data = file.file.read(skill_files.MAX_UPLOAD_BYTES + 1)
     if len(data) > skill_files.MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "Skill 包不能超过 25 MiB")
+        raise HTTPException(413, f"Skill 包不能超过 {skill_files.MAX_SIZE_MIB} MiB")
     files = {"SKILL.md": data} if name.endswith(".md") else skill_files.unzip(data)[0]
     return save_package(files, db, access)
 
 
 @router.post("/import-folder", status_code=201)
-def importing_folder(files: list[UploadFile] = File(...), paths: list[str] = Form(...),
-                           db=Depends(get_db), access=Depends(get_access)):
+async def importing_folder(request: Request, db=Depends(get_db), access=Depends(get_access)):
     access.editor()
-    if len(files) != len(paths) or len(files) > skill_files.MAX_FILES:
+    async with request.form(max_files=float("inf"), max_fields=float("inf")) as form:
+        files, paths = form.getlist("files"), form.getlist("paths")
+        if not files or not all(hasattr(file, "file") and hasattr(file, "filename") for file in files) or not all(isinstance(path, str) for path in paths):
+            raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
+        return await run_in_threadpool(save_folder, files, paths, db, access)
+
+
+def save_folder(files, paths, db, access):
+    access.editor()
+    if len(files) != len(paths):
         raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
     entries, total = [], 0
     for file, path in zip(files, paths):
         data = file.file.read(skill_files.MAX_FILE_BYTES + 1)
         total += len(data)
-        if len(data) > skill_files.MAX_FILE_BYTES or total > skill_files.MAX_BUNDLE_BYTES:
-            raise HTTPException(413, "Skill 文件超过大小限制")
+        if len(data) > skill_files.MAX_FILE_BYTES:
+            raise HTTPException(413, f"单个 Skill 文件不能超过 {skill_files.MAX_SIZE_MIB} MiB")
+        if total > skill_files.MAX_BUNDLE_BYTES:
+            raise HTTPException(413, f"Skill 总大小不能超过 {skill_files.MAX_SIZE_MIB} MiB")
         entries.append((path, data))
     return save_package(skill_files.imported_files(entries)[0], db, access)
 
@@ -106,13 +151,10 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
         if version is None:
             raise HTTPException(404, "Skill 文件已删除")
         from .shared_resources import backend
-        from .skill_discovery import MAX_MANIFEST_BYTES
         with backend(db).download(version.object_key) as handle:
-            raw = handle.read(MAX_MANIFEST_BYTES + 1)
-        if len(raw) > MAX_MANIFEST_BYTES:
-            value.update(name=None, description="", manifest_path=row.path,
-                directory=row.path.rsplit("/", 1)[0], manifest_error="清单超过 5 MB，请在工作区替换文件后重试")
-            return value
+            raw = handle.read(skill_files.MAX_FILE_BYTES + 1)
+        if len(raw) > skill_files.MAX_FILE_BYTES:
+            raise HTTPException(413, f"Skill 文件不能超过 {skill_files.MAX_SIZE_MIB} MiB")
         content = raw.decode("utf-8")
         from .skill_discovery import parse
         value.update(**parse(content, row.path), markdown=content)

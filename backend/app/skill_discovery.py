@@ -5,14 +5,33 @@ import json
 
 import frontmatter
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .models import WorkspaceFile
 from .workspace_files import read_file
 from . import shared_resources as shared
 
 ROOT = ".skills"
-MAX_MANIFEST_BYTES = 5_000_000
+
+
+def read_metadata(store, key, size):
+    """Read the YAML header, expanding only when the header itself needs more bytes."""
+    end = min(size, 16 * 1024)
+    while end:
+        with store.download_range(key, 0, end - 1) as body:
+            raw = body.read()
+        header = raw.removeprefix(b"\xef\xbb\xbf").lstrip()
+        complete = header if end >= size else header[:header.rfind(b"\n") + 1]
+        boundaries = list(re.finditer(rb"(?m)^-{3,}[ \t]*\r?$", complete))
+        if boundaries and boundaries[0].start() == 0:
+            if len(boundaries) >= 2:
+                return header[:boundaries[1].end()].decode("utf-8")
+        elif b"\n" in header or not b"---".startswith(header[:3]) or end >= size:
+            return ""
+        if end >= size:
+            return header.decode("utf-8")
+        end = min(size, end * 2)
+    return ""
 
 
 def prompt(skills):
@@ -48,39 +67,47 @@ def parse(content, path):
     return value
 
 
-def discover(db, access, *, refresh=True):
-    if refresh:
-        from .workspace_mutations import snapshot
-        snapshot(db, access)
-    rows = db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(ROOT + "/", autoescape=True),
-        WorkspaceFile.path.endswith("/SKILL.md")).order_by(WorkspaceFile.path)).all()
-    result, roots = [], []
+def markdown_body(content):
+    """Return the instructions after frontmatter for readable package previews."""
+    try:
+        return frontmatter.loads(content.lstrip("\ufeff")).content
+    except Exception:
+        return content
+
+
+def discover(db, access, *, refresh=False):
     store = shared.backend(db)
-    for row in sorted(rows, key=lambda item: (item.path.count("/"), item.path)):
-        directory = str(PurePosixPath(row.path).parent)
-        if directory == ROOT or any(directory.startswith(root + "/") for root in roots):
-            continue
-        roots.append(directory)
-        metadata = store.head(shared.object_key(access.workspace_id, row.path)) if store else None
-        if not metadata or str(metadata.get("Type", "")).lower() == "symlink":
-            continue
-        content = None
+    if store is None:
+        return []
+    if refresh:
+        rows, _ = shared.refresh_index(db, access, path_prefix=ROOT + "/", filename="SKILL.md", limit=None)
+    else:
+        # Model admission can hold billing locks: observe current manifests without index writes.
+        root = shared.object_key(access.workspace_id, ROOT + "/")
+        objects = {item["Key"][len(shared.prefix(access.workspace_id)):]: item
+            for item in store.iter_objects(root)
+            if item["Key"].startswith(root) and item["Key"].rsplit("/", 1)[-1].casefold() == "skill.md"
+            and str(item.get("Type", "")).lower() != "symlink"}
+        indexed = {row.path: read_file(row) for row in db.scalars(select(WorkspaceFile).where(
+            WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
+            WorkspaceFile.path.startswith(ROOT + "/", autoescape=True),
+            func.lower(WorkspaceFile.path).endswith("/skill.md")))}
+        rows = [{**indexed.get(path, {}), "path": path, "size_bytes": int(item.get("Size", 0))}
+            for path, item in sorted(objects.items())]
+    result = []
+    for row in rows:
+        path = row["path"]
         try:
-            with store.download(shared.object_key(access.workspace_id, row.path)) as body:
-                raw = body.read(MAX_MANIFEST_BYTES + 1)
-            if len(raw) > MAX_MANIFEST_BYTES:
-                raise ValueError("too large")
-            content = raw.decode("utf-8")
-            item = parse(content, row.path)
+            item = parse(read_metadata(store, shared.object_key(access.workspace_id, path), row["size_bytes"]), path)
         except (UnicodeError, ValueError):
-            item = {"name": None, "description": "", "manifest_path": row.path, "directory": directory,
-                "manifest_error": "清单需要 UTF-8 文本且不超过 5 MB，请在工作区修复"}
+            item = {"name": None, "description": "", "manifest_path": path,
+                "directory": str(PurePosixPath(path).parent),
+                "manifest_error": "清单需要 UTF-8 文本，请编辑 SKILL.md 修复"}
         except HTTPException as error:
             if error.status_code == 404:
                 continue
             raise
-        item = {**read_file(row), **item, "enabled": True, "source": "workspace"}
+        item = {**row, **item, "enabled": True, "source": "workspace"}
         result.append(item)
     return result
 

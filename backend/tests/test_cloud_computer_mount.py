@@ -24,6 +24,7 @@ class MemoryMount:
     def __init__(self): self.objects, self.copies = {}, []
     def put(self, key, source, *_): self.objects[key] = source.read()
     def download(self, key): return io.BytesIO(self.objects[key])
+    def download_range(self, key, start, end): return io.BytesIO(self.objects[key][start:end + 1])
     def delete(self, key): self.objects.pop(key, None)
     def head(self, key):
         if key not in self.objects: return None

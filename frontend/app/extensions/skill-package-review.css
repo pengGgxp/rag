@@ -1,0 +1,41 @@
+.skill-package-review { display: grid; gap: 16px; border-top: 1px solid var(--line); padding-top: 20px; min-width: 0; }
+.skill-package-review > header, .skill-package-review > footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.skill-package-review > header span { color: var(--muted); font-size: 13px; }
+.skill-package-review-body { display: grid; grid-template-columns: minmax(290px, 38%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: min(68dvh, 720px); min-height: min(420px, 68dvh); border: 1px solid var(--line); border-radius: var(--selection-radius); overflow: hidden; background: var(--surface); }
+.skill-package-list-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); background: var(--background); }
+.skill-package-selection { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; min-height: 52px; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.skill-package-selection > span { white-space: nowrap; }
+.skill-package-selection strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.skill-package-selection > div { display: flex; gap: 4px; }
+.skill-package-selection button { min-height: 36px; padding: 0 9px; border-radius: var(--form-radius); color: var(--accent); font-size: 12px; }
+.skill-package-selection button:hover:not(:disabled) { background: var(--accent-soft); }
+.skill-package-selection button:disabled { color: var(--muted); opacity: .45; }
+.skill-package-list { display: grid; align-content: start; gap: 8px; min-width: 0; min-height: 0; padding: 10px; overflow-y: auto; overscroll-behavior: contain; }
+.skill-package-choice { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--form-radius); background: var(--surface); }
+.skill-package-choice[data-selected="true"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: var(--accent-soft); }
+.skill-package-choice[data-previewing="true"] { box-shadow: inset 3px 0 var(--accent); }
+.skill-package-choice label { display: flex; align-items: flex-start; gap: 10px; min-width: 0; cursor: pointer; }
+.skill-package-choice input[type="checkbox"] { display: block; flex: 0 0 16px; width: 16px; min-width: 16px; height: 16px; min-height: 16px; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
+.skill-package-choice label > span { display: grid; gap: 4px; min-width: 0; }
+.skill-package-choice label strong { color: var(--ink); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.skill-package-choice label small { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.skill-package-choice button { min-width: 64px; min-height: 40px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--form-radius); background: var(--surface); color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.skill-package-choice button:hover { border-color: var(--accent); color: var(--accent); }
+.skill-package-choice button[aria-current="true"] { border-color: var(--accent); background: var(--surface); color: var(--accent); font-weight: 600; }
+.skill-package-review-body article { min-width: 0; min-height: 0; padding: 18px; overflow-y: auto; }
+.skill-package-review-body article h3 { margin: 0 0 6px; overflow-wrap: anywhere; }
+.skill-package-review-body article > p { margin-bottom: 16px; color: var(--muted); overflow-wrap: anywhere; }
+.skill-package-markdown { overflow-wrap: anywhere; }
+.skill-package-markdown pre { max-width: 100%; overflow: auto; }
+.skill-package-review-body details { margin-top: 16px; }
+.skill-package-review-body summary { cursor: pointer; }
+.skill-package-list:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+@media (max-width: 680px) {
+  .skill-package-review-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 42%) minmax(0, 1fr); height: min(72dvh, 720px); min-height: min(460px, 72dvh); }
+  .skill-package-list-panel { border-right: 0; border-bottom: 1px solid var(--line); }
+  .skill-package-review-body article { max-height: none; padding: 16px; }
+  .skill-package-list { padding: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skill-package-choice { transition: none; }
+}

@@ -24,6 +24,10 @@ async (page) => {
   const url = `${web}/extensions/skills/${pack.id}?platform=1`;
   const button = label => page.getByRole('button', { name: label, exact: true });
   const link = label => page.getByRole('link', { name: label, exact: true });
+  const assertNoUnderline = async label => {
+    const decoration = await link(label).evaluate(element => getComputedStyle(element).textDecorationLine);
+    assert(decoration === 'none', `${label} 不应显示下划线`);
+  };
   const results = [];
   let delayedReads = 0;
   const delayedDetail = async route => {
@@ -44,6 +48,12 @@ async (page) => {
     assert(deleted.ok(), '临时目录清理失败');
   }
   try {
+    await page.goto(`${web}/extensions/skills/new?returnTo=%2Fextensions`);
+    await link('返回 Skill 仓库').waitFor();
+    await assertNoUnderline('返回 Skill 仓库');
+    await assertNoUnderline('在工作区查看');
+    results.push('添加 Skill 页面两个导航链接均无下划线');
+
     for (const [width, label, target] of [[1440, '返回 Skill 仓库', '/extensions'], [700, '在工作区查看', '/resources'], [390, '在工作区查看', '/resources']]) {
       await cleanInstall();
       await page.setViewportSize({ width, height: 900 });

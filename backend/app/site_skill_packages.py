@@ -4,14 +4,15 @@ import binascii
 
 from fastapi import HTTPException
 
-from .skill_files import MAX_BUNDLE_BYTES, WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, text_content, validate_files
+from . import skill_files
+from .skill_files import WINDOWS_RESOURCE_SUFFIXES, archive_entries, manifest, safe_path, text_content, validate_files
 
 TEXT_SUFFIXES = {"md", "txt", "csv", "json", "yaml", "yml", "xml", "html", "css", "svg"}
 
 
 def decode_files(items, markdown):
-    if sum(len(item.content) for item in items) > (MAX_BUNDLE_BYTES * 4 // 3 + len(items) * 4):
-        raise HTTPException(413, "Skill 文件总大小不能超过 20 MiB")
+    if sum(len(item.content) for item in items) > (skill_files.MAX_BUNDLE_BYTES * 4 // 3 + len(items) * 4):
+        raise HTTPException(413, f"Skill 文件总大小不能超过 {skill_files.MAX_SIZE_MIB} MiB")
     files = {"SKILL.md": markdown.encode("utf-8")}
     seen = {"skill.md"}
     for item in items:
