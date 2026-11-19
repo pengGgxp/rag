@@ -11,6 +11,7 @@ import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
 import { KnowledgeNavigation } from "./knowledge-navigation";
 import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import { useDocumentUploads } from "./document-uploads";
+import { ingestionRetryLabel } from "./workspace-types";
 import type {
   Health,
   KnowledgeBase,
@@ -869,9 +870,11 @@ export default function KnowledgeWorkspace() {
                                 <span
                                   className={`status-badge ${doc.status}`}
                                   title={doc.error_detail || doc.job?.error_detail || undefined}
+                                  role="status"
                                 >
                                   <span className="status-dot" />
-                                  {STATUS[doc.status] || doc.status}
+                                  {(doc.status === "processing" && doc.job?.state === "running"
+                                    && ingestionRetryLabel(doc.job.retry_progress)) || STATUS[doc.status] || doc.status}
                                 </span>
                                 {(doc.error_detail || doc.job?.error_detail) && (
                                   <small className="document-error">
@@ -923,7 +926,7 @@ export default function KnowledgeWorkspace() {
                                   </button>
                                   {!trash && canEdit && (
                                     <>
-                                      {doc.job &&
+                                      {doc.status === "failed" && doc.job &&
                                         ["failed", "cancelled"].includes(
                                           doc.job.state,
                                         ) && (

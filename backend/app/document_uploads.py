@@ -13,7 +13,7 @@ from sqlalchemy import select, func
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_ingestion import admit, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
-from .models import Document, DocumentStatus, DocumentUpload, Membership, User
+from .models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, Membership, User
 from .storage_backend import current_storage
 
 router = APIRouter(tags=["document-uploads"])
@@ -101,6 +101,15 @@ def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)
         if document:
             result["document_status"] = document.status.value
             result["document_error"] = document.error_detail
+            if document.status == DocumentStatus.PROCESSING:
+                job = db.scalar(
+                    select(IngestionJob)
+                    .where(IngestionJob.document_id == document.id, IngestionJob.state == JobState.RUNNING,
+                           IngestionJob.retry_progress.is_not(None))
+                    .order_by(IngestionJob.created_at.desc())
+                    .limit(1)
+                )
+                result["retry_progress"] = job.retry_progress if job else None
     return result
 
 

@@ -7,6 +7,7 @@ import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
 import { ApiError, request } from "./api";
 import { useAuth } from "./auth";
+import { ingestionRetryLabel, type IngestionRetryProgress } from "./workspace-types";
 import { BATCH_COUNT, BATCH_LIMIT, DOCUMENT_ACCEPT, DOCUMENT_LIMIT, droppedDocuments, prepareDocuments, type ImportFile, type ImportIssue } from "./document-import";
 import "./uploads.css";
 
@@ -16,11 +17,12 @@ type Task = {
   key: string; uploadId?: string; workspace: string; library: Destination;
   name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
   hashes: Record<number, string>; state: string; transferred: number;
-  error?: string; documentId?: string;
+  error?: string; documentId?: string; retryProgress?: IngestionRetryProgress | null;
 };
 type Remote = {
   id: string; state: string; part_size: number; document_id?: string; error?: string;
   document_status?: string; document_error?: string;
+  retry_progress?: IngestionRetryProgress | null;
   parts: { number: number; size: number; sha256: string }[];
 };
 type UploadContext = { tasks: Task[]; open: (destination?: Destination) => void };
@@ -126,6 +128,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const restart = ["failed", "expired", "cleaned"].includes(state);
     if (restart) state = "failed";
     patch(task.key, { state, documentId: remote.document_id, error: remote.error || remote.document_error || undefined,
+      retryProgress: state === "processing" ? remote.retry_progress : undefined,
       ...(restart ? { uploadId: undefined, hashes: {}, transferred: 0 } : {}),
       ...(["verifying", "processing", "ready", "processing_failed"].includes(state) ? { transferred: task.size } : {}) });
     if (["verifying", "processing", "ready", "processing_failed", "deleted", "cancelled"].includes(state)) files.current.delete(task.key);
@@ -344,7 +347,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
             <div className="transfer-heading"><FileText size={17} /><strong title={task.sourcePath || task.name}>{task.sourcePath || task.name}</strong><span>{size(task.size)}</span></div>
             <div className="transfer-state" aria-live="polite">
               {task.state === "ready" ? <Check size={14} /> : ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
-              <span>{labels[task.state] || "等待恢复"}</span>
+              <span>{ingestionRetryLabel(task.retryProgress) || labels[task.state] || "等待恢复"}</span>
               {task.state === "uploading" && <span>{Math.floor(Math.min(task.transferred, task.size) / task.size * 100)}%</span>}
               <small>{task.library.name}</small>
             </div>

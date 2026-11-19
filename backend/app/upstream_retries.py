@@ -22,6 +22,8 @@ class RetryPolicy:
     base_delay: float = 1.0
     max_delay: float = 8.0
     seconds: float = 30.0
+    retry_after_jitter: float = 0.0
+    check_interval: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -48,11 +50,13 @@ def retry_scope(check_active=None, notify=None, *, deadline=None):
         _hooks.reset(token)
 
 
-def retry_after(value):
+def retry_after(value, *, reject_negative=False):
     if not value:
         return None
     try:
         seconds = float(value)
+        if reject_negative and seconds < 0:
+            return None
     except (TypeError, ValueError):
         try:
             date = parsedate_to_datetime(value)
@@ -89,7 +93,7 @@ class RetryBudget:
                 "max_attempts": self.policy.attempts, "wait_seconds": None})
         return True
 
-    def delay(self, category, after=None):
+    def delay(self, category, after=None, *, remaining_wait=math.inf):
         self.check()
         if self.attempt >= self.policy.attempts:
             return None
@@ -101,7 +105,10 @@ class RetryBudget:
             if after > self.policy.max_delay:
                 return None
             delay = max(delay, after)
-        if delay >= self.remaining():
+            headroom = min(self.policy.retry_after_jitter, self.policy.max_delay - delay)
+            if headroom > 0:
+                delay += random.uniform(0, headroom)
+        if delay >= self.remaining() or delay > remaining_wait:
             return None
         logger.info("Upstream retry kind=%s category=%s attempt=%s wait_seconds=%.3f",
             self.kind, category, self.attempt + 1, delay)
@@ -115,7 +122,7 @@ class RetryBudget:
         end = time.monotonic() + delay
         while time.monotonic() < end:
             self.check()
-            time.sleep(max(0, min(.1, end - time.monotonic())))
+            time.sleep(max(0, min(self.policy.check_interval, end - time.monotonic())))
         self.check()
 
     async def await_delay(self, delay):

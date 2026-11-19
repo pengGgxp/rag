@@ -244,6 +244,13 @@ def authorization_hold(
     )
 
 
+def release_embedding_hold(db: Session, workspace_id: UUID, job_id: UUID) -> None:
+    hold = db.scalar(select(CreditLedgerEntry).where(
+        CreditLedgerEntry.idempotency_key == f"usage:{job_id}:hold"))
+    if hold is not None:
+        release_hold(db, workspace_id, None, job_id, -hold.amount)
+
+
 def settle_usage(
     db: Session,
     workspace_id: UUID,

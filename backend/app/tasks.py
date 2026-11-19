@@ -15,7 +15,8 @@ from .docmind import (
     MAX_SUBMISSION_BYTES, pdf_part, submission_ranges,
 )
 from .parsed_document import ParsedDocument, assemble_pages, parsed_chunks
-from .embedding import EmbeddingConfigurationError, OpenAICompatibleEmbeddingProvider
+from .embedding import EmbeddingConfigurationError, EmbeddingProviderError, INGESTION_RETRY, OpenAICompatibleEmbeddingProvider
+from .upstream_retries import retry_scope
 from .models import (
     Chunk,
     Document,
@@ -30,7 +31,8 @@ from .models import (
 from .parsers import parse_document, parse_local_pdf, pdf_pages
 from .storage import download_fileobj
 from .credits import (
-    authorization_hold, authorization_hold_amount, release_hold, settle_usage, reconcile_hold,
+    CreditError, authorization_hold, authorization_hold_amount, release_hold, release_embedding_hold,
+    settle_usage, reconcile_hold,
 )
 from .workspace_billing import document_snapshot
 
@@ -331,10 +333,13 @@ def process_document(self, job_id: str, *, prepared_content: bytes | None = None
     session = SessionLocal()
     job = None
     try:
-        job = session.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update())
+        document_id = session.scalar(select(IngestionJob.document_id).where(IngestionJob.id == job_id))
+        if document_id is None:
+            return
+        document = session.get(Document, document_id, with_for_update=True)
+        job = session.get(IngestionJob, job_id, with_for_update=True)
         if job is None:
             return
-        document = session.get(Document, job.document_id)
         if document is None:
             job.state = JobState.FAILED
             job.error_detail = "Document no longer exists"
@@ -487,139 +492,126 @@ def cleanup_workspace_files() -> None:
         recover_pending(db)
 
 
-@celery_app.task(bind=True, max_retries=3)
-def embed_document(self, document_id: str, job_id: str | None = None) -> None:
-    session = SessionLocal()
-    try:
-        job = session.get(IngestionJob, job_id) if job_id else None
-        if job is not None and job.state == JobState.CANCELLED:
-            return
-        if job is not None:
-            job.state = JobState.RUNNING
-            job.error_detail = None
-            session.commit()
-        document = session.get(Document, document_id)
-        if document is None:
-            if job is not None:
-                job.state = JobState.FAILED
-                job.error_detail = "Document no longer exists"
-                session.commit()
-            return
-        if document.status == DocumentStatus.DELETED:
-            if job is not None:
-                job.state = JobState.CANCELLED
-                job.error_detail = "Document deleted"
-                session.commit()
-            return
-        chunks = list(
-            session.query(Chunk)
-            .filter(Chunk.document_id == document.id)
-            .order_by(Chunk.ordinal)
-            .all()
-        )
-        if not chunks:
-            raise ValueError("The document has no chunks to embed")
+class EmbeddingCancelled(Exception):
+    pass
 
-        pending = [
-            chunk
-            for chunk in chunks
-            if chunk.embedding_status in (EmbeddingStatus.PENDING, EmbeddingStatus.FAILED)
-        ]
-        if not pending:
-            # Another worker may currently own RUNNING chunks. Leave the
-            # document in PROCESSING instead of falsely reporting readiness.
-            if all(chunk.embedding_status == EmbeddingStatus.READY for chunk in chunks):
-                document.status = DocumentStatus.READY
-                document.error_detail = None
-                if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
-                    document.knowledge_base.status = KnowledgeBaseStatus.READY
-                if job is not None:
-                    job.state = JobState.SUCCEEDED
-                session.commit()
-            return
 
-        for chunk in pending:
-            chunk.embedding_status = EmbeddingStatus.RUNNING
-            chunk.embedding_error = None
-        document.status = DocumentStatus.PROCESSING
-        document.error_detail = None
-        session.commit()
+@celery_app.task
+def embed_document(document_id: str, job_id: str) -> None:
+    document_id, job_id = UUID(str(document_id)), UUID(str(job_id))
+    claimed = False
+    workspace_id = None
+    chunk_ids = []
+    with SessionLocal() as session:
+        def target(*, lock=False):
+            # Keep the same lock order as cancel, retry and delete.
+            document = session.get(Document, document_id, with_for_update=lock, populate_existing=True)
+            job = session.get(IngestionJob, job_id, with_for_update=lock, populate_existing=True)
+            return document, job
 
-        provider = OpenAICompatibleEmbeddingProvider()
-        workspace_id = document.knowledge_base.workspace_id
-        metering_id = UUID(str(job.id if job is not None else document.id))
-        pricing_context = document_snapshot(session, workspace_id, metering_id, "embedding_tokens", "embedding")
-        hold_amount = authorization_hold_amount()
-        authorization_hold(session, workspace_id, None, metering_id, hold_amount)
-        session.commit()
-        try:
-            vectors = provider.embed_texts([chunk.text for chunk in pending])
-        except Exception:
-            release_hold(session, workspace_id, None, metering_id, hold_amount)
-            session.commit()
-            raise
-        if len(vectors) != len(pending):
-            raise ValueError("Embedding provider returned an unexpected number of vectors")
-        event = settle_usage(
-            session, workspace_id, None, metering_id, "embedding_tokens",
-            sum(max(chunk.token_count, 0) for chunk in pending),
-            event_key="embedding", metadata={"document_id": str(document.id)},
-            pricing_context=pricing_context,
-        )
-        reconcile_hold(
-            session, workspace_id, None, metering_id, event.credits, hold_amount,
-        )
-        session.refresh(document)
-        if job is not None:
-            session.refresh(job)
-            if job.state == JobState.CANCELLED:
-                return
-        if document.status == DocumentStatus.DELETED:
-            if job is not None:
-                job.state = JobState.CANCELLED
-                job.error_detail = "Document deleted"
-                session.commit()
-            return
-        for chunk, vector in zip(pending, vectors):
-            chunk.embedding = vector
-            chunk.embedding_status = EmbeddingStatus.READY
-            chunk.embedding_error = None
-        session.refresh(document)
-        if document.status == DocumentStatus.DELETED:
+        def active(document, job):
+            return (document is not None and document.status == DocumentStatus.PROCESSING
+                    and job is not None and job.state == JobState.RUNNING)
+
+        def require_active(*, lock=False):
+            document, job = target(lock=lock)
+            if not active(document, job):
+                raise EmbeddingCancelled()
+            return document, job
+
+        def check_active():
+            require_active()
             session.rollback()
-            if job is not None:
-                job = session.get(IngestionJob, job.id)
-                job.state = JobState.CANCELLED
-                job.error_detail = "Document deleted"
-                session.commit()
-            return
-        document.status = DocumentStatus.READY
-        document.error_detail = None
-        if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
-            document.knowledge_base.status = KnowledgeBaseStatus.READY
-        if job is not None:
-            job.state = JobState.SUCCEEDED
-        session.commit()
-    except Exception as exc:
-        session.rollback()
-        document = session.get(Document, document_id)
-        if document is not None:
-            chunks = session.query(Chunk).filter(Chunk.document_id == document.id).all()
-            for chunk in chunks:
-                if chunk.embedding_status == EmbeddingStatus.RUNNING:
-                    chunk.embedding_status = EmbeddingStatus.FAILED
-                    chunk.embedding_error = str(exc)
-            document.status = DocumentStatus.FAILED
-            document.error_detail = str(exc)
-            if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
-                document.knowledge_base.status = KnowledgeBaseStatus.ERROR
-            if job is not None:
-                job.state = JobState.FAILED
-                job.error_detail = str(exc)
+
+        def retry_progress(progress):
+            _, job = require_active(lock=True)
+            job.retry_progress = progress
             session.commit()
-        if not isinstance(exc, (ValueError, EmbeddingConfigurationError)) and self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** (self.request.retries + 1))
-        raise
-    finally:
-        session.close()
+
+        def mark_ready(document, job):
+            document.status = DocumentStatus.READY
+            document.error_detail = None
+            if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+                document.knowledge_base.status = KnowledgeBaseStatus.READY
+            job.state = JobState.SUCCEEDED
+            job.retry_progress = None
+
+        try:
+            document, job = target(lock=True)
+            if document is None or job is None or job.document_id != document_id or job.state != JobState.QUEUED:
+                return
+            if document.status == DocumentStatus.DELETED:
+                job.state, job.error_detail = JobState.CANCELLED, "Document deleted"
+                session.commit()
+                return
+            chunks = session.scalars(select(Chunk).where(Chunk.document_id == document_id)
+                                     .order_by(Chunk.ordinal)).all()
+            if any(chunk.embedding_status == EmbeddingStatus.RUNNING for chunk in chunks):
+                return
+            pending = [chunk for chunk in chunks
+                       if chunk.embedding_status != EmbeddingStatus.READY or chunk.embedding is None]
+            if chunks and not pending:
+                mark_ready(document, job)
+                session.commit()
+                return
+
+            chunk_ids = [chunk.id for chunk in pending]
+            texts = [chunk.text for chunk in pending]
+            units = sum(max(chunk.token_count, 0) for chunk in pending)
+            for chunk in pending:
+                chunk.embedding_status = EmbeddingStatus.RUNNING
+                chunk.embedding_error = None
+            job.state, job.error_detail, job.retry_progress = JobState.RUNNING, None, None
+            document.status, document.error_detail = DocumentStatus.PROCESSING, None
+            workspace_id = document.knowledge_base.workspace_id
+            session.commit()
+            claimed = True
+
+            if not chunk_ids:
+                raise ValueError("The document has no chunks to embed")
+            require_active(lock=True)
+            pricing_context = document_snapshot(session, workspace_id, job_id, "embedding_tokens", "embedding")
+            authorization_hold(session, workspace_id, None, job_id, authorization_hold_amount())
+            session.commit()
+            with retry_scope(check_active=check_active):
+                vectors = OpenAICompatibleEmbeddingProvider().embed_texts(
+                    texts, retry_policy=INGESTION_RETRY, retry_progress=retry_progress)
+            if len(vectors) != len(chunk_ids):
+                raise ValueError("Embedding provider returned an unexpected number of vectors")
+
+            document, job = require_active(lock=True)
+            settle_usage(session, workspace_id, None, job_id, "embedding_tokens", units,
+                         event_key="embedding", metadata={"document_id": str(document_id)},
+                         pricing_context=pricing_context)
+            for chunk_id, vector in zip(chunk_ids, vectors, strict=True):
+                chunk = session.get(Chunk, chunk_id)
+                chunk.embedding = vector
+                chunk.embedding_status = EmbeddingStatus.READY
+                chunk.embedding_error = None
+            mark_ready(document, job)
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            if not claimed:
+                raise
+            document, job = target(lock=True)
+            release_embedding_hold(session, workspace_id, job_id)
+            if active(document, job):
+                if isinstance(exc, EmbeddingProviderError):
+                    message = exc.user_message
+                elif isinstance(exc, EmbeddingConfigurationError):
+                    message = "文档处理服务不可用，请联系管理员"
+                elif isinstance(exc, CreditError):
+                    message = "积分不足，请补充积分后重试"
+                else:
+                    message = "文档处理未完成，请稍后重试；若仍失败，请联系管理员"
+                document.status, document.error_detail = DocumentStatus.FAILED, message
+                if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
+                    document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+                job.state, job.error_detail, job.retry_progress = JobState.FAILED, message, None
+                for chunk in session.scalars(select(Chunk).where(Chunk.id.in_(chunk_ids))):
+                    chunk.embedding_status, chunk.embedding_error = EmbeddingStatus.FAILED, message
+            session.commit()
+            if not isinstance(exc, EmbeddingCancelled):
+                raise
 
