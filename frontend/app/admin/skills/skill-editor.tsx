@@ -12,6 +12,7 @@ import type { PackageReview, Skill } from "./page";
 import { SkillResources } from "./skill-resources";
 import { skillUploadError } from "../../extensions/skill-upload";
 import { uploadSkillPackage, type SkillPackagePreview } from "../../extensions/skill-package-upload";
+import { SkillPackagePicker } from "../../extensions/skill-package-picker";
 import "../../billing.css";
 import "../platform-content.css";
 
@@ -39,6 +40,7 @@ export function SkillEditor({ id }: { id?: string }) {
   const [uploadId, setUploadId] = useState("");
   const [selectedPackages, setSelectedPackages] = useState<number[]>([]);
   const [activePackage, setActivePackage] = useState(0);
+  const activePreviewPackage = packages.find(item => item.id === activePackage);
   const packageReview = checked?.markdown === form.markdown && checked?.files === form.files ? checked.result : undefined;
   const input = useRef<HTMLInputElement>(null);
   const dirty = form.name !== saved.name || form.description !== saved.description ||
@@ -89,20 +91,14 @@ export function SkillEditor({ id }: { id?: string }) {
       {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill">
         <header><strong>识别到 {packages.length} 个 Skill</strong><span>检查每个 Skill 的名称、描述和完整正文</span></header>
         <div className="skill-package-review-body">
-        <nav aria-label="Skill 列表">{packages.map(item => <div className="skill-package-choice" key={item.id}>
-            <label><input type="checkbox" checked={selectedPackages.includes(item.id)} aria-label={`导入${item.name}`}
-              onChange={event => setSelectedPackages(values => event.target.checked
-                ? [...values, item.id] : values.filter(value => value !== item.id))} />
-            <span><strong>{item.name}</strong><small>{item.description || item.folder}</small></span>
-            </label><button type="button" aria-current={item.id === activePackage ? "true" : undefined}
-              aria-label={`查看${item.name}正文`} onClick={() => setActivePackage(item.id)}>预览</button>
-          </div>)}</nav>
-          {packages.find(item => item.id === activePackage) && <article>
-            <h3>{packages[activePackage]?.name}</h3>
-            <p>{packages[activePackage]?.description}</p>
-            <div className="skill-package-markdown"><ReactMarkdown skipHtml>{packages[activePackage]?.markdown}</ReactMarkdown></div>
-            {!!packages[activePackage]?.resources.length && <details><summary>附属文件 · {packages[activePackage].resources.length}</summary>
-              <ul>{packages[activePackage].resources.map(file => <li key={file.path}>{file.path}</li>)}</ul>
+          <SkillPackagePicker packages={packages} selected={selectedPackages} activePackage={activePackage}
+            onSelectedChange={setSelectedPackages} onActivePackageChange={setActivePackage} />
+          {activePreviewPackage && <article>
+            <h3>{activePreviewPackage.name}</h3>
+            <p>{activePreviewPackage.description}</p>
+            <div className="skill-package-markdown"><ReactMarkdown skipHtml>{activePreviewPackage.markdown}</ReactMarkdown></div>
+            {!!activePreviewPackage.resources.length && <details><summary>附属文件 · {activePreviewPackage.resources.length}</summary>
+              <ul>{activePreviewPackage.resources.map(file => <li key={file.path}>{file.path}</li>)}</ul>
             </details>}
           </article>}
         </div>

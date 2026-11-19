@@ -8,6 +8,7 @@
 
 - 工作区 Skill 包预览和导入。
 - 站点管理端复用相同的包预览正文字段。
+- 工作区与站点管理端的 Skill 选择、预览状态及列表布局。
 - Skill 上传预览/导入请求时限。
 - 后端个人 Skill 批量导入及相应用例。
 
@@ -23,12 +24,16 @@
 - 多 Skill 个人导入通过一次批量工作区写入完成，保留唯一目录名和资源文件。
 - 预览/导入长耗时请求不在 120 秒时被前端提前中断。
 - 长 Skill 列表和 Skill 正文在预览窗格内滚动，窄屏仍可读。
+- 复选框保持 16px 可见尺寸；勾选行有明确底色，当前预览项另有状态提示。
+- 列表描述最多占两行；提供全选、清空和已选数量，选择状态与预览状态互相独立。
 - 后端相关测试、前端测试、类型检查和构建通过；验证限制如实记录。
 
 ## 验证
 
 - Edge 页面已复现：识别出 24 个 Skill，20 个默认勾选；预览正文包含 `name`、`description`、`metadata` YAML，并保留一条连接超时错误。页面当时的上传按钮已恢复为空闲态。该页面是线上现有版本，未执行导入或其他写操作。
+- 新增本地选中态原型 `output/playwright/skill-selection-preview.html`，用 24 个示例 Skill 验证 20 个默认选中、单项切换、全选和清空。
+- 本地预览中复选框恢复为 16px；所选底色、正在预览的状态、两行描述和已选计数均可直接区分。
 - 后端 `test_skill_uploads.py` 与 `test_skill_resources.py`：20 项通过；排除 1 项调用 Bash 的 Windows 不兼容用例。
-- 前端 `npm test`：52 项通过；`npx tsc --noEmit` 通过。
-- 设置 `NEXT_PUBLIC_API_URL=http://localhost:8000` 后 `npm run build` 通过。
-- `git diff --check` 通过。新版本尚未部署，因此没有声称线上 UI 已更新。
+- 前端 `npm test`：52 项通过；`npx tsc --noEmit` 通过；`git diff --check` 通过。
+- 设置 `NEXT_PUBLIC_API_URL=http://localhost:8000` 后，Next 编译、TypeScript 与页面生成通过；构建收尾被当前 Next.js 版本的安全检查终止，生产构建未完整完成。
+- 新版尚未部署；本机页面为静态交互原型，不连接上传或导入接口。

@@ -13,6 +13,7 @@ import type { ResourceFile } from "../resource-library";
 import { useExtensionResource } from "./extension-data";
 import { skillUploadError } from "./skill-upload";
 import { uploadSkillPackage, zipSkillFolder, type SkillPackagePreview } from "./skill-package-upload";
+import { SkillPackagePicker } from "./skill-package-picker";
 
 export function SkillImport({ id }: { id?: string }) {
   const { session, role } = useAuth();
@@ -37,7 +38,7 @@ export function SkillImport({ id }: { id?: string }) {
       const file = isFolder ? await zipSkillFolder(files) : files[0];
       const result = await uploadSkillPackage(file, "agent");
       setPackages(result.items); setUploadId(result.uploadId);
-      setSelected(result.items.map(item => item.id)); setActivePackage(0);
+      setSelected(result.items.map(item => item.id)); setActivePackage(result.items[0]?.id ?? 0);
       if (!result.items.length) throw new Error("没有识别到 SKILL.md");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "导入失败，请重试"); }
     finally { setOperation(null); }
@@ -72,14 +73,8 @@ export function SkillImport({ id }: { id?: string }) {
     {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill" aria-busy={busy}>
       <header><strong>识别到 {packages.length} 个 Skill</strong><span>选择要导入的项目并查看正文</span></header>
       <div className="skill-package-review-body">
-        <nav aria-label="Skill 列表">{packages.map(item => <div className="skill-package-choice" key={item.id}>
-          <label><input type="checkbox" checked={selected.includes(item.id)} aria-label={`导入${item.name}`}
-            onChange={event => setSelected(values => event.target.checked
-              ? [...values, item.id] : values.filter(value => value !== item.id))} />
-          <span><strong>{item.name}</strong><small>{item.description || item.folder}</small></span>
-          </label><button type="button" aria-current={item.id === activePackage ? "true" : undefined}
-            aria-label={`查看${item.name}正文`} onClick={() => setActivePackage(item.id)}>预览</button>
-        </div>)}</nav>
+        <SkillPackagePicker packages={packages} selected={selected} activePackage={activePackage}
+          onSelectedChange={setSelected} onActivePackageChange={setActivePackage} />
         {currentPackage && <article>
           <h3>{currentPackage.name}</h3>
           <p>{currentPackage.description}</p>
