@@ -266,10 +266,28 @@ class ExtensionRuntime:
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     try:
                         from .cloud_computer import tool_request_id
-                        return execute_tool(name, arguments, db, access, access.workspace_id,
+                        request_id = tool_request_id(self.request_id, call_id) if name != "get_workspace_file_link" else None
+                        knowledge_write = name in {"run_command", "write_file", "apply_patch", "delete_file"}
+                        if knowledge_write:
+                            access.editor()
+                            from .knowledge_workspace import prepare_if_relevant
+                            paths = None if name == "run_command" else [arguments.get("path", "")]
+                            prepare_if_relevant(db, access, request_id, paths=paths)
+                        result = execute_tool(name, arguments, db, access, access.workspace_id,
                             conversation_id=message.conversation_id if message else None,
-                            request_id=tool_request_id(self.request_id, call_id) if name != "get_workspace_file_link" else None,
-                            check_active=check_active, **execution)
+                            request_id=request_id, check_active=check_active, **execution)
+                        if knowledge_write and result.get("status") == "completed":
+                            from .knowledge_workspace import synchronize_if_prepared
+                            try:
+                                result["knowledge_base_sync"] = synchronize_if_prepared(
+                                    db, access, request_id)
+                            except HTTPException as error:
+                                result["knowledge_base_sync"] = {
+                                    "error": public_error(error.detail),
+                                    "status_code": error.status_code,
+                                    "retry_required": True,
+                                }
+                        return result
                     except PayloadValidationError:
                         return {"error": "文件参数无效，请修正后重试", "error_code": "file_arguments"}
                     except HTTPException as error:

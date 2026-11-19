@@ -1,5 +1,6 @@
 """Scoped, resumable multipart uploads. Only the server can seal or admit an object."""
 import hashlib
+import io
 import math
 import re
 from datetime import datetime, timedelta
@@ -12,7 +13,7 @@ from sqlalchemy import select, func
 
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
-from .document_ingestion import admit, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
+from .document_ingestion import check_format, MAX_DOCUMENT_BYTES, SUFFIXES, stage_upload
 from .models import Document, DocumentStatus, DocumentUpload, Membership, User
 from .storage_backend import current_storage
 
@@ -60,15 +61,35 @@ def cloud_parts(storage, row):
 @router.post("/knowledge-bases/{library_id}/uploads", status_code=201)
 def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), access=Depends(get_access)):
     access.library(db, library_id, write=True)
-    from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, payload.size_bytes)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
         raise HTTPException(415, "不支持的文件名或文档格式")
-    if payload.version_of:
-        previous = db.get(Document, payload.version_of)
-        if not previous or previous.knowledge_base_id != library_id or previous.status == DocumentStatus.DELETED:
-            raise HTTPException(404, "原文档版本不存在")
+    from .shared_resources import backend as shared_backend, object_key
+    library = access.library(db, library_id, write=True)
+    previous = db.get(Document, payload.version_of) if payload.version_of else None
+    if payload.version_of and (not previous or previous.knowledge_base_id != library_id
+            or previous.status == DocumentStatus.DELETED):
+        raise HTTPException(404, "原文档版本不存在")
+    workspace_path = workspace_revision = None
+    if shared_backend(db) is not None:
+        from .knowledge_workspace import ensure_roots, migrate_legacy_documents
+        from .workspace_files import valid_path
+        from .workspace_mutations import snapshot
+        from .file_operations import file_revision
+        ensure_roots(db, access.workspace_id, access)
+        migrate_legacy_documents(db, access, library)
+        workspace_path = (previous.workspace_path if previous and previous.workspace_path
+            else valid_path(f"{library.workspace_path}/{payload.filename}"))
+        files, _, _ = snapshot(db, access)
+        if not previous and workspace_path in files:
+            from .workspace_mutations import unique_name
+            from .workspace_mutations import snapshot as workspace_snapshot
+            _, directories, _ = workspace_snapshot(db, access, refresh=False)
+            workspace_path = unique_name(workspace_path, set(files) | directories)
+        workspace_revision = file_revision(files[workspace_path]) if workspace_path in files else None
+    from .storage_billing import check_capacity
+    check_capacity(db, access.workspace_id, payload.size_bytes,
+        exclude_key=object_key(access.workspace_id, workspace_path) if workspace_path else None)
     if db.scalar(select(func.count()).select_from(DocumentUpload).where(
             DocumentUpload.user_id == access.user_id, DocumentUpload.state.in_(["uploading", "completing", "verifying"]),
             DocumentUpload.expires_at > now())) >= 20:
@@ -79,7 +100,8 @@ def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), ac
     multipart_id = storage.begin(key, payload.content_type)
     row = DocumentUpload(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
         knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
-        size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
+        size_bytes=payload.size_bytes, version_of=payload.version_of, workspace_path=workspace_path,
+        workspace_revision=workspace_revision, object_key=key,
         multipart_id=multipart_id, state="uploading", expires_at=now()+timedelta(hours=24))
     db.add(row)
     try:
@@ -197,11 +219,21 @@ def finalize_upload(identifier):
                 if hashlib.sha256(chunk).hexdigest() != row.parts.get(str(number)):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
             access = worker_access(db, row)
-            document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
-                size, digest, row.object_key, row.version_of)
+            from .shared_resources import backend as shared_backend
+            shared_store = shared_backend(db)
+            document, job = stage_upload(db, access, row.knowledge_base_id, row.filename, row.content_type,
+                io.BytesIO(content), row.version_of, request_id=row.id, workspace_path=row.workspace_path,
+                expected_revision=row.workspace_revision, check_expected_revision=True,
+                capacity_exclude_keys=(row.object_key,),
+                already_uploaded_key=row.object_key if shared_store is None else None)
             row.document_id, row.state = document.id, "completed"
             job_id = str(job.id)
             db.commit()
+            if document.object_key != row.object_key:
+                try:
+                    storage.delete(row.object_key)
+                except Exception:
+                    pass
         except Exception as error:
             db.rollback()
             row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
@@ -247,16 +279,19 @@ def cleanup_uploads():
 
 
 def recover_uploads():
-    from .tasks import verify_upload, process_document
+    from .tasks import verify_upload
+    from .document_ingestion import dispatch_document_job
     from .models import IngestionJob, JobState
     with SessionLocal() as db:
         for identifier in db.scalars(select(DocumentUpload.id).where(DocumentUpload.state == "verifying")):
             verify_upload.delay(str(identifier))
-        # Admission can commit just before the verifier stops; recover only unstarted work.
-        for job in db.scalars(select(IngestionJob).join(DocumentUpload,
-                DocumentUpload.document_id == IngestionJob.document_id).where(
-                    DocumentUpload.state == "completed", IngestionJob.state == JobState.QUEUED)):
-            process_document.delay(str(job.id))
+        # Recover any durable ingestion admission, including workspace-sync jobs.
+        for job in db.scalars(select(IngestionJob).where(IngestionJob.state == JobState.QUEUED)):
+            try:
+                dispatch_document_job(job)
+            except Exception:
+                # Leave the job queued so the next maintenance pass retries dispatch.
+                continue
 
 
 def cleanup_orphans():

@@ -76,6 +76,7 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
         chunk=SimpleNamespace(
             id=chunk_id,
             document_id=document_id,
+            document=SimpleNamespace(workspace_path="知识库/Allowed/guide.md"),
             text="needle evidence",
             char_start=0,
             char_end=14,
@@ -237,7 +238,9 @@ def test_history_and_query_preserved_while_evidence_is_bounded_as_whole_chunks(r
     for i in range(30):
         chunks.append(SimpleNamespace(
             chunk=SimpleNamespace(
-                id=uuid4(), document_id=uuid4(), text=f"candidate {i}", char_start=i, char_end=i + 1,
+                id=uuid4(), document_id=uuid4(),
+                document=SimpleNamespace(workspace_path="知识库/Allowed/report.pdf"),
+                text=f"candidate {i}", char_start=i, char_end=i + 1,
                 heading_path=None, page_number=2, source_locations=[],
                 version_group_id=uuid4(), version_number=3,
             ),

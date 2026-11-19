@@ -44,9 +44,9 @@ def validate_destination(path, files, directories):
             raise HTTPException(409, "上级路径是文件，请选择其他文件夹")
 
 
-def check_capacity(db, access, amount):
+def check_capacity(db, access, amount, *, exclude_key=None, exclude_keys=()):
     from .storage_billing import check_capacity as check
-    check(db, access.workspace_id, max(0, amount))
+    check(db, access.workspace_id, max(0, amount), exclude_key=exclude_key, exclude_keys=exclude_keys)
 
 
 def tree_revision(paths, files, directories):
@@ -77,6 +77,29 @@ def _mark_deleted(db, access, row):
         attachment.deleted_at = attachment.object_deleted_at = row.deleted_at
 
 
+def _knowledge_plan(db, access, paths, request_id):
+    from .knowledge_workspace import ensure_roots, operation_id, prepare_changes
+    libraries = ensure_roots(db, access.workspace_id, access)
+    roots = [row.workspace_path for row in libraries if row.workspace_path]
+    paths = normalize_selection(paths)
+    relevant = [path for path in paths if any(beneath(path, root) or beneath(root, path) for root in roots)]
+    if not relevant:
+        return request_id, None
+    identifier = operation_id(access.workspace_id, request_id)
+    prepare_changes(db, access, identifier, paths=relevant)
+    return (str(identifier) if request_id is None else request_id), identifier
+
+
+def _finish_knowledge_plan(db, access, identifier, *, content_origin="uploaded",
+                           capacity_exclude_key=None, capacity_exclude_keys=(), dispatch=None):
+    if identifier is None:
+        return None
+    from .knowledge_workspace import synchronize_if_prepared
+    return synchronize_if_prepared(db, access, identifier, content_origin=content_origin,
+        capacity_exclude_key=capacity_exclude_key, capacity_exclude_keys=capacity_exclude_keys,
+        dispatch=dispatch)
+
+
 def delete(db, access, paths, *, confirmation=None, request_id=None):
     access.editor()
     paths = normalize_selection(paths)
@@ -84,6 +107,10 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
     with ops.workspace_lock(db, access.workspace_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
+            from .knowledge_workspace import synchronize_if_prepared
+            sync_result = synchronize_if_prepared(db, access, request_id)
+            if sync_result:
+                previous["knowledge_base_sync"] = sync_result
             return previous
         preview = delete_preview(db, access, paths)
         if confirmation is not None and confirmation != preview["confirmation"]:
@@ -96,16 +123,23 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
         store = ops.storage(db)
         changes += [{"key": shared.directory_marker_key(access.workspace_id, row.path), "delete": True,
                      "expected": ops.revision(store.head(shared.directory_marker_key(access.workspace_id, row.path)))} for row in selected_dirs]
+        request_id, knowledge_request = _knowledge_plan(db, access, paths, request_id)
         def update():
             for row in selected_files:
                 _mark_deleted(db, access, row)
             for row in selected_dirs:
                 db.delete(row)
             return {"deleted": paths, "files": preview["files"], "directories": preview["directories"]}
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        sync_result = _finish_knowledge_plan(db, access, knowledge_request)
+        if sync_result:
+            result["knowledge_base_sync"] = sync_result
+        return result
 
 
-def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload", signature=None):
+def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload",
+               signature=None, content_origin="uploaded", dispatch_knowledge=True,
+               capacity_exclude_key=None, capacity_exclude_keys=()):
     """Create a package or save files, with one quota check and one journal."""
     access.editor()
     expected = expected or {}
@@ -115,6 +149,12 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
     with ops.workspace_lock(db, access.workspace_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
+            from .knowledge_workspace import synchronize_if_prepared
+            sync_result = synchronize_if_prepared(db, access, request_id,
+                content_origin=content_origin, capacity_exclude_key=capacity_exclude_key,
+                capacity_exclude_keys=capacity_exclude_keys)
+            if sync_result:
+                previous["knowledge_base_sync"] = sync_result
             return previous
         current, directories, _ = snapshot(db, access)
         changes, increase = [], 0
@@ -132,7 +172,8 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
             increase += len(data) - (row.size_bytes if row else 0)
             changes.append({"key": shared.object_key(access.workspace_id, path), "data": data,
                 "content_type": content_type, "expected": actual})
-        check_capacity(db, access, increase)
+        check_capacity(db, access, increase, exclude_keys=capacity_exclude_keys)
+        request_id, knowledge_request = _knowledge_plan(db, access, list(files), request_id)
         def update():
             result = []
             for path, (data, content_type) in files.items():
@@ -142,7 +183,14 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
                 row.live_etag = ops.storage(db).head(shared.object_key(access.workspace_id, path)).get("ETag")
                 result.append(read_file(row))
             return {"items": result}
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        sync_result = (_finish_knowledge_plan(db, access, knowledge_request,
+            content_origin=content_origin, capacity_exclude_key=capacity_exclude_key,
+            capacity_exclude_keys=capacity_exclude_keys)
+            if dispatch_knowledge else None)
+        if sync_result:
+            result["knowledge_base_sync"] = sync_result
+        return result
 
 
 def create_directory(db, access, path, *, request_id=None):
@@ -151,6 +199,10 @@ def create_directory(db, access, path, *, request_id=None):
     with ops.workspace_lock(db, access.workspace_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
+            from .knowledge_workspace import synchronize_if_prepared
+            sync_result = synchronize_if_prepared(db, access, request_id)
+            if sync_result:
+                previous["knowledge_base_sync"] = sync_result
             return previous
         files, directories, _ = snapshot(db, access)
         validate_destination(path, files, directories)
@@ -186,6 +238,10 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
     with ops.workspace_lock(db, access.workspace_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
+            from .knowledge_workspace import synchronize_if_prepared
+            sync_result = synchronize_if_prepared(db, access, request_id)
+            if sync_result:
+                previous["knowledge_base_sync"] = sync_result
             return previous
         files, directories, explicit = snapshot(db, access)
         if destination and destination not in directories:
@@ -263,6 +319,8 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
             changes += [{"key": shared.directory_marker_key(access.workspace_id, origin), "delete": True,
                 "expected": ops.revision(store.head(shared.directory_marker_key(access.workspace_id, origin)))}
                 for origin in dir_mappings if origin in explicit]
+        affected_paths = list(roots) + list(roots.values())
+        request_id, knowledge_request = _knowledge_plan(db, access, affected_paths, request_id)
         def update():
             for origin, target in mappings.items():
                 row = files[origin]
@@ -287,6 +345,13 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
             for origin in dir_mappings:
                 if move and origin in explicit:
                     db.delete(explicit[origin])
+            if move:
+                from .knowledge_workspace import ensure_roots
+                for library in ensure_roots(db, access.workspace_id, access):
+                    for origin, target in roots.items():
+                        if origin == library.workspace_path or beneath(library.workspace_path, origin):
+                            library.workspace_path = target + library.workspace_path[len(origin):]
+                            break
             db.flush()
             shared.refresh_index(db, access, commit=False)
             result = {"moved" if move else "copied": paths, "destination": destination, "targets": list(roots.values())}
@@ -295,4 +360,8 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
                 # Commit the exact rename response with the operation, including a no-op rename.
                 result["file"] = read_file(files[paths[0]])
             return result
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        sync_result = _finish_knowledge_plan(db, access, knowledge_request)
+        if sync_result:
+            result["knowledge_base_sync"] = sync_result
+        return result

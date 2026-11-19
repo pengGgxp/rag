@@ -93,8 +93,11 @@ def lock_workspace(db, identifier):
         raise HTTPException(404, "工作区不存在")
 
 
-def inventory(db, identifier, *, exclude_key=None):
+def inventory(db, identifier, *, exclude_key=None, exclude_keys=()):
     """Count each retained object once; mounted resources have one current key."""
+    excluded = set(exclude_keys)
+    if exclude_key:
+        excluded.add(exclude_key)
     objects = {}
     groups = {"documents": 0, "attachments": 0, "outputs": 0, "skills": 0, "reserved": 0}
     sources = [
@@ -124,7 +127,7 @@ def inventory(db, identifier, *, exclude_key=None):
     sources.append(("reserved", reserved))
     for group, rows in sources:
         for key, size in rows:
-            if key != exclude_key and key not in objects:
+            if key not in excluded and key not in objects:
                 objects[key] = size
                 groups[group] += size
     for row in db.scalars(select(AgentSkill).where(AgentSkill.workspace_id == identifier)):
@@ -142,10 +145,11 @@ def storage_limit(db, identifier, config=None):
     return (config or settings(db)).free_storage_bytes + sum(e.storage_bytes for e in active_entitlements(db, identifier))
 
 
-def check_capacity(db, identifier, additional, *, exclude_key=None, skill_replaced_bytes=0, output=False):
+def check_capacity(db, identifier, additional, *, exclude_key=None, exclude_keys=(),
+                   skill_replaced_bytes=0, output=False):
     lock_workspace(db, identifier)
     config = settings(db)
-    usage = inventory(db, identifier, exclude_key=exclude_key)
+    usage = inventory(db, identifier, exclude_key=exclude_key, exclude_keys=exclude_keys)
     if usage["used_bytes"] - skill_replaced_bytes + additional > storage_limit(db, identifier, config):
         raise HTTPException(413, "工作区存储空间不足，请联系工作区管理员增加额度")
     state = db.get(WorkspaceStorageState, identifier)

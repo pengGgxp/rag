@@ -17,6 +17,7 @@ import "./retrieval.css";
 type TraceResult = {
   chunk_id: string;
   filename: string;
+  workspace_path: string | null;
   rank: number;
   score: number;
   lexical_rank: number | null;
@@ -53,6 +54,7 @@ type Retrieval = {
     chunk: RetrievedChunk;
     score: number;
     filename: string;
+    workspace_path: string | null;
   }[];
 };
 type SourcePreview = {
@@ -209,6 +211,7 @@ export function TraceInspector({
                 <FileText size={16} />
                 <strong>{result.filename}</strong>
               </div>
+              {result.workspace_path && <code className="retrieval-source-path">{result.workspace_path}</code>}
               <RankMetrics result={result} />
               <code className="chunk-id">{result.chunk_id}</code>
             </div>
@@ -368,6 +371,7 @@ export function RetrievalPanel({
                     </button>
                   </div>
                   <div className="retrieval-location">
+                    {result.workspace_path && <span>{result.workspace_path}</span>}
                     <span>片段 {result.chunk.ordinal + 1}</span>
                     {result.chunk.page_number && <span>第 {result.chunk.page_number} 页</span>}
                     <span>

@@ -1,4 +1,5 @@
 import math
+import hashlib
 import re
 import secrets
 import asyncio
@@ -284,6 +285,9 @@ def update_knowledge_base(
     knowledge_base = access.library(
         db, knowledge_base_id, write=True, allow_archived=True,
     )
+    if payload.name != knowledge_base.name:
+        from .knowledge_workspace import rename_library_root
+        rename_library_root(db, access, knowledge_base, payload.name)
     knowledge_base.name = payload.name
     knowledge_base.description = payload.description
     if payload.tags is not None:
@@ -504,6 +508,19 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
     if document.status == DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
+    if document.is_active and document.workspace_path:
+        from .workspace_mutations import delete as delete_workspace_paths
+        delete_workspace_paths(db, access, [document.workspace_path])
+        document = db.get(Document, document_id, populate_existing=True)
+        record_audit(
+            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            action="document.deleted", resource_type="document", resource_id=document.id,
+            metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
+            request=request,
+        )
+        db.commit()
+        return DocumentRead.model_validate(document)
+
     was_active = document.is_active
     document.status = DocumentStatus.DELETED
     document.is_active = False
@@ -556,18 +573,58 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
     if document.status != DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
+    if document.workspace_path and "knowledge-history/" in document.object_key:
+        from .shared_resources import backend
+        from .workspace_mutations import save_files
+        store = backend(db)
+        if store is None or store.head(document.object_key) is None:
+            raise HTTPException(status_code=404, detail="文档原件不存在，无法恢复")
+        with store.download(document.object_key) as source:
+            content = source.read()
+        if hashlib.sha256(content).hexdigest() != document.content_hash:
+            raise HTTPException(status_code=409, detail="文档原件校验失败，无法恢复")
+        archive_key = document.object_key
+        save_files(db, access, {document.workspace_path: (
+            content, document.content_type)}, request_id=str(uuid4()), source="knowledge_base",
+            content_origin=document.content_origin, dispatch_knowledge=True)
+        restored = db.scalar(select(Document).where(
+            Document.knowledge_base_id == document.knowledge_base_id,
+            Document.workspace_path == document.workspace_path,
+            Document.status != DocumentStatus.DELETED,
+            Document.is_active.is_(True),
+        ).order_by(Document.created_at.desc(), Document.id.desc()).limit(1))
+        if restored and restored.object_key != archive_key:
+            try:
+                store.delete(archive_key)
+            except Exception:
+                pass
+        record_audit(
+            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            action="document.restored", resource_type="document", resource_id=document.id,
+            metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
+            request=request,
+        )
+        db.commit()
+        return DocumentRead.model_validate(restored or document)
+
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     has_ready_embeddings = bool(document.chunks) and all(
         chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
         for chunk in document.chunks
     )
-    document.status = DocumentStatus.READY if has_ready_embeddings else DocumentStatus.PROCESSING
+    document.status = DocumentStatus.READY if has_ready_embeddings else DocumentStatus.QUEUED
     if not has_ready_embeddings:
         for chunk in document.chunks:
             chunk.embedding = None
             chunk.embedding_status = EmbeddingStatus.PENDING
             chunk.embedding_error = None
+    db.execute(
+        update(Document)
+        .where(Document.version_group_id == document.version_group_id)
+        .values(is_active=False)
+    )
+    document.is_active = True
     job = IngestionJob(document_id=document.id)
     if has_ready_embeddings:
         job.state = JobState.SUCCEEDED
@@ -585,7 +642,8 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
         document.knowledge_base.status = KnowledgeBaseStatus.READY
         db.commit()
     else:
-        embed_document.delay(str(document.id), str(job.id))
+        from .document_ingestion import dispatch_document_job
+        dispatch_document_job(job)
     return DocumentRead.model_validate(document).model_copy(
         update={"job": JobRead.model_validate(job)}
     )
@@ -662,10 +720,8 @@ def retry_job(
     )
     db.commit()
     db.refresh(new_job)
-    if document.parsed_text and document.chunks:
-        embed_document.delay(str(document.id), str(new_job.id))
-    else:
-        process_document.delay(str(new_job.id))
+    from .document_ingestion import dispatch_document_job
+    dispatch_document_job(new_job)
     return new_job
 
 
@@ -701,7 +757,7 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
         chunk.embedding = None
         chunk.embedding_status = EmbeddingStatus.PENDING
         chunk.embedding_error = None
-    document.status = DocumentStatus.PROCESSING
+    document.status = DocumentStatus.QUEUED
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     job = IngestionJob(document_id=document.id)
@@ -714,7 +770,8 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     )
     db.commit()
     db.refresh(job)
-    embed_document.delay(str(document.id), str(job.id))
+    from .document_ingestion import dispatch_document_job
+    dispatch_document_job(job)
     return job
 
 
@@ -877,6 +934,7 @@ def retrieve_knowledge_base(
         {
             "chunk_id": str(chunk_id),
             "filename": entry["filename"],
+            "workspace_path": entry["chunk"].document.workspace_path,
             "score": float(entry["score"]),
             "bm25_score": entry.get("bm25_score"),
             "rank": rank,
@@ -916,6 +974,7 @@ def retrieve_knowledge_base(
             }),
             score=float(entry["score"]),
             filename=entry["filename"],
+            workspace_path=entry["chunk"].document.workspace_path,
         )
         for _, entry in ordered_results
     ]
@@ -971,6 +1030,8 @@ def answer_knowledge_base(
             CitationRead(
                 chunk_id=result.chunk.id,
                 filename=result.filename,
+                version_id=result.chunk.document_id,
+                workspace_path=result.chunk.document.workspace_path,
                 content_origin=result.chunk.content_origin,
                 text=result.chunk.text,
                 char_start=result.chunk.char_start,

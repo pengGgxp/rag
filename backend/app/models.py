@@ -96,6 +96,8 @@ class DocumentUpload(Base):
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
     version_of: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
+    workspace_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    workspace_revision: Mapped[str | None] = mapped_column(String(64), nullable=True)
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(150))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -574,6 +576,7 @@ class EmbeddingStatus(str, Enum):
 
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
+    __table_args__ = (Index("ix_knowledge_bases_workspace_path", "workspace_id", "workspace_path", unique=True),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True, default=LEGACY_WORKSPACE_ID)
@@ -581,6 +584,7 @@ class KnowledgeBase(Base):
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    workspace_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[KnowledgeBaseStatus] = mapped_column(
         SqlEnum(KnowledgeBaseStatus), default=KnowledgeBaseStatus.DRAFT
     )
@@ -613,6 +617,10 @@ class Document(Base):
     parser_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     parsing_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_origin: Mapped[str] = mapped_column(String(30), default="uploaded", server_default="uploaded")
+    workspace_file_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("workspace_files.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    workspace_path: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     status: Mapped[DocumentStatus] = mapped_column(
         SqlEnum(DocumentStatus), default=DocumentStatus.QUEUED
     )
@@ -699,6 +707,21 @@ class IngestionJob(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     document: Mapped[Document] = relationship(back_populates="jobs")
+
+
+class KnowledgeBaseFileSnapshot(Base):
+    __tablename__ = "knowledge_base_file_snapshots"
+    __table_args__ = (UniqueConstraint("workspace_id", "request_id",
+        name="uq_knowledge_base_file_snapshot_request"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
+    state: Mapped[str] = mapped_column(String(24), default="prepared", index=True)
+    snapshots: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class QueryTrace(Base):

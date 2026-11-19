@@ -2,7 +2,7 @@ from celery import Celery
 from celery.signals import worker_ready, worker_shutdown
 import redis
 import threading
-from sqlalchemy import select
+from sqlalchemy import select, update
 from uuid import UUID
 from datetime import datetime, timezone
 import io
@@ -491,10 +491,14 @@ def cleanup_workspace_files() -> None:
 def embed_document(self, document_id: str, job_id: str | None = None) -> None:
     session = SessionLocal()
     try:
-        job = session.get(IngestionJob, job_id) if job_id else None
-        if job is not None and job.state == JobState.CANCELLED:
-            return
+        job = (session.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update()
+            .execution_options(populate_existing=True))
+            if job_id else None)
         if job is not None:
+            # The maintenance sweep and broker redelivery may enqueue the same
+            # durable job concurrently; only one worker may claim it.
+            if job.state in (JobState.CANCELLED, JobState.SUCCEEDED, JobState.RUNNING):
+                return
             job.state = JobState.RUNNING
             job.error_detail = None
             session.commit()
@@ -595,6 +599,22 @@ def embed_document(self, document_id: str, job_id: str | None = None) -> None:
             return
         document.status = DocumentStatus.READY
         document.error_detail = None
+        if document.supersedes_id and not document.is_active:
+            ready_version = session.scalar(
+                select(Document)
+                .where(
+                    Document.version_group_id == document.version_group_id,
+                    Document.status == DocumentStatus.READY,
+                )
+                .order_by(Document.version_number.desc(), Document.id.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if ready_version is not None:
+                session.execute(update(Document)
+                    .where(Document.version_group_id == document.version_group_id)
+                    .values(is_active=False))
+                ready_version.is_active = True
         if document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED:
             document.knowledge_base.status = KnowledgeBaseStatus.READY
         if job is not None:

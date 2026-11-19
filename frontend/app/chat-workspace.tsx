@@ -50,6 +50,7 @@ import { ConversationThinking } from "./conversation-thinking";
 import { citationMarkers } from "./citation-markers";
 import { Tooltip } from "../components/ui/tooltip";
 import { ConversationContextControl, type ConversationContextState } from "./conversation-context-control";
+import { FilePreview } from "./resource-preview";
 import { acceptContextState } from "./conversation-context-state";
 import { activityItem, appendActivity, appendText, processBlocks, updateThinking, type DisplayBlock, type ToolEvent } from "./conversation-display";
 import "./conversation-experience.css";
@@ -64,7 +65,9 @@ type Library = {
 type Citation = {
   content_origin?: string;
   chunk_id: string;
+  version_id?: string;
   filename: string;
+  workspace_path?: string | null;
   text: string;
   char_start: number;
   char_end: number;
@@ -357,6 +360,7 @@ export function ChatWorkspace({
     error?: boolean;
   } | null>(null);
   const [preview, setPreview] = useState<Citation | null>(null);
+  const [originalPreview, setOriginalPreview] = useState<Citation | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [editing, setEditing] = useState(false);
   const [renameTarget, setRenameTarget] = useState<HistoryItem | null>(null);
@@ -1542,10 +1546,38 @@ export function ChatWorkspace({
                 {preview.heading_path ? `${preview.heading_path} · ` : ""}字符{" "}
                 {preview.char_start}–{preview.char_end}
               </p>
+              {preview.workspace_path && (
+                <p className="citation-workspace-path">
+                  工作区路径：<code>{preview.workspace_path}</code>
+                </p>
+              )}
             </div>
           </div>
+          {preview.version_id && preview.workspace_path && (
+            <button
+              className="secondary"
+              type="button"
+              onClick={() => {
+                setOriginalPreview(preview);
+                setPreview(null);
+              }}
+            >
+              查看原件
+            </button>
+          )}
           <div className="preview-text">{preview.text}</div>
         </Modal>
+      )}
+      {originalPreview?.version_id && originalPreview.workspace_path && (
+        <FilePreview
+          file={{
+            type: "document",
+            id: originalPreview.version_id,
+            name: originalPreview.workspace_path,
+          }}
+          scope={`${session.user.id}:${session.workspace_id}`}
+          onClose={() => setOriginalPreview(null)}
+        />
       )}
       {trace && (
         <Modal title="检索记录" wide onClose={() => setTrace(null)}>

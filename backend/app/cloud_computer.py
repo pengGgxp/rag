@@ -695,6 +695,12 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
                 time.sleep(1)
             command.finished_at = now()
             db.commit()
+            if command.status in ("completed", "failed", "cancelled"):
+                try:
+                    from .knowledge_workspace import synchronize_if_prepared
+                    synchronize_if_prepared(db, access, command.request_id)
+                except Exception:
+                    logger.warning("Knowledge workspace synchronization deferred: %s", command.id, exc_info=False)
         except Exception:
             db.rollback()
             db.refresh(command)
@@ -967,6 +973,12 @@ def _maintain(db, identifier):
             if row.status != "stopping" and not row.ended_at:
                 row.last_activity_at = now()
             db.commit()
+            if command.status in ("completed", "failed", "cancelled"):
+                try:
+                    from .knowledge_workspace import synchronize_if_prepared
+                    synchronize_if_prepared(db, session_access(db, row), command.request_id)
+                except Exception:
+                    logger.warning("Recovered knowledge synchronization deferred: %s", command.id, exc_info=False)
         else:
             # Never replay lost submission. Cancel only this command, leaving
             # other commands/instances alone; a missing receipt stays uncertain.

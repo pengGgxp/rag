@@ -221,7 +221,12 @@ def test_all_provider_definitions_and_calls_roundtrip(saving, monkeypatch, proto
     captured = []
     args = ({"name": "协议测试"} if name == "create_knowledge_base" else
             {"knowledge_base_id": str(saving.library), "name": "协议测试"} if name == "update_knowledge_base" else
-            {"knowledge_base_id": str(saving.library)} if name == "get_knowledge_base_document_status" else {})
+            {"knowledge_base_id": str(saving.library)} if name in (
+                "get_knowledge_base_document_status", "list_knowledge_base_files",
+                "synchronize_knowledge_base_files") else {})
+    if name in ("list_knowledge_base_files", "synchronize_knowledge_base_files"):
+        from test_cloud_computer_mount import MemoryMount
+        monkeypatch.setattr("app.shared_resources.backend", lambda _db: MemoryMount())
     def post(url, **kwargs):
         captured.append(kwargs["json"])
         if protocol == "chat_completions":

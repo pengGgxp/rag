@@ -133,11 +133,13 @@ class SearchResult(BaseModel):
     chunk: ChunkRead
     score: float
     filename: str
+    workspace_path: str | None = None
 
 
 class TraceResultRead(BaseModel):
     chunk_id: UUID
     filename: str
+    workspace_path: str | None = None
     score: float
     bm25_score: float | None = None
     rank: int
@@ -186,6 +188,8 @@ class AnswerRequest(BaseModel):
 class CitationRead(BaseModel):
     chunk_id: UUID
     filename: str
+    version_id: UUID
+    workspace_path: str | None = None
     content_origin: str = "uploaded"
     text: str
     char_start: int
