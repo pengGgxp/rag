@@ -153,7 +153,8 @@ type Generation = {
   requestId: string;
   epoch: number;
 };
-type HeldInput = { id: string; text: string; turn?: string; immediate?: boolean };
+type HeldInput = { id: string; text: string; turn?: string; immediate?: boolean;
+  attachments?: ChatAttachment[]; mentions?: DraftMention[]; error?: string };
 
 function recoveryStatus(data: unknown) {
   const recovery = data as { category: string; attempt: number; max_attempts: number };
@@ -227,6 +228,15 @@ function mentionRanges(text: string, mentions: PositionedMention[]) {
   }
   if (cursor < text.length || !parts.length) parts.push({ text: text.slice(cursor) });
   return parts;
+}
+function questionText(text: string, mentions: PositionedMention[]) {
+  if (!text) return null;
+  return <p className="chat-question">{mentionRanges(text, mentions).map((part, index) => part.mention
+    ? <span key={index} className="chat-document-mention"
+      title={part.mention.kind === "knowledge_base" ? part.mention.name
+        : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
+        : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
+    : <Fragment key={index}>{part.text}</Fragment>)}</p>;
 }
 function pruneMentions(previous: string, text: string, caret: number, mentions: DraftMention[]) {
   if (previous === text) return mentions;
@@ -413,6 +423,31 @@ export function ChatWorkspace({
   const liveDraft = useRef({ text: question, mentions: documentMentions, attachments: attachments.ready, scroll: 0, follow: true });
   liveDraft.current = { text: question, mentions: documentMentions,
     attachments: attachments.ready.filter(item => !!item.resource_id), scroll: scrollArea.current?.scrollTop ?? 0, follow: follow.current };
+  function restoreHeld(entries: HeldInput[], prepend = false) {
+    const draft = liveDraft.current;
+    const ordered = prepend ? [...entries, draft] : [draft, ...entries];
+    let text = "";
+    const mentions: DraftMention[] = [];
+    for (const input of ordered) {
+      if (!input.text) continue;
+      if (text) text += "\n\n";
+      const offset = text.length;
+      text += input.text;
+      mentions.push(...(input.mentions ?? []).map(item => ({ ...item, start: item.start + offset, end: item.end + offset })));
+    }
+    liveDraft.current = { ...draft, text, mentions };
+    setQuestion(text);
+    setDocumentMentions(mentions);
+    attachments.merge(entries.flatMap(item => item.attachments ?? []));
+  }
+  function updateHeldFromEvent(name: string, data: unknown) {
+    if (name === "steered") setHeld(items => items.filter(item => item.id !== (data as { id: string }).id));
+    if (name === "steering_rejected") {
+      const rejection = data as { id: string; error: string };
+      setHeld(items => items.map(item => item.id === rejection.id ? { ...item, error: rejection.error } : item));
+      report(new Error(rejection.error));
+    }
+  }
   const searchParams = useSearchParams();
   const targetMessage = searchParams.get("message");
   const [highlightedMessage, setHighlightedMessage] = useState<string | null>(null);
@@ -687,6 +722,8 @@ export function ChatWorkspace({
         });
     };
     void streamRequest(`/conversations/${id}/requests/${conversation.active_request_id}/events`, undefined, controller.signal, (name, data) => {
+      if (controller.signal.aborted) return;
+      updateHeldFromEvent(name, data);
       if (name === "browser_connection") setBrowserReconnecting((data as { reconnecting: boolean }).reconnecting);
       if (name === "model_recovering") setPhase(recoveryStatus(data));
       if (name === "model_resuming" || name === "phase" || name === "agent_step") setPhase("处理中");
@@ -778,11 +815,11 @@ export function ChatWorkspace({
         .filter(block => block.type === "user").map(block => block.id));
       const restore = heldInputs.filter(item => item.id !== immediate?.id && !accepted.has(item.id));
       setHeld(immediate && !accepted.has(immediate.id) ? [{ ...immediate, id: crypto.randomUUID(), turn: undefined, immediate: true }] : []);
-      if (restore.length) setQuestion(text => [text, ...restore.map(item => item.text)].filter(Boolean).join("\n\n"));
+      if (restore.length) restoreHeld(restore);
     } catch (error) {
       if (epoch.current === currentEpoch) {
         if (immediate && !heldInputs.some(item => item.id === immediate.id))
-          setQuestion(value => [immediate.text, value].filter(Boolean).join("\n\n"));
+          restoreHeld([immediate], true);
         report(error);
       }
     } finally {
@@ -794,28 +831,38 @@ export function ChatWorkspace({
     const id = conversation?.id;
     const turn = conversation?.active_request_id;
     const text = question.trim();
-    if (!text || !id || !turn || stopping.current || attachments.items.length || documentMentions.length) return;
-    const entry: HeldInput = { id: crypto.randomUUID(), text, turn: mode === "steer" ? turn : undefined };
+    if (!canFollowUp || !id || !turn || stopping.current) return;
+    const leading = question.length - question.trimStart().length;
+    const mentions = documentMentions.map(item => ({ ...item, start: item.start - leading, end: item.end - leading }));
+    const entry: HeldInput = { id: crypto.randomUUID(), text, turn: mode === "steer" ? turn : undefined,
+      attachments: attachments.ready, mentions };
     setQuestion("");
     setDocumentMentions([]);
+    liveDraft.current = { ...liveDraft.current, text: "", mentions: [], attachments: [] };
+    attachments.reset(false);
     if (mode === "interrupt") {
       await stop(entry);
       return;
     }
     setHeld(items => [...items, entry]);
     if (mode === "queue") return;
-    const submit = () => request<{ id: string; status: string }>(`/conversations/${id}/requests/${turn}/steer`, {
+    const submit = () => request<{ id: string; status: string; error?: string }>(`/conversations/${id}/requests/${turn}/steer`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message_id: entry.id, text }),
+      body: JSON.stringify({ message_id: entry.id, text, attachment_ids: entry.attachments?.map(item => item.id),
+        document_ids: mentions.filter(item => item.kind === "document").map(item => item.id),
+        knowledge_base_ids: mentions.filter(item => item.kind === "knowledge_base").map(item => item.id),
+        resource_ids: mentions.filter(item => item.kind === "resource").map(item => item.id) }),
     });
     try {
       const result = await submit().catch(error => { if (error instanceof ApiError) throw error; return submit(); });
       if (viewRef.current?.id === id && result.status === "accepted")
         setHeld(items => items.filter(item => item.id !== entry.id));
+      if (viewRef.current?.id === id && result.status === "rejected" && result.error)
+        updateHeldFromEvent("steering_rejected", { id: entry.id, error: result.error });
     } catch (error) {
       if (viewRef.current?.id === id && error instanceof ApiError && error.status < 500) {
         setHeld(items => items.filter(item => item.id !== entry.id));
-        setQuestion(value => [text, value].filter(Boolean).join("\n\n"));
+        restoreHeld([entry], true);
         report(error);
       }
     }
@@ -832,7 +879,7 @@ export function ChatWorkspace({
         if (result.status === "accepted") return;
       } catch (error) { report(error); return; }
     } else setHeld(items => items.filter(item => item.id !== entry.id));
-    setQuestion(value => [entry.text, value].filter(Boolean).join("\n\n"));
+    restoreHeld([entry], true);
     composerInput.current?.focus();
   }
   async function changeExtensions(value: ExtensionSelection) {
@@ -849,12 +896,14 @@ export function ChatWorkspace({
 
   async function send(queued?: HeldInput) {
     const input = queued?.text ?? question;
+    const turnAttachments = queued ? queued.attachments ?? [] : attachments.ready;
     if (
       sending.current || stopping.current || extensionBusy || !!conversationError ||
       modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
-      (!input.trim() && (queued || !attachments.ready.length) || !queued && (attachments.blocked ||
-        attachments.hasImages && !selectedModel?.supports_images)) ||
+      (!input.trim() && !turnAttachments.length) || (!queued && attachments.blocked) ||
+      (!queued && tooManyMentions) ||
+      (turnAttachments.some(item => item.kind === "image") && !selectedModel?.supports_images) ||
       conversation?.active_request_id
     )
       return;
@@ -865,7 +914,7 @@ export function ChatWorkspace({
     const currentEpoch = epoch.current;
     const query = input.trim();
     const leading = input.length - input.trimStart().length;
-    const turnDraftMentions = (queued ? [] : documentMentions).map(item => ({ ...item,
+    const turnDraftMentions = (queued ? queued.mentions ?? [] : documentMentions).map(item => ({ ...item,
       start: item.start - leading, end: item.end - leading }));
     const turnMentions = [...turnDraftMentions].sort((a, b) => a.start - b.start)
       .map(({ start: _start, end: _end, ...item }) => item);
@@ -909,7 +958,7 @@ export function ChatWorkspace({
         sequence: (current.messages.at(-1)?.sequence ?? -1) + 1,
         role: "user",
         content: query,
-        attachments: queued ? [] : attachments.ready,
+        attachments: turnAttachments,
         document_mentions: turnDocumentMentions,
         knowledge_base_mentions: turnKnowledgeBaseMentions,
         resource_mentions: turnResourceMentions,
@@ -933,7 +982,7 @@ export function ChatWorkspace({
           knowledge_base_ids: turnKnowledgeBaseMentions.map(item => item.id),
           resource_ids: turnResourceMentions.map(item => item.id),
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
-          ...(query ? { query } : {}), attachment_ids: queued ? [] : attachments.ready.map(item => item.id),
+          ...(query ? { query } : {}), attachment_ids: turnAttachments.map(item => item.id),
         },
         controller.signal,
         (name, data) => {
@@ -955,7 +1004,7 @@ export function ChatWorkspace({
           if (name === "browser_connection") setBrowserReconnecting((data as { reconnecting: boolean }).reconnecting);
           if (name === "model_recovering") setPhase(recoveryStatus(data));
           if (name === "model_resuming") setPhase("处理中");
-          if (name === "steered") setHeld(items => items.filter(item => item.id !== (data as { id: string }).id));
+          updateHeldFromEvent(name, data);
           if (name === "phase")
             setPhase(
               (data as { phase: string }).phase === "planning"
@@ -1019,7 +1068,7 @@ export function ChatWorkspace({
                   ? { ...block, stage: update.stage, status: update.status } : block) };
               }
               if (name === "steered") {
-                const entry = data as { id: string; text: string };
+                const entry = data as Extract<DisplayBlock, { type: "user" }>;
                 const blocks = message.display_blocks ?? [];
                 return blocks.some(block => block.id === entry.id) ? message
                   : { ...message, display_blocks: [...blocks, { ...entry, type: "user" }] };
@@ -1066,7 +1115,7 @@ export function ChatWorkspace({
             else { attachments.reset(false); setQuestion(text => text === query ? "" : text); }
           } else if (queued && !received) {
             setHeld(items => items.filter(item => item.id !== queued.id));
-            setQuestion(text => [queued.text, text].filter(Boolean).join("\n\n"));
+            restoreHeld([queued], true);
           }
         }
         generation.current = null;
@@ -1188,8 +1237,11 @@ export function ChatWorkspace({
   }
   const running = asking || !!conversation?.active_request_id;
   const activeTurn = conversation?.active_request_id ?? generation.current?.requestId;
+  const draftReferencesDisabled = loading || (running && !conversation?.active_request_id);
+  const tooManyMentions = new Set(documentMentions.map(item => `${item.kind}:${item.id}`)).size > 8;
   const canFollowUp = !!conversation?.active_request_id && contextInfo.status !== "running"
-    && !!question.trim() && !attachments.items.length && !documentMentions.length;
+    && (!!question.trim() || !!attachments.ready.length) && !attachments.blocked && !tooManyMentions
+    && (!attachments.hasImages || !!selectedModel?.supports_images);
   const startedAt = conversation?.messages.find(item => item.request_id === activeTurn)?.created_at;
   const elapsed = startedAt ? Math.max(0, Math.floor((clock - Date.parse(startedAt)) / 1000)) : 0;
   const drainInputs = useRef<() => void>(() => {});
@@ -1209,7 +1261,7 @@ export function ChatWorkspace({
     if (dealtWith.length || restore.length) {
       const removed = new Set([...dealtWith, ...restore].map(item => item.id));
       setHeld(items => items.filter(item => !removed.has(item.id)));
-      if (restore.length) setQuestion(text => [text, ...restore.map(item => item.text)].filter(Boolean).join("\n\n"));
+      if (restore.length) restoreHeld(restore);
       return;
     }
     const next = heldInputs[0];
@@ -1302,18 +1354,14 @@ export function ChatWorkspace({
                   </span>
                   {message.role === "user" ? (
                     <><MessageAttachments items={message.attachments} />
-                      {message.content && <p className="chat-question">{mentionRanges(message.content, storedMentions(message)).map((part, partIndex) => part.mention
-                        ? <span key={`${part.mention.kind}-${part.mention.id}-${partIndex}`} className="chat-document-mention"
-                          title={part.mention.kind === "knowledge_base" ? part.mention.name
-                            : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
-                            : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
-                        : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
+                      {questionText(message.content, storedMentions(message))}</>
                   ) : (
                     <MessageFileProvider key={message.id} scope={`${session?.user.id}:${session?.workspace_id}`}>
                       {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
                         if (block.type === "user") return <div key={block.id} className="turn-steering">
-                          <span className="answer-label">你</span><p className="chat-question">{block.text}</p>
+                          <span className="answer-label">你</span><MessageAttachments items={block.attachments} />
+                          {questionText(block.text, storedMentions(block))}
                         </div>;
                         const thinking = (detail: Extract<DisplayBlock, { type: "thinking" }>) =>
                           <ConversationThinking key={detail.id} block={detail} conversationId={conversation.id}
@@ -1475,13 +1523,14 @@ export function ChatWorkspace({
           </div>}
           {[...heldInputs.filter(item => item.turn && !conversation?.messages.some(message =>
             message.request_id === item.turn && message.display_blocks?.some(block => block.type === "user" && block.id === item.id))),
-            ...heldInputs.filter(item => !item.turn)].map(item =>
-            <div className="turn-held-input" key={item.id}>
-              <small>{item.turn ? "待补充" : "下一轮"}</small><span title={item.text}>{item.text}</span>
+            ...heldInputs.filter(item => !item.turn)].map(item => {
+            const summary = [item.text, ...(item.attachments ?? []).map(attachment => attachment.filename)].filter(Boolean).join(" · ");
+            return <div className="turn-held-input" key={item.id}>
+              <small>{item.error ? "未接纳" : item.turn ? "待补充" : "下一轮"}</small><span title={item.error ?? summary}>{summary}</span>
               <button type="button" className="text-button" onClick={() => void editHeld(item)}>取回编辑</button>
-              {item.turn && running && <button type="button" className="text-button" onClick={() => void stop(item)}>中断并发送</button>}
-            </div>
-          )}
+              {item.turn && item.turn === activeTurn && running && !item.error && <button type="button" className="text-button" onClick={() => void stop(item)}>中断并发送</button>}
+            </div>;
+          })}
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
           </div>}
@@ -1499,7 +1548,7 @@ export function ChatWorkspace({
             onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
             onDrop={event => {
               event.preventDefault(); setDragging(false);
-              if (running || loading) return;
+              if (draftReferencesDisabled) return;
               const error = attachments.add(Array.from(event.dataTransfer.files), !!selectedModel?.supports_images);
               if (error) report(new Error(error));
             }}
@@ -1509,12 +1558,14 @@ export function ChatWorkspace({
               else void send();
             }}
           >
-            <DraftAttachments items={attachments.items} disabled={running || loading}
+            <DraftAttachments items={attachments.items} disabled={draftReferencesDisabled}
               onRemove={attachments.remove} onRetry={item => void attachments.retry(item)} />
+            {attachments.limitError && <p className="chat-attachment-warning" role="alert">{attachments.limitError}</p>}
+            {tooManyMentions && <p className="chat-attachment-warning" role="alert">每条消息最多可以提及 8 项资料。</p>}
             {attachments.hasImages && !selectedModel?.supports_images &&
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
             <DocumentMentionMenu key={`mentions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
-              draft={question} caret={caret} disabled={running || loading || extensionBusy}
+              draft={question} caret={caret} disabled={draftReferencesDisabled || extensionBusy}
               supportsTools={selectedModel?.supports_tools !== false}
               selected={documentMentions} input={composerInput} onActive={updateMentionState}
               onChoose={(item, start, end) => {
@@ -1563,7 +1614,7 @@ export function ChatWorkspace({
                 const files = Array.from(event.clipboardData?.files ?? []);
                 if (!files.length) return;
                 event.preventDefault();
-                if (running) return;
+                if (draftReferencesDisabled) return;
                 const error = attachments.add(files, !!selectedModel?.supports_images);
                 if (error) report(new Error(error));
               }}
@@ -1586,7 +1637,7 @@ export function ChatWorkspace({
             />
             </div>
             <div className="composer-footer">
-              <AttachmentButton disabled={running || loading || modelLoading || !selectedModel?.available}
+              <AttachmentButton disabled={draftReferencesDisabled || modelLoading || !selectedModel?.available}
                 select={item => attachments.selectResource(item, !!selectedModel?.supports_images)}
                 add={files => { const error = attachments.add(files, !!selectedModel?.supports_images); if (error) report(new Error(error)); }} />
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
@@ -1625,7 +1676,7 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    (!question.trim() && !attachments.ready.length) || attachments.blocked ||
+                    (!question.trim() && !attachments.ready.length) || attachments.blocked || tooManyMentions ||
                     (attachments.hasImages && !selectedModel?.supports_images) ||
                     loading || extensionBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)

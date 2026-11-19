@@ -64,13 +64,13 @@ def _steering_execution(db, conversation_id, request_id):
     return row, active
 
 
-def update_steering(db, conversation, request_id, message_id, text):
+def update_steering(db, conversation, request_id, message_id, submission):
     row, active = _steering_execution(db, conversation.id, request_id)
     payload = _execution_payload(row)
     entries = payload.setdefault("steering", {})
     key = str(message_id)
     entry = entries.get(key)
-    if text is None:
+    if submission is None:
         if entry is None:
             if active:
                 entries[key] = {"status": "withdrawn"}
@@ -85,14 +85,15 @@ def update_steering(db, conversation, request_id, message_id, text):
     if entry is not None:
         if entry["status"] == "withdrawn":
             return {"id": key, "status": "withdrawn"}
-        if entry["text"] != text:
+        if entry.get("input", {"text": entry.get("text")}) != submission:
             raise HTTPException(409, "该补充消息已提交")
-        return {"id": key, "status": entry["status"] if active or entry["status"] != "pending" else "withdrawn"}
+        return {"id": key, "status": entry["status"] if active or entry["status"] != "pending" else "withdrawn",
+            **({"error": entry["error"]} if "error" in entry else {})}
     if not active or payload.get("steering_sealed"):
         raise HTTPException(409, "当前回答已结束，可以发送新消息")
     if sum(item["status"] == "pending" for item in entries.values()) >= 20:
         raise HTTPException(409, "还有补充消息等待接纳")
-    entries[key] = {"text": text, "status": "pending"}
+    entries[key] = {"input": submission, "status": "pending"}
     _set_execution_payload(row, payload)
     db.commit()
     return {"id": key, "status": "pending"}
@@ -105,8 +106,7 @@ def steering_batch(factory, conversation_id, request_id, *, seal=False):
             from .agent import AgentCancelled
             raise AgentCancelled()
         payload = _execution_payload(row)
-        pending = [{"id": key, "text": value["text"]} for key, value in payload.get("steering", {}).items()
-                   if value["status"] == "pending"]
+        pending = [key for key, value in payload.get("steering", {}).items() if value["status"] == "pending"]
         if not pending and seal:
             payload["steering_sealed"] = True
             _set_execution_payload(row, payload)
@@ -114,22 +114,28 @@ def steering_batch(factory, conversation_id, request_id, *, seal=False):
         return pending
 
 
-def mark_steered(db, conversation_id, request_id, entry):
+def lock_steering(db, conversation_id, request_id, message_id):
     row, active = _steering_execution(db, conversation_id, request_id)
     payload = _execution_payload(row)
-    current = payload.get("steering", {}).get(entry["id"])
+    current = payload.get("steering", {}).get(message_id)
     if not active or not current or current["status"] != "pending":
-        return False
-    current["status"] = "accepted"
+        return None
+    return row, payload, current
+
+
+def finish_steering(row, payload, entry, *, block=None, error=None):
+    if block is not None:
+        entry.update(status="accepted", block=block)
+    else:
+        entry.update(status="rejected", error=error)
     _set_execution_payload(row, payload)
-    return True
 
 
 def accepted_steering(db, request_id):
     row = db.get(ConversationExecution, request_id)
     if not row:
         return []
-    return [{"id": key, "type": "user", "text": entry["text"]}
+    return [entry.get("block") or {"id": key, "type": "user", "text": entry["text"]}
             for key, entry in _execution_payload(row).get("steering", {}).items() if entry["status"] == "accepted"]
 
 

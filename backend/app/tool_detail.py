@@ -4,10 +4,11 @@ import re
 from uuid import UUID
 
 from fastapi import HTTPException
+from sqlalchemy import select
 
 from .context_windows import decrypt_items
 from .mcp_client import decrypt_headers
-from .models import AgentToolExecution, WorkspaceFile
+from .models import AgentToolExecution, KnowledgeBaseStatus, WorkspaceFile, WorkspaceFileVersion
 from .tool_result_reads import authorize, metadata
 
 PAGE_SIZE = 4000
@@ -49,6 +50,11 @@ def receipt_projection(db, access, conversation_id, request_id, execution_id, of
         omitted = any(isinstance(item, dict) and item.get("truncated")
                       for item in (data.get("output_capture") or {}).values())
     elif name == "search_knowledge_base":
+        for identifier in data.get("knowledge_base_ids", []):
+            library = access.library(db, UUID(identifier))
+            if library.status == KnowledgeBaseStatus.ARCHIVED:
+                raise HTTPException(403, "知识库当前不可用")
+            add("检索范围", library.name)
         add("检索词", data.get("query"))
         add("命中", data.get("result_count"))
         for item in data.get("evidence", []):
@@ -82,7 +88,10 @@ def receipt_projection(db, access, conversation_id, request_id, execution_id, of
         except (TypeError, ValueError, AttributeError):
             continue
         if resource and resource.workspace_id == access.workspace_id and resource.deleted_at is None:
-            add("文件", resource.path)
+            version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == resource.id,
+                WorkspaceFileVersion.version == file.get("version", 1)).execution_options(populate_existing=True))
+            if version and version.workspace_id == access.workspace_id and version.deleted_at is None and version.available is not False:
+                add("文件", resource.path)
     if data.get("error") or data.get("isError"):
         add("结果", "操作未完成")
     content, substitutions = SECRET.subn("[已隐藏]", "\n\n".join(fields))

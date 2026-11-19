@@ -190,11 +190,20 @@ function ToolReceipt({ path }: { path: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const session = useRef<AbortController | null>(null);
+  const reading = useRef<AbortController | null>(null);
   async function load(offset: number, controller: AbortController) {
+    if (reading.current === controller) return;
+    reading.current = controller;
     try {
       const page = await request<Receipt>(`${path}?offset=${offset}`, { signal: controller.signal, cache: "no-store" });
       if (!controller.signal.aborted) {
-        setPages(items => offset ? [...items, page] : [page]);
+        setPages(items => {
+          if (offset) return [...items, page];
+          const first = items[0];
+          return first && first.text === page.text && first.next_offset === page.next_offset &&
+            first.redacted === page.redacted && first.missing === page.missing && first.truncated === page.truncated
+            ? items : [page];
+        });
         setError("");
       }
     } catch (cause) {
@@ -204,6 +213,7 @@ function ToolReceipt({ path }: { path: string }) {
           ? "该操作详情已不可访问" : "暂时无法查看详情");
       }
     } finally {
+      if (reading.current === controller) reading.current = null;
       if (!controller.signal.aborted) setBusy(false);
     }
   }
@@ -215,10 +225,12 @@ function ToolReceipt({ path }: { path: string }) {
     void load(0, controller);
     // Recheck currently displayed content without retaining it across sessions.
     const recheck = () => { if (!document.hidden) void load(0, controller); };
+    const timer = window.setInterval(recheck, 10_000);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", recheck);
     return () => {
       controller.abort();
+      window.clearInterval(timer);
       session.current = null;
       window.removeEventListener("focus", recheck);
       document.removeEventListener("visibilitychange", recheck);

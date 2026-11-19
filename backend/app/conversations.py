@@ -72,13 +72,16 @@ class ContextRequest(BaseModel):
     thinking_config_version: int | None = Field(default=None, ge=0, strict=True)
 
 
-class TurnRequest(ContextRequest):
-    web_search: bool = True
-    query: str | None = Field(default=None, min_length=1)
+class InputReferences(BaseModel):
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     document_ids: list[UUID] = Field(default_factory=list, max_length=8)
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=8)
     resource_ids: list[UUID] = Field(default_factory=list, max_length=8)
+
+
+class TurnRequest(ContextRequest, InputReferences):
+    web_search: bool = True
+    query: str | None = Field(default=None, min_length=1)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -92,10 +95,57 @@ class StopRequest(BaseModel):
     request_id: UUID
 
 
-class SteerRequest(BaseModel):
+class SteerRequest(InputReferences):
     model_config = ConfigDict(str_strip_whitespace=True)
     message_id: UUID
-    text: str = Field(min_length=1, max_length=100_000)
+    text: str = Field(default="", max_length=100_000)
+
+    @model_validator(mode="after")
+    def has_input(self):
+        if not self.text and not self.attachment_ids:
+            raise ValueError("Provide text or an attachment")
+        return self
+
+
+def resolve_input_mentions(db, access, document_ids, knowledge_base_ids, resource_ids, *, skip_unavailable=False):
+    documents, libraries, resources = map(lambda ids: list(dict.fromkeys(ids)),
+        (document_ids, knowledge_base_ids, resource_ids))
+    if len(documents) + len(libraries) + len(resources) > 8:
+        raise HTTPException(422, "每条消息最多可以提及 8 项资料")
+
+    def ready_library(identifier):
+        library = access.library(db, identifier)
+        if library.status == KnowledgeBaseStatus.ARCHIVED:
+            raise HTTPException(404, "知识库已归档")
+        return library
+
+    knowledge_base_mentions = []
+    for identifier in libraries:
+        try:
+            library = ready_library(identifier)
+        except HTTPException:
+            if not skip_unavailable:
+                raise HTTPException(409, "提及的知识库已不可用，请重新选择") from None
+            continue
+        knowledge_base_mentions.append({"id": str(library.id), "name": library.name})
+
+    document_mentions = []
+    rows = {row.id: row for row in db.scalars(select(Document).where(Document.id.in_(documents)))} if documents else {}
+    for identifier in documents:
+        row = rows.get(identifier)
+        try:
+            if row is None or row.status != DocumentStatus.READY or not row.is_active:
+                raise HTTPException(404, "文档不可用")
+            library = ready_library(row.knowledge_base_id)
+        except HTTPException:
+            if not skip_unavailable:
+                raise HTTPException(409, "提及的文档已不可用，请重新选择") from None
+            continue
+        document_mentions.append({"id": str(row.id), "filename": row.filename,
+            "knowledge_base_id": str(library.id), "knowledge_base_name": library.name})
+    resource_mentions = resource_references.resolve(db, access, resources, skip_unavailable=skip_unavailable)
+    return {"document_mentions": document_mentions, "knowledge_base_mentions": knowledge_base_mentions,
+        "resource_mentions": resource_mentions}
 
 
 def message_read(message: ChatMessage) -> dict:
@@ -420,7 +470,8 @@ def chat_router(get_db, retrieve):
               db: Session = Depends(get_db), access: Access = Depends(get_access)):
         from .conversation_jobs import update_steering
         conversation = live_conversation(db, conversation_id, access.revalidate(db))
-        return update_steering(db, conversation, request_id, payload.message_id, payload.text)
+        return update_steering(db, conversation, request_id, payload.message_id,
+            payload.model_dump(mode="json", exclude={"message_id"}, exclude_defaults=True))
 
     @router.delete("/{conversation_id}/requests/{request_id}/steer/{message_id}")
     def withdraw_steering(conversation_id: UUID, request_id: UUID, message_id: UUID,
@@ -653,67 +704,18 @@ def chat_router(get_db, retrieve):
             else list(dict.fromkeys(payload.knowledge_base_ids)))
         resource_ids = ([UUID(item["id"]) for item in resource_mentions] if retry
             else list(dict.fromkeys(payload.resource_ids)))
-        if len(mention_ids) + len(knowledge_base_mention_ids) + len(resource_ids) > 8:
-            raise HTTPException(422, "每条消息最多可以提及 8 项资料")
         checked_access = access.revalidate(db)
-        if knowledge_base_mention_ids:
-            available_knowledge_base_ids = []
-            for identifier in knowledge_base_mention_ids:
-                try:
-                    library = checked_access.library(db, identifier)
-                    if library.status == KnowledgeBaseStatus.ARCHIVED:
-                        raise HTTPException(404, "知识库已归档")
-                except HTTPException:
-                    if not retry:
-                        raise HTTPException(409, "提及的知识库已不可用，请重新选择") from None
-                    continue
-                available_knowledge_base_ids.append(identifier)
-                if not retry:
-                    knowledge_base_mentions.append({"id": str(library.id), "name": library.name})
-            knowledge_base_mention_ids = available_knowledge_base_ids
-        if mention_ids:
-            rows = db.scalars(select(Document).where(Document.id.in_(mention_ids))).all()
-            rows_by_id = {row.id: row for row in rows}
-            available_document_ids = []
-            for identifier in mention_ids:
-                row = rows_by_id.get(identifier)
-                if row is None or row.status != DocumentStatus.READY or not row.is_active:
-                    if not retry:
-                        raise HTTPException(409, "提及的文档已不可用，请重新选择")
-                    continue
-                try:
-                    library = checked_access.library(db, row.knowledge_base_id)
-                    if library.status == KnowledgeBaseStatus.ARCHIVED:
-                        raise HTTPException(404, "知识库已归档")
-                except HTTPException:
-                    if not retry:
-                        raise HTTPException(409, "提及的文档已不可用，请重新选择") from None
-                    continue
-                available_document_ids.append(identifier)
-            mention_ids = available_document_ids
-            if mention_ids and not retry:
-                rows_by_id = {row.id: row for row in rows}
-                libraries_by_id = {}
-                for row in rows:
-                    library = checked_access.library(db, row.knowledge_base_id)
-                    libraries_by_id[row.knowledge_base_id] = library
-                document_mentions = [{
-                    "id": str(identifier), "filename": rows_by_id[identifier].filename,
-                    "knowledge_base_id": str(rows_by_id[identifier].knowledge_base_id),
-                    "knowledge_base_name": libraries_by_id[rows_by_id[identifier].knowledge_base_id].name,
-                } for identifier in mention_ids]
-        current_resource_mentions = resource_references.resolve(
-            db, checked_access, resource_ids, skip_unavailable=bool(retry)) if resource_ids else []
-        if not retry:
-            resource_mentions = current_resource_mentions
+        current_mentions = resolve_input_mentions(db, checked_access, mention_ids, knowledge_base_mention_ids,
+            resource_ids, skip_unavailable=bool(retry))
+        saved_mentions = ({"document_mentions": document_mentions, "knowledge_base_mentions": knowledge_base_mentions,
+            "resource_mentions": resource_mentions} if retry else current_mentions)
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
             search_config = None
             provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
-            if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids
-                    or current_resource_mentions):
+            if not provider_config.thinking.supports_tools and any(current_mentions.values()):
                 raise HTTPException(422, "当前模型无法使用资料引用，请选择支持工具的模型")
             attachments = select_attachments(db, access, [row.id for row in previous_user.attachments]
                 if previous_user else payload.attachment_ids, provider_config)
@@ -752,9 +754,7 @@ def chat_router(get_db, retrieve):
         user_message = ChatMessage(
             conversation_id=conversation.id, sequence=next_sequence - 2,
             role="user", content=query, attachments=attachments,
-            document_mentions=document_mentions,
-            knowledge_base_mentions=knowledge_base_mentions,
-            resource_mentions=resource_mentions,
+            **saved_mentions,
         )
         db.add(user_message)
         db.flush()
@@ -1066,7 +1066,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                         await run_in_threadpool(save)
                 if name == "steered":
                     if not any(item["id"] == data["id"] for item in display_blocks):
-                        display_blocks.append({"id": data["id"], "type": "user", "text": data["text"]})
+                        display_blocks.append(data)
                         await run_in_threadpool(save)
                 if name == "sources":
                     citations, traces = data["citations"], data["traces"]

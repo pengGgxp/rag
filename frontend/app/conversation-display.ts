@@ -2,9 +2,12 @@ import type { ConversationActivityItem, KnowledgeBaseResult, SavedDocument } fro
 import type { ImageTaskResult } from "./image-task-result";
 import type { Preview } from "./cloud-preview";
 import type { WorkspaceFileReference } from "./workspace-file-link";
+import type { ChatAttachment } from "./chat-attachments";
+import type { MentionDocument, MentionKnowledgeBase, MentionResource } from "./document-mention-menu";
 
 export type DisplayBlock = { id: string; type: "text"; text: string; stage?: "pending" | "commentary" | "intermediate" | "final"; status?: string }
-  | { id: string; type: "user"; text: string }
+  | { id: string; type: "user"; text: string; attachments?: ChatAttachment[];
+    document_mentions?: MentionDocument[]; knowledge_base_mentions?: MentionKnowledgeBase[]; resource_mentions?: MentionResource[] }
   | { id: string; type: "activity"; call_id: string }
   | { id: string; type: "thinking"; round: number; status: string; text?: string };
 export type ToolEvent = {

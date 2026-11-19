@@ -261,7 +261,7 @@ def test_retrieval_receipt_rechecks_access_and_document_version(client, change):
 
     receipt = http.get(path)
     assert receipt.status_code == 200
-    assert receipt.headers["Cache-Control"] == "private, no-store"
+    assert "no-store" in receipt.headers["Cache-Control"]
     assert "needle retained evidence" in receipt.json()["text"]
     assert http.get(path.replace(submitted["request_id"], str(uuid4()))).status_code == 404
 

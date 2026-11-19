@@ -1,6 +1,7 @@
 """Local compact orchestration over the authoritative replacement window."""
 import math
 import json
+from contextlib import nullcontext
 from copy import deepcopy
 from uuid import UUID, uuid5
 
@@ -51,7 +52,7 @@ class ContextManager:
                         message_id=self.current_message_id, sequence=self.current_sequence)
         return self.messages
 
-    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None, before_append=None):
+    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None, session=None):
         items = [make_item(uuid5(self.request_id, f"{key}:{index}"), message,
             "tool_image" if source == "tool" and message.get("role") == "user" else source,
             self.request_id, message_id, sequence, self.config) for index, message in enumerate(messages)]
@@ -61,19 +62,53 @@ class ContextManager:
             if item["message"].get("tool_calls"):
                 item["tool_intent_version"] = 1
                 item["model_key"] = key
-        with self.factory() as db:
-            if before_append is not None and not before_append(db):
-                return None
+        with (self.factory() if session is None else nullcontext(session)) as db:
             state, current = self.store.append(db, items, request_id=self.request_id, revision=self.revision)
             db.commit()
             self.adopt(state, current)
         self.messages = self.messages[:1] + project(self.bounded_items(), self.config)
         return self.messages
 
-    def steer(self, entry):
-        from .conversation_jobs import mark_steered
-        return self.record([{"role": "user", "content": entry["text"]}], "user", f"steer:{entry['id']}",
-            message_id=entry["id"], before_append=lambda db: mark_steered(db, self.conversation_id, self.request_id, entry))
+    def steer(self, message_id):
+        from fastapi import HTTPException
+        from .chat_attachments import attachment_read, select_attachments, user_content
+        from .conversation_jobs import finish_steering, lock_steering
+        from .conversations import live_conversation, resolve_input_mentions
+
+        with self.factory() as db:
+            locked = lock_steering(db, self.conversation_id, self.request_id, message_id)
+            if locked is None:
+                return None
+            row, payload, entry = locked
+            submission = entry.get("input", {"text": entry.get("text", "")})
+            text = submission.get("text", "")
+            checked = self.access.revalidate(db)
+            live_conversation(db, self.conversation_id, checked)
+            try:
+                mentions = resolve_input_mentions(db, checked,
+                    *([UUID(value) for value in submission.get(key, [])]
+                      for key in ("document_ids", "knowledge_base_ids", "resource_ids")))
+                if any(mentions.values()) and not self.config.thinking.supports_tools:
+                    raise HTTPException(422, "当前模型无法使用资料引用")
+                attachments = select_attachments(db, checked, [UUID(value)
+                    for value in submission.get("attachment_ids", [])], self.config)
+            except HTTPException as exc:
+                error = (exc.detail if exc.status_code in (409, 413, 422)
+                         else "补充消息的附件或资料已不可用，请重新选择")
+                finish_steering(row, payload, entry, error=error)
+                db.commit()
+                return "steering_rejected", {"id": message_id, "error": error}
+
+            content = text
+            if any(mentions.values()):
+                content += ("\n\n本条消息引用的资料（文档和知识库供 search_knowledge_base 定位，"
+                            "资源文件仅提供定位信息）：\n" + json.dumps(mentions, ensure_ascii=False))
+            block = {"id": message_id, "type": "user", "text": text, **mentions,
+                "attachments": [attachment_read(attachment) for attachment in attachments]}
+            finish_steering(row, payload, entry, block=block)
+            self.record([{"role": "user", "content": user_content(content, attachments)}],
+                "user", f"steer:{message_id}", message_id=message_id, session=db)
+            return "steered", block
 
     def output_budget(self, calls=1):
         return max(300, min(4000, (input_budget(self.config) or 24000) // 4 // max(1, calls)))

@@ -305,13 +305,15 @@ async def stream_text(provider, messages):
                         raise LLMProviderError("模型未返回正文")
                     yield parsed.content
                     return
+                emitted_text = False
                 async for event in source.aiter_sse():
                     if event.data and event.data != "[DONE]":
                         for name, data in state.feed(event.json()):
                             if name == "delta":
+                                emitted_text = True
                                 yield data["text"]
                 state.check()
-                if not state.text:
+                if not emitted_text:
                     raise LLMProviderError("模型未返回正文")
     except LLMProviderError:
         raise

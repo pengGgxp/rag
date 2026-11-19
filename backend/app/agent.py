@@ -323,10 +323,11 @@ def stream_retrieval_agent(
     def take_steering(write, *, seal=False, entries=None):
         accepted = False
         if read_steering is not None:
-            for entry in entries if entries is not None else read_steering(seal):
-                if context_manager.steer(entry) is not None:
-                    accepted = True
-                    write(("steered", entry))
+            for message_id in entries if entries is not None else read_steering(seal):
+                result = context_manager.steer(message_id)
+                if result is not None:
+                    accepted = accepted or result[0] == "steered"
+                    write(result)
         return accepted
 
     def plan(state: AgentState) -> AgentState:
@@ -453,7 +454,13 @@ def stream_retrieval_agent(
             assistant_message.update(response.protocol_fields)
         next_messages = (context_manager.record([assistant_message], "model", f"model:{state.get('steps', 0) + 1}")
             if context_manager else messages + [assistant_message])
-        pending = read_steering(True) if read_steering is not None and not calls else []
+        pending = False
+        if read_steering is not None and not calls:
+            while entries := read_steering(True):
+                if take_steering(write, entries=entries):
+                    pending = True
+                    next_messages = context_manager.messages
+                    break
         for block_id, stage in text_stages.items():
             if stage != "commentary":
                 stage = "intermediate" if calls or pending else "final"
@@ -842,6 +849,7 @@ def stream_retrieval_agent(
                 all_evidence = [item for _, item in found][:top_k]
                 result = {
                     "query": search_query,
+                    "knowledge_base_ids": [str(identifier) for identifier in search_ids],
                     "evidence": all_evidence,
                     "result_count": len(all_evidence),
                     "notice": "保留原排序的 top_k 候选，按模型预算分页展示，未改写原文位置",

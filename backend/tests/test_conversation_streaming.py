@@ -147,7 +147,7 @@ def test_length_finish_still_reads_the_final_usage_frame():
         provider = OpenAICompatibleChatProvider(config=ChatProviderConfig(url, "test-only", "test"))
         stream = provider.stream_with_tools([], [])
         assert next(stream)[1]["text"] == "部分正文"
-    with pytest.raises(LLMProviderError, match="输出长度上限"):
+        with pytest.raises(LLMProviderError, match="输出长度上限"):
             list(stream)
         assert provider.last_usage.prompt_tokens == 17 and provider.last_usage.completion_tokens == 9
 
