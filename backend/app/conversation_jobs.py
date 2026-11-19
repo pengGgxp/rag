@@ -7,6 +7,7 @@ import logging
 import re
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 
 from .auth import Access
@@ -45,6 +46,98 @@ def public_status(row):
     return {"request_id": str(row.request_id), "conversation_id": str(row.conversation_id), "status": row.status}
 
 
+def _execution_payload(row):
+    return json.loads(decrypt_headers(row.encrypted_payload)["payload"])
+
+
+def _set_execution_payload(row, payload):
+    row.encrypted_payload = encrypt_headers({"payload": json.dumps(payload)})
+
+
+def _steering_execution(db, conversation_id, request_id):
+    conversation = db.get(Conversation, conversation_id, with_for_update=True, populate_existing=True)
+    row = db.get(ConversationExecution, request_id, with_for_update=True, populate_existing=True)
+    if row is None or row.conversation_id != conversation_id or row.message_id is None:
+        raise HTTPException(404, "回答不存在")
+    active = (conversation.deleted_at is None and conversation.active_request_id == request_id
+              and row.status in ("queued", "running"))
+    return row, active
+
+
+def update_steering(db, conversation, request_id, message_id, text):
+    row, active = _steering_execution(db, conversation.id, request_id)
+    payload = _execution_payload(row)
+    entries = payload.setdefault("steering", {})
+    key = str(message_id)
+    entry = entries.get(key)
+    if text is None:
+        if entry is None:
+            if active:
+                entries[key] = {"status": "withdrawn"}
+                _set_execution_payload(row, payload)
+                db.commit()
+            return {"id": key, "status": "withdrawn"}
+        if entry["status"] == "pending":
+            entry["status"] = "withdrawn"
+            _set_execution_payload(row, payload)
+            db.commit()
+        return {"id": key, "status": entry["status"]}
+    if entry is not None:
+        if entry["status"] == "withdrawn":
+            return {"id": key, "status": "withdrawn"}
+        if entry["text"] != text:
+            raise HTTPException(409, "该补充消息已提交")
+        return {"id": key, "status": entry["status"] if active or entry["status"] != "pending" else "withdrawn"}
+    if not active or payload.get("steering_sealed"):
+        raise HTTPException(409, "当前回答已结束，可以发送新消息")
+    if sum(item["status"] == "pending" for item in entries.values()) >= 20:
+        raise HTTPException(409, "还有补充消息等待接纳")
+    entries[key] = {"text": text, "status": "pending"}
+    _set_execution_payload(row, payload)
+    db.commit()
+    return {"id": key, "status": "pending"}
+
+
+def steering_batch(factory, conversation_id, request_id, *, seal=False):
+    with factory() as db:
+        row, active = _steering_execution(db, conversation_id, request_id)
+        if not active:
+            from .agent import AgentCancelled
+            raise AgentCancelled()
+        payload = _execution_payload(row)
+        pending = [{"id": key, "text": value["text"]} for key, value in payload.get("steering", {}).items()
+                   if value["status"] == "pending"]
+        if not pending and seal:
+            payload["steering_sealed"] = True
+            _set_execution_payload(row, payload)
+        db.commit()
+        return pending
+
+
+def mark_steered(db, conversation_id, request_id, entry):
+    row, active = _steering_execution(db, conversation_id, request_id)
+    payload = _execution_payload(row)
+    current = payload.get("steering", {}).get(entry["id"])
+    if not active or not current or current["status"] != "pending":
+        return False
+    current["status"] = "accepted"
+    _set_execution_payload(row, payload)
+    return True
+
+
+def accepted_steering(db, request_id):
+    row = db.get(ConversationExecution, request_id)
+    if not row:
+        return []
+    return [{"id": key, "type": "user", "text": entry["text"]}
+            for key, entry in _execution_payload(row).get("steering", {}).items() if entry["status"] == "accepted"]
+
+
+def recover_steered_blocks(db, request_id, blocks):
+    existing = {block["id"] for block in blocks}
+    return [*blocks, *(block for block in accepted_steering(db, request_id) if block["id"] not in existing)]
+
+
 async def subscribe(factory, access, conversation_id, request_id, after=0):
     from .conversations import live_conversation
     while True:
@@ -57,27 +150,26 @@ async def subscribe(factory, access, conversation_id, request_id, after=0):
                 ConversationEvent.sequence > after).order_by(ConversationEvent.sequence).limit(200)))
             status = row.status
             payloads = [(item.sequence, json.loads(decrypt_headers(item.encrypted_payload)["event"])) for item in events]
+        newest = payloads[-1][0] if payloads else after
         for sequence, payload in payloads:
             after = sequence
+            if "\nevent: model_recovering\n" in payload and (
+                    sequence != newest or status not in ("queued", "running")):
+                continue
             yield payload
         if status not in ("queued", "running") and len(payloads) < 200:
-            if not payloads:
+            if not any("\nevent: done\n" in payload for _, payload in payloads):
                 # Recovery may finish without the original producer's final event.
                 from .conversations import event, event_text, message_read
                 with factory() as db:
                     live_conversation(db, conversation_id, access.revalidate(db))
                     row = db.get(ConversationExecution, request_id)
-                    last = db.scalar(select(ConversationEvent).where(ConversationEvent.request_id == request_id)
-                        .order_by(ConversationEvent.sequence.desc()).limit(1))
-                    if last:
-                        final = json.loads(decrypt_headers(last.encrypted_payload)["event"])
-                        if "event: done\n" in final:
-                            yield final
-                            return
                     message = db.get(ChatMessage, row.message_id) if row.message_id else None
                     if message and message.request_id != request_id:
                         message = None
-                    yield event_text(event("done", message_read(message) if message else {"status": status}))
+                    operation = db.get(ContextOperation, request_id) if not row.message_id else None
+                    data = message_read(message) if message else operation.result if operation else {"status": status}
+                    yield event_text(event("done", {**data, "request_id": str(request_id)}))
             return
         yield ": heartbeat\n\n"
         await asyncio.sleep(0.3)
@@ -239,9 +331,10 @@ def interrupt_execution(db, row):
     cancel_request(db, row.request_id)
     message = db.get(ChatMessage, row.message_id) if row.message_id else None
     if message and message.request_id == row.request_id and message.status == "streaming":
-        message.status, message.error_detail = "interrupted", "回答已中断，请检查已有结果后重试"
+        message.status, message.error_detail = "interrupted", "回答已中断。可以查看已有结果，再继续提交"
         message.tool_events = [{**item, "status": "interrupted"}
             if item.get("status") in ("waiting", "running") else item for item in message.tool_events]
+        message.display_blocks = recover_steered_blocks(db, row.request_id, message.display_blocks)
     operation = db.get(ContextOperation, row.request_id) if not row.message_id else None
     if operation and operation.status == "completed":
         row.status = "completed"

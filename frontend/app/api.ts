@@ -137,40 +137,43 @@ export async function streamRequest(
   signal: AbortSignal,
   onEvent: (name: string, data: unknown) => void,
 ) {
-  let response = await fetch(`${API_URL}${path}`, {
+  const headers = sessionHeaders({ headers: { "Content-Type": "application/json" } });
+  const read = (url: string) => fetch(`${API_URL}${url}`, {
     credentials: "include",
-    method: body === undefined ? "GET" : "POST",
-    headers: sessionHeaders({
-      headers: { "Content-Type": "application/json" },
-    }),
-    body: JSON.stringify(body),
+    headers,
     signal,
   });
-  if (!response.ok) {
+  async function verify(response: Response) {
+    if (response.ok) return response;
     if (response.status === 401)
       window.dispatchEvent(new Event("rag-session-expired"));
     const error = await response.json().catch(() => ({}));
-    throw new ApiError(response.status,
-      errorMessage(error.detail, response.status),
-    );
+    throw new ApiError(response.status, errorMessage(error.detail, response.status));
   }
   let eventPath = body === undefined ? path : "";
-  if (response.headers.get("content-type")?.includes("application/json")) {
-    const task = await response.json() as { request_id: string };
-    onEvent("submitted", task);
-    eventPath = `${path.replace(/\/(messages|compact)$/, "")}/requests/${encodeURIComponent(task.request_id)}/events`;
-    response = await fetch(`${API_URL}${eventPath}`, { credentials: "include", headers: sessionHeaders(), signal });
+  let response: Response | undefined;
+  if (body !== undefined) {
+    const post = () => fetch(`${API_URL}${path}`, {
+      credentials: "include", method: "POST", headers, body: JSON.stringify(body), signal,
+    });
+    response = await verify(await post().catch(error => { if (signal.aborted) throw error; return post(); }));
+    if (response.headers.get("content-type")?.includes("application/json")) {
+      const task = await response.json() as { request_id: string };
+      onEvent("submitted", task);
+      eventPath = `${path.replace(/\/(messages|compact)$/, "")}/requests/${encodeURIComponent(task.request_id)}/events`;
+      response = undefined;
+    }
   }
-  if (!response.ok || !response.body) throw new Error("连接暂时不可用，回答会继续处理，请重新打开对话");
   let done = false;
-  let after = 0;
-  const eventIds = new Set<string>();
+  let after = Number(new URLSearchParams(eventPath.split("?")[1]).get("after")) || 0;
+  let failures = 0;
+  let reconnecting = false;
   const parser = createParser({
     onEvent(event) {
-      if (event.id && eventIds.has(event.id)) return;
-      if (event.id) eventIds.add(event.id);
-      if (event.id) after = Number(event.id.split(":").at(-1)) || after;
+      const sequence = event.id ? Number(event.id.split(":").at(-1)) : 0;
+      if (sequence > 0 && sequence <= after) return;
       const data: unknown = JSON.parse(event.data);
+      if (sequence > 0) after = sequence;
       if (event.event === "done") done = true;
       onEvent(event.event || "message", data);
     },
@@ -178,27 +181,38 @@ export async function streamRequest(
       throw error;
     },
   });
-  for (let attempt = 0; !done; attempt++) {
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
+  while (!done && !signal.aborted) {
     try {
-      while (true) {
-        const { value, done: ended } = await reader.read();
-        if (ended) break;
-        parser.feed(decoder.decode(value, { stream: true }));
+      response ??= await verify(await read(`${eventPath.split("?")[0]}?after=${after}`));
+      if (!response.body) throw new Error("连接暂时不可用");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      try {
+        while (!done) {
+          const { value, done: ended } = await reader.read();
+          if (ended) break;
+          if (reconnecting) { reconnecting = false; onEvent("browser_connection", { reconnecting }); }
+          failures = 0;
+          parser.feed(decoder.decode(value, { stream: true }));
+        }
+        if (!done) parser.feed(decoder.decode());
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
       }
-      parser.feed(decoder.decode());
     } catch (error) {
-      if (signal.aborted || !eventPath || attempt >= 3) throw error;
-    } finally {
-      await reader.cancel().catch(() => {});
-      reader.releaseLock();
+      if (signal.aborted || !eventPath || (error instanceof ApiError && error.status < 500 && error.status !== 429)) throw error;
     }
     if (done || signal.aborted) return;
-    if (!eventPath || attempt >= 3) throw new Error("连接已中断，回答会继续处理，请重新打开对话");
+    if (!eventPath) throw new Error("连接已中断，可以重新打开对话");
+    if (!reconnecting) { reconnecting = true; onEvent("browser_connection", { reconnecting }); }
     parser.reset();
-    await new Promise(resolve => setTimeout(resolve, 600 * (attempt + 1)));
-    response = await fetch(`${API_URL}${eventPath}?after=${after}`, { credentials: "include", headers: sessionHeaders(), signal });
-    if (!response.ok || !response.body) throw new Error("无法恢复连接，请重新打开对话");
+    response = undefined;
+    await new Promise<void>(resolve => {
+      const end = () => { clearTimeout(timer); signal.removeEventListener("abort", end); resolve(); };
+      const timer = setTimeout(end, Math.min(5000, 600 * ++failures));
+      signal.addEventListener("abort", end, { once: true });
+      if (signal.aborted) end();
+    });
   }
 }

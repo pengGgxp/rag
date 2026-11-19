@@ -51,7 +51,7 @@ class ContextManager:
                         message_id=self.current_message_id, sequence=self.current_sequence)
         return self.messages
 
-    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None):
+    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None, before_append=None):
         items = [make_item(uuid5(self.request_id, f"{key}:{index}"), message,
             "tool_image" if source == "tool" and message.get("role") == "user" else source,
             self.request_id, message_id, sequence, self.config) for index, message in enumerate(messages)]
@@ -62,11 +62,18 @@ class ContextManager:
                 item["tool_intent_version"] = 1
                 item["model_key"] = key
         with self.factory() as db:
+            if before_append is not None and not before_append(db):
+                return None
             state, current = self.store.append(db, items, request_id=self.request_id, revision=self.revision)
             db.commit()
             self.adopt(state, current)
         self.messages = self.messages[:1] + project(self.bounded_items(), self.config)
         return self.messages
+
+    def steer(self, entry):
+        from .conversation_jobs import mark_steered
+        return self.record([{"role": "user", "content": entry["text"]}], "user", f"steer:{entry['id']}",
+            message_id=entry["id"], before_append=lambda db: mark_steered(db, self.conversation_id, self.request_id, entry))
 
     def output_budget(self, calls=1):
         return max(300, min(4000, (input_budget(self.config) or 24000) // 4 // max(1, calls)))
@@ -107,6 +114,7 @@ class ContextManager:
 
     def begin_tool(self, call):
         from .models import AgentToolExecution
+        from .mcp_client import encrypt_headers
         _, pending = groups(self.items)
         if not pending or call.id not in pending[0]["pair_ids"]:
             raise ContextWindowError("context_suffix_incompatible", "工具调用缺少对应模型记录")
@@ -118,7 +126,8 @@ class ContextManager:
                 # This slot was already admitted. Never execute its side effect twice.
                 raise ContextWindowError("tool_execution_already_started", "该工具调用已经开始，请继续会话核对已有结果")
             db.add(AgentToolExecution(id=identifier, conversation_id=self.conversation_id,
-                request_id=self.request_id, model_item_id=model_item, call_id=call.id, name=call.name, status="running"))
+                request_id=self.request_id, model_item_id=model_item, call_id=call.id, name=call.name, status="running",
+                encrypted_arguments=encrypt_headers({"arguments": json.dumps(call.arguments)})))
             db.commit()
         return identifier
 

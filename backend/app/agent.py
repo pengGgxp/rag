@@ -238,6 +238,7 @@ class AgentState(TypedDict, total=False):
     citations: list[dict[str, Any]]
     traces: list[dict[str, Any]]
     answer: str | None
+    steering_pending: bool
     all_tool_calls: list[ToolCall]
     tool_results: list[dict[str, Any]]
     usage_events: list[dict[str, Any]]
@@ -286,6 +287,7 @@ def stream_retrieval_agent(
     search=None,
     document_mentions: list[dict[str, str]] | None = None,
     resource_mentions: list[dict[str, Any]] | None = None,
+    read_steering=None,
 ) -> Iterator[tuple[str, Any]]:
     """Run model/tool rounds until the model answers, the user stops, or a request fails."""
     from .skill_discovery import prompt as skill_prompt
@@ -318,6 +320,15 @@ def stream_retrieval_agent(
         if is_active is not None and not is_active():
             raise AgentCancelled()
 
+    def take_steering(write, *, seal=False, entries=None):
+        accepted = False
+        if read_steering is not None:
+            for entry in entries if entries is not None else read_steering(seal):
+                if context_manager.steer(entry) is not None:
+                    accepted = True
+                    write(("steered", entry))
+        return accepted
+
     def plan(state: AgentState) -> AgentState:
         check_active()
         write = get_stream_writer()
@@ -332,50 +343,72 @@ def stream_retrieval_agent(
         elif context_manager is None:
             from .agent_tools import PLAN_TOOL
             tools = tools + [PLAN_TOOL]
-        messages = state["messages"]
+        messages = context_manager.messages if take_steering(write) else state["messages"]
         if context_manager:
             messages = context_manager.prepare(messages, tools, write, check_active)
-        def invoke():
+        round_number = state.get("steps", 0) + 1
+
+        def sampled(attempt):
+            suffix = f"{round_number}-{attempt}"
+            text_id, thinking_id = f"text-{suffix}", f"thinking-{suffix}"
+            text_stages = {}
+            def invoke():
+                return model_response(text_id, thinking_id, text_stages)
+            try:
+                response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
+            except BaseException:
+                for block_id in text_stages:
+                    write(("text_complete", {"block_id": block_id, "stage": "commentary", "status": "interrupted"}))
+                write_thinking(thinking_id, "interrupted")
+                raise
+            write_thinking(thinking_id, "completed")
+            return response, text_stages
+
+        def write_thinking(block_id, status):
+            if hasattr(provider, "thinking_diagnostic"):
+                write(("thinking_status", {"round": round_number, "block_id": block_id, "status": status,
+                    "diagnostic": provider.thinking_diagnostic()}))
+
+        def model_response(text_id, thinking_id, text_stages):
             if hasattr(provider, "stream_with_tools"):
                 response = None
-                # Finish the in-flight call even after stop, so confirmed usage can be recorded.
                 for name, data in provider.stream_with_tools(messages, tools, tool_choice="auto"):
                     if name == "complete":
                         response = data
                     else:
-                        round_number = state.get("steps", 0) + 1
+                        index = data.get("item_index")
+                        block_id = f"{text_id}-{index}" if index is not None else text_id
+                        if name == "text_phase":
+                            if block_id in text_stages:
+                                text_stages[block_id] = data["stage"]
+                            continue
+                        if name == "delta":
+                            text_stages.setdefault(block_id, None)
                         write((name, {**data, "round": round_number,
-                            "block_id": f"{'thinking' if name.startswith('thinking_') else 'text'}-{round_number}"}))
+                            "block_id": thinking_id if name.startswith("thinking_") else block_id}))
                 if response is None:
-                    raise LLMProviderError("模型未完成响应")
+                    from .chat_sampling import stream_closed
+                    raise stream_closed()
                 return response
             response = provider.complete_with_tools(messages, tools, tool_choice="auto")
             if response.content:
-                write(("delta", {"text": response.content, "block_id": f"text-{state.get('steps', 0) + 1}"}))
+                text_stages[text_id] = None
+                write(("delta", {"text": response.content, "block_id": text_id}))
             return response
+        from .chat_sampling import sample
+        def notify(info):
+            write(("model_recovering", info))
+        def run_sample(attempt):
+            if attempt:
+                write(("model_resuming", {}))
+            return sampled(attempt)
         try:
-            with retry_activity(check_active, write, {"call_id": f"model-retry-{state.get('steps', 0) + 1}",
-                    "name": "model_request", "label": "请求回答", "kind": "model"}):
-                try:
-                    response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
-                except LLMContextCapacityError:
-                    if not context_manager:
-                        raise
-                    # Retry only this rejected model step. No tool has run and
-                    # no accepted/uncertain response is eligible for this path.
-                    messages = context_manager.prepare(messages, tools, write, check_active, force=True)
-                    check_active()
-                    response = meter.invoke(provider, invoke, messages, tools) if meter else invoke()
-        except BaseException:
-            if hasattr(provider, "thinking_diagnostic"):
-                write(("thinking_status", {"round": state.get("steps", 0) + 1,
-                    "block_id": f"thinking-{state.get('steps', 0) + 1}", "status": "interrupted",
-                    "diagnostic": provider.thinking_diagnostic()}))
-            raise
-        if hasattr(provider, "thinking_diagnostic"):
-            write(("thinking_status", {"round": state.get("steps", 0) + 1,
-                "block_id": f"thinking-{state.get('steps', 0) + 1}", "status": "completed",
-                "diagnostic": provider.thinking_diagnostic()}))
+            response, text_stages = sample(run_sample, check_active, notify, provider=provider)
+        except LLMContextCapacityError:
+            if not context_manager:
+                raise
+            messages = context_manager.prepare(messages, tools, write, check_active, force=True)
+            response, text_stages = sample(lambda attempt: run_sample(f"context-{attempt}"), check_active, notify, provider=provider)
         check_active()
         calls = response.tool_calls
         usage_events = list(state.get("usage_events", []))
@@ -420,11 +453,17 @@ def stream_retrieval_agent(
             assistant_message.update(response.protocol_fields)
         next_messages = (context_manager.record([assistant_message], "model", f"model:{state.get('steps', 0) + 1}")
             if context_manager else messages + [assistant_message])
+        pending = read_steering(True) if read_steering is not None and not calls else []
+        for block_id, stage in text_stages.items():
+            if stage != "commentary":
+                stage = "intermediate" if calls or pending else "final"
+            write(("text_complete", {"block_id": block_id, "stage": stage, "status": "completed"}))
         return {
             "messages": next_messages,
             "tool_calls": calls,
             "steps": state.get("steps", 0) + 1,
-            "answer": response.content if not calls else None,
+            "answer": response.content if not calls and not pending else None,
+            "steering_pending": bool(pending),
             "all_tool_calls": state.get("all_tool_calls", []) + calls,
             "usage_events": usage_events,
         }
@@ -441,7 +480,8 @@ def stream_retrieval_agent(
         execution_id = None
         stopped_after_result = False
         def emit_tool_result(activity, result):
-            write(("tool_result", {**activity, "outcome": tool_outcome(result)}))
+            write(("tool_result", {**activity, "outcome": tool_outcome(result),
+                **({"execution_id": str(execution_id)} if execution_id else {})}))
             if stopped_after_result:
                 raise AgentCancelled()
 
@@ -649,6 +689,8 @@ def stream_retrieval_agent(
                         else f"已读取「{result['name']}」的方法" if kind == "skill" and result.get("name")
                         else "已读取内容" if kind == "skill" else "操作已完成",
                         **({"files": output_files} if output_files else {}),
+                        **({"deliverables": output_files} if output_files and call.name in (
+                            "write_file", "apply_patch", "run_command") else {}),
                         **({"saved_document": saved_document} if saved_document else {}),
                         **({"image_task": image_task} if image_task else {}),
                         **({"cloud_computer": result["cloud_computer"]} if result.get("cloud_computer") else {}),
@@ -873,7 +915,7 @@ def stream_retrieval_agent(
                             "kind": "web" if call.name in ("web_search", "web_fetch") else "knowledge" if call.name in ("discover_knowledge_bases", "search_knowledge_base", *KNOWLEDGE_TOOL_LABELS) else "skill" if call.name in ("load_skill", "read_skill_resource", "read_skill_file") else "tool" if call.name in FILE_TOOL_NAMES else "mcp",
                             "label": "搜索网页" if call.name == "web_search" else "阅读网页" if call.name == "web_fetch" else "发现知识库" if call.name == "discover_knowledge_bases" else "回查早期对话" if call.name == "read_conversation_history" else "知识库检索" if call.name == "search_knowledge_base" else extensions.label(call.name, call.arguments) if extensions else call.name,
                         }
-        if not result.get("tool_calls"):
+        if not result.get("tool_calls") and not result.get("steering_pending"):
             break
     check_active()
     yield "complete", AgentRun(

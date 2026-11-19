@@ -10,7 +10,7 @@ import httpx
 from httpx_sse import EventSource
 
 from .llm import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
-from .upstream_retries import model_post, model_stream, model_astream
+from .upstream_retries import model_post, model_astream
 
 
 def _tool_result_image(image, native):
@@ -228,13 +228,18 @@ class NativeStream:
         self.finished = False
 
     def feed(self, event):
+        from .chat_sampling import upstream_error
+        if event.get("error"):
+            raise upstream_error(event["error"])
         if self.provider.config.api_protocol == "gemini":
+            if "promptFeedback" in event:
+                self.body["promptFeedback"] = event["promptFeedback"]
             candidates = event.get("candidates", [])
             if candidates:
                 candidate = candidates[0]
                 self.gemini_parts.extend(candidate.get("content", {}).get("parts", []))
                 self.body["candidates"] = [{**candidate, "content": {"parts": self.gemini_parts}}]
-                self.finished = candidate.get("finishReason") == "STOP" or self.finished
+                self.finished = bool(candidate.get("finishReason")) or self.finished
                 for part in candidate.get("content", {}).get("parts", []):
                     if part.get("text"):
                         if part.get("thought"):
@@ -274,8 +279,17 @@ class NativeStream:
             self.finished = True
 
     def finish(self):
+        from .chat_sampling import incomplete_response, stream_closed
+        if self.provider.config.api_protocol == "gemini":
+            blocked = (self.body.get("promptFeedback") or {}).get("blockReason")
+            candidates = self.body.get("candidates") or []
+            reason = candidates[0].get("finishReason") if candidates else None
+            if blocked or reason not in (None, "STOP"):
+                raise incomplete_response(blocked or reason)
+        elif self.finished and self.body.get("stop_reason") in ("max_tokens", "refusal"):
+            raise incomplete_response(self.body["stop_reason"])
         if not self.finished:
-            raise LLMProviderError("模型流式响应中断，请重试")
+            raise stream_closed()
         if self.provider.config.api_protocol == "anthropic":
             parts = []
             for _, block in sorted(self.blocks.items()):
@@ -288,6 +302,7 @@ class NativeStream:
 
 
 def stream(provider, messages, tools=None, tool_choice="auto"):
+    from .chat_sampling import model_stream, stream_events, stream_error
     url, headers, body = request(provider, messages, tools, tool_choice, streaming=True)
     state = NativeStream(provider)
     provider.stream_diagnostic = "sse"
@@ -295,12 +310,14 @@ def stream(provider, messages, tools=None, tool_choice="auto"):
         with model_stream(provider, "POST", url, headers=headers, json=body, timeout=provider.timeout_seconds) as response:
             if response.status_code >= 400:
                 raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}）")
-            for event in EventSource(response).iter_sse():
+            for event in stream_events(response):
                 if event.data:
                     yield from state.feed(json.loads(event.data))
+                if state.finished and provider.config.api_protocol == "anthropic":
+                    break
         yield "complete", state.finish()
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-        raise LLMProviderError("模型流式连接或响应异常，请重试") from exc
+        raise stream_error(exc) from exc
 
 
 async def stream_text(provider, messages):

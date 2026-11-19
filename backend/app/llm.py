@@ -128,6 +128,7 @@ class ChatProviderConfig:
     connection_version: int = 0
     api_protocol: str = "chat_completions"
     supports_images: bool = False
+    responses_websocket: bool = False
 
     @property
     def continuation_required(self):
@@ -393,7 +394,7 @@ class OpenAICompatibleChatProvider:
 
     def stream_with_tools(self, messages, tools, *, tool_choice="auto") -> Iterator[tuple[str, Any]]:
         """Forward public text as received; assemble private protocol fields and tool JSON server-side."""
-        from httpx_sse import EventSource
+        from .chat_sampling import incomplete_response, model_stream, stream_events, stream_closed, stream_error, upstream_error
         self.reset_observation()
         self.check_available()
         if self.config.api_protocol in ("anthropic", "gemini"):
@@ -435,7 +436,7 @@ class OpenAICompatibleChatProvider:
                         yield "thinking_status", {"status": "completed"}
                     yield "complete", result
                     return
-                for event in EventSource(response).iter_sse():
+                for event in stream_events(response):
                     if not event.data:
                         continue
                     if event.data == "[DONE]":
@@ -451,7 +452,7 @@ class OpenAICompatibleChatProvider:
                         else:
                             self.last_usage = usage
                     if body.get("error"):
-                        raise LLMProviderError("模型流式调用失败")
+                        raise upstream_error(body["error"])
                     for choice in body.get("choices", [])[:1]:
                         delta = choice.get("delta") or {}
                         reasoning = delta.get("reasoning_content")
@@ -482,13 +483,13 @@ class OpenAICompatibleChatProvider:
                         reason = choice.get("finish_reason")
                         if reason in ("length", "content_filter"):
                             # Usage may arrive after the terminal choice in a separate frame.
-                            finish_error = "模型响应未完整生成，请重试"
+                            finish_error = incomplete_response(reason)
                         if reason in ("stop", "tool_calls"):
                             finished = True
                 if finish_error:
-                    raise LLMProviderError(finish_error)
+                    raise finish_error
                 if not finished:
-                    raise LLMProviderError("模型响应未完成，请重试")
+                    raise stream_closed()
                 message["tool_calls"] = [calls[index] for index in sorted(calls)]
                 if self.thinking_characters and self.config.thinking.displays_reasoning:
                     yield "thinking_status", {"status": "completed"}
@@ -496,7 +497,7 @@ class OpenAICompatibleChatProvider:
         except LLMProviderError:
             raise
         except (httpx.HTTPError, SSEError, ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
-            raise LLMProviderError("模型流式连接或响应异常，请重试") from exc
+            raise stream_error(exc) from exc
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.reset_observation()

@@ -37,7 +37,7 @@ export function MessageFiles({ events }: { events: ToolEvent[] }) {
   const files = activityFiles(events.map(event => activityItem({
     ...event, image_task: event.image_task
       ? latestImageTask(event.image_task, context.images[event.image_task.task_id]) : undefined,
-  })));
+  })), session.workspace_id);
   return <>{files.length > 0 && <div className="message-files" role="group" aria-label="本轮文件">
     {files.map(file => {
       const name = file.path.split("/").at(-1) || file.path;
