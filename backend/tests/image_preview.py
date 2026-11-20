@@ -95,7 +95,7 @@ if __name__ == "__main__":
         user = fixture.authenticate(http, db)
         user.is_site_admin = True
         user.email_verified_at = fixture.auth.now()
-        fixture.configured_model(db, fixture.auth.LEGACY_WORKSPACE_ID)
+        fixture.configured_model(db, user.id)
         for connection in db.query(ModelConnection):
             connection.encrypted_api_key = _encrypt_api_key("synthetic-only")
         connection = ModelConnection(name="图片验收供应商", base_url="https://synthetic.invalid/v1", encrypted_api_key=_encrypt_api_key("synthetic-only"), website_url="https://example.com")

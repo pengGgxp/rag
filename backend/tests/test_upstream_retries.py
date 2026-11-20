@@ -443,7 +443,7 @@ def test_durable_agent_retries_only_failed_model_round_and_reconnect_does_not_ex
         def label(self, name, arguments=None): return "执行测试命令"
         def execute(self, name, arguments, check_active=None, **kwargs):
             tools_run.append(name)
-            return {"status": "completed"}
+            return {"status": "completed", "exit_code": 0, "stdout": "命令输出\nAuthorization: Bearer output-secret\n" + "x" * 5000}
     def respond(handler, payload):
         calls.append(payload)
         if len(calls) in (2, 3):
@@ -470,19 +470,28 @@ def test_durable_agent_retries_only_failed_model_round_and_reconnect_does_not_ex
         message = db.scalar(select(ChatMessage).where(ChatMessage.request_id == UUID(request_id)))
         db.refresh(message)
         assert message.status == "completed" and message.content == "完成"
-        activity = next(item for item in message.tool_events if item["name"] == "model_request")
-        assert activity["status"] == "completed" and activity["summary"] == "请求已恢复"
-        assert "秒后重试" in response.text and "正在重试" in response.text
+        assert [item["name"] for item in message.tool_events] == ["run_command"]
+        tool_id = message.tool_events[0]["execution_id"]
+        detail_path = f"/conversations/{conversation['id']}/requests/{request_id}/tools/{tool_id}"
+        detail = http.get(detail_path)
+        assert detail.status_code == 200 and "no-store" in detail.headers["cache-control"]
+        assert detail.json()["redacted"] and detail.json()["truncated"] and "output-secret" not in detail.json()["text"]
+        assert "命令输出" in detail.json()["text"]
+        assert http.get(f"{detail_path}?offset=4000").json()["next_offset"] is None
+        assert http.get(detail_path.replace(request_id, str(uuid4()))).status_code == 404
+        assert "event: model_resuming" in response.text
+        assert "event: text_complete" in response.text
         snapshots = list(db.scalars(select(BillingSnapshot).where(BillingSnapshot.request_id == UUID(request_id))))
         uses = [row.context["call_usage"] for row in snapshots if "call_usage" in row.context]
         if metering:
             records = list(db.scalars(select(ModelCallUsage).where(ModelCallUsage.request_id == UUID(request_id))
                 .order_by(ModelCallUsage.round)))
             uses = [item.usage for item in records]
-        assert len(uses) == 2 and sum(item["prompt_tokens"] for item in uses) == 18
-        assert uses[-1]["thinking_diagnostic"]["upstream"]["attempts"] == 3
+        assert len(uses) == 4 and sum(item["prompt_tokens"] or 0 for item in uses) == 18
+        assert uses[-1]["thinking_diagnostic"]["upstream"]["attempts"] == 1
         reconnect = http.get(f"/conversations/{conversation['id']}/requests/{request_id}/events")
         assert reconnect.status_code == 200 and "event: done" in reconnect.text
+        assert "event: model_recovering" not in reconnect.text
         conversation_jobs.run(request_id, sessionmaker(bind=db.get_bind()))
         assert len(calls) == 4 and tools_run == ["run_command"]
 

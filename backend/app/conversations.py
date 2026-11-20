@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, object_session, sessionmaker
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
+from .llm import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from .agent import AgentCancelled, stream_retrieval_agent
 from .auth import Access, get_access
 from .models import (
@@ -72,13 +72,16 @@ class ContextRequest(BaseModel):
     thinking_config_version: int | None = Field(default=None, ge=0, strict=True)
 
 
-class TurnRequest(ContextRequest):
-    web_search: bool = True
-    query: str | None = Field(default=None, min_length=1)
+class InputReferences(BaseModel):
     attachment_ids: list[UUID] = Field(default_factory=list, max_length=6)
     document_ids: list[UUID] = Field(default_factory=list, max_length=8)
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=8)
     resource_ids: list[UUID] = Field(default_factory=list, max_length=8)
+
+
+class TurnRequest(ContextRequest, InputReferences):
+    web_search: bool = True
+    query: str | None = Field(default=None, min_length=1)
     retry_message_id: UUID | None = None
 
     @model_validator(mode="after")
@@ -90,6 +93,59 @@ class TurnRequest(ContextRequest):
 
 class StopRequest(BaseModel):
     request_id: UUID
+
+
+class SteerRequest(InputReferences):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    message_id: UUID
+    text: str = Field(default="", max_length=100_000)
+
+    @model_validator(mode="after")
+    def has_input(self):
+        if not self.text and not self.attachment_ids:
+            raise ValueError("Provide text or an attachment")
+        return self
+
+
+def resolve_input_mentions(db, access, document_ids, knowledge_base_ids, resource_ids, *, skip_unavailable=False):
+    documents, libraries, resources = map(lambda ids: list(dict.fromkeys(ids)),
+        (document_ids, knowledge_base_ids, resource_ids))
+    if len(documents) + len(libraries) + len(resources) > 8:
+        raise HTTPException(422, "每条消息最多可以提及 8 项资料")
+
+    def ready_library(identifier):
+        library = access.library(db, identifier)
+        if library.status == KnowledgeBaseStatus.ARCHIVED:
+            raise HTTPException(404, "知识库已归档")
+        return library
+
+    knowledge_base_mentions = []
+    for identifier in libraries:
+        try:
+            library = ready_library(identifier)
+        except HTTPException:
+            if not skip_unavailable:
+                raise HTTPException(409, "提及的知识库已不可用，请重新选择") from None
+            continue
+        knowledge_base_mentions.append({"id": str(library.id), "name": library.name})
+
+    document_mentions = []
+    rows = {row.id: row for row in db.scalars(select(Document).where(Document.id.in_(documents)))} if documents else {}
+    for identifier in documents:
+        row = rows.get(identifier)
+        try:
+            if row is None or row.status != DocumentStatus.READY or not row.is_active:
+                raise HTTPException(404, "文档不可用")
+            library = ready_library(row.knowledge_base_id)
+        except HTTPException:
+            if not skip_unavailable:
+                raise HTTPException(409, "提及的文档已不可用，请重新选择") from None
+            continue
+        document_mentions.append({"id": str(row.id), "filename": row.filename,
+            "knowledge_base_id": str(library.id), "knowledge_base_name": library.name})
+    resource_mentions = resource_references.resolve(db, access, resources, skip_unavailable=skip_unavailable)
+    return {"document_mentions": document_mentions, "knowledge_base_mentions": knowledge_base_mentions,
+        "resource_mentions": resource_mentions}
 
 
 def message_read(message: ChatMessage) -> dict:
@@ -400,6 +456,30 @@ def chat_router(get_db, retrieve):
         db.commit()
         return Response(status_code=204)
 
+    @router.get("/{conversation_id}/requests/{request_id}/tools/{execution_id}")
+    def tool_detail(conversation_id: UUID, request_id: UUID, execution_id: UUID, offset: int = Query(0, ge=0),
+                    db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        access = access.revalidate(db)
+        live_conversation(db, conversation_id, access)
+        from .tool_detail import receipt_projection
+        return JSONResponse(receipt_projection(db, access, conversation_id, request_id, execution_id, offset),
+                            headers={"Cache-Control": "private, no-store"})
+
+    @router.post("/{conversation_id}/requests/{request_id}/steer")
+    def steer(conversation_id: UUID, request_id: UUID, payload: SteerRequest,
+              db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        from .conversation_jobs import update_steering
+        conversation = live_conversation(db, conversation_id, access.revalidate(db))
+        return update_steering(db, conversation, request_id, payload.message_id,
+            payload.model_dump(mode="json", exclude={"message_id"}, exclude_defaults=True))
+
+    @router.delete("/{conversation_id}/requests/{request_id}/steer/{message_id}")
+    def withdraw_steering(conversation_id: UUID, request_id: UUID, message_id: UUID,
+                          db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        from .conversation_jobs import update_steering
+        conversation = live_conversation(db, conversation_id, access.revalidate(db))
+        return update_steering(db, conversation, request_id, message_id, None)
+
     @router.post("/{conversation_id}/stop")
     def stop(conversation_id: UUID, payload: StopRequest, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         conversation = db.scalar(select(Conversation).where(
@@ -415,9 +495,11 @@ def chat_router(get_db, retrieve):
         if message is None and (operation is None or operation.conversation_id != conversation_id):
             raise HTTPException(404, "回答不存在")
         if message:
+            from .conversation_jobs import recover_steered_blocks
             db.execute(update(ChatMessage).where(
                 ChatMessage.id == message.id, ChatMessage.status == "streaming",
-            ).values(status="cancelled", error_detail=None))
+            ).values(status="cancelled", error_detail=None, display_blocks=recover_steered_blocks(
+                db, payload.request_id, message.display_blocks)))
         elif operation.status == "running":
             operation.status = "cancelled"
             operation.result = {"status": "failed", "error": "整理已停止，原始记录已保留"}
@@ -596,6 +678,7 @@ def chat_router(get_db, retrieve):
                 yield event_text(event("done", message_read(existing)))
             return StreamingResponse(duplicate(), media_type="text/event-stream")
         retry = None
+        previous_user = None
         document_mentions = []
         knowledge_base_mentions = []
         resource_mentions = []
@@ -621,69 +704,21 @@ def chat_router(get_db, retrieve):
             else list(dict.fromkeys(payload.knowledge_base_ids)))
         resource_ids = ([UUID(item["id"]) for item in resource_mentions] if retry
             else list(dict.fromkeys(payload.resource_ids)))
-        if len(mention_ids) + len(knowledge_base_mention_ids) + len(resource_ids) > 8:
-            raise HTTPException(422, "每条消息最多可以提及 8 项资料")
         checked_access = access.revalidate(db)
-        if knowledge_base_mention_ids:
-            available_knowledge_base_ids = []
-            for identifier in knowledge_base_mention_ids:
-                try:
-                    library = checked_access.library(db, identifier)
-                    if library.status == KnowledgeBaseStatus.ARCHIVED:
-                        raise HTTPException(404, "知识库已归档")
-                except HTTPException:
-                    if not retry:
-                        raise HTTPException(409, "提及的知识库已不可用，请重新选择") from None
-                    continue
-                available_knowledge_base_ids.append(identifier)
-                if not retry:
-                    knowledge_base_mentions.append({"id": str(library.id), "name": library.name})
-            knowledge_base_mention_ids = available_knowledge_base_ids
-        if mention_ids:
-            rows = db.scalars(select(Document).where(Document.id.in_(mention_ids))).all()
-            rows_by_id = {row.id: row for row in rows}
-            available_document_ids = []
-            for identifier in mention_ids:
-                row = rows_by_id.get(identifier)
-                if row is None or row.status != DocumentStatus.READY or not row.is_active:
-                    if not retry:
-                        raise HTTPException(409, "提及的文档已不可用，请重新选择")
-                    continue
-                try:
-                    library = checked_access.library(db, row.knowledge_base_id)
-                    if library.status == KnowledgeBaseStatus.ARCHIVED:
-                        raise HTTPException(404, "知识库已归档")
-                except HTTPException:
-                    if not retry:
-                        raise HTTPException(409, "提及的文档已不可用，请重新选择") from None
-                    continue
-                available_document_ids.append(identifier)
-            mention_ids = available_document_ids
-            if mention_ids and not retry:
-                rows_by_id = {row.id: row for row in rows}
-                libraries_by_id = {}
-                for row in rows:
-                    library = checked_access.library(db, row.knowledge_base_id)
-                    libraries_by_id[row.knowledge_base_id] = library
-                document_mentions = [{
-                    "id": str(identifier), "filename": rows_by_id[identifier].filename,
-                    "knowledge_base_id": str(rows_by_id[identifier].knowledge_base_id),
-                    "knowledge_base_name": libraries_by_id[rows_by_id[identifier].knowledge_base_id].name,
-                } for identifier in mention_ids]
-        current_resource_mentions = resource_references.resolve(
-            db, checked_access, resource_ids, skip_unavailable=bool(retry)) if resource_ids else []
-        if not retry:
-            resource_mentions = current_resource_mentions
+        current_mentions = resolve_input_mentions(db, checked_access, mention_ids, knowledge_base_mention_ids,
+            resource_ids, skip_unavailable=bool(retry))
+        saved_mentions = ({"document_mentions": document_mentions, "knowledge_base_mentions": knowledge_base_mentions,
+            "resource_mentions": resource_mentions} if retry else current_mentions)
         try:
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
             search_config = None
             provider_config = request_provider_config(db, access.user_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
-            if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids
-                    or current_resource_mentions):
+            if not provider_config.thinking.supports_tools and any(current_mentions.values()):
                 raise HTTPException(422, "当前模型无法使用资料引用，请选择支持工具的模型")
-            attachments = select_attachments(db, access, payload.attachment_ids, provider_config)
+            attachments = select_attachments(db, access, [row.id for row in previous_user.attachments]
+                if previous_user else payload.attachment_ids, provider_config)
             # Check retained multimodal history before reserving credits, including retries.
             from .chat_attachments import validate_messages
             factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
@@ -709,51 +744,34 @@ def chat_router(get_db, retrieve):
             Conversation.active_request_id.is_(None),
         ).values(
             active_request_id=payload.request_id,
-            next_sequence=Conversation.next_sequence + (0 if retry else 2),
+            next_sequence=Conversation.next_sequence + 2,
             updated_at=datetime.now(timezone.utc),
         ).returning(Conversation.next_sequence))
         if next_sequence is None:
             db.rollback()
             raise HTTPException(409, "当前会话正在回答，请先停止或等待完成")
-        if retry:
-            message = retry
-            message.request_id = payload.request_id
-            message.content = ""
-            message.status = "streaming"
-            message.error_detail = None
-            message.refused = False
-            message.refusal_reason = None
-            message.citations = []
-            message.web_sources = []
-            message.traces = []
-            message.tool_events = []
-            message.display_blocks = []
-            message.thinking_diagnostics = []
-            message.encrypted_display_thinking = None
-        else:
-            user_message = ChatMessage(
-                conversation_id=conversation.id, sequence=next_sequence - 2,
-                role="user", content=payload.query or "", attachments=attachments,
-                document_mentions=document_mentions,
-                knowledge_base_mentions=knowledge_base_mentions,
-                resource_mentions=resource_mentions,
-            )
-            db.add(user_message)
-            db.flush()
-            from .models import chat_message_resources
-            for position, attachment in enumerate(attachments):
-                db.execute(update(chat_message_resources).where(
-                    chat_message_resources.c.message_id == user_message.id,
-                    chat_message_resources.c.attachment_id == attachment.id).values(position=position))
-            message = ChatMessage(
-                conversation_id=conversation.id, sequence=next_sequence - 1,
-                role="assistant", status="streaming", request_id=payload.request_id,
-            )
-            db.add(message)
-            if next_sequence == 2 and conversation.title == "新对话":
-                from .conversation_jobs import temporary_title
-                conversation.title = temporary_title(payload.query or attachments[0].filename)
-                conversation.revision += 1
+        query = previous_user.content if previous_user else payload.query or ""
+        user_message = ChatMessage(
+            conversation_id=conversation.id, sequence=next_sequence - 2,
+            role="user", content=query, attachments=attachments,
+            **saved_mentions,
+        )
+        db.add(user_message)
+        db.flush()
+        from .models import chat_message_resources
+        for position, attachment in enumerate(attachments):
+            db.execute(update(chat_message_resources).where(
+                chat_message_resources.c.message_id == user_message.id,
+                chat_message_resources.c.attachment_id == attachment.id).values(position=position))
+        message = ChatMessage(
+            conversation_id=conversation.id, sequence=next_sequence - 1,
+            role="assistant", status="streaming", request_id=payload.request_id,
+        )
+        db.add(message)
+        if next_sequence == 2 and conversation.title == "新对话":
+            from .conversation_jobs import temporary_title
+            conversation.title = temporary_title(query or attachments[0].filename)
+            conversation.revision += 1
         message.provider_id = UUID(provider_config.provider_id)
         message.provider_name = provider_config.provider_name
         message.model = provider_config.model
@@ -798,7 +816,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
     def emit(name, data):
         nonlocal sequence
         sequence += 1
-        payload = event(name, {**data, "event_sequence": sequence})
+        payload = event(name, {**data, "request_id": str(request_id), "event_sequence": sequence})
         payload["id"] = f"{request_id}:{sequence}"
         return event_text(payload)
 
@@ -835,7 +853,9 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                 message = db.get(ChatMessage, message_id)
                 if (conversation.deleted_at is None and message.request_id == request_id
                         and message.status == "cancelled"):
-                    message.content, message.display_blocks = content, display_blocks
+                    from .conversation_jobs import recover_steered_blocks
+                    message.content = content
+                    message.display_blocks = recover_steered_blocks(db, request_id, display_blocks)
                     message.tool_events = tool_events
                     message.web_sources = web_sources
                     message.encrypted_display_thinking = encrypt_display_thinking(thinking_blocks)
@@ -915,6 +935,22 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
         yield emit("phase", {"phase": "planning"})
         provider = OpenAICompatibleChatProvider(config=provider_config)
         provider.resource_context = (factory, access)
+        if not manual and isinstance(getattr(provider, "config", None), ChatProviderConfig):
+            from .llm_providers import refresh_chat_credentials
+
+            def refresh_credentials():
+                with factory() as db:
+                    access.revalidate(db)
+                    refreshed = refresh_chat_credentials(db, provider.config)
+                if refreshed is None:
+                    return False
+                provider.config = refreshed
+                return True
+
+            provider.refresh_credentials = refresh_credentials
+        if not manual and provider_config.responses_websocket:
+            from .responses_socket import ResponsesSocket
+            provider.responses_socket = ResponsesSocket()
         if not hasattr(provider, "complete_with_tools"):
             raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")
         agent_run = None
@@ -960,6 +996,9 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             execution = manual_execution()
         else:
             from .search_billing import SearchRuntime
+            from .conversation_jobs import steering_batch
+            def read_steering(seal=False):
+                return steering_batch(factory, conversation_id, request_id, seal=seal)
             execution = stream_retrieval_agent(
             query=query, knowledge_base_ids=scope_ids, history=history,
             factory=factory, access=access, retrieve=retrieve, provider=provider,
@@ -971,6 +1010,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             document_mentions=current_document_mentions,
             resource_mentions=current_resource_mentions,
             search=SearchRuntime(factory, access, request_id, search_config) if search_config else None,
+            read_steering=read_steering,
         )
         bridge = stream_events(execution, stopped)
         async for name, data in bridge:
@@ -979,7 +1019,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                 continue
             now = time.monotonic()
             active = await run_in_threadpool(still_authorized)
-            if not active and name not in ("tool_started", "tool_result", "compaction", "thinking_status"):
+            if not active and name not in ("tool_started", "tool_result", "compaction", "thinking_status", "text_complete", "steered"):
                 continue
             if name == "complete":
                 agent_run = data
@@ -1010,7 +1050,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                     block_id = data["block_id"]
                     block = next((item for item in display_blocks if item["id"] == block_id), None)
                     if block is None:
-                        block = {"id": block_id, "type": "text", "text": ""}
+                        block = {"id": block_id, "type": "text", "text": "", "stage": "pending", "status": "running"}
                         display_blocks.append(block)
                         if content:
                             content += "\n\n"
@@ -1019,6 +1059,15 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                     if now - last_text_save >= 0.25:
                         await run_in_threadpool(save)
                         last_text_save = now
+                if name == "text_complete":
+                    block = next((item for item in display_blocks if item["id"] == data["block_id"]), None)
+                    if block is not None:
+                        block.update(stage=data["stage"], status=data["status"])
+                        await run_in_threadpool(save)
+                if name == "steered":
+                    if not any(item["id"] == data["id"] for item in display_blocks):
+                        display_blocks.append(data)
+                        await run_in_threadpool(save)
                 if name == "sources":
                     citations, traces = data["citations"], data["traces"]
                     await run_in_threadpool(save)
@@ -1029,7 +1078,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                     if name == "compaction":
                         data = {**data, "kind": "compaction", "name": "compact_context"}
                     summary = {
-                        key: data[key] for key in ("call_id", "name", "label", "kind", "status", "outcome", "result_count", "summary", "files", "saved_document", "image_task", "preview", "cloud_computer", "computer_id", "command_id", "knowledge_base",
+                        key: data[key] for key in ("call_id", "execution_id", "name", "label", "kind", "status", "outcome", "result_count", "summary", "files", "deliverables", "saved_document", "image_task", "preview", "cloud_computer", "computer_id", "command_id", "knowledge_base",
                                                    "skill_id", "skill_name", "skill_version")
                         if key in data
                     }
@@ -1041,7 +1090,10 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                         display_blocks.append({"id": f"activity-{summary['call_id']}",
                             "type": "activity", "call_id": summary["call_id"]})
                     else:
-                        tool_events[index] = {**tool_events[index], **summary}
+                        current = tool_events[index]
+                        if current["status"] not in ("waiting", "running") and summary["status"] in ("waiting", "running"):
+                            continue
+                        tool_events[index] = {**current, **summary}
                     await run_in_threadpool(save)
                 if active:
                     yield emit(name, data)
@@ -1085,16 +1137,31 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             stopped.set()
             if "bridge" in locals():
                 await bridge.aclose()
+            if "provider" in locals() and getattr(provider, "responses_socket", None):
+                await run_in_threadpool(provider.responses_socket.close)
             for item in tool_events:
                 if item.get("status") in ("waiting", "running"):
                     item["status"] = "cancelled" if final_status == "cancelled" else "interrupted"
             for block in display_blocks:
                 if block["type"] == "thinking" and block.get("status") == "running":
                     block["status"] = "cancelled" if final_status == "cancelled" else "interrupted"
+                if block["type"] == "text" and block.get("status") == "running":
+                    block.update(stage="intermediate", status="interrupted")
+            if final_status in ("failed", "cancelled", "interrupted"):
+                partial = next((block for block in reversed(display_blocks) if block["type"] == "text"), None)
+                if partial and partial.get("stage") == "commentary":
+                    partial["stage"] = "intermediate"
             if metered:
                 with factory() as usage_db:
-                    model_billing.finalize_request(usage_db, request_id, final_status)
-                    usage_db.commit()
+                    try:
+                        model_billing.finalize_request(usage_db, request_id, final_status)
+                        usage_db.commit()
+                    except Exception:
+                        usage_db.rollback()
+                        logging.getLogger(__name__).exception("Model settlement deferred for request %s", request_id)
+                        if final_status == "completed":
+                            final_status = "failed"
+                            error_detail = "回答已保留，用量尚未结算。可以查看积分记录或联系管理员"
             saved, _ = await run_in_threadpool(save, final_status)
             if not metered:
                 with factory() as credit_db:

@@ -1,6 +1,6 @@
 """Stateless Responses adaptation for the existing provider-neutral Agent contract."""
 import json
-from .upstream_retries import model_post, model_stream, model_astream
+from .upstream_retries import model_post, model_astream
 from copy import deepcopy
 
 from fastapi import HTTPException
@@ -117,7 +117,7 @@ def result(provider, body):
                         raise ValueError
                     texts.append(part["text"])
                     content.append({"type": "output_text", "text": part["text"], "annotations": []})
-                continuation.append({**{key: item[key] for key in ("type", "id", "role", "status") if key in item},
+                continuation.append({**{key: item[key] for key in ("type", "id", "role", "status", "phase") if key in item},
                                      "content": content})
             elif kind == "function_call":
                 calls.append(ToolCall.parse(item["call_id"], item["name"], item["arguments"]))
@@ -143,9 +143,15 @@ class ResponseStream:
         self.provider = provider
         self.finished = False
         self.text = ""
+        self.by_output_index = {}
+
+    @staticmethod
+    def stage(item):
+        return {"commentary": "commentary", "final_answer": "intermediate"}.get(item.get("phase"))
 
     def feed(self, body):
         from .llm import LLMProviderError
+        from .chat_sampling import incomplete_response, upstream_error
         kind = body.get("type")
         if self.finished:
             raise LLMProviderError("模型在完成后返回了额外事件")
@@ -153,43 +159,92 @@ class ResponseStream:
             delta = body.get("delta")
             if not isinstance(delta, str):
                 raise LLMProviderError("模型正文片段无效")
+            index = body.get("output_index")
+            if isinstance(index, int) and index >= 0:
+                self.by_output_index[index] = self.by_output_index.get(index, "") + delta
+                return [("delta", {"text": delta, "item_index": index})] if delta else []
             self.text += delta
             return [("delta", {"text": delta})] if delta else []
         if kind in ("response.completed", "response.incomplete", "response.failed"):
             response = body.get("response") or {}
             self.provider.last_usage = usage(response.get("usage")) or self.provider.last_usage
+            if kind == "response.failed":
+                raise upstream_error(response.get("error"))
             if kind != "response.completed":
-                raise LLMProviderError("模型响应未完整生成，请重试")
+                raise incomplete_response((response.get("incomplete_details") or {}).get("reason"))
             parsed = result(self.provider, response)
             full = parsed.content or ""
-            if not full.startswith(self.text):
-                raise LLMProviderError("模型最终正文与流式内容不一致")
-            events = [("delta", {"text": full[len(self.text):]})] if full[len(self.text):] else []
-            self.text = full
+            outputs = parsed.protocol_fields[OUTPUT_FIELD]
+            messages = [(index, item) for index, item in enumerate(outputs) if item["type"] == "message"]
+            events = []
+            if self.text:
+                if self.by_output_index or not full.startswith(self.text):
+                    raise LLMProviderError("模型最终正文与流式内容不一致")
+                extra = full[len(self.text):]
+                if extra:
+                    events.append(("delta", {"text": extra}))
+                if len(messages) == 1 and (stage := self.stage(messages[0][1])):
+                    events.append(("text_phase", {"stage": stage}))
+            else:
+                remaining = dict(self.by_output_index)
+                for index, item in messages:
+                    text = "".join(part["text"] for part in item["content"])
+                    prefix = remaining.pop(index, "")
+                    if not text.startswith(prefix):
+                        raise LLMProviderError("模型最终正文与流式内容不一致")
+                    if extra := text[len(prefix):]:
+                        events.append(("delta", {"text": extra, "item_index": index}))
+                    if stage := self.stage(item):
+                        events.append(("text_phase", {"stage": stage, "item_index": index}))
+                if remaining:
+                    raise LLMProviderError("模型最终正文与流式内容不一致")
             self.finished = True
             return events + [("complete", parsed)]
         if kind == "error":
-            raise LLMProviderError("模型流式调用失败，请检查调用类型及模型配置")
+            raise upstream_error(body.get("error", body))
         # Argument fragments are deliberately held until the terminal response validates the whole call.
         return []
 
     def check(self):
-        from .llm import LLMProviderError
+        from .chat_sampling import stream_closed
         if not self.finished:
-            raise LLMProviderError("模型响应未完成，请重试")
+            raise stream_closed()
 
 
 def stream(provider, messages, tools, tool_choice):
     import httpx
-    from httpx_sse import EventSource, SSEError
+    from httpx_sse import SSEError
     from .llm import LLMProviderError
+    from .chat_sampling import active_check, model_stream, stream_events, stream_error
     state = ResponseStream(provider)
     provider.stream_diagnostic = "sse"
+    url = endpoint(provider.base_url, "responses")
+    body = payload(provider.config, messages, tools=tools, tool_choice=tool_choice, stream=True,
+                   resource_context=getattr(provider, "resource_context", None))
+    socket = getattr(provider, "responses_socket", None) if active_check() else None
     try:
-        with model_stream(provider, "POST", endpoint(provider.base_url, "responses"),
-                headers={"Authorization": f"Bearer {provider.api_key}"},
-                json=payload(provider.config, messages, tools=tools, tool_choice=tool_choice, stream=True),
+        if socket and not socket.fallback:
+            provider.stream_diagnostic = "websocket"
+            provider.request_observation = {"attempts": 1, "accepted_response": False}
+            try:
+                for body_event in socket.events(url, provider.api_key, body):
+                    provider.request_observation["accepted_response"] = True
+                    for name, data in state.feed(body_event):
+                        if name == "complete":
+                            socket.record_response(body, body_event["response"].get("id"),
+                                                   data.protocol_fields[OUTPUT_FIELD])
+                        yield name, data
+                state.check()
+            except BaseException:
+                socket.close()
+                raise
+            return
+        with model_stream(provider, "POST", url,
+                headers=socket.headers(provider.api_key) if socket else {"Authorization": f"Bearer {provider.api_key}"},
+                json=body,
                 timeout=provider.timeout_seconds) as response:
+            if socket:
+                socket.capture_route(response.headers)
             if response.status_code >= 400:
                 raise LLMProviderError(f"模型请求失败（HTTP {response.status_code}），请检查调用类型与模型配置")
             if "application/json" in response.headers.get("content-type", ""):
@@ -199,14 +254,16 @@ def stream(provider, messages, tools, tool_choice):
                     yield "delta", {"text": parsed.content}
                 yield "complete", parsed
                 return
-            for event in EventSource(response).iter_sse():
+            for event in stream_events(response):
                 if event.data and event.data != "[DONE]":
                     yield from state.feed(event.json())
+                    if state.finished:
+                        return
             state.check()
     except LLMProviderError:
         raise
     except (httpx.HTTPError, SSEError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise LLMProviderError("模型流式连接或响应异常，请重试") from exc
+        raise stream_error(exc) from exc
 
 
 def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0):
@@ -248,13 +305,15 @@ async def stream_text(provider, messages):
                         raise LLMProviderError("模型未返回正文")
                     yield parsed.content
                     return
+                emitted_text = False
                 async for event in source.aiter_sse():
                     if event.data and event.data != "[DONE]":
                         for name, data in state.feed(event.json()):
                             if name == "delta":
+                                emitted_text = True
                                 yield data["text"]
                 state.check()
-                if not state.text:
+                if not emitted_text:
                     raise LLMProviderError("模型未返回正文")
     except LLMProviderError:
         raise

@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from app import auth
 from app.db import SessionLocal
-from app.models import Membership, SiteSkill, SiteSkillFile
+from app.models import SiteSkill, SiteSkillFile
 from workspace_local_preview import LocalFiles, LocalS3
 
 
@@ -25,7 +25,6 @@ def main():
         viewer = auth.create_user(db, "issue100-viewer@example.com", "只读验收", "local-preview-password-100")
         other_workspace = viewer.id
         viewer.email_verified_at = auth.now()
-        db.add(Membership(account_id=workspace, user_id=viewer.id, role="viewer"))
         skill = SiteSkill(name="报告助手", description="整理工作区资料并生成报告", markdown="按需读取 references/guide.md。", enabled=True,
             created_by=owner.id, updated_by=owner.id, files=[SiteSkillFile(path="scripts/report.py", content=b"print('local-only')"),
                 SiteSkillFile(path="references/guide.md", content="本地临时参考资料".encode())])

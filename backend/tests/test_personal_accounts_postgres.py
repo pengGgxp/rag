@@ -33,7 +33,7 @@ def legacy_database():
     try:
         with engine.connect() as connection, connection.begin() as transaction:
             context = MigrationContext.configure(connection)
-            assert context.get_current_revision() == "0078_merge_retry_uploads"
+            assert context.get_current_revision() == "0078_tool_detail"
             with Session(connection) as db:
                 def migrate():
                     with Operations.context(context):

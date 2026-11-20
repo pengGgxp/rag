@@ -25,7 +25,7 @@ from app import auth, cloud_computer as cloud, conversation_jobs, conversations,
 from app import shared_resources, storage_backend, storage_downloads, workspace_files
 from app.db import Base, engine, SessionLocal
 from app.llm import ToolCall, ToolResponse
-from app.models import CloudComputerSettings, LEGACY_WORKSPACE_ID, ModelBillingSettings, SiteStorageSettings
+from app.models import CloudComputerSettings, ModelBillingSettings, SiteStorageSettings
 from app.site_auth import protect
 from auth_helpers import authenticate, configured_model
 from cloud_command_fixtures import LocalFileCloud
@@ -77,7 +77,8 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at = auth.now()
-        configured_model(db, LEGACY_WORKSPACE_ID)
+        account_id = user.id
+        configured_model(db, account_id)
         db.add(ModelBillingSettings(id=1, enabled=False, shared_pricing_enabled=False))
         db.add(SiteStorageSettings(id=2, version=1, provider="oss", bucket=storage.bucket, region=storage.region,
             encrypted_secret_id="local-only", encrypted_secret_key="local-only", active=True))
@@ -90,7 +91,7 @@ if __name__ == "__main__":
         access = auth.Access(user.id, session.token_hash)
         resource = workspace_files._save_bytes(access.user_id, access, db, path, b"quantity 17\n", "text/plain")
         cookie = client.cookies.get(auth.COOKIE)
-    provider = LocalFileCloud(root / "workspace", storage, shared_resources.prefix(LEGACY_WORKSPACE_ID))
+    provider = LocalFileCloud(root / "workspace", storage, shared_resources.prefix(account_id))
     cloud.adapter = lambda *_: provider
     cloud.dispatch = lambda identifier: Thread(target=cloud.run,
         args=(identifier,), kwargs={"factory": SessionLocal}, daemon=True).start()
@@ -103,7 +104,7 @@ if __name__ == "__main__":
     def fixture_report():
         with SessionLocal() as db:
             commands = db.scalars(select(cloud.Command).order_by(cloud.Command.created_at)).all()
-            content = storage.objects[shared_resources.prefix(LEGACY_WORKSPACE_ID) + path]
+            content = storage.objects[shared_resources.prefix(account_id) + path]
             return {"creates": provider.creates, "starts": provider.starts,
                 "commands": [{"id": str(row.id), "request_id": str(row.request_id), "digest": row.digest,
                     "status": row.status, "operation": row.payload.get("file_operation", {}).get("name")}

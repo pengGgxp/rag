@@ -8,7 +8,7 @@ import pytest
 from app.agent import run_retrieval_agent
 from app.agent_tools import bounded_message
 from app.llm import ToolCall, ToolResponse
-from app.models import Chunk, Document, DocumentStatus, KnowledgeBase, MCPServer
+from app.models import Chunk, Document, DocumentStatus, KnowledgeBase, MCPServer, User, WorkspaceFile, WorkspaceFileVersion
 from test_agent_continuation import assistant, client, fresh_manager, tool_message
 
 
@@ -18,6 +18,30 @@ def saved(manager, name, data, key="saved"):
     identifier = manager.begin_tool(call)
     visible = manager.finish_tool(identifier, tool_message(call, data), 1600)
     return identifier, json.loads(visible["content"])
+
+
+def test_tool_receipt_only_shows_files_owned_by_the_signed_in_account(client):
+    http, db, _ = client
+    db, manager = fresh_manager(client)
+    other = User(name="Other account", email="tool-receipt-other@example.com")
+    db.add(other)
+    db.flush()
+    files = []
+    for owner, path in ((manager.access.user_id, "mine.txt"), (other.id, "private.txt")):
+        file = WorkspaceFile(account_id=owner, owner_user_id=owner, path=path,
+            content_hash="test", created_by=owner, updated_by=owner)
+        file.versions.append(WorkspaceFileVersion(account_id=owner, version=1,
+            object_key=f"accounts/{owner}/{path}", content_type="text/plain",
+            size_bytes=1, content_hash="test", created_by=owner))
+        db.add(file)
+        db.flush()
+        files.append({"id": str(file.id), "path": path, "version": 1})
+    db.commit()
+    identifier, _ = saved(manager, "write_file", {"files": files, "status": "saved"})
+    response = http.get(f"/conversations/{manager.conversation_id}/requests/{manager.request_id}/tools/{identifier}")
+    assert response.status_code == 200, response.text
+    assert "mine.txt" in response.json()["text"]
+    assert "private.txt" not in response.json()["text"]
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])

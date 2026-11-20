@@ -1,4 +1,4 @@
-// Uses real Chromium touch events and a separate viewer session; local preview only.
+// Uses real Chromium touch events and a separate personal account; local preview only.
 async (page) => {
   const assert = (ok, text) => { if (!ok) throw new Error(text); };
   const session = await (await page.request.get('http://localhost:8000/auth/me')).json();
@@ -29,6 +29,9 @@ async (page) => {
   await directory.tap(); await directory.tap();
   await mobile.getByRole('heading', { name: '此文件夹为空' }).waitFor();
   await context.close();
+  const ownerFiles = await (await page.request.get('http://localhost:8000/resources/browse?path=' + encodeURIComponent('项目资料'))).json();
+  const ownerFile = ownerFiles.items.find(item => item.path === '项目资料/会议纪要.md');
+  assert(ownerFile, '找不到账号私有的验收文件');
   const viewerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const viewer = await viewerContext.newPage();
   await viewer.goto('http://localhost:3000/auth/login');
@@ -37,16 +40,14 @@ async (page) => {
   await viewer.getByRole('button', { name: '登录', exact: true }).click();
   await viewer.getByRole('heading', { name: '知识库', exact: true }).waitFor();
   const identity = await (await viewer.request.get('http://localhost:8000/auth/me')).json();
-  const switchResponse = await viewer.request.post('http://localhost:8000/auth/workspace', { headers: { 'X-RAG-Request': '1', 'X-CSRF-Token': identity.csrf_token }, data: { workspace_id: session.workspace_id } });
-  assert(switchResponse.ok(), '临时viewer切换失败');
-  await viewer.goto('http://localhost:3000/resources?path=' + encodeURIComponent('项目资料'));
-  await viewer.getByRole('option', { name: '会议纪要.md', exact: true }).dblclick();
-  const preview = viewer.getByRole('textbox', { name: '文件内容' });
-  assert(await preview.getAttribute('readonly') !== null, 'viewer须只读');
-  assert(await viewer.getByRole('button', { name: '保存', exact: true }).count() === 0, 'viewer不能保存');
-  await viewer.getByRole('button', { name: '关闭', exact: true }).last().click();
-  assert(await viewer.getByRole('button', { name: '上传', exact: true }).isDisabled(), 'viewer不能上传');
+  const headers = { 'X-RAG-Request': '1', 'X-CSRF-Token': identity.csrf_token };
+  const switchResponse = await viewer.request.post('http://localhost:8000/auth/workspace', { headers, data: {} });
+  assert(switchResponse.status() === 404, '旧切换接口应已移除');
+  assert((await viewer.request.get(`http://localhost:8000/files/${ownerFile.id}/text`)).status() === 404, '其他账号不能读取私有文件');
+  await viewer.goto('http://localhost:3000/resources');
+  await viewer.getByRole('listbox', { name: '资源内容' }).waitFor();
+  assert(await viewer.getByRole('option', { name: '项目资料', exact: true }).count() === 0, '其他账号不能列出私有目录');
   await viewer.screenshot({ path: 'output/playwright/issue100-viewer.png', fullPage: true });
   await viewerContext.close();
-  return 'PASS 390px真实触控选择/长按/菜单/双击、44px触控目标、只读viewer预览与写操作限制';
+  return 'PASS 390px真实触控选择/长按/菜单/双击、44px触控目标、个人目录和文件隔离';
 }

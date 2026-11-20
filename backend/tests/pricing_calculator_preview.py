@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import auth, main, payments
 from app.config import Settings
 from app.db import Base, SessionLocal, engine
-from app.models import ModelBillingSettings, SiteModelProvider, LEGACY_WORKSPACE_ID
+from app.models import ModelBillingSettings, SiteModelProvider
 from app.model_pricing import TEMPLATE_CAPABILITIES
 from auth_helpers import authenticate, configured_model
 from fastapi.testclient import TestClient
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at, user.is_site_admin = auth.now(), True
-        binding = configured_model(db, LEGACY_WORKSPACE_ID)
+        binding = configured_model(db, user.id)
         model = db.get(SiteModelProvider, binding.site_provider_id)
         model.name = "定价验收模型"
         template = {key: {"capability": key, "unit": "pages" if key == "ocr_pages" else "tokens",

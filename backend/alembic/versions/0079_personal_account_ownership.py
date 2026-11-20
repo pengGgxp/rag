@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "0079_personal_account_ownership"
-down_revision = "0078_merge_retry_uploads"
+down_revision = "0078_tool_detail"
 branch_labels = None
 depends_on = None
 LEGACY = "00000000-0000-4000-a000-000000000001"
@@ -172,7 +172,7 @@ def upgrade():
     # before any user exists. Leave that seed available for first registration.
     unresolved = [workspace_id for workspace_id in missing if not _unclaimed_seed(connection, workspace_id)]
     if unresolved:
-        raise RuntimeError("Cannot migrate workspace ownership: no active administrator for "
+        raise RuntimeError("Cannot migrate workspace ownership: no administrator for "
                            + ", ".join(map(str, unresolved)))
 
     op.create_table(

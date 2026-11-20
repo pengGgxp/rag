@@ -93,7 +93,7 @@ if __name__ == "__main__":
         http = fixture.TestClient(fixture.main.app)
         user = fixture.authenticate(http, db)
         user.email_verified_at = fixture.auth.now()
-        fixture.configured_model(db, fixture.auth.LEGACY_WORKSPACE_ID)
+        fixture.configured_model(db, user.id)
         for model in db.query(fixture.SiteModelProvider):
             model.name = "文件验收模型"
             model.supports_images = True

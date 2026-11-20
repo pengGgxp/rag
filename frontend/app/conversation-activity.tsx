@@ -23,9 +23,11 @@ export type ConversationActivityItem = {
   id: string;
   label: string;
   summary?: string;
+  executionId?: string;
   kind: "retrieval" | "tool" | "compaction";
   status: "waiting" | "running" | "completed" | "feedback" | "blocked" | "failed" | "cancelled" | "uncertain";
   files?: WorkspaceFileReference[];
+  deliverables?: WorkspaceFileReference[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
@@ -90,15 +92,17 @@ function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) 
 }
 
 // Only presentation state lives here. Tool execution and safe summaries belong to the server.
-export function ConversationActivity({ items, finished, workspaceId, steps, thinking, children }: {
+export function ConversationActivity({ items, finished, detailRoot, turnFinished, steps, thinking, children }: {
   items: ConversationActivityItem[];
   finished: boolean;
-  workspaceId?: string;
+  detailRoot?: string;
+  turnFinished?: boolean;
   steps?: ({ type: "activity"; id: string } | { type: "detail"; id: string; content: ReactNode })[];
   thinking?: boolean;
   children?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  useEffect(() => { if (turnFinished) setExpanded(false); }, [turnFinished]);
   const regionId = useId();
   const messageFiles = useMessageFiles();
   const publishImage = messageFiles?.updateImage;
@@ -147,7 +151,8 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
       <span>{item.label} · {statusLabel[item.status]}{item.summary ? `：${item.summary}` : ""}</span>
     </div>)}
     {savedDocuments.map(saved => <SavedDocumentResult key={saved.save_id} initial={saved} onUpdate={updateSaved} showStatus />)}
-    {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage} showStatus showFiles={false} />)}
+    {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage}
+      showStatus={false} showFiles={false} showCancel={false} />)}
     {items.filter(item => item.knowledge_base && item.status === "completed").map(item => <div className="activity-file-downloads" key={item.id}>
       <Link className="activity-file-download" href={`/?library=${encodeURIComponent(item.knowledge_base!.id)}&view=documents`}>
         <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>
@@ -170,8 +175,85 @@ export function ConversationActivity({ items, finished, workspaceId, steps, thin
             <span className="activity-state-label">{statusLabel[item.status]}</span>
           </span>
           {item.summary && <span className="activity-step-summary">{item.summary}</span>}
+          {detailRoot && item.executionId && <ToolReceipt path={`${detailRoot}/${item.executionId}`} />}
         </div>
       </Motion.li> : null; })}
     </ol>{children}</div>}
   </div>;
+}
+
+type Receipt = { text: string; missing: boolean; redacted: boolean; truncated: boolean; next_offset: number | null };
+function ToolReceipt({ path }: { path: string }) {
+  const [open, setOpen] = useState(false);
+  const [pages, setPages] = useState<Receipt[]>([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const session = useRef<AbortController | null>(null);
+  const reading = useRef<AbortController | null>(null);
+  async function load(offset: number, controller: AbortController) {
+    if (reading.current === controller) return;
+    reading.current = controller;
+    try {
+      const page = await request<Receipt>(`${path}?offset=${offset}`, { signal: controller.signal, cache: "no-store" });
+      if (!controller.signal.aborted) {
+        setPages(items => {
+          if (offset) return [...items, page];
+          const first = items[0];
+          return first && first.text === page.text && first.next_offset === page.next_offset &&
+            first.redacted === page.redacted && first.missing === page.missing && first.truncated === page.truncated
+            ? items : [page];
+        });
+        setError("");
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        setPages([]);
+        setError(cause instanceof ApiError && [401, 403, 404].includes(cause.status)
+          ? "该操作详情已不可访问" : "暂时无法查看详情");
+      }
+    } finally {
+      if (reading.current === controller) reading.current = null;
+      if (!controller.signal.aborted) setBusy(false);
+    }
+  }
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    session.current = controller;
+    setBusy(true);
+    void load(0, controller);
+    // Recheck currently displayed content without retaining it across sessions.
+    const recheck = () => { if (!document.hidden) void load(0, controller); };
+    const timer = window.setInterval(recheck, 10_000);
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      session.current = null;
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [open, path]);
+  const last = pages.at(-1);
+  return <details className="tool-receipt" onToggle={event => {
+    setOpen(event.currentTarget.open);
+    if (!event.currentTarget.open) { setPages([]); setError(""); }
+  }}>
+    <summary>查看操作详情</summary>
+    {open && <>
+      {busy && <span role="status">正在读取…</span>}
+      {error && <span role="status">{error}</span>}
+      {last?.missing && <span>没有可显示的记录</span>}
+      {pages.some(page => page.text) && <pre>{pages.map(page => page.text).join("")}</pre>}
+      {last?.redacted && <span>部分内容已隐藏</span>}
+      {last?.truncated && <span>显示部分记录</span>}
+      {last?.next_offset != null && <button type="button" className="text-button" disabled={busy} onClick={() => {
+        if (session.current && last.next_offset != null) {
+          setBusy(true);
+          void load(last.next_offset, session.current);
+        }
+      }}>继续查看</button>}
+    </>}
+  </details>;
 }

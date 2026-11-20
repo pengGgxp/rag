@@ -97,16 +97,27 @@ export function useChatAttachments() {
   }
   function restore(references: ChatAttachment[]) {
     reset(false);
-    const restored = references.filter(item => item.resource_id && item.available !== false).slice(0, 6).map(attachment => {
+    merge(references.filter(item => item.resource_id && item.available !== false));
+  }
+  function merge(references: ChatAttachment[]) {
+    const key = (item: ChatAttachment) => item.resource_id ?? item.id;
+    const known = new Set(current.current.flatMap(item => item.attachment ? [key(item.attachment)] : []));
+    const restored: DraftAttachment[] = [];
+    for (const attachment of references) {
+      if (known.has(key(attachment))) continue;
+      known.add(key(attachment));
       const file = new File([], attachment.filename, { type: attachment.content_type });
       Object.defineProperty(file, "size", { value: attachment.size_bytes });
-      return { key: crypto.randomUUID(), file, attachment, status: "ready" as const, existing: true };
-    });
-    current.current = restored; setItems(restored);
+      restored.push({ key: crypto.randomUUID(), file, attachment, status: "ready", existing: true });
+    }
+    current.current = [...current.current, ...restored]; setItems(current.current);
   }
-  return { items, add, selectResource, remove, retry: upload, reset, restore,
+  const limitError = items.length > 6 ? "每次最多添加 6 个附件"
+    : items.reduce((total, item) => total + item.file.size, 0) > 40 * 1024 * 1024
+      ? "每次附件总计不能超过 40 MiB" : "";
+  return { items, add, selectResource, remove, retry: upload, reset, restore, merge, limitError,
     ready: items.flatMap(item => item.attachment ? [item.attachment] : []),
-    blocked: items.some(item => item.status !== "ready"),
+    blocked: !!limitError || items.some(item => item.status !== "ready"),
     hasImages: items.some(item => imageFile(item.file)) };
 }
 

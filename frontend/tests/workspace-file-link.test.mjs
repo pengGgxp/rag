@@ -24,6 +24,6 @@ test("跨处理段、读取和生图更新汇总为同级文件，保持首次�
     event({ name: "list_files" }),
   ];
   const original = structuredClone(inputs);
-  assert.deepEqual(activityFiles(inputs), [{ ...file, version: 1, availability: "missing" }, other]);
+  assert.deepEqual(activityFiles(inputs), [{ ...file, version: 1, availability: "missing" }]);
   assert.deepEqual(inputs, original);
 });

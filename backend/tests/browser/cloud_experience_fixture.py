@@ -20,7 +20,7 @@ from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.credits import authorization_hold, ensure_account
 from app.main import app
-from app.models import ChatMessage, CloudComputerCommand, CloudComputerSession, CloudPreview, User, Workspace, LEGACY_WORKSPACE_ID
+from app.models import ChatMessage, CloudComputerCommand, CloudComputerSession, CloudPreview, User
 from app.site_auth import protect
 from test_cloud_computer import FakeCloud
 from test_cloud_computer_mount import MemoryMount
@@ -43,10 +43,6 @@ fake.stop_preview = lambda *_: None
 cloud.adapter = lambda *_: fake
 
 init_db()
-with SessionLocal() as db:
-    if not db.get(Workspace, LEGACY_WORKSPACE_ID):
-        db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="Local acceptance baseline"))
-        db.commit()
 client = TestClient(app, headers={"X-RAG-Request": "1"})
 email, password = "cloud107-local@example.com", "cloud107-local-only-123"
 identity = client.post("/auth/register", json={"email": email, "name": "云电脑体验验收", "password": password})

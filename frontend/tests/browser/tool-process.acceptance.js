@@ -4,7 +4,7 @@ async (page) => {
   const assert = (condition, text) => { if (!condition) throw new Error(text); };
   const base = "http://localhost:3127";
   const api = "http://localhost:8127";
-  const build = "frontend/.next-cloud-experience";
+  const build = "frontend/.next";
   const stamp = "2026-11-14T10:00:00Z";
   const errors = [], unexpected = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -17,10 +17,12 @@ async (page) => {
   const file = (id, path) => ({ id, path, version: 1, size_bytes: 2048 });
   const image = { task_id: "image", status: "running", terminal: false, summary: "图片正在生成",
     credits: "1", cancel_requested: false, files: [] };
-  let imageState = structuredClone(image), thinkingReads = 0;
+  let imageState = structuredClone(image), thinkingReads = 0, receiptRevoked = false;
   const tools = [
     tool("bad", "write_file", "生成文件", { status: "error", outcome: "feedback", summary: "path 必须是文本" }),
-    tool("write", "write_file", "生成文件", { files: [file("html", "算法可视化.html")], summary: "文件已生成" }),
+    tool("retrieve", "search_knowledge_base", "知识库检索", { kind: "knowledge", result_count: 1 }),
+    tool("command", "run_command", "云电脑执行", { summary: "核对素材完成" }),
+    tool("write", "write_file", "生成文件", { execution_id: "write-execution", files: [file("html", "算法可视化.html")], summary: "文件已生成" }),
     tool("read", "read_file", "读取文件", { summary: "内容已核对" }),
     tool("preview", "start_preview", "启动成果预览", {
       preview: { id: "preview", name: "排序算法", status: "ready", terminal: false, summary: "预览就绪", url: null },
@@ -28,20 +30,29 @@ async (page) => {
     }),
     tool("image", "generate_image", "生成图片", { image_task: image }),
     tool("image-status", "get_image_task", "生成图片", { image_task: image }),
+    tool("inspect-picture", "read_image", "查看图片", { files: [file("picture", "排序配图.png")] }),
   ];
-  const blocks = [text("intro", "我会先制作可交互页面，再核对生成的文件。"),
+  const blocks = [{ ...text("intro", "我会先制作可交互页面，再核对生成的文件。"), stage: "commentary" },
     thinking("think1", 1), activity("bad"), thinking("think2", 2),
     ...tools.slice(1).map(item => activity(item.call_id)),
-    text("final", "已制作排序算法可视化页面和 PDF 说明。可以打开预览，或下载文件。")];
+    text("final", "已依据原文 [sorting-source] 制作排序算法可视化页面和 PDF 说明。可以打开预览，或下载文件。")];
   const user = { id: "user-message", role: "user", sequence: 0, status: "completed",
     content: "做一个排序算法可视化页面，再给我一张配图。", citations: [], traces: [], refused: false };
   const assistant = { id: "answer", role: "assistant", sequence: 1, status: "completed",
     request_id: "request", content: blocks.filter(item => item.type === "text").map(item => item.text).join("\n\n"),
-    citations: [], traces: [], refused: false, tool_events: tools, display_blocks: blocks };
+    citations: [{ chunk_id: "sorting-source", filename: "验收资料.pdf", text: "排序步骤按比较与交换记录。",
+      char_start: 12, char_end: 25, page_number: 3, version_number: 2, knowledge_base_id: "reference-library",
+      knowledge_base_name: "验收知识库" }], traces: [], refused: false, tool_events: tools, display_blocks: blocks };
   const initial = { id: "fixture", title: "排序算法可视化与说明", title_source: "manual", revision: 1,
     updated_at: stamp, active_request_id: null, knowledge_bases: [], compactions: [],
     skill_ids: [], mcp_server_ids: [], question_workbench: false, messages: [user, assistant] };
   let current = structuredClone(initial);
+  const submissions = [], supplements = [], stops = [];
+  const attachment = { id: "attachment-note", resource_id: "note-file", filename: "补充资料.txt",
+    kind: "document", content_type: "text/plain", size_bytes: 10, available: true };
+  const mentioned = { id: "referenced-doc", filename: "验收资料.pdf",
+    knowledge_base_id: "reference-library", knowledge_base_name: "验收知识库" };
+  let simulateComposer = false, dropped = false, holdLocalGeneration = false;
   const computer = { id: "fixture-computer", status: "ready", terminal: false, summary: "云电脑运行中",
     credits: "0.5", credits_per_minute: "0.5", seconds: 60, idle_ends_at: null, max_ends_at: null };
   const preview = tools.find(item => item.call_id === "preview").preview;
@@ -59,12 +70,12 @@ async (page) => {
   await page.route(`${api}/**`, async route => {
     const path = new URL(route.request().url()).pathname;
     const headers = { "access-control-allow-origin": base, "access-control-allow-credentials": "true",
-      "access-control-allow-headers": "*", "access-control-allow-methods": "GET,POST,OPTIONS" };
+      "access-control-allow-headers": "*", "access-control-allow-methods": "GET,POST,DELETE,OPTIONS" };
     const send = body => route.fulfill({ json: body, headers });
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     if (path === "/auth/options") return send({ oauth_name: null, first_run: false, setup_available: false, password_reset: false });
     if (path === "/auth/me") return send({ user: { id: "fixture-user", name: "本地验收", email: "fixture@example.invalid" },
-      workspace_id: "fixture-workspace", workspaces: [{ id: "fixture-workspace", name: "验收工作区", role: "editor" }], csrf_token: "fixture" });
+      csrf_token: "fixture" });
     if (path === "/knowledge-bases") return send([]);
     if (path === "/health") return send({ status: "ok", database: "ok", redis: "ok" });
     if (path === "/site/announcement") return send({ announcement: null });
@@ -77,12 +88,52 @@ async (page) => {
     if (path === "/conversations/fixture") return send(current);
     if (path === "/conversations/fixture/context") return send({ estimated_input_tokens: 1200,
       capacity: 128000, output_reserve: 4000, eligible: true, status: "idle" });
+    if (path === "/chat/attachments") return send(attachment);
+    if (path === "/conversations/knowledge-catalog") return send({ knowledge_bases: [], documents: [mentioned], resources: [] });
+    if (simulateComposer && path.endsWith("/steer")) {
+      const input = route.request().postDataJSON();
+      supplements.push(input);
+      return send({ id: input.message_id, status: "pending" });
+    }
+    if (simulateComposer && path.endsWith("/stop")) {
+      const requestId = route.request().postDataJSON().request_id;
+      stops.push(requestId);
+      current.active_request_id = null;
+      const stopped = current.messages.find(message => message.request_id === requestId);
+      if (stopped) stopped.status = "cancelled";
+      return send(stopped ?? current.messages[1]);
+    }
+    if (simulateComposer && path.endsWith("/messages")) {
+      const input = route.request().postDataJSON();
+      submissions.push(input);
+      if (holdLocalGeneration && input.query === "正在生成的请求") {
+        current.active_request_id = input.request_id;
+        current.messages.push({ ...assistant, id: "local-running-answer", sequence: current.messages.length,
+          request_id: input.request_id, status: "streaming", content: "", tool_events: [], display_blocks: [] });
+        return send({ request_id: input.request_id, status: "queued" });
+      }
+      const sequence = current.messages.length;
+      current.messages.push({ ...user, id: `user-${sequence}`, sequence, content: input.query },
+        { ...assistant, sequence: sequence + 1, id: `reply-${sequence}`, request_id: input.request_id,
+          status: "completed", content: "下一轮已完成", tool_events: [], display_blocks: [] });
+      return send({ request_id: input.request_id, status: "queued" });
+    }
     if (path.endsWith("/thinking")) {
       thinkingReads++;
       return send({ blocks: [{ id: "think1", text: "先核对文件路径和页面需求。" }, { id: "think2", text: "已调整参数，继续生成。" }] });
     }
-    if (path.endsWith("/events")) return route.fulfill({ contentType: "text/event-stream", headers,
-      body: 'event: heartbeat\ndata: {}\n\n' });
+    if (path.endsWith("/tools/write-execution")) {
+      if (receiptRevoked) return route.fulfill({ status: 403, headers, json: { detail: "权限已撤销" } });
+      return send({ text: "文件：算法可视化.html", missing: false, redacted: false, truncated: false, next_offset: null });
+    }
+    if (path.endsWith("/events")) {
+      if (simulateComposer && !dropped) { dropped = true; return route.abort("connectionreset"); }
+      const turn = path.split("/").at(-2);
+      const answer = current.messages.find(item => item.request_id === turn);
+      return route.fulfill({ contentType: "text/event-stream", headers,
+        body: simulateComposer && answer && answer.status !== "streaming"
+          ? `event: done\ndata: ${JSON.stringify(answer)}\n\n` : 'event: heartbeat\ndata: {}\n\n' });
+    }
     if (path === "/cloud-computer/catalog") return send({ available: true, credits_per_minute: 0.5, idle_seconds: 600 });
     if (path === "/conversations/fixture/cloud-computer") return send({ computer });
     if (path === "/conversations/fixture/cloud-computer/commands") return send({ items: [] });
@@ -91,8 +142,8 @@ async (page) => {
     if (path === "/image-tasks/image") return send(imageState);
     const resourceId = path.match(/^\/resources\/([^/]+)$/)?.[1];
     if (resourceId) return send(file(resourceId, resourceId === "html" ? "算法可视化.html" : "算法说明.pdf"));
-    if (/^\/resources\/[^/]+\/preview$/.test(path)) return send({
-      revision: "fixture", kind: "unsupported", size_bytes: 2048, original_url: "", previews: [],
+    if (/^\/resources\/[^/]+\/preview-access$/.test(path)) return send({
+      revision: "fixture", kind: "unsupported", size_bytes: 2048, url: "", etag: "fixture", headers: {},
     });
     if (path.endsWith("/download")) return route.fulfill({ headers: { ...headers, "content-disposition": "attachment; filename=fixture.html" },
       contentType: "text/html", body: "<!doctype html><title>local fixture</title>" });
@@ -105,7 +156,9 @@ async (page) => {
   await process.waitFor();
   assert(await process.count() === 1, "连续操作应只有一个过程入口");
   assert(await page.locator(".image-task-result").count() === 1, "查询同一图片任务不能重复呈现产物");
+  assert(await page.locator(".image-task-result button").count() === 0, "聊天过程不能重复呈现生图停止入口");
   assert(await page.locator(".activity-details").count() === 0, "详情应默认收起");
+  assert(!await page.getByText("我会先制作可交互页面，再核对生成的文件。", { exact: true }).isVisible(), "过程说明随活动收起");
   assert(!await page.getByText("path 必须是文本", { exact: true }).count(), "参数反馈不应铺在正文");
   assert(await page.getByRole("link", { name: "查看文件：算法可视化.html", exact: true }).isVisible(), "第一个文件应在消息下方");
   assert(await page.getByRole("link", { name: "查看文件：算法说明.pdf", exact: true }).isVisible(), "第二个文件不能被分组吞掉");
@@ -133,10 +186,22 @@ async (page) => {
   await process.click();
   await page.getByRole("button", { name: "展开第 1 轮思考", exact: true }).click();
   await page.getByText("先核对文件路径和页面需求。", { exact: true }).waitFor();
+  await page.getByText("查看操作详情", { exact: true }).click();
+  await page.getByText("文件：算法可视化.html", { exact: true }).waitFor();
+  receiptRevoked = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.getByText("该操作详情已不可访问", { exact: true }).waitFor();
+  assert(!await page.getByText("文件：算法可视化.html", { exact: true }).count(), "撤权后要清除展开中的旧内容");
+  receiptRevoked = false;
   assert(thinkingReads === 1, "仅在用户展开思考后读取内容");
   await page.getByRole("button", { name: "收起处理过程", exact: true }).click();
+  await page.getByRole("button", { name: "查看来源：验收资料.pdf" }).first().click();
+  const source = page.getByRole("dialog", { name: "来源详情" });
+  await source.getByText("排序步骤按比较与交换记录。").waitFor();
+  assert(await source.getByText(/v2 · 第 3 页 · 字符 12–25/).isVisible(), "引用应定位到版本、页码和原文");
+  await page.keyboard.press("Escape");
   await page.getByRole("link", { name: "查看文件：算法可视化.html", exact: true }).click();
-  await page.getByText("该格式暂不支持预览", { exact: true }).waitFor();
+  await page.getByText("此格式请下载后查看", { exact: true }).waitFor();
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载原文件", exact: true }).click();
   assert((await download).suggestedFilename().includes("算法可视化"), "下载入口应保留真实文件名");
@@ -144,6 +209,7 @@ async (page) => {
 
   imageState = { ...image, status: "completed", terminal: true, summary: "图片已生成", files: [file("picture", "排序配图.png")] };
   await page.getByRole("link", { name: "查看文件：排序配图.png", exact: true }).waitFor({ timeout: 12000 });
+  assert(await page.getByRole("link", { name: "查看文件：排序配图.png", exact: true }).count() === 1, "查看同一素材不能产生重复成果");
   assert(await page.locator(".activity-details").count() === 0, "独立任务更新不能自动展开过程");
   await page.screenshot({ path: "output/playwright/tool-process-image-completed.png", fullPage: true });
   imageState = { ...image, status: "failed", terminal: true, summary: "图片生成未完成，请重新尝试" };
@@ -187,7 +253,103 @@ async (page) => {
   assert(await page.getByText("生成文件 · 结果待确认：请先核对已有输出，勿重复运行", { exact: true }).isVisible(), "结果不确定必须保持可见");
   assert(await page.locator(".chat-message-error").isVisible(), "真实回答失败必须保持可见");
   await page.screenshot({ path: "output/playwright/tool-process-errors-390.png", fullPage: true });
+
+  simulateComposer = true;
+  const openTurn = async () => {
+    current = structuredClone(initial);
+    current.active_request_id = "request";
+    current.messages[1] = { ...assistant, status: "streaming", content: "已收到原问题",
+      tool_events: [], display_blocks: [], created_at: new Date().toISOString() };
+    await page.reload();
+    await page.getByRole("button", { name: "停止回答", exact: true }).waitFor();
+  };
+  const openIdle = async () => {
+    current = structuredClone(initial);
+    current.active_request_id = null;
+    await page.reload();
+    await page.getByRole("textbox", { name: "发送消息" }).waitFor();
+  };
+  await openTurn();
+  const composer = page.getByRole("textbox", { name: "发送消息" });
+  await page.getByText("正在恢复对话连接…", { exact: true }).waitFor();
+  await composer.fill("输入法还在组词");
+  await composer.dispatchEvent("keydown", { key: "Enter", isComposing: true, bubbles: true });
+  assert(supplements.length === 0, "输入法确认不能提交补充");
+  const addAttachment = async () => {
+    const transfer = await page.evaluateHandle(() => {
+      const data = new DataTransfer();
+      data.items.add(new File(["local data"], "补充资料.txt", { type: "text/plain" }));
+      return data;
+    });
+    await page.locator("form.composer").dispatchEvent("drop", { dataTransfer: transfer });
+    await page.getByRole("list", { name: "待发送附件" }).getByText("补充资料.txt").waitFor();
+    await page.getByLabel("正在上传").waitFor({ state: "hidden" });
+  };
+  const mention = async text => {
+    await composer.fill(`${text} @`);
+    await page.getByRole("option", { name: /验收资料\.pdf/ }).click();
+    return (await composer.inputValue()).trim();
+  };
+  const supplementText = await mention("补充约束");
+  await addAttachment();
+  await composer.press("Enter");
+  await page.getByText("待补充", { exact: true }).waitFor();
+  assert(supplements.length === 1 && supplements[0].attachment_ids[0] === attachment.id
+    && supplements[0].document_ids[0] === mentioned.id, "同轮补充只提交一次并携带资料和附件");
+  current.messages[1].display_blocks.push({ id: supplements[0].message_id, type: "user", text: supplementText,
+    attachments: [attachment], document_mentions: [mentioned] });
+  await page.reload();
+  await page.locator(".turn-steering .chat-document-mention").getByText(/验收资料/).waitFor();
+  await page.locator(".turn-steering").getByRole("button", { name: "下载 补充资料.txt" }).waitFor();
+  assert(supplements.length === 1, "刷新不能再次提交补充");
+  await composer.fill("下一轮再整理");
+  await composer.press("Tab");
+  const heldRow = page.locator(".turn-held-input").filter({ hasText: "下一轮再整理" });
+  await heldRow.getByRole("button", { name: "取回编辑" }).click();
+  assert(await composer.inputValue() === "下一轮再整理");
+  await composer.press("Tab");
+  await heldRow.waitFor();
+  await page.screenshot({ path: "output/playwright/issue139-composer-390.png", fullPage: true });
+  await composer.press("Escape");
+  await page.getByText("已停止生成", { exact: true }).waitFor();
+  await page.waitForFunction(() => document.querySelector('textarea[aria-label="发送消息"]').value === "下一轮再整理");
+  assert(stops[0] === "request" && submissions.length === 0, "普通停止恢复草稿且不发送排队消息");
+  await openTurn();
+  await composer.fill("现在就发送");
+  await page.getByRole("button", { name: "中断并发送", exact: true }).click();
+  await page.getByText("下一轮已完成", { exact: true }).waitFor();
+  assert(stops.length === 2 && submissions.length === 1 && submissions[0].query === "现在就发送", "中断后只立即提交所选输入");
+  holdLocalGeneration = true;
+  await openIdle();
+  await composer.fill("正在生成的请求");
+  const localSubmission = page.waitForResponse(response => response.url().endsWith("/conversations/fixture/messages"));
+  await composer.press("Enter");
+  await localSubmission;
+  await page.getByRole("button", { name: "停止回答", exact: true }).waitFor();
+  await composer.fill("本轮中断后发送");
+  await page.getByRole("button", { name: "中断并发送", exact: true }).click();
+  await page.getByText("下一轮已完成", { exact: true }).waitFor();
+  assert(submissions.length === 3 && submissions[1].query === "正在生成的请求"
+    && submissions[2].query === "本轮中断后发送", "本页生成中断后必须再次发出新一轮消息请求");
+  holdLocalGeneration = false;
+  await openTurn();
+  const queuedText = await mention("自动接续");
+  await addAttachment();
+  await page.getByRole("button", { name: "排到下一轮", exact: true }).click();
+  const queuedRow = page.locator(".turn-held-input").filter({ hasText: "自动接续" });
+  await queuedRow.getByRole("button", { name: "取回编辑" }).click();
+  assert(await composer.inputValue() === queuedText && await page.locator(".composer-mention-overlay").count() === 1,
+    "取回应恢复资料引用的位置");
+  await page.getByRole("list", { name: "待发送附件" }).getByText("补充资料.txt").waitFor();
+  await page.getByRole("button", { name: "排到下一轮", exact: true }).click();
+  current.active_request_id = null;
+  current.messages[1].status = "failed";
+  current.messages[1].error_detail = "回答暂时中断";
+  await page.getByText("下一轮已完成", { exact: true }).waitFor();
+  assert(submissions.length === 4 && submissions[3].query === queuedText
+    && submissions[3].attachment_ids[0] === attachment.id && submissions[3].document_ids[0] === mentioned.id,
+    "通常终止失败后串行发送队列并保留原始引用");
   assert(errors.length === 0, `浏览器异常：${errors.join("; ")}`);
   assert(unexpected.length === 0, `缺失夹具：${[...new Set(unexpected)].join(", ")}`);
-  return "PASS: grouped process, neutral model feedback, ordered details, keyboard, 3 widths, files, image lifecycle, refresh and disclosure stability, blocked/unknown/final failures.";
+  return "PASS: grouped tools, details, downloads, late images, 3 widths, reconnect, input recovery, steering, queue, stop and immediate submission.";
 }

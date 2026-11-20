@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import chat_attachment_preview as fixture
 from app import resource_cache, storage_downloads, workspace_files
-from app.models import LoginSession, Membership, User
+from app.models import LoginSession, User
 from test_chat_attachments import PNG
 
 
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         user = fixture.authenticate(http, db)
         user.is_site_admin = True
         user.email_verified_at = fixture.auth.now()
-        fixture.configured_model(db, fixture.auth.LEGACY_WORKSPACE_ID, fixture.FixturePatch())
+        fixture.configured_model(db, user.id, fixture.FixturePatch())
         for model in db.query(fixture.SiteModelProvider):
             model.supports_images = True
             model.context_capacity = 128000
@@ -48,7 +48,6 @@ if __name__ == "__main__":
         for role in ("viewer", "editor"):
             member = User(email=f"{role}@example.com", name=role, email_verified_at=fixture.auth.now())
             db.add(member); db.flush()
-            db.add(Membership(account_id=fixture.auth.LEGACY_WORKSPACE_ID, user_id=member.id, role=role))
             token = secrets.token_urlsafe(48)
             db.add(LoginSession(token_hash=fixture.auth.digest(token), user_id=member.id,
                 csrf_token=secrets.token_urlsafe(32),

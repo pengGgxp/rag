@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app import auth, conversation_jobs, conversations, llm_providers, main, shared_resources, workspace_files
 from app.db import Base, engine, SessionLocal
 from app.llm import ToolResponse
-from app.models import LEGACY_WORKSPACE_ID, ModelBillingSettings
+from app.models import ModelBillingSettings
 from auth_helpers import authenticate, configured_model
 from test_cloud_computer_mount import MemoryMount
 from test_retrieval import add_document, add_library
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at = auth.now()
-        configured_model(db, LEGACY_WORKSPACE_ID)
+        configured_model(db, user.id)
         db.add(ModelBillingSettings(id=1, enabled=False, shared_pricing_enabled=False))
         library = add_library(db)
         library.name = "产品资料"

@@ -104,3 +104,59 @@ def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_pos
             "name": call.name, "content": '{"saved": true}'}, 1000)
     with Session(engine) as db:
         assert db.get(AgentToolExecution, identifier).status == "completed"
+
+
+def test_postgres_steering_admission_and_stop_are_atomic(auth_postgres):
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+    from app import conversation_jobs, main
+    from app.effective_context import ContextManager
+    from app.models import ChatMessage
+
+    engine = auth_postgres
+    request_id, supplement = uuid4(), str(uuid4())
+    with Session(engine) as db:
+        user, workspace = auth.create_user(db, f"steering-{uuid4().hex}@example.test", "Steering test")
+        token = uuid4().hex
+        db.add(LoginSession(token_hash=auth.digest(token), user_id=user.id, workspace_id=workspace,
+            csrf_token="test-only", expires_at=auth.now() + timedelta(hours=1)))
+        conv = Conversation(workspace_id=workspace, owner_id=user.id, active_request_id=request_id, next_sequence=2)
+        db.add(conv)
+        db.flush()
+        conv_id = conv.id
+        original = ChatMessage(conversation_id=conv_id, role="user", sequence=0, content="Original question")
+        answer = ChatMessage(conversation_id=conv_id, role="assistant", sequence=1, request_id=request_id, status="streaming")
+        db.add_all([original, answer])
+        db.flush()
+        access = Access(user.id, workspace, "admin", auth.digest(token))
+        config = ChatProviderConfig("", "", "test")
+        manager = ContextManager(sessionmaker(bind=engine), access, conv_id, config, None, None, request_id)
+        conversation_jobs.enqueue(db, conv_id, answer.id, request_id, access, 0, config)
+        manager.history(db, conv)
+        db.commit()
+        conversation_jobs.update_steering(db, conv, request_id, supplement, {"text": "More details"})
+    manager.start({"role": "system", "content": "System"})
+    barrier = Barrier(2)
+
+    def admit():
+        barrier.wait(timeout=10)
+        return manager.steer(supplement)
+
+    def stop():
+        with TestClient(main.app, headers={"X-RAG-Request": "1", "X-CSRF-Token": "test-only"}) as client:
+            client.cookies.set(auth.COOKIE, token)
+            barrier.wait(timeout=10)
+            return client.post(f"/conversations/{conv_id}/stop", json={"request_id": str(request_id)})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        admission, stopping = pool.submit(admit), pool.submit(stop)
+        admitted = admission.result(timeout=10) is not None
+        stopped = stopping.result(timeout=10)
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["status"] == "cancelled"
+    assert any(block["id"] == supplement for block in stopped.json()["display_blocks"]) == admitted
+    with Session(engine) as db:
+        _, items = manager.store.load(db)
+        assert sum(item["message_id"] == supplement for item in items) == int(admitted)
+        assert len(conversation_jobs.accepted_steering(db, request_id)) == int(admitted)
+    assert manager.steer(supplement) is None

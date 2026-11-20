@@ -1,6 +1,7 @@
 """Local compact orchestration over the authoritative replacement window."""
 import math
 import json
+from contextlib import nullcontext
 from copy import deepcopy
 from uuid import UUID, uuid5
 
@@ -51,7 +52,7 @@ class ContextManager:
                         message_id=self.current_message_id, sequence=self.current_sequence)
         return self.messages
 
-    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None):
+    def record(self, messages, source, key, *, message_id=None, sequence=None, plan=None, session=None):
         items = [make_item(uuid5(self.request_id, f"{key}:{index}"), message,
             "tool_image" if source == "tool" and message.get("role") == "user" else source,
             self.request_id, message_id, sequence, self.config) for index, message in enumerate(messages)]
@@ -61,12 +62,53 @@ class ContextManager:
             if item["message"].get("tool_calls"):
                 item["tool_intent_version"] = 1
                 item["model_key"] = key
-        with self.factory() as db:
+        with (self.factory() if session is None else nullcontext(session)) as db:
             state, current = self.store.append(db, items, request_id=self.request_id, revision=self.revision)
             db.commit()
             self.adopt(state, current)
         self.messages = self.messages[:1] + project(self.bounded_items(), self.config)
         return self.messages
+
+    def steer(self, message_id):
+        from fastapi import HTTPException
+        from .chat_attachments import attachment_read, select_attachments, user_content
+        from .conversation_jobs import finish_steering, lock_steering
+        from .conversations import live_conversation, resolve_input_mentions
+
+        with self.factory() as db:
+            locked = lock_steering(db, self.conversation_id, self.request_id, message_id)
+            if locked is None:
+                return None
+            row, payload, entry = locked
+            submission = entry.get("input", {"text": entry.get("text", "")})
+            text = submission.get("text", "")
+            checked = self.access.revalidate(db)
+            live_conversation(db, self.conversation_id, checked)
+            try:
+                mentions = resolve_input_mentions(db, checked,
+                    *([UUID(value) for value in submission.get(key, [])]
+                      for key in ("document_ids", "knowledge_base_ids", "resource_ids")))
+                if any(mentions.values()) and not self.config.thinking.supports_tools:
+                    raise HTTPException(422, "当前模型无法使用资料引用")
+                attachments = select_attachments(db, checked, [UUID(value)
+                    for value in submission.get("attachment_ids", [])], self.config)
+            except HTTPException as exc:
+                error = (exc.detail if exc.status_code in (409, 413, 422)
+                         else "补充消息的附件或资料已不可用，请重新选择")
+                finish_steering(row, payload, entry, error=error)
+                db.commit()
+                return "steering_rejected", {"id": message_id, "error": error}
+
+            content = text
+            if any(mentions.values()):
+                content += ("\n\n本条消息引用的资料（文档和知识库供 search_knowledge_base 定位，"
+                            "资源文件仅提供定位信息）：\n" + json.dumps(mentions, ensure_ascii=False))
+            block = {"id": message_id, "type": "user", "text": text, **mentions,
+                "attachments": [attachment_read(attachment) for attachment in attachments]}
+            finish_steering(row, payload, entry, block=block)
+            self.record([{"role": "user", "content": user_content(content, attachments)}],
+                "user", f"steer:{message_id}", message_id=message_id, session=db)
+            return "steered", block
 
     def output_budget(self, calls=1):
         return max(300, min(4000, (input_budget(self.config) or 24000) // 4 // max(1, calls)))
@@ -107,6 +149,7 @@ class ContextManager:
 
     def begin_tool(self, call):
         from .models import AgentToolExecution
+        from .mcp_client import encrypt_headers
         _, pending = groups(self.items)
         if not pending or call.id not in pending[0]["pair_ids"]:
             raise ContextWindowError("context_suffix_incompatible", "工具调用缺少对应模型记录")
@@ -118,7 +161,8 @@ class ContextManager:
                 # This slot was already admitted. Never execute its side effect twice.
                 raise ContextWindowError("tool_execution_already_started", "该工具调用已经开始，请继续会话核对已有结果")
             db.add(AgentToolExecution(id=identifier, conversation_id=self.conversation_id,
-                request_id=self.request_id, model_item_id=model_item, call_id=call.id, name=call.name, status="running"))
+                request_id=self.request_id, model_item_id=model_item, call_id=call.id, name=call.name, status="running",
+                encrypted_arguments=encrypt_headers({"arguments": json.dumps(call.arguments)})))
             db.commit()
         return identifier
 

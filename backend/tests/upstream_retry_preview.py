@@ -22,7 +22,7 @@ import uvicorn
 from app import auth, conversation_jobs, llm_providers, main
 from app.db import Base, engine, SessionLocal
 from app.models import (ChatMessage, Conversation, ConversationExecution, ModelBillingSettings,
-    ModelConnection, SiteModelProvider, LEGACY_WORKSPACE_ID)
+    ModelConnection, SiteModelProvider)
 from app.credits import ensure_account
 from auth_helpers import authenticate, configured_model
 from test_conversation_streaming import upstream, sse
@@ -62,14 +62,14 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at = auth.now()
-        binding = configured_model(db, LEGACY_WORKSPACE_ID)
+        binding = configured_model(db, user.id)
         shared = db.get(SiteModelProvider, binding.site_provider_id)
         db.get(ModelConnection, shared.connection_id).base_url = url
         shared.context_capacity, shared.max_output_tokens = 16000, 2000
         shared.name = "本地重试验收"
         db.add(ModelBillingSettings(id=1, default_provider_id=shared.id, enabled=False, shared_pricing_enabled=False))
         ensure_account(db, binding.account_id)
-        conversation = Conversation(account_id=LEGACY_WORKSPACE_ID, owner_id=user.id, title="上游重试验收",
+        conversation = Conversation(account_id=user.id, owner_id=user.id, title="上游重试验收",
             title_source="manual")
         db.add(conversation)
         db.commit()

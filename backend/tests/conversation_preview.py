@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app import auth, llm_providers, main
 from app.db import Base, engine, SessionLocal
-from app.models import ChatMessage, Conversation, ModelBillingSettings, SiteModelProvider, LEGACY_WORKSPACE_ID
+from app.models import ChatMessage, Conversation, ModelBillingSettings, SiteModelProvider
 from app.credits import ensure_account
 from auth_helpers import authenticate, configured_model
 from test_conversation_streaming import upstream, sse
@@ -70,7 +70,7 @@ if __name__ == "__main__":
         user = authenticate(client, db)
         user.email_verified_at = auth.now()
         user.is_site_admin = True
-        binding = configured_model(db, LEGACY_WORKSPACE_ID)
+        binding = configured_model(db, user.id)
         shared = db.get(SiteModelProvider, binding.site_provider_id)
         shared.base_url, shared.context_capacity, shared.max_output_tokens = url, 16000, 2000
         shared.name = "本地流式测试"

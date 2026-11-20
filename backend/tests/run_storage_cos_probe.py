@@ -49,7 +49,7 @@ def main():
         subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=Path(__file__).resolve().parents[1], check=True, stdout=subprocess.DEVNULL)
         from app import auth, main as application, storage_downloads
-        from app.models import UserCreditAccount, LoginSession, Membership, User, Workspace, WorkspaceFile, WorkspaceFileVersion
+        from app.models import UserCreditAccount, LoginSession, User, WorkspaceFile, WorkspaceFileVersion
         from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer
         from app.db import get_db
         engine = create_engine(url)
@@ -58,24 +58,23 @@ def main():
         assert int(storage.head(key)["Content-Length"]) == len(body)
         raw, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         with Session(engine) as db:
-            user, workspace = User(email=f"storage-probe-{uuid4().hex}@example.com", name="Probe"), Workspace(name="Isolated storage probe")
-            db.add_all([user,workspace]); db.flush()
-            db.add(Membership(user_id=user.id, account_id=workspace.id, role="admin"))
-            db.add(UserCreditAccount(user_id=workspace.id, balance=10, lifetime_granted=10, lifetime_spent=0))
+            user = User(email=f"storage-probe-{uuid4().hex}@example.com", name="Probe")
+            db.add(user); db.flush()
+            db.add(UserCreditAccount(user_id=user.id, balance=10, lifetime_granted=10, lifetime_spent=0))
             db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id,
                 csrf_token=csrf, expires_at=auth.now()+timedelta(hours=1)))
-            file = WorkspaceFile(account_id=workspace.id, path="probe.bin", size_bytes=len(body),
+            file = WorkspaceFile(account_id=user.id, owner_user_id=user.id, path="probe.bin", size_bytes=len(body),
                 content_type="application/octet-stream", content_hash=hashlib.sha256(body).hexdigest(),
                 current_version=1, created_by=user.id, updated_by=user.id, expires_at=auth.now()+timedelta(days=3))
             db.add(file); db.flush()
-            db.add(WorkspaceFileVersion(file_id=file.id, account_id=workspace.id, version=1, object_key=key,
+            db.add(WorkspaceFileVersion(file_id=file.id, account_id=user.id, version=1, object_key=key,
                 size_bytes=len(body), content_type=file.content_type, content_hash=file.content_hash, created_by=user.id))
             db.add(StorageQuotaSettings(id=1, version=1, free_storage_bytes=512*1024**2,
                 free_download_bytes=20*1024**2, output_limit_bytes=512*1024**2, retention_days=3,
                 packages=[{"id":"probe", "name":"Probe", "storage_bytes":1024, "download_bytes":1024,
                     "days":30, "price_credits":"0.1234", "enabled":True, "order":0}], costs={}))
             db.commit()
-            workspace_id, file_id = workspace.id, file.id
+            account_id, file_id = user.id, file.id
         def database():
             with Session(engine, autoflush=False) as db:
                 yield db
@@ -90,7 +89,7 @@ def main():
             time.sleep(0.05)
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30,
                 cookies={auth.COOKIE:raw}, headers={"X-RAG-Request":"1", "X-CSRF-Token":csrf}) as client:
-            path = f"/workspaces/{workspace_id}/files/{file_id}/download"
+            path = f"/files/{file_id}/download"
             assert client.head(path).status_code == 200
             response=client.get(path, headers={"Range":"bytes=1000-1999"})
             assert response.status_code == 206 and response.content == body[1000:2000]
@@ -110,7 +109,7 @@ def main():
             assert len(rows)==3 and rows[0].sent_bytes+rows[1].sent_bytes==len(body)+1000
             assert all(row.status in ("completed","interrupted") for row in rows)
             assert all(row.reserved_bytes==0 for row in db.scalars(select(StorageEntitlement)))
-            assert str(db.get(UserCreditAccount,workspace_id).balance)=="9.8766"
+            assert str(db.get(UserCreditAccount,account_id).balance)=="9.8766"
             print(f"REAL_COS_HTTP_PROBE_PASSED bytes={len(body)} range=1000 transfers=3 debit=0.1234 once")
     finally:
         if server: server.should_exit=True

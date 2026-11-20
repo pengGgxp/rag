@@ -290,7 +290,7 @@ def test_first_successful_answer_after_failure_gets_one_title(client):
     assert db.get(ConversationTitleTask, identifier).request_id == UUID(second["request_id"])
 
 
-def test_original_request_stays_idempotent_after_retry_replaces_message_request(client):
+def test_original_request_stays_idempotent_after_retry_creates_a_new_turn(client):
     http, db, captured = client
     item = create(http, [add_library(db)])
     _, original = turn(http, item["id"])

@@ -73,7 +73,18 @@ against production data during implementation.
 
 ### Migration operation
 
-Stop old API and worker processes, back up the database, and apply
+Before cutover, inventory a production database copy without writing to it:
+record workspace administrator and membership counts, accounts with multiple
+workspaces, file counts and bytes, knowledge base and conversation ownership,
+credit balances, allowances, billing totals, and unfinished uploads or jobs.
+On a separate writable copy, rehearse the upgrade and reconcile those totals
+against the selected receivers before running account cleanup. Missing
+administrators must be resolved before migration. Run `alembic upgrade head`
+again to confirm it leaves the reconciled totals unchanged. Verify the backup
+can be restored, and test account file access through the live cloud mount
+before issuing the production cleanup command.
+
+Stop old API and worker processes and take the final backup before applying
 `alembic upgrade head`. Resume the deployment with the matching new code.
 Run `python -m app.manage personal-accounts cleanup-suspended` with the same
 database and object storage configuration before reopening traffic. Repeat
