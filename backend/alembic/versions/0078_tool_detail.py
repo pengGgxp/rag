@@ -3,7 +3,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0078_tool_detail"
-down_revision = "0077_direct_skill_uploads"
+down_revision = "0078_merge_retry_uploads"
 branch_labels = depends_on = None
 
 
