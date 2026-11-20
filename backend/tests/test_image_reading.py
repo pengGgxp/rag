@@ -19,7 +19,6 @@ from app.cloud_file_operation import inspect_image, perform
 from app.extensions import ExtensionRuntime
 from app.llm import ChatProviderConfig
 from app.llm import OpenAICompatibleChatProvider
-from app.models import Membership
 from test_chat_attachments import PNG
 from test_agent import runtime as agent_runtime
 from test_conversation_streaming import upstream, sse
@@ -373,7 +372,7 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
 
     monkeypatch.setattr(cloud, "execute_image", execute_image)
     from app.shared_resources import object_key
-    resource_store[0][object_key(access.workspace_id, "chart.png")] = PNG
+    resource_store[0][object_key(access.user_id, "chart.png")] = PNG
     runtime.request_id = uuid4()
     result = runtime.execute("read_image", {"path": "chart.png",
         "computer_id": "00000000-0000-4000-a000-000000000112"}, call_id="tool-1-image")
@@ -384,14 +383,6 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
     assert result.result["files"][0]["url"].startswith("/resources?file=")
     assert "data" not in result.result and "base64" not in json.dumps(result.result).lower()
     assert runtime.label("read_image") == "查看图片"
-    member = db.get(Membership, (access.workspace_id, access.user_id))
-    member.role = "viewer"
-    db.commit()
-    viewer_access = load_access(admin, db)
-    viewer = ExtensionRuntime(lambda: nullcontext(db), viewer_access, provider_config=ChatProviderConfig(
-        "https://example.test/v1", "test", "vision", supports_images=True))
-    assert "read_image" in {item["function"]["name"] for item in viewer.tools}
-    assert "write_file" not in {item["function"]["name"] for item in viewer.tools}
 
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
@@ -498,7 +489,7 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     fake, execute = enable_execution(db, user_access, monkeypatch)
     storage = MemoryMount()
     monkeypatch.setattr(storage_backend, "current_storage", lambda _db: storage)
-    conversation = Conversation(workspace_id=user_access.workspace_id, owner_id=user_access.user_id)
+    conversation = Conversation(account_id=user_access.user_id, owner_id=user_access.user_id)
     db.add(conversation)
     db.commit()
     computer_id = cloud.create_computer(db, user_access, conversation.id, uuid4(),
@@ -535,7 +526,7 @@ def test_workspace_image_passes_paths_to_sandbox_for_access_checks(accounts, mon
     storage = MemoryMount()
     monkeypatch.setattr(storage_backend, "current_storage", lambda _db: storage)
     from app.models import Conversation
-    conversation = Conversation(workspace_id=user_access.workspace_id, owner_id=user_access.user_id)
+    conversation = Conversation(account_id=user_access.user_id, owner_id=user_access.user_id)
     db.add(conversation)
     db.commit()
     with pytest.raises(Exception):

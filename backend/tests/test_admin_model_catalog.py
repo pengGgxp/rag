@@ -2,62 +2,24 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from app.models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
+from app.models import ModelConnection, SiteModelProvider
 from test_auth import register
 from test_shared_providers import setup_site, provider, choose
 
 
 def test_billing_preview_includes_unused_models_without_writes(accounts, monkeypatch):
-    owner, db, session = setup_site(accounts, monkeypatch)
-    first = provider(owner, rate=0)
-    second = provider(owner, "second", rate=7)
-    workspace_id = UUID(session["workspace_id"])
-    workspace = db.get(Workspace, workspace_id)
-    workspace.billing_multiplier_percent = 125
-    db.commit()
-    response = owner.get(f"/site/admin/workspaces/{workspace_id}/billing-settings")
-    assert response.status_code == 200
-    body = response.json()
-    assert {p["provider_id"] for p in body["models"]} == {first["id"], second["id"]}
-    assert all(p["available"] for p in body["models"])
-    assert all(p["configured"] for model in body["models"] for p in model["policies"])
-    assert body["models"][0]["policies"][0]["effective_credits_per_unit"] == "0"
-    assert body["models"][1]["policies"][0]["effective_credits_per_unit"] == "8.75"
-    assert db.scalars(select(LLMProviderConfig)).all() == []
-    assert db.scalars(select(UsagePolicy)).all() == []
-    assert not db.get(ModelBillingSettings, 1).enabled
-    assert owner.get("/auth/me").json()["workspace_id"] == str(workspace_id)
+    owner, _db, session = setup_site(accounts, monkeypatch)
+    response = owner.get(f"/site/admin/workspaces/{session['user']['id']}/billing-settings")
+    assert response.status_code == 404
 
 
 def test_preview_visibility_and_reasons_match_composer(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
-    ready = provider(owner)
-    missing = provider(owner, "missing")
-    disabled = provider(owner, "disabled")
-    disconnected = provider(owner, "disconnected")
-    private = provider(owner, "private")
-    choose(owner, private["id"])
-    db.get(SiteModelProvider, UUID(private["id"])).published = False
-    db.get(SiteModelProvider, UUID(missing["id"])).prices = {}
-    db.get(SiteModelProvider, UUID(disabled["id"])).enabled = False
-    db.get(ModelConnection, UUID(disconnected["connection_id"])).encrypted_api_key = ""
-    db.commit()
-    path = f"/site/admin/workspaces/{session['workspace_id']}/billing-settings"
-    models = owner.get(path).json()["models"]
-    choices = owner.get("/models/available").json()["providers"]
-    assert {p["provider_id"]: p["unavailable_reason"] for p in models if p["provider_id"] != disabled["id"]} == {
-        p["id"]: p["unavailable_reason"] for p in choices}
-    reasons = {p["provider_id"]: p["unavailable_reason"] for p in models}
-    assert reasons[ready["id"]] is None
-    assert reasons[missing["id"]] == "pricing_unconfigured"
-    assert reasons[disabled["id"]] == "model_disabled"
-    assert reasons[disconnected["id"]] == "service_not_ready"
+    path = f"/site/admin/workspaces/{session['user']['id']}/billing-settings"
+    assert owner.get(path).status_code == 404
     (_, other, _), _ = accounts
-    target = register(other, "catalog-other@example.com")["workspace_id"]
-    others = owner.get(f"/site/admin/workspaces/{target}/billing-settings").json()["models"]
-    assert private["id"] in {p["provider_id"] for p in others}
-    assert other.get(path).status_code == 403
-    assert len(db.scalars(select(LLMProviderConfig)).all()) == 1
+    register(other, "catalog-other@example.com")
+    assert other.get(path).status_code == 404
 
 
 def test_model_detail_permissions_redaction_and_live_diagnostics(accounts, monkeypatch):

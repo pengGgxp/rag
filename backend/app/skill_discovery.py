@@ -7,7 +7,7 @@ import frontmatter
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from .models import WorkspaceFile
+from .models import WorkspaceFile, WorkspaceFileVersion
 from .workspace_files import read_file
 from . import shared_resources as shared
 
@@ -81,24 +81,38 @@ def discover(db, access, *, refresh=False):
         return []
     if refresh:
         rows, _ = shared.refresh_index(db, access, path_prefix=ROOT + "/", filename="SKILL.md", limit=None)
-    else:
+    indexed = {row.path: (read_file(row), key) for row, key in db.execute(
+        select(WorkspaceFile, WorkspaceFileVersion.storage_key).join(WorkspaceFileVersion,
+            (WorkspaceFileVersion.file_id == WorkspaceFile.id)
+            & (WorkspaceFileVersion.version == WorkspaceFile.current_version)).where(
+            WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.deleted_at.is_(None),
+            WorkspaceFileVersion.deleted_at.is_(None), WorkspaceFileVersion.available.is_not(False),
+            WorkspaceFile.path.startswith(ROOT + "/", autoescape=True),
+            func.lower(WorkspaceFile.path).endswith("/skill.md")))}
+    keys = {path: key for path, (_, key) in indexed.items()}
+    if not refresh:
         # Model admission can hold billing locks: observe current manifests without index writes.
-        root = shared.object_key(access.workspace_id, ROOT + "/")
-        objects = {item["Key"][len(shared.prefix(access.workspace_id)):]: item
+        root = shared.object_key(access.user_id, ROOT + "/")
+        objects = {item["Key"][len(shared.prefix(access.user_id)):]: item
             for item in store.iter_objects(root)
             if item["Key"].startswith(root) and item["Key"].rsplit("/", 1)[-1].casefold() == "skill.md"
             and str(item.get("Type", "")).lower() != "symlink"}
-        indexed = {row.path: read_file(row) for row in db.scalars(select(WorkspaceFile).where(
-            WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
-            WorkspaceFile.path.startswith(ROOT + "/", autoescape=True),
-            func.lower(WorkspaceFile.path).endswith("/skill.md")))}
-        rows = [{**indexed.get(path, {}), "path": path, "size_bytes": int(item.get("Size", 0))}
-            for path, item in sorted(objects.items())]
+        manifests = {path: entry for path, (entry, key) in indexed.items()
+                     if key != shared.object_key(access.user_id, path)}
+        for path, item in objects.items():
+            if path not in manifests:
+                manifests[path] = {**indexed.get(path, ({}, None))[0], "path": path,
+                                   "size_bytes": int(item.get("Size", 0))}
+        rows = [manifests[path] for path in sorted(manifests)]
+    directories = {PurePosixPath(row["path"]).parent for row in rows}
     result = []
     for row in rows:
         path = row["path"]
+        if any(parent in directories for parent in PurePosixPath(path).parent.parents):
+            continue
         try:
-            item = parse(read_metadata(store, shared.object_key(access.workspace_id, path), row["size_bytes"]), path)
+            key = keys.get(path) or shared.object_key(access.user_id, path)
+            item = parse(read_metadata(store, key, row["size_bytes"]), path)
         except (UnicodeError, ValueError):
             item = {"name": None, "description": "", "manifest_path": path,
                 "directory": str(PurePosixPath(path).parent),

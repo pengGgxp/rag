@@ -25,7 +25,7 @@ def platform_skill(db, user_id):
 
 def access_for(client, db):
     session = db.get(auth.LoginSession, auth.digest(client.cookies.get(auth.COOKIE)))
-    return auth.Access(session.user_id, session.workspace_id, "admin", session.token_hash)
+    return auth.get_access(session)
 
 
 def test_catalog_download_install_is_idempotent_and_keeps_workspace_copy(accounts, monkeypatch, resource_store):
@@ -52,23 +52,21 @@ def test_catalog_download_install_is_idempotent_and_keeps_workspace_copy(account
     root = next(item for item in installed.json()["items"] if item["path"].endswith("/SKILL.md"))
     actor = access_for(owner, db)
     changed = "---\nname: 报告助手\n---\nuser changed".encode()
-    workspace_files._save_bytes(actor.workspace_id, actor, db, root["path"], changed, "text/markdown", expected_version=1)
+    workspace_files._save_bytes(actor.user_id, actor, db, root["path"], changed, "text/markdown", expected_version=1)
     repeated = owner.post(f"/agent/skills/platform/{skill.id}/install")
     assert repeated.status_code == 201 and repeated.json()["already_installed"]
     assert owner.get(f"/resources/{root['id']}/download").content == changed
 
 
-def test_catalog_is_readable_to_viewers_but_install_requires_editor(accounts, monkeypatch, resource_store):
+def test_accounts_can_install_platform_skills_independently(accounts, monkeypatch, resource_store):
     owner, db, _ = setup_site(accounts, monkeypatch)
     skill = platform_skill(db, UUID(owner.get("/auth/me").json()["user"]["id"]))
     (_, member, _), _ = accounts
     register(member, "issue100-viewer@example.com")
-    share(owner, "issue100-viewer@example.com", "viewer")
-    workspace_id = owner.get("/auth/me").json()["workspace_id"]
-    switch(member, workspace_id)
     assert member.get("/agent/skills/platform").status_code == 200
     assert member.get(f"/agent/skills/platform/{skill.id}/download").status_code == 200
-    assert member.post(f"/agent/skills/platform/{skill.id}/install").status_code == 403
+    assert member.post(f"/agent/skills/platform/{skill.id}/install").status_code == 201
+    assert owner.get("/agent/skills").json() == []
 
 
 def test_workspace_browser_keeps_directories_and_file_operations_in_one_mount(accounts, monkeypatch, resource_store):

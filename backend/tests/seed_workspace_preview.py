@@ -19,16 +19,18 @@ def main():
     from app import shared_resources as shared
     shared.backend = lambda db: store
     with SessionLocal() as db:
-        owner, workspace = auth.create_user(db, "issue100-local@example.com", "临时验收", "local-preview-password-100")
+        owner = auth.create_user(db, "issue100-local@example.com", "临时验收", "local-preview-password-100")
+        workspace = owner.id
         owner.email_verified_at = auth.now()
-        viewer, other_workspace = auth.create_user(db, "issue100-viewer@example.com", "只读验收", "local-preview-password-100")
+        viewer = auth.create_user(db, "issue100-viewer@example.com", "只读验收", "local-preview-password-100")
+        other_workspace = viewer.id
         viewer.email_verified_at = auth.now()
-        db.add(Membership(workspace_id=workspace, user_id=viewer.id, role="viewer"))
+        db.add(Membership(account_id=workspace, user_id=viewer.id, role="viewer"))
         skill = SiteSkill(name="报告助手", description="整理工作区资料并生成报告", markdown="按需读取 references/guide.md。", enabled=True,
             created_by=owner.id, updated_by=owner.id, files=[SiteSkillFile(path="scripts/report.py", content=b"print('local-only')"),
                 SiteSkillFile(path="references/guide.md", content="本地临时参考资料".encode())])
         db.add(skill); db.commit()
-        actor = auth.Access(owner.id, workspace, "admin", "")
+        actor = auth.Access(owner.id, "")
         from app.workspace_mutations import save_files, create_directory
         create_directory(db, actor, "项目资料")
         create_directory(db, actor, "项目资料/目标文件夹")

@@ -156,7 +156,7 @@ def extract_document(data, filename):
 
 def owned(db, access, identifier, *, lock=False):
     row = db.get(ChatAttachment, identifier, with_for_update=lock, populate_existing=True)
-    if (row is None or row.deleted_at or row.object_deleted_at or row.workspace_id != access.workspace_id):
+    if row is None or row.deleted_at or row.object_deleted_at or row.user_id != access.user_id:
         raise HTTPException(404, "附件不存在或无权访问")
     if row.resource_file_id:
         resource = db.get(WorkspaceFile, row.resource_file_id)
@@ -165,7 +165,7 @@ def owned(db, access, identifier, *, lock=False):
         from .workspace_files import resolve_input
         resource, current = resolve_input(db, access, {"id": str(resource.id)})
         changed = row.content_hash != current.content_hash or row.size_bytes != current.size_bytes
-        row.object_key, row.size_bytes, row.content_type = current.object_key, current.size_bytes, current.content_type
+        row.object_key, row.size_bytes, row.content_type = current.storage_key, current.size_bytes, current.content_type
         row.content_hash, row.resource_version = current.content_hash, 1
         if changed or (row.kind == "document" and row.text_content is None) or (row.kind == "image" and not row.width):
             from .resource_cache import read_bytes
@@ -185,19 +185,18 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
 
 def create_upload(file, db, access, *, source, directory=""):
     from .file_operations import workspace_lock
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         return _create_upload(file, db, access, source=source, directory=directory)
 
 
 def _create_upload(file, db, access, *, source, directory):
-    access.editor()
     filename = file.filename or ""
     suffix = Path(filename).suffix.lower()
     if (not filename or len(filename) > 255 or "/" in filename or "\\" in filename
             or any(ord(c) < 32 for c in filename) or suffix not in DOCUMENT_SUFFIXES | IMAGE_TYPES.keys()):
         raise HTTPException(415, "请选择 PNG、JPEG、WebP、PDF、TXT、Markdown、CSV、Word 或 Excel 文件")
     from .storage_billing import lock_workspace
-    lock_workspace(db, access.workspace_id)
+    lock_workspace(db, access.user_id)
     # Serialize staging quotas for one user.
     from .models import User
     db.get(User, access.user_id, with_for_update=True)
@@ -216,37 +215,37 @@ def _create_upload(file, db, access, *, source, directory):
             raise HTTPException(413, "图片尺寸过大，请缩小后重试")
     text = None if image else extract_document(data, filename)
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, len(data))
+    check_capacity(db, access.user_id, len(data))
     identifier = uuid4()
     from .shared_resources import object_key
     if directory:
         from .workspace_files import valid_path
         directory = valid_path(directory)
         from .models import WorkspaceDirectory
-        if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
+        if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.owner_user_id == access.user_id,
                 WorkspaceDirectory.path == directory)) or db.scalar(select(WorkspaceFile.id).where(
-                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None),
+                WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.deleted_at.is_(None),
                 WorkspaceFile.path.startswith(directory + "/", autoescape=True)))):
             raise HTTPException(404, "目标文件夹不存在")
         resource_path = f"{directory}/{filename}"
-        existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+        existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
             WorkspaceFile.path == resource_path, WorkspaceFile.deleted_at.is_(None)))
         if existing:
             raise HTTPException(409, "目标目录中已存在同名文件，请更换文件名")
     else:
         resource_path = f"uploads/{identifier}/{filename}"
-    key = object_key(access.workspace_id, resource_path)
+    key = object_key(access.user_id, resource_path)
     document_types = {".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
-    row = ChatAttachment(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
+    row = ChatAttachment(id=identifier, user_id=access.user_id, account_id=access.user_id,
         filename=filename, content_type=IMAGE_TYPES[suffix] if image else document_types[suffix],
         size_bytes=len(data), content_hash=hashlib.sha256(data).hexdigest(), object_key=key,
         kind="image" if image else "document", source=source,
         resource_path=resource_path, text_content=text, width=width, height=height)
     upload_fileobj(io.BytesIO(data), key, row.content_type)
     try:
-        resource = WorkspaceFile(id=identifier, workspace_id=access.workspace_id,
+        resource = WorkspaceFile(id=identifier, account_id=access.user_id,
             path=row.resource_path, content_type=row.content_type, size_bytes=len(data),
             content_hash=row.content_hash, current_version=1, source=source,
             created_by=access.user_id, updated_by=access.user_id,
@@ -256,13 +255,13 @@ def _create_upload(file, db, access, *, source, directory):
         mounted = backend(db)
         resource.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
         db.flush()
-        db.add(WorkspaceFileVersion(file_id=identifier, workspace_id=access.workspace_id, version=1,
+        db.add(WorkspaceFileVersion(file_id=identifier, account_id=access.user_id, version=1,
             object_key=key, content_type=row.content_type, size_bytes=len(data),
             content_hash=row.content_hash, created_by=access.user_id))
         row.resource_file_id, row.resource_version = identifier, 1
         db.add(row)
         from .audit_log import record_audit
-        record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="resource.created", resource_type="resource", resource_id=identifier,
             metadata={"source": source, "version": 1})
         db.commit()
@@ -285,7 +284,6 @@ def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depen
 @router.delete("/{identifier}", status_code=204)
 def remove(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
-    access.editor()
     if row.resource_file_id:
         from .resources import remove as remove_resource
         return remove_resource(row.resource_file_id, db, access)
@@ -408,7 +406,7 @@ def model_messages(messages, config, resource_context=None):
                     version.content_hash = resource.content_hash or ""
                     attachment.content_hash = resource.content_hash or ""
                     attachment.size_bytes = resource.size_bytes
-                    attachment.object_key = version.object_key
+                    attachment.object_key = version.storage_key
                     raw = read_bytes(db, checked, resource, version)
                     # A retained image denotes the originally selected bytes. Never
                     # silently upgrade a saved window to a changed live resource.

@@ -14,7 +14,7 @@ from app.auth import Access, digest, now
 from app.credits import ensure_account
 from app.image_tasks import ImageInput
 from app.model_capabilities import ImageConfig
-from app.models import AgentToolExecution, Conversation, CreditAccount, ImageTask, LoginSession, Membership, ModelConnection, SiteModelProvider, UsageEvent, User, Workspace, WorkspaceFile
+from app.models import AgentToolExecution, Conversation, UserCreditAccount, ImageTask, LoginSession, ModelConnection, SiteModelProvider, UsageEvent, User, WorkspaceFile
 from test_auth_postgres import auth_postgres
 from test_image_tasks import png
 
@@ -25,11 +25,9 @@ def test_concurrent_image_admission_and_worker_claim_settle_once(auth_postgres, 
     execution_id = uuid4() if inline else None
     with Session(engine) as db:
         user = User(email=f"image-{uuid4().hex}@example.com", name="Image test", email_verified_at=now())
-        workspace = Workspace(name="Image test")
-        db.add_all([user, workspace]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
+        db.add(user); db.flush()
         token = digest(uuid4().hex)
-        db.add(LoginSession(token_hash=token, user_id=user.id, workspace_id=workspace.id,
+        db.add(LoginSession(token_hash=token, user_id=user.id,
             csrf_token="test-only", expires_at=now()+timedelta(hours=1)))
         connection = ModelConnection(name="Synthetic image", base_url="https://example.invalid/v1", encrypted_api_key="enc:key")
         db.add(connection); db.flush()
@@ -39,13 +37,13 @@ def test_concurrent_image_admission_and_worker_claim_settle_once(auth_postgres, 
         db.add(model); db.flush()
         if inline:
             request_id = uuid4()
-            conversation = Conversation(workspace_id=workspace.id, owner_id=user.id, active_request_id=request_id)
+            conversation = Conversation(account_id=user.id, owner_id=user.id, active_request_id=request_id)
             db.add(conversation); db.flush()
             db.add(AgentToolExecution(id=execution_id, conversation_id=conversation.id,
                 request_id=request_id, model_item_id=uuid4(), call_id="once", name="generate_image"))
-        ensure_account(db, workspace.id, initial=100)
+        ensure_account(db, user.id, initial=100)
         db.commit()
-        uid, wid, mid, cid = user.id, workspace.id, model.id, connection.id
+        uid, wid, mid, cid = user.id, user.id, model.id, connection.id
     def dispatch(_):
         assert not inline, "Agent 任务不得二次派发"
     monkeypatch.setattr(image_tasks, "dispatch", dispatch)
@@ -53,7 +51,7 @@ def test_concurrent_image_admission_and_worker_claim_settle_once(auth_postgres, 
     monkeypatch.setattr(workspace_billing, "context_for_workspace", lambda db, identifier: {"multiplier_percent": 125, "workspace_id": str(identifier)})
     monkeypatch.setattr(llm_providers, "_encrypt_api_key", lambda value: "enc:"+value)
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
-    access = Access(uid, wid, "admin", token)
+    access = Access(uid, token)
     barrier = Barrier(4)
     key = uuid4().hex
     def submit(_):
@@ -80,7 +78,7 @@ def test_concurrent_image_admission_and_worker_claim_settle_once(auth_postgres, 
         task = db.get(ImageTask, UUID(identifiers[0]))
         assert task.status == "completed", task.error
         assert task.charged_credits == Decimal("4.0625")
-        assert db.get(CreditAccount, wid).balance == Decimal("95.9375")
+        assert db.get(UserCreditAccount, wid).balance == Decimal("95.9375")
         assert len(db.scalars(select(UsageEvent).where(UsageEvent.request_id == task.id)).all()) == 1
-        assert len(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == wid)).all()) == 1
+        assert len(db.scalars(select(WorkspaceFile).where(WorkspaceFile.account_id == wid)).all()) == 1
         assert len(uploaded) == 1

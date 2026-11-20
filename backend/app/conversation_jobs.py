@@ -24,7 +24,7 @@ def temporary_title(text):
 
 
 def enqueue(db, conversation_id, message_id, request_id, access, hold, config, search=None):
-    payload = {"access": {**asdict(access), "user_id": str(access.user_id), "workspace_id": str(access.workspace_id)},
+    payload = {"access": {"user_id": str(access.user_id), "session_hash": access.session_hash},
         "hold": str(hold), "config": asdict(config), "search": asdict(search) if search else None}
     row = ConversationExecution(request_id=request_id, conversation_id=conversation_id, message_id=message_id,
         encrypted_payload=encrypt_headers({"payload": json.dumps(payload)}))
@@ -89,7 +89,7 @@ def unpack(row):
     from .web_search import SearchConfig
     payload = json.loads(decrypt_headers(row.encrypted_payload)["payload"])
     actor = payload["access"]
-    access = Access(UUID(actor["user_id"]), UUID(actor["workspace_id"]), actor["role"], actor["session_hash"])
+    access = Access(UUID(actor["user_id"]), actor["session_hash"])
     config = payload["config"]
     config["thinking"] = ThinkingSelection(**config["thinking"])
     return access, payload["hold"], ChatProviderConfig(**config), SearchConfig(**payload["search"]) if payload["search"] else None
@@ -258,9 +258,9 @@ def interrupt_execution(db, row):
         from .credits import settle_model_usage
         from .workspace_billing import finish_operation, legacy_call_usage
         from decimal import Decimal
-        settle_model_usage(db, access.workspace_id, access.user_id, row.request_id,
-            legacy_call_usage(db, access.workspace_id, row.request_id), Decimal(hold))
-        finish_operation(db, access.workspace_id, row.request_id)
+        settle_model_usage(db, access.user_id, access.user_id, row.request_id,
+            legacy_call_usage(db, access.user_id, row.request_id), Decimal(hold))
+        finish_operation(db, access.user_id, row.request_id)
 
 
 def recover(factory=SessionLocal):

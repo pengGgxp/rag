@@ -198,7 +198,7 @@ class ContextManager:
             from .image_tasks import TERMINAL, tool_read
             task = db.scalar(select(ImageTask).where(
                 ImageTask.agent_tool_execution_id == uuid5(UUID(model["id"]), call["id"]),
-                ImageTask.workspace_id == self.access.workspace_id,
+                ImageTask.account_id == self.access.user_id,
                 ImageTask.actor_user_id == self.access.user_id))
             if task and task.status in TERMINAL:
                 return tool_read(task)
@@ -206,14 +206,14 @@ class ContextManager:
         if key.startswith("model:"):
             activity = f"tool-{key.split(':')[1]}-{call['id']}"
             receipt = db.get(KnowledgeBaseToolExecution, uuid5(request, "knowledge-base-tool:" + activity))
-            if receipt and receipt.workspace_id == self.access.workspace_id and receipt.user_id == self.access.user_id:
+            if receipt and receipt.account_id == self.access.user_id and receipt.user_id == self.access.user_id:
                 return receipt.result
             from .models import CloudComputerCommand, CloudComputerSession
             from .cloud_computer import tool_request_id
             command = db.scalar(select(CloudComputerCommand).join(CloudComputerSession).where(
                 CloudComputerCommand.request_id == tool_request_id(request, activity),
                 CloudComputerSession.conversation_id == self.conversation_id,
-                CloudComputerSession.workspace_id == self.access.workspace_id,
+                CloudComputerSession.account_id == self.access.user_id,
                 CloudComputerSession.user_id == self.access.user_id))
             if command and command.status not in ("queued", "preparing", "running", "submitted") and command.result:
                 result = dict(command.result)
@@ -233,7 +233,7 @@ class ContextManager:
             fingerprint = sha256(signature.encode()).hexdigest()
             scope = (
                 RemoteToolExecution.request_id == request,
-                RemoteToolExecution.owner_id == self.access.user_id, RemoteToolExecution.workspace_id == self.access.workspace_id,
+                RemoteToolExecution.owner_id == self.access.user_id, RemoteToolExecution.account_id == self.access.user_id,
                 RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == fingerprint)
             receipt = db.scalar(select(RemoteToolExecution).where(*scope,
                 RemoteToolExecution.invocation_id == identifier))

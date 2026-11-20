@@ -12,9 +12,7 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
-
-from app.models import Conversation, CreditAccount, CreditLedgerEntry, User, Workspace
+from legacy_migration_helpers import seed_workspace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,32 +64,31 @@ def test_postgres_upgrade_preserves_messages_and_billing():
         migrate("upgrade", "0063_deployment_maintenance")
         schema = tables()
         conversation_id, message_id = uuid4(), uuid4()
-        with Session(engine) as db:
-            workspace = Workspace(name="Synthetic migration workspace")
-            user = User(email=f"mentions-{uuid4().hex}@example.com", name="Migration test")
-            db.add_all([workspace, user]); db.flush()
-            db.add(Conversation(id=conversation_id, workspace_id=workspace.id, owner_id=user.id,
-                title="Preserved conversation"))
-            db.add(CreditAccount(workspace_id=workspace.id, balance=Decimal("18.2345")))
-            db.add(CreditLedgerEntry(workspace_id=workspace.id, actor_user_id=user.id,
-                amount=Decimal("18.2345"), balance_after=Decimal("18.2345"), kind="grant",
-                idempotency_key=f"mentions-{uuid4()}"))
-            db.flush()
+        with engine.begin() as db:
+            user_id, workspace_id = seed_workspace(db)
+            db.execute(schema["conversations"].insert().values(
+                id=conversation_id, workspace_id=workspace_id, owner_id=user_id,
+                title="Preserved conversation", next_sequence=1))
+            db.execute(schema["credit_accounts"].insert().values(workspace_id=workspace_id,
+                balance=Decimal("18.2345"), lifetime_granted=Decimal("18.2345"), lifetime_spent=0))
+            db.execute(schema["credit_ledger"].insert().values(id=uuid4(), workspace_id=workspace_id,
+                actor_user_id=user_id, amount=Decimal("18.2345"), balance_after=Decimal("18.2345"),
+                kind="grant", idempotency_key=f"mentions-{uuid4()}", metadata={}))
             db.execute(schema["chat_messages"].insert().values(id=message_id,
                 conversation_id=conversation_id, sequence=0, role="user", content="Preserved message",
                 status="completed", citations=[{"chunk_id": str(uuid4()), "text": "Historical evidence"}],
                 traces=[{"id": str(uuid4())}], document_mentions=[{"id": str(uuid4())}],
                 tool_events=[], refused=False))
-            db.commit()
         before = snapshot(schema)
-        migrate("upgrade", "head")
-        migrate("upgrade", "head")
+        legacy_head = "0078_merge_retry_uploads"
+        migrate("upgrade", legacy_head)
+        migrate("upgrade", legacy_head)
         assert snapshot(schema) == before
         with engine.connect() as connection:
             version = connection.scalar(text("SELECT version_num FROM alembic_version"))
             length = next(column["type"].length for column in inspect(connection).get_columns(
                 "alembic_version") if column["name"] == "version_num")
-            assert version == migration_scripts().get_current_head() and len(version) <= length == 32
+            assert version == legacy_head and len(version) <= length == 32
             for table in ("image_tasks", "cloud_computer_commands"):
                 columns = {column["name"]: column for column in inspect(connection).get_columns(table)}
                 assert columns["agent_tool_execution_id"]["nullable"]
@@ -114,7 +111,7 @@ def test_postgres_upgrade_preserves_messages_and_billing():
             connection.execute(current_messages.delete().where(current_messages.c.id != message_id))
         migrate("downgrade", "0063_deployment_maintenance")
         assert snapshot(schema) == before
-        migrate("upgrade", "head")
+        migrate("upgrade", legacy_head)
         assert snapshot(schema) == before
     finally:
         engine.dispose()

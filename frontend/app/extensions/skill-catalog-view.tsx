@@ -7,13 +7,12 @@ import * as Tabs from "../../components/ui/tabs";
 import { WorkspaceSkeleton } from "../workspace-header";
 import { useExtensionResource } from "./extension-data";
 import { skillCatalog, filterSkills, type SkillSummary, type CatalogSkill } from "./skill-catalog";
-import { useAuth } from "../auth";
 import { downloadFile, request } from "../api";
 import { Modal } from "../modal";
 
 export function SkillCatalogView({ query, status, returnTo, filter }: { query: string; status: string; returnTo: string; filter: (values: Record<string, string>) => void }) {
-  const router = useRouter(), { role } = useAuth();
-  const canWrite = role === "admin" || role === "editor";
+  const router = useRouter();
+  const canWrite = true;
   const [installing, setInstalling] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [feedback, setFeedback] = useState({ error: "", message: "" });
@@ -62,7 +61,7 @@ export function SkillCatalogView({ query, status, returnTo, filter }: { query: s
         <span className="extension-symbol skill-card-icon"><FileText size={23} strokeWidth={1.7} /></span>
         <div className="skill-card-copy"><button className="skill-card-title" onClick={() => open(item, "view")}>{item.name}</button><p>{item.description || (item.needsRepair ? "清单需要修复，打开后编辑 SKILL.md" : "暂无简介")}</p></div>
         {item.installations.length ? <button id={`skill-more-${item.installations[0].id}`} className="icon-button skill-card-action" aria-label={`${item.name} 的更多操作`} aria-haspopup="dialog" onClick={event => setMenu({ item, anchor: event.currentTarget })}><MoreHorizontal size={19} /></button>
-        : <button className="icon-button skill-card-action" aria-label={`安装 ${item.name}`} title={canWrite ? "安装到当前工作区" : "需要工作区编辑权限才能安装"} disabled={!canWrite || !!installing} onClick={() => void install(item)}>{installing === item.key ? <Loader2 size={18} className="spin" /> : <Plus size={19} />}</button>}
+        : <button className="icon-button skill-card-action" aria-label={`安装 ${item.name}`} title={canWrite ? "安装到我的资源" : "当前账号无权安装"} disabled={!canWrite || !!installing} onClick={() => void install(item)}>{installing === item.key ? <Loader2 size={18} className="spin" /> : <Plus size={19} />}</button>}
         <div className="skill-card-footer"><span className={item.installations.length ? "skill-installed" : ""}>{item.installations.length ? <><Check size={13} />已安装{item.installations.length > 1 ? ` · ${item.installations.length} 个位置` : ""}</> : "未安装"}</span>{item.needsRepair && <span className="skill-repair">需要修复</span>}</div>
       </article>)}</div>
       {!items.length && <div className="extension-empty"><FileText size={28} /><p>{query ? "没有找到匹配的 Skill" : status === "installed" ? "还没有安装 Skill" : "暂无可用的 Skill"}</p>{(query || status) && <button className="secondary" onClick={() => filter({ q: "", status: "" })}>查看全部 Skill</button>}</div>}
@@ -70,7 +69,7 @@ export function SkillCatalogView({ query, status, returnTo, filter }: { query: s
     {menu && <Modal title={menu.item.name} anchor={menu.anchor} busy={downloading} onClose={() => setMenu(null)} restoreFocusSelector={`#skill-more-${menu.item.installations[0].id}`}><div className="skill-action-menu" role="menu" aria-label="Skill 操作" onKeyDown={event => { if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return; event.preventDefault(); const entries = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')); const index = entries.indexOf(document.activeElement as HTMLButtonElement); entries[event.key === "Home" ? 0 : event.key === "End" ? entries.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + entries.length) % entries.length]?.focus(); }}>
       <button autoFocus role="menuitem" onClick={() => open(menu.item, "view")}><FileText size={16} />查看详情</button>
       {canWrite && <button role="menuitem" onClick={() => open(menu.item, "edit")}><Pencil size={16} />编辑 Skill</button>}
-      <button role="menuitem" onClick={() => open(menu.item, "locate")}><FolderOpen size={16} />在工作区查看</button>
+      <button role="menuitem" onClick={() => open(menu.item, "locate")}><FolderOpen size={16} />在我的资源中查看</button>
       {menu.item.packageId && <button role="menuitem" disabled={downloading} onClick={() => void download(menu.item)}>{downloading ? <Loader2 size={16} className="spin" /> : <Download size={16} />}{downloading ? "正在下载" : "下载仓库包"}</button>}
       {canWrite && <button role="menuitem" className="skill-uninstall" onClick={() => open(menu.item, "uninstall")}><Trash2 size={16} />卸载</button>}
     </div></Modal>}

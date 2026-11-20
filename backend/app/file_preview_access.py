@@ -10,9 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from .auth import Access, get_access, now
 from .db import get_db
 from .models import ChatAttachment, Document, DocumentStatus
-from .shared_resources import object_key
 from .storage_backend import current_storage
-from .workspace_files import owned
+from .workspace_files import _current_file_version, owned
 
 router = APIRouter(tags=["file-preview-access"])
 TTL = 300
@@ -64,8 +63,8 @@ def grant(storage, key, *, identifier, filename, content_type, expected, respons
 @router.post("/resources/{identifier}/preview-access")
 def resource_access(identifier: UUID, payload: PreviewRequest, response: Response,
                     db=Depends(get_db), access: Access = Depends(get_access)):
-    row = owned(db, access, access.workspace_id, identifier)
-    return grant(current_storage(db), object_key(row.workspace_id, row.path), identifier=row.id,
+    row = owned(db, access, access.user_id, identifier)
+    return grant(current_storage(db), _current_file_version(db, row).storage_key, identifier=row.id,
         filename=row.path, content_type=row.content_type, expected=payload.revision, response=response)
 
 
@@ -73,11 +72,12 @@ def resource_access(identifier: UUID, payload: PreviewRequest, response: Respons
 def attachment_access(identifier: UUID, payload: PreviewRequest, response: Response,
                       db=Depends(get_db), access: Access = Depends(get_access)):
     row = db.get(ChatAttachment, identifier)
-    if not row or row.deleted_at or row.object_deleted_at or row.workspace_id != access.workspace_id:
+    if not row or row.deleted_at or row.object_deleted_at or row.user_id != access.user_id:
         raise HTTPException(404, "附件不存在或无权访问")
     if row.resource_file_id:
-        resource = owned(db, access, access.workspace_id, row.resource_file_id)
-        key, filename, content_type = object_key(resource.workspace_id, resource.path), resource.path, resource.content_type
+        resource = owned(db, access, access.user_id, row.resource_file_id)
+        key = _current_file_version(db, resource).storage_key
+        filename, content_type = resource.path, resource.content_type
     else:
         key, filename, content_type = row.object_key, row.filename, row.content_type
     return grant(current_storage(db), key, identifier=row.id, filename=filename,

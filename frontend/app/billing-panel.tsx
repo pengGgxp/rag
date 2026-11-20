@@ -79,8 +79,7 @@ const usageLabel: Record<string, string> = {
   cloud_computer: "云电脑运行时长",
 };
 
-export function BillingPanel({ workspaceName, onBusyChange }: {
-  workspaceName: string;
+export function BillingPanel({ onBusyChange }: {
   onBusyChange: (busy: boolean) => void;
 }) {
   const router = useRouter();
@@ -185,7 +184,6 @@ export function BillingPanel({ workspaceName, onBusyChange }: {
         <div>
           <span className="credit-label">可用积分</span>
           <strong>{usage ? count(usage.balance) : "--"}</strong>
-          <small>{workspaceName}</small>
         </div>
         <button className="icon-button" title="刷新充值记录" aria-label="刷新充值记录"
           disabled={loading || busy} onClick={() => void load()}>

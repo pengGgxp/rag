@@ -141,7 +141,7 @@ def test_settings(payload: SearchTestInput, request: Request, db=Depends(get_db)
         raise HTTPException(409, "联网搜索配置已更新，请重新加载后测试")
     existing = db.get(ModelUsageRequest, payload.request_id)
     if existing:
-        if (existing.workspace_id != access.workspace_id or existing.actor_user_id != actor.id
+        if (existing.account_id != access.user_id or existing.actor_user_id != actor.id
                 or not existing.billing_context.get("search_test")):
             raise HTTPException(409, "请求标识已被使用")
         if existing.status == "running":
@@ -149,7 +149,7 @@ def test_settings(payload: SearchTestInput, request: Request, db=Depends(get_db)
         return {"completed": existing.outcome == "completed", "credits": existing.credits,
                 "request_id": str(existing.request_id)}
     rate_limit(request, f"search-test:{actor.id}", limit=3)
-    model_billing.start_request(db, access.workspace_id, actor.id, payload.request_id, None, 0,
+    model_billing.start_request(db, access.user_id, actor.id, payload.request_id, None, 0,
         search_config=config, tool_only=True)
     row = db.get(ModelUsageRequest, payload.request_id)
     row.billing_context = {**row.billing_context, "search_test": True}

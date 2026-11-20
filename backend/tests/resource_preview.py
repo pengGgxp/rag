@@ -48,10 +48,10 @@ if __name__ == "__main__":
         for role in ("viewer", "editor"):
             member = User(email=f"{role}@example.com", name=role, email_verified_at=fixture.auth.now())
             db.add(member); db.flush()
-            db.add(Membership(workspace_id=fixture.auth.LEGACY_WORKSPACE_ID, user_id=member.id, role=role))
+            db.add(Membership(account_id=fixture.auth.LEGACY_WORKSPACE_ID, user_id=member.id, role=role))
             token = secrets.token_urlsafe(48)
             db.add(LoginSession(token_hash=fixture.auth.digest(token), user_id=member.id,
-                workspace_id=fixture.auth.LEGACY_WORKSPACE_ID, csrf_token=secrets.token_urlsafe(32),
+                csrf_token=secrets.token_urlsafe(32),
                 expires_at=fixture.auth.now()+timedelta(hours=1)))
             member_cookies[role] = token
         db.commit()

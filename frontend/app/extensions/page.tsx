@@ -6,12 +6,10 @@ import * as Tabs from "../../components/ui/tabs";
 import { WorkspaceHeader, WorkspaceSkeleton } from "../workspace-header";
 import { useExtensionResource, type MCPConnection } from "./extension-data";
 import { SkillCatalogView } from "./skill-catalog-view";
-import { useAuth } from "../auth";
 
 export default function ExtensionsPage() {
   const params = useSearchParams();
   const router = useRouter();
-  const { role } = useAuth();
   const tab = params.get("tab") === "mcp" ? "mcp" : "skills";
   const query = params.get("q") || "";
   const requestedStatus = params.get("status") || "";
@@ -28,7 +26,7 @@ export default function ExtensionsPage() {
   const items = resource.data?.filter(item => `${item.name} ${item.url}`.toLowerCase().includes(query.toLowerCase())
     && (!status || (item.enabled !== false ? "enabled" : "disabled") === status));
   return <>
-    <WorkspaceHeader title={tab === "skills" ? "Skill 仓库" : "扩展"} actions={(tab === "mcp" || role === "admin" || role === "editor") && <Link className="primary skill-add" href={tab === "mcp" ? "/extensions/mcp/new" : `/extensions/skills/new?returnTo=${encodeURIComponent(returnTo)}`}>
+    <WorkspaceHeader title={tab === "skills" ? "Skill 仓库" : "扩展"} actions={<Link className="primary skill-add" href={tab === "mcp" ? "/extensions/mcp/new" : `/extensions/skills/new?returnTo=${encodeURIComponent(returnTo)}`}>
       <Plus size={16} />{tab === "mcp" ? "添加 MCP" : "添加 Skill"}
     </Link>} />
     <div className={`workspace-body extension-page ${tab === "skills" ? "skill-catalog-page" : ""}`}><div className={tab === "skills" ? "skill-catalog-content" : undefined}>

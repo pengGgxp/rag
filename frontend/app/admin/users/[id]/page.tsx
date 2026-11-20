@@ -1,13 +1,15 @@
 "use client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, LogOut, Mail, ShieldBan, ShieldCheck } from "lucide-react";
 import { Dialog } from "../../../../components/ui/dialog";
 import { ApiError, request } from "../../../api";
 import { useAuth } from "../../../auth";
+import { StoragePanel } from "../../../storage-panel";
 import type { AdminUser } from "../page";
-import { WorkspaceCredits } from "../../workspace-credits";
+import { useAdminChanges } from "../../admin-changes";
+import { UserCredits } from "../../user-credits";
 import {
   AdminHeading,
   AdminLoad,
@@ -15,6 +17,7 @@ import {
   json,
   useAdminResource,
 } from "../../admin-ui";
+type ModelProvider = { id: string; name: string; enabled: boolean; supports_chat?: boolean };
 export default function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { session } = useAuth();
@@ -24,6 +27,7 @@ export default function UserDetailPage() {
     loading,
     reload,
   } = useAdminResource<AdminUser>(`/site/admin/users/${id}`);
+  const models = useAdminResource<ModelProvider[]>("/site/admin/llm-providers");
   const [operation, setOperation] = useState<
     "status" | "sessions" | "email" | null
   >(null);
@@ -34,6 +38,35 @@ export default function UserDetailPage() {
   const [accessBusy, setAccessBusy] = useState(false);
   const [accessError, setAccessError] = useState("");
   const [accessConflict, setAccessConflict] = useState(false);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyError, setPolicyError] = useState("");
+  const [policyModels, setPolicyModels] = useState<string[]>([]);
+  const [policyDefault, setPolicyDefault] = useState("");
+  const [policyMultiplier, setPolicyMultiplier] = useState("100");
+  const [storageBusy, setStorageBusy] = useState(false);
+  useAdminChanges(false, storageBusy || policyBusy || accessBusy || busy);
+  useEffect(() => {
+    if (!user) return;
+    setPolicyModels(user.model_policy.available_models);
+    setPolicyDefault(user.model_policy.default_model || "");
+    setPolicyMultiplier(String(user.model_policy.billing_multiplier_percent));
+  }, [user?.id, user?.model_policy.version]);
+  async function savePolicy() {
+    if (!user) return;
+    setPolicyBusy(true); setPolicyError(""); setNotice("");
+    try {
+      await request(`/site/admin/users/${id}/model-policy`, json({
+        available_models: policyModels,
+        default_model: policyDefault || null,
+        billing_multiplier_percent: Number(policyMultiplier),
+        version: user.model_policy.version,
+      }, "PUT"));
+      setNotice("账号模型策略已更新");
+      await reload();
+    } catch (error) {
+      setPolicyError(error instanceof Error ? error.message : "保存失败，请重试");
+    } finally { setPolicyBusy(false); }
+  }
   async function changeWorkbench(enabled: boolean) {
     if (!user) return;
     setAccessBusy(true); setAccessError(""); setNotice("");
@@ -144,6 +177,10 @@ export default function UserDetailPage() {
                 <dd>{user.active_sessions}</dd>
               </div>
             </dl>
+            <section className="admin-section">
+              <h2>存储与下载</h2>
+              <StoragePanel userId={user.id} onBusyChange={setStorageBusy} />
+            </section>
             <section className="admin-section admin-user-capability">
               <h2>功能权限</h2>
               <label className="provider-enabled">
@@ -202,29 +239,44 @@ export default function UserDetailPage() {
               </div>
             </section>
             <section className="admin-section">
-              <h2>所属工作区</h2>
-              {!user.workspaces.length && (
-                <p className="admin-empty">暂无工作区</p>
-              )}
-              {user.workspaces.map((workspace) => (
-                <section key={workspace.id} className="admin-section">
-                  <h2>
-                    <Link href={`/admin/workspaces/${workspace.id}`}>
-                      {workspace.name}
-                    </Link>{" "}
-                    ·{" "}
-                    {(
-                      {
-                        admin: "管理员",
-                        editor: "编辑者",
-                        viewer: "只读成员",
-                      } as Record<string, string>
-                    )[workspace.role] || workspace.role}
-                  </h2>
-                  <WorkspaceCredits id={workspace.id} name={workspace.name} credits={workspace.credits}
-                    changed={setNotice} />
-                </section>
-              ))}
+              <h2>账号额度与模型策略</h2>
+              <dl className="admin-details">
+                <div><dt>当前余额</dt><dd>{user.credits.balance}</dd></div>
+                <div><dt>累计充值</dt><dd>{user.credits.lifetime_granted}</dd></div>
+                <div><dt>累计消费</dt><dd>{user.credits.lifetime_spent}</dd></div>
+                <div><dt>倍率</dt><dd>{(user.model_policy.billing_multiplier_percent / 100).toFixed(2)}x</dd></div>
+                <div><dt>默认模型</dt><dd>{models.data?.find(model => model.id === user.model_policy.default_model)?.name || "未设置"}</dd></div>
+                <div><dt>可用模型</dt><dd>{models.data?.filter(model => user.model_policy.available_models.includes(model.id))
+                  .map(model => model.name).join("、") || "未设置"}</dd></div>
+              </dl>
+              <UserCredits id={id} name={user.name} changed={message => { setNotice(message); void reload(); }} />
+              <div className="admin-form-grid">
+                <label>
+                  可用模型
+                  <select multiple value={policyModels} disabled={policyBusy || models.loading}
+                    onChange={event => setPolicyModels(Array.from(event.target.selectedOptions, option => option.value))}>
+                    {models.data?.filter(model => model.enabled && model.supports_chat !== false).map(model =>
+                      <option key={model.id} value={model.id}>{model.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  默认模型
+                  <select value={policyDefault} disabled={policyBusy} onChange={event => setPolicyDefault(event.target.value)}>
+                    <option value="">未设置</option>
+                    {models.data?.filter(model => policyModels.includes(model.id)).map(model =>
+                      <option key={model.id} value={model.id}>{model.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  消费倍率（百分比）
+                  <input type="number" min={1} max={10000} value={policyMultiplier} disabled={policyBusy}
+                    onChange={event => setPolicyMultiplier(event.target.value)} />
+                </label>
+              </div>
+              {policyError && <p className="form-error" role="alert">{policyError}</p>}
+              <button className="primary" disabled={policyBusy || models.loading} onClick={() => void savePolicy()}>
+                {policyBusy ? "保存中" : "保存模型策略"}
+              </button>
             </section>
           </>
         )}

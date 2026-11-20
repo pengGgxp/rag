@@ -6,11 +6,11 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, Column, DateTime, Enum as SqlEnum, ForeignKey, Index, Integer, LargeBinary, Numeric, String, Table, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
-LEGACY_WORKSPACE_ID = UUID("00000000-0000-4000-a000-000000000001")
 
 chat_message_resources = Table(
     "chat_message_resources", Base.metadata,
@@ -93,7 +93,7 @@ class DocumentUpload(Base):
     __tablename__ = "document_uploads"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
     version_of: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     filename: Mapped[str] = mapped_column(String(255))
@@ -113,7 +113,7 @@ class SkillUpload(Base):
     __tablename__ = "skill_uploads"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID | None] = mapped_column(ForeignKey("workspaces.id"), nullable=True, index=True)
+    account_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     scope: Mapped[str] = mapped_column(String(16))
     filename: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -135,28 +135,41 @@ class User(Base):
     is_suspended: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     question_workbench_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     question_workbench_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    legacy_resource_prefix: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class Workspace(Base):
-    __tablename__ = "workspaces"
-    __table_args__ = (CheckConstraint("billing_multiplier_percent BETWEEN 1 AND 10000",
-                                     name="ck_workspace_billing_multiplier"),)
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(100))
-    model_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    billing_multiplier_percent: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
-    billing_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+class LegacyAccountObjectPrefix(Base):
+    __tablename__ = "legacy_account_object_prefixes"
+    prefix: Mapped[str] = mapped_column(String(100), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
 
-class CreditAccount(Base):
-    __tablename__ = "credit_accounts"
+class UserCreditAccount(Base):
+    """User-level billing aggregate populated by the ownership migration."""
 
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    __tablename__ = "user_credit_accounts"
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     balance: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
     lifetime_granted: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
     lifetime_spent: Mapped[Decimal] = mapped_column(Numeric(24, 4), default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UserModelPolicy(Base):
+    """Per-user model visibility and billing policy."""
+
+    __tablename__ = "user_model_policies"
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    available_models: Mapped[list[str]] = mapped_column(JSON, default=list, server_default="[]")
+    default_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    billing_multiplier_percent: Mapped[int] = mapped_column(
+        Integer, default=100, server_default="100"
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -167,7 +180,7 @@ class CreditLedgerEntry(Base):
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_credit_ledger_idempotency"),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(24, 4))
     balance_after: Mapped[Decimal] = mapped_column(Numeric(24, 4))
@@ -225,7 +238,7 @@ class ThinkingTest(Base):
     __tablename__ = "model_thinking_tests"
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
     actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     provider_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
     version: Mapped[int] = mapped_column(Integer)
     connection_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -246,10 +259,10 @@ class ImageModelSettings(Base):
 
 class ImageTask(Base):
     __tablename__ = "image_tasks"
-    __table_args__ = (UniqueConstraint("workspace_id", "actor_user_id", "idempotency_key", name="uq_image_task_request"),)
+    __table_args__ = (UniqueConstraint("account_id", "actor_user_id", "idempotency_key", name="uq_image_task_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     agent_tool_execution_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, unique=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     model_id: Mapped[UUID] = mapped_column(ForeignKey("site_model_providers.id"))
     session_hash: Mapped[str] = mapped_column(String(64))
@@ -274,12 +287,12 @@ class ImageTask(Base):
 class LLMProviderConfig(Base):
     __tablename__ = "llm_provider_configs"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "key", name="uq_llm_provider_workspace_key"),
-        UniqueConstraint("workspace_id", "site_provider_id", name="uq_workspace_site_provider"),
+        UniqueConstraint("account_id", "key", name="uq_llm_provider_workspace_key"),
+        UniqueConstraint("account_id", "site_provider_id", name="uq_workspace_site_provider"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     site_provider_id: Mapped[UUID | None] = mapped_column(ForeignKey("site_model_providers.id"), nullable=True, index=True)
     source_price_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     key: Mapped[str] = mapped_column(String(80))
@@ -300,14 +313,14 @@ class UsagePolicy(Base):
     __tablename__ = "usage_policies"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "provider_id", "capability",
+            "account_id", "provider_id", "capability",
             name="uq_usage_policy_workspace_provider_capability",
         ),
         CheckConstraint("credits_per_unit >= 0 AND unit_size > 0", name="ck_usage_policy_positive"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     provider_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("llm_provider_configs.id"), nullable=True, index=True,
     )
@@ -331,7 +344,7 @@ class UsageEvent(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     provider_id: Mapped[UUID | None] = mapped_column(
@@ -362,10 +375,10 @@ class ModelBillingSettings(Base):
 
 class BillingSnapshot(Base):
     __tablename__ = "billing_snapshots"
-    __table_args__ = (UniqueConstraint("workspace_id", "request_id", "event_key",
+    __table_args__ = (UniqueConstraint("account_id", "request_id", "event_key",
                                       name="uq_billing_snapshot_operation"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
     event_key: Mapped[str] = mapped_column(String(100))
     context: Mapped[dict] = mapped_column(JSON)
@@ -376,7 +389,7 @@ class BillingSnapshot(Base):
 class ModelUsageRequest(Base):
     __tablename__ = "model_usage_requests"
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="running", index=True)
     outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)
@@ -420,13 +433,13 @@ class SearchToolCall(Base):
 class RechargeOrder(Base):
     __tablename__ = "recharge_orders"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "user_id", "idempotency_key", name="uq_recharge_request"),
+        UniqueConstraint("account_id", "user_id", "idempotency_key", name="uq_recharge_request"),
         UniqueConstraint("merchant_num", "platform_order_no", name="uq_recharge_platform_order"),
         CheckConstraint("amount_fen > 0 AND credits > 0", name="ck_recharge_positive"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(64))
     package_id: Mapped[str] = mapped_column(String(64))
@@ -465,7 +478,7 @@ class SitePaymentConfig(Base):
     encrypted_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     packages: Mapped[list[dict]] = mapped_column(JSON, default=list)
     custom_recharge_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -481,18 +494,10 @@ class SiteRechargeConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class Membership(Base):
-    __tablename__ = "memberships"
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    role: Mapped[str] = mapped_column(String(20))
-
-
 class LoginSession(Base):
     __tablename__ = "login_sessions"
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
     csrf_token: Mapped[str] = mapped_column(String(100))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
@@ -548,6 +553,17 @@ class SiteAuthAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AccountCleanupObject(Base):
+    """Durable retry queue for object-store deletion after account cleanup."""
+
+    __tablename__ = "account_cleanup_objects"
+    object_key: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -591,8 +607,8 @@ class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True, default=LEGACY_WORKSPACE_ID)
-    restricted: Mapped[bool] = mapped_column(default=False)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -649,7 +665,7 @@ class KnowledgeBaseToolExecution(Base):
     __tablename__ = "knowledge_base_tool_executions"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"))
@@ -663,7 +679,7 @@ class ConversationDocumentSave(Base):
     __table_args__ = (UniqueConstraint("user_id", "request_id", "knowledge_base_id", "content_hash", name="uq_conversation_document_save"),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
     message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id"))
@@ -739,7 +755,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True, default=LEGACY_WORKSPACE_ID)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     title_source: Mapped[str] = mapped_column(String(20), default="temporary", server_default="legacy")
@@ -805,7 +821,7 @@ class ConversationTitleTask(Base):
 class QuestionWorkbenchGrant(Base):
     __tablename__ = "question_workbench_grants"
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     enabled: Mapped[bool] = mapped_column(default=False)
     version: Mapped[int] = mapped_column(default=1)
 
@@ -863,7 +879,7 @@ class ChatMessage(Base):
 class ChatAttachment(Base):
     __tablename__ = "chat_attachments"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     message_id: Mapped[UUID | None] = mapped_column(ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
     conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -889,9 +905,11 @@ class ChatAttachment(Base):
 
 class WorkspaceFile(Base):
     __tablename__ = "workspace_files"
-    __table_args__ = (UniqueConstraint("workspace_id", "path", name="uq_workspace_file_path"),)
+    __table_args__ = (UniqueConstraint("owner_user_id", "path", name="uq_workspace_files_owner_path"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"),
+        default=lambda context: context.get_current_parameters()["created_by"])
     path: Mapped[str] = mapped_column(String(512))
     content_type: Mapped[str] = mapped_column(String(150), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
@@ -910,10 +928,14 @@ class WorkspaceFile(Base):
 
 class WorkspaceDirectory(Base):
     __tablename__ = "workspace_directories"
-    __table_args__ = (UniqueConstraint("workspace_id", "path", name="uq_workspace_directory_path"),)
+    __table_args__ = (UniqueConstraint("owner_user_id", "path", name="uq_workspace_directories_owner_path"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"),
+        default=lambda context: context.get_current_parameters()["created_by"])
     path: Mapped[str] = mapped_column(String(512))
+    marker_key: Mapped[str | None] = mapped_column(String(700), nullable=True)
+    mounted_marker_key: Mapped[str | None] = mapped_column(String(700), nullable=True)
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -921,9 +943,9 @@ class WorkspaceDirectory(Base):
 
 class WorkspaceFileOperation(Base):
     __tablename__ = "workspace_file_operations"
-    __table_args__ = (UniqueConstraint("workspace_id", "request_id", name="uq_workspace_file_operation_request"),)
+    __table_args__ = (UniqueConstraint("account_id", "request_id", name="uq_workspace_file_operation_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     request_id: Mapped[str] = mapped_column(String(100))
     fingerprint: Mapped[str] = mapped_column(String(64))
@@ -940,9 +962,10 @@ class WorkspaceFileVersion(Base):
     __table_args__ = (UniqueConstraint("file_id", "version", name="uq_workspace_file_version"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     file_id: Mapped[UUID] = mapped_column(ForeignKey("workspace_files.id", ondelete="CASCADE"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     object_key: Mapped[str] = mapped_column(String(700), unique=True)
+    mounted_object_key: Mapped[str | None] = mapped_column(String(700), nullable=True)
     content_type: Mapped[str] = mapped_column(String(150))
     size_bytes: Mapped[int] = mapped_column(Integer)
     content_hash: Mapped[str] = mapped_column(String(64))
@@ -951,11 +974,27 @@ class WorkspaceFileVersion(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     available: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
 
+    @hybrid_property
+    def storage_key(self):
+        return self.mounted_object_key or self.object_key
+
+    @storage_key.inplace.expression
+    @classmethod
+    def _storage_key_expression(cls):
+        return func.coalesce(cls.mounted_object_key, cls.object_key)
+
+    @storage_key.inplace.setter
+    def _set_storage_key(self, key):
+        if self.mounted_object_key is not None:
+            self.mounted_object_key = key
+        else:
+            self.object_key = key
+
 
 class WorkspaceExecutionJob(Base):
     __tablename__ = "workspace_execution_jobs"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     conversation_id: Mapped[UUID | None] = mapped_column(ForeignKey("conversations.id"), nullable=True, index=True)
     request_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
@@ -1020,7 +1059,7 @@ class AnswerFeedback(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     rating: Mapped[str] = mapped_column(String(10))
     categories: Mapped[list[str]] = mapped_column(JSON, default=list)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1034,7 +1073,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    owner_user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(100), index=True)
     resource_type: Mapped[str] = mapped_column(String(50), index=True)
@@ -1045,12 +1084,6 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
-class LibraryGrant(Base):
-    __tablename__ = "library_grants"
-    knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
-
-
 class SiteSkill(Base):
     __tablename__ = "site_skills"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -1059,8 +1092,8 @@ class SiteSkill(Base):
     markdown: Mapped[str] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
-    updated_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     files: Mapped[list["SiteSkillFile"]] = relationship(cascade="all, delete-orphan")
@@ -1077,9 +1110,9 @@ class SiteSkillFile(Base):
 
 class WorkspaceSkillInstall(Base):
     __tablename__ = "workspace_skill_installs"
-    __table_args__ = (UniqueConstraint("workspace_id", "site_skill_id", name="uq_workspace_skill_install"),)
+    __table_args__ = (UniqueConstraint("account_id", "site_skill_id", name="uq_workspace_skill_install"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     site_skill_id: Mapped[UUID] = mapped_column(ForeignKey("site_skills.id", ondelete="CASCADE"), index=True)
     directory: Mapped[str] = mapped_column(String(512), unique=True)
     source_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -1093,7 +1126,7 @@ class ProductSuggestion(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     category: Mapped[str] = mapped_column(String(24))
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="pending")
@@ -1120,7 +1153,7 @@ class AgentSkill(Base):
     __tablename__ = "agent_skills"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(64))
     description: Mapped[str] = mapped_column(Text)
@@ -1151,7 +1184,7 @@ class MCPServer(Base):
     __tablename__ = "mcp_servers"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     url: Mapped[str] = mapped_column(Text)
@@ -1183,7 +1216,7 @@ class ResourcePreview(Base):
     __tablename__ = "resource_previews"
     __table_args__ = (UniqueConstraint("resource_id", "revision", "kind", name="uq_resource_preview_content"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     resource_id: Mapped[UUID] = mapped_column(ForeignKey("workspace_files.id"), index=True)
     revision: Mapped[str] = mapped_column(String(64))
     kind: Mapped[str] = mapped_column(String(20))
@@ -1201,7 +1234,7 @@ class ResourcePreview(Base):
 class CloudComputerSession(Base):
     __tablename__ = "cloud_computer_sessions"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     conversation_id: Mapped[UUID] = mapped_column(ForeignKey("conversations.id"), index=True)
     session_hash: Mapped[str] = mapped_column(String(64))
@@ -1283,7 +1316,7 @@ class RemoteToolExecution(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     invocation_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     message_id: Mapped[UUID] = mapped_column(ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"))
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     request_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
     tool_name: Mapped[str] = mapped_column(String(64))

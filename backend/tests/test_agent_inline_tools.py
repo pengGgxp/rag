@@ -12,8 +12,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth, cloud_computer as cloud, conversations, image_adapters, image_tasks, image_tools
 from app.agent import AgentCancelled
+from app.credits import ensure_account
 from app.extensions import ExtensionRuntime
-from app.models import (AgentToolExecution, ChatMessage, Conversation, CreditAccount, ImageTask,
+from app.models import (AgentToolExecution, ChatMessage, Conversation, ImageTask,
     UsageEvent)
 from auth_helpers import configured_model
 from test_cloud_computer import enable_execution
@@ -27,7 +28,7 @@ from test_resources import access_for, resource_store
 def invocation(db, access, *, name="generate_image", request=None, conversation=None):
     request = request or uuid4()
     if conversation is None:
-        conversation = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
+        conversation = Conversation(account_id=access.user_id, owner_id=access.user_id)
         db.add(conversation); db.flush()
     conversation.active_request_id = request
     model_item_id, call_id = uuid4(), uuid4().hex
@@ -94,14 +95,14 @@ def test_status_recovery_and_wrong_worker_never_claim_bound_task(inline):
 
 def test_stop_before_submission_releases_hold_without_generation(inline):
     http, db, actor, tool, conversation, runtime, attempts = inline
-    before = db.get(CreditAccount, actor.workspace_id).balance
+    before = ensure_account(db, actor.user_id).balance
     def stopped():
         raise AgentCancelled()
     result = image_tools.execute(runtime, "generate_image", {"prompt": "配图"},
         agent_tool_execution_id=tool.id, check_active=stopped)
     db.expire_all()
     assert result["status"] == "cancelled" and not attempts
-    assert db.get(CreditAccount, actor.workspace_id).balance == before
+    assert ensure_account(db, actor.user_id).balance == before
 
 
 def test_stop_during_generation_keeps_actual_bytes_and_charges_once(inline, monkeypatch):
@@ -109,7 +110,7 @@ def test_stop_during_generation_keeps_actual_bytes_and_charges_once(inline, monk
     db.add(ChatMessage(conversation_id=conversation.id, sequence=0, role="assistant",
         request_id=runtime.request_id, status="streaming", content=""))
     db.commit()
-    before = db.get(CreditAccount, actor.workspace_id).balance
+    before = ensure_account(db, actor.user_id).balance
     def generate(*args):
         attempts.append(args)
         stopped = http.post(f"/conversations/{conversation.id}/stop",
@@ -122,7 +123,7 @@ def test_stop_during_generation_keeps_actual_bytes_and_charges_once(inline, monk
     assert result["status"] == "cancelled" and result["files"]
     assert http.get(result["files"][0]["download_url"]).content == png()
     db.expire_all()
-    assert db.get(CreditAccount, actor.workspace_id).balance == before - Decimal("3.25")
+    assert ensure_account(db, actor.user_id).balance == before - Decimal("3.25")
     image_tasks.run(result["task_id"], runtime.factory)
     assert len(attempts) == 1
     assert db.get(Conversation, conversation.id).active_request_id is None
@@ -255,26 +256,19 @@ def test_bound_save_retry_and_orphan_save_recovery_never_regenerate(inline, monk
     assert len(db.scalars(select(UsageEvent).where(UsageEvent.request_id == identifier)).all()) == 1
 
 
-def test_revoked_permission_after_submission_preserves_bytes_until_save_retry(inline, monkeypatch):
+def test_personal_image_output_is_downloadable_by_its_owner(inline, monkeypatch):
     http, db, actor, tool, _, runtime, attempts = inline
-    from app.models import Membership
     def generate(*args):
         attempts.append(args)
-        with runtime.factory() as work:
-            work.get(Membership, (actor.workspace_id, actor.user_id)).role = "viewer"
-            work.commit()
-        return [(png(), "image/png")], "submitted-before-revocation", {}
+        return [(png(), "image/png")], "submitted", {}
     monkeypatch.setattr(image_adapters, "generate", generate)
     result = image_tools.execute(runtime, "generate_image", {"prompt": "配图"},
         agent_tool_execution_id=tool.id)
-    assert result["status"] == "save_failed" and not result["files"]
+    assert result["status"] == "completed" and result["files"]
     db.expire_all()
     row = db.get(ImageTask, UUID(result["task_id"]))
-    assert row.outputs[0]["encrypted_data"] and row.settled
-    db.get(Membership, (actor.workspace_id, actor.user_id)).role = "admin"
-    db.commit()
-    response = http.post(f"/image-tasks/{row.id}/retry-save")
-    assert response.status_code == 200 and response.json()["files"]
+    assert row.settled
+    assert http.get(result["files"][0]["download_url"]).content == png()
     assert len(attempts) == 1
 
 
@@ -283,7 +277,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     """The real durable turn completes serially; neither tool gets a child slot."""
     http, db, _ = configure(accounts, monkeypatch)
     actor = access_for(http, db)
-    binding = configured_model(db, actor.workspace_id)
+    binding = configured_model(db, actor.user_id)
     from app.models import SiteModelProvider
     db.get(SiteModelProvider, binding.site_provider_id).supports_images = True
     db.commit()
@@ -292,8 +286,8 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     mounted = MemoryMount()
     mounted.objects = resource_store[0]
     configure_mount(db, monkeypatch, mounted)
-    fake = LocalFileCloud(tmp_path / "workspace", mounted,
-        f"workspaces/{actor.workspace_id}/resource-directory/")
+    from app.shared_resources import prefix
+    fake = LocalFileCloud(tmp_path / "workspace", mounted, prefix(actor.user_id))
     start_file = fake.start_file
     monkeypatch.setattr(fake, "start_file", lambda sandbox, identifier, operation:
         start_file(sandbox, identifier, {**operation,
@@ -393,7 +387,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
 def test_durable_turn_stop_keeps_late_result_without_another_model_call(accounts, monkeypatch, resource_store):
     http, db, _ = configure(accounts, monkeypatch)
     actor = access_for(http, db)
-    configured_model(db, actor.workspace_id)
+    configured_model(db, actor.user_id)
     from auth_helpers import StreamingTestProvider
     from app.llm import ToolCall, ToolResponse
     calls = []

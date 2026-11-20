@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import conversations as chat, main
 from app.llm import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
-from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, CreditAccount, SiteModelProvider
+from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, SiteModelProvider
 from auth_helpers import model_id, generation_response
 from test_conversations import client, create, turn
 
@@ -312,7 +312,8 @@ def context_fixture(client, *, length=1000):
     http, db, _ = client
     identifier = model_id(http)
     provider = db.get(SiteModelProvider, UUID(identifier))
-    provider.context_capacity, provider.max_output_tokens = 16000, 2000
+    # Allow room for the production tool schemas as well as the test history.
+    provider.context_capacity, provider.max_output_tokens = 32000, 2000
     conversation = create(http, [])
     for sequence in range(8):
         db.add(ChatMessage(conversation_id=UUID(conversation["id"]), sequence=sequence,
@@ -352,7 +353,7 @@ def test_manual_compaction_preserves_budgeted_users_and_repeat_is_free(client, m
     before = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
     request_id = str(uuid4())
     events = compact(http, conversation, provider, request_id)
-    assert events[-1][1]["status"] == "completed"
+    assert events[-1][1]["status"] == "completed", events
     assert len(calls) == 1
     assert "record-3" in calls[0][1]["content"] and "record-4" in calls[0][1]["content"]
     after = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
@@ -383,7 +384,7 @@ def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinki
     monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=key))
     http, db, conversation, provider = context_fixture(client, length=60)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
-    skill = AgentSkill(owner_id=session.user_id, workspace_id=session.workspace_id,
+    skill = AgentSkill(owner_id=session.user_id, account_id=auth.get_access(session).user_id,
         name="Test method", description="Check facts", markdown="Read and verify.", enabled=True)
     db.add(skill); db.flush()
     row = db.get(Conversation, UUID(conversation))
@@ -524,9 +525,9 @@ def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
-    access = Access(session.user_id, session.workspace_id, "admin", session.token_hash)
+    access = auth.get_access(session)
     request_id = uuid4()
-    config = replace(request_provider_config(db, access.workspace_id, UUID(provider)),
+    config = replace(request_provider_config(db, access.user_id, UUID(provider)),
         context_capacity=capacity, max_output_tokens=512)
     row = db.get(Conversation, UUID(conversation))
     row.active_request_id = request_id
@@ -676,13 +677,12 @@ def test_original_lookup_is_current_conversation_only_and_rechecks_access(client
 
 @pytest.mark.parametrize("settlement", [False, True])
 def test_confirmed_failed_stream_is_charged_and_insufficient_balance_becomes_pending(client, monkeypatch, settlement):
-    from app.models import ModelBillingSettings, ModelUsageRequest, LEGACY_WORKSPACE_ID
+    from app.credits import ensure_account
+    from app.models import ModelBillingSettings, ModelUsageRequest
     http, db, _ = client
     db.add(ModelBillingSettings(id=1, enabled=settlement))
-    account = db.get(CreditAccount, LEGACY_WORKSPACE_ID)
-    if account is None:
-        from app.credits import ensure_account
-        account = ensure_account(db, LEGACY_WORKSPACE_ID)
+    user_id = UUID(http.get("/auth/me").json()["user"]["id"])
+    account = ensure_account(db, user_id)
     account.balance = 2
     db.commit()
     calls = []
@@ -714,17 +714,17 @@ def test_confirmed_failed_stream_is_charged_and_insufficient_balance_becomes_pen
 def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(client):
     from types import SimpleNamespace
     from app import auth
-    from app.models import LoginSession, LEGACY_WORKSPACE_ID, ContextOperation, UsageEvent, LLMProviderConfig
+    from app.models import LoginSession, ContextOperation, UsageEvent, LLMProviderConfig
     from app.credits import authorization_hold
     from app.workspace_billing import operation_snapshot, LegacyPriceMeter
     http, db, _ = client
     conversation = create(http, [])
-    binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == LEGACY_WORKSPACE_ID))
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
+    binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.account_id == session.user_id))
     request_id = uuid4()
-    operation_snapshot(db, LEGACY_WORKSPACE_ID, request_id, "model",
+    operation_snapshot(db, session.user_id, request_id, "model",
         capabilities=("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens"), provider_id=binding.id)
-    authorization_hold(db, LEGACY_WORKSPACE_ID, session.user_id, request_id, 1)
+    authorization_hold(db, session.user_id, session.user_id, request_id, 1)
     db.get(Conversation, UUID(conversation["id"])).active_request_id = request_id
     db.add(ContextOperation(request_id=request_id, conversation_id=UUID(conversation["id"])))
     message = ChatMessage(conversation_id=UUID(conversation["id"]), sequence=0, role="assistant",
@@ -734,7 +734,7 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     db.add(message)
     db.commit()
     provider = SimpleNamespace(status=SimpleNamespace(provider_id=str(binding.id), provider_key=binding.key))
-    meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), LEGACY_WORKSPACE_ID, request_id)
+    meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), session.user_id, request_id)
     meter.invoke(provider, lambda: ToolResponse("confirmed", [], LLMUsage(prompt_tokens=100, completion_tokens=20)), [])
     chat.recover_interrupted_conversations(db)
     assert db.get(ContextOperation, request_id).status == "interrupted"

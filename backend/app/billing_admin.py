@@ -5,29 +5,15 @@ from decimal import Decimal
 from fractions import Fraction
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import HTTPException
 from sqlalchemy import select
 
-from .db import get_db
-from .management_access import ManagementAccess, management_access
-from .model_pricing import ModelPrice, settings_locked
+from .model_pricing import settings_locked
 from .models import (BillingSnapshot, Conversation, IngestionJob, JobState, LLMProviderConfig,
-                     ModelUsageRequest, SiteModelProvider, UsagePolicy, Workspace)
-from .site_auth import site_admin
+                     ModelUsageRequest, SiteModelProvider, UsagePolicy, User, UserModelPolicy)
 from .site_audit import record
 from .workspace_billing import MODEL_CAPABILITIES, DOCUMENT_CAPABILITIES, resolve_prices
 from .credit_amounts import amount, exact_charge
-
-router = APIRouter(tags=["site-admin"])
-ROOT = "/site/admin/workspaces/{workspace_id}/billing-settings"
-
-
-class MultiplierUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    version: int = Field(ge=0)
-    multiplier: str = Field(pattern=r"^(?:0\.(?:0[1-9]|[1-9][0-9]?)|[1-9][0-9]?(?:\.[0-9]{1,2})?|100(?:\.0{1,2})?)$")
-
 
 def display_rate(percent):
     return f"{percent // 100}.{percent % 100:02d}"
@@ -41,53 +27,19 @@ def price_read(price, percent):
             "available": configured and price.get("enabled", True)}
 
 
-def effective_prices(db, workspace, binding, shared=True):
-    context = {"source_mode": "shared" if shared else "legacy", "multiplier_percent": workspace.billing_multiplier_percent}
-    result = list(resolve_prices(db, workspace.id, DOCUMENT_CAPABILITIES, context=context, required=False).values())
+def effective_prices(db, user_id, binding, percent, shared=True):
+    context = {"source_mode": "shared" if shared else "legacy", "multiplier_percent": percent}
+    result = list(resolve_prices(db, user_id, DOCUMENT_CAPABILITIES, context=context, required=False).values())
     if binding is not None:
         try:
-            model = resolve_prices(db, workspace.id, MODEL_CAPABILITIES, binding.id, context=context, required=False)
+            model = resolve_prices(db, user_id, MODEL_CAPABILITIES, binding.id, context=context, required=False)
             result.extend(model.values())
         except HTTPException:
             result.extend({"capability": key, "unit": "tokens", "unit_size": 1000,
                 "credits_per_unit": None, "enabled": False, "version": 0, "configured": False,
                 "source": "model_provider", "source_id": str(binding.site_provider_id) if binding.site_provider_id else None,
                 "provider_id": str(binding.id)} for key in MODEL_CAPABILITIES)
-    percent = workspace.billing_multiplier_percent if shared else 100
-    return [price_read(price, percent) for price in result]
-
-
-def settings_read(db, workspace_id):
-    from .models import ModelBillingSettings
-    from .shared_providers import unavailable_reason, visible_providers
-    workspace = db.get(Workspace, workspace_id)
-    row = db.get(ModelBillingSettings, 1)
-    models = []
-    for provider in visible_providers(db, workspace_id):
-        prices = []
-        for capability in MODEL_CAPABILITIES:
-            value = provider.prices.get(capability)
-            try:
-                price = ModelPrice.model_validate(value).model_dump()
-                if price["capability"] != capability:
-                    raise ValueError("Mismatched capability")
-                configured = True
-            except (ValueError, TypeError):
-                price = {"capability": capability, "unit": "tokens", "unit_size": 1000,
-                         "credits_per_unit": None, "enabled": False}
-                configured = False
-            prices.append(price_read({**price, "configured": configured, "version": provider.version,
-                "source": "model_provider", "source_id": str(provider.id)}, workspace.billing_multiplier_percent))
-        reason = unavailable_reason(db, provider, None, True)
-        models.append({"provider_id": str(provider.id), "name": provider.name, "model": provider.model,
-            "available": reason is None, "unavailable_reason": reason, "policies": prices})
-    return {"workspace_id": str(workspace_id), "version": workspace.billing_version,
-            "multiplier": display_rate(workspace.billing_multiplier_percent),
-            "multiplier_percent": workspace.billing_multiplier_percent,
-            "shared_pricing_enabled": bool(row and row.shared_pricing_enabled),
-            "billing_enabled": bool(row and row.enabled),
-            "document_policies": effective_prices(db, workspace, None), "models": models,
-            "search_policies": search_prices(db, workspace.billing_multiplier_percent)}
+    return [price_read(price, percent if shared else 100) for price in result]
 
 
 def search_prices(db, percent):
@@ -97,27 +49,6 @@ def search_prices(db, percent):
     return [price_read({**policy, "source": "platform_search", "source_id": "1",
         "enabled": policy["enabled"] and bool(settings and settings.enabled)}, percent)
         for policy in read(settings)["policies"]]
-
-
-@router.get(ROOT)
-def read_settings(db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    return settings_read(db, access.workspace_id)
-
-
-@router.put(ROOT)
-def update_settings(payload: MultiplierUpdate, db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    settings_locked(db)
-    workspace = db.get(Workspace, access.workspace_id)
-    if workspace.billing_version != payload.version:
-        raise HTTPException(409, "工作区倍率已更新，请重新加载后保存")
-    previous = workspace.billing_multiplier_percent
-    workspace.billing_multiplier_percent = int(Decimal(payload.multiplier) * 100)
-    workspace.billing_version += 1
-    record(db, access.actor, "billing.workspace_multiplier_updated", "workspace", workspace.id,
-        request=access.request, details={"fields": ["multiplier"], "previous_percent": previous,
-            "multiplier_percent": workspace.billing_multiplier_percent, "version": workspace.billing_version})
-    db.commit()
-    return settings_read(db, workspace.id)
 
 
 def sample(prices, capability, units, percent, precise):
@@ -131,20 +62,23 @@ def migration_preview(db):
     from .models import ModelBillingSettings
     settings = db.get(ModelBillingSettings, 1, populate_existing=True) or ModelBillingSettings(
         enabled=False, shared_pricing_enabled=False, pricing_paused=False, template={}, version=0)
-    workspaces, fingerprint = [], {"template": settings.template, "version": settings.version,
+    users, fingerprint = [], {"template": settings.template, "version": settings.version,
         "settlement": settings.enabled, "shared": settings.shared_pricing_enabled}
     fingerprint["providers"] = [{"id": str(p.id), "version": p.version, "enabled": p.enabled, "prices": p.prices}
         for p in db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.id))]
-    fingerprint["policies"] = [{"id": str(p.id), "workspace_id": str(p.workspace_id),
+    fingerprint["policies"] = [{"id": str(p.id), "account_id": str(p.account_id),
         "provider_id": str(p.provider_id) if p.provider_id else None, "capability": p.capability,
         "unit_size": p.unit_size, "credits_per_unit": str(p.credits_per_unit), "enabled": p.enabled, "version": p.version}
         for p in db.scalars(select(UsagePolicy).order_by(UsagePolicy.id))]
-    for workspace in db.scalars(select(Workspace).order_by(Workspace.id)):
-        bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id)
+    for user in db.scalars(select(User).where(User.is_suspended.is_(False)).order_by(User.id)):
+        policy = db.get(UserModelPolicy, user.id)
+        percent = policy.billing_multiplier_percent if policy else 100
+        version = policy.version if policy else 0
+        bindings = db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.account_id == user.id)
                              .order_by(LLMProviderConfig.id)).all()
         active = next((b for b in bindings if b.active), None)
-        old = effective_prices(db, workspace, active, shared=False)
-        new = effective_prices(db, workspace, active)
+        old = effective_prices(db, user.id, active, percent, shared=False)
+        new = effective_prices(db, user.id, active, percent)
         by_key = {p["capability"]: p for p in old}
         ratios, changed = set(), False
         for price in new:
@@ -165,7 +99,7 @@ def migration_preview(db):
             precise = settings.enabled and items[0][0] in MODEL_CAPABILITIES
             applicable = items if precise else [(key, units) for key, units in items if key != "llm_cached_input_tokens"]
             old_parts = [sample(old, key, units, 100, precise) for key, units in applicable]
-            new_parts = [sample(new, key, units, workspace.billing_multiplier_percent, precise) for key, units in applicable]
+            new_parts = [sample(new, key, units, percent, precise) for key, units in applicable]
             old_total = amount(sum(old_parts, Fraction())) if all(p is not None for p in old_parts) else None
             new_total = amount(sum(new_parts, Fraction())) if all(p is not None for p in new_parts) else None
             comparisons.append({"label": name, "old_credits": old_total, "new_credits": new_total,
@@ -175,27 +109,20 @@ def migration_preview(db):
         for b in bindings:
             provider = db.get(SiteModelProvider, b.site_provider_id) if b.site_provider_id else None
             if provider and provider.enabled:
-                missing.extend(f"{b.id}:{p['capability']}" for p in effective_prices(db, workspace, b)
+                missing.extend(f"{b.id}:{p['capability']}" for p in effective_prices(db, user.id, b, percent)
                                if p["capability"] in MODEL_CAPABILITIES and not p["available"])
-        workspaces.append({"id": str(workspace.id), "name": workspace.name,
-            "multiplier": display_rate(workspace.billing_multiplier_percent), "version": workspace.billing_version,
+        users.append({"id": str(user.id), "name": user.name,
+            "multiplier": display_rate(percent), "version": version,
             "old_policies": old, "new_policies": new, "missing": sorted(set(missing)),
             "single_multiplier_preserves_prices": not changed and len(ratios) <= 1,
             "samples": comparisons})
-        fingerprint.setdefault("workspaces", []).append({"id": str(workspace.id),
-            "multiplier": workspace.billing_multiplier_percent, "version": workspace.billing_version,
+        fingerprint.setdefault("users", []).append({"id": str(user.id),
+            "multiplier": percent, "version": version,
             "bindings": [{"id": str(b.id), "provider_id": str(b.site_provider_id), "active": b.active} for b in bindings]})
-    ready = not any(w["missing"] for w in workspaces)
+    ready = not any(user["missing"] for user in users)
     digest = hashlib.sha256(json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"fingerprint": digest, "ready": ready, "shared_pricing_enabled": settings.shared_pricing_enabled,
-            "billing_enabled": settings.enabled, "paused": settings.pricing_paused, "workspaces": workspaces}
-
-
-@router.get("/site/admin/pricing-migration")
-def preview(db=Depends(get_db), actor=Depends(site_admin)):
-    result = migration_preview(db)
-    db.commit()
-    return result
+            "billing_enabled": settings.enabled, "paused": settings.pricing_paused, "users": users}
 
 
 def assert_drained(db):

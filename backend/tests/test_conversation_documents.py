@@ -11,8 +11,8 @@ from sqlalchemy.orm import sessionmaker
 from app import auth, conversation_documents as saves, document_ingestion, main, storage
 from app.extensions import ExtensionRuntime
 from app.models import (ChatMessage, ConversationDocumentSave, Document, DocumentStatus, IngestionJob,
-    JobState, KnowledgeBase, KnowledgeBaseStatus, Membership, UsageEvent)
-from test_auth import library, register, share, switch
+    JobState, KnowledgeBase, KnowledgeBaseStatus, UsageEvent)
+from test_auth import library, register
 from test_retrieval import add_document
 
 
@@ -26,8 +26,7 @@ def saving(accounts, monkeypatch):
     message = ChatMessage(conversation_id=UUID(conversation['id']), sequence=2, role='assistant',
         request_id=request_id, content='Synthetic output', status='completed')
     db.add(message); db.commit()
-    access = auth.Access(UUID(session['user']['id']), UUID(session['workspace_id']), 'admin',
-        auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(session['user']['id']), auth.digest(owner.cookies.get(auth.COOKIE)))
     stored, queued, deleted = {}, [], []
     monkeypatch.setattr(storage, 'upload_fileobj', lambda **kw: stored.update({kw['object_key']: kw['fileobj'].read()}))
     monkeypatch.setattr(storage, 'delete_object', deleted.append)
@@ -81,13 +80,11 @@ def test_scopes_writable_targets_roles_and_live_revocation(saving):
     assert good.get('save_id'), good
     assert e.other.get('/conversation-document-saves/'+good['save_id']).status_code==404
     assert e.anonymous.get('/conversation-document-saves/'+good['save_id']).status_code==401
-    share(e.owner, 'outsider@example.com', 'viewer'); switch(e.other, str(e.access.workspace_id))
-    assert e.other.get(f"/documents/{good['document_id']}/preview").status_code==200
+    assert e.owner.put('/auth/members', json={'email': 'outsider@example.com', 'role': 'viewer'}).status_code==404
+    assert e.other.get(f"/documents/{good['document_id']}/preview").status_code==404
     assert e.other.get('/conversation-document-saves/'+good['save_id']).status_code==404
-    member = e.db.get(Membership,(e.access.workspace_id,e.access.user_id)); member.role='viewer'; e.db.commit()
-    assert e.runtime.execute('save_to_knowledge_base',payload(e)).get('error')
     fresh = ExtensionRuntime(e.runtime.factory,e.access)
-    assert 'save_to_knowledge_base' not in [v['function']['name'] for v in fresh.tools]
+    assert 'save_to_knowledge_base' in [v['function']['name'] for v in fresh.tools]
 
 
 def test_validation_archival_and_status_never_restarts(saving):

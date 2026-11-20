@@ -30,7 +30,7 @@ from .auth import Access, aware, get_access, now
 from .config import Settings, get_settings
 from .client_ip import payment_client_ip
 from .credits import recharge
-from .models import RechargeOrder, SitePaymentConfig, Workspace
+from .models import RechargeOrder, SitePaymentConfig, User
 
 
 def _load_ezfp_key(raw: str, *, private: bool):
@@ -591,13 +591,13 @@ def accept_payment(db: Session, params: dict[str, str], settings: Settings, prov
 
     # Order, balance, ledger and audit commit together, including late notifications.
     entry = recharge(
-        db, order.workspace_id, order.user_id, order.credits, order.id, order.amount_fen,
+        db, order.account_id, order.user_id, order.credits, order.id, order.amount_fen,
     )
     order.platform_order_no = platform_id
     order.status = "paid"
     order.paid_at = now()
     record_audit(
-        db, workspace_id=order.workspace_id, actor_user_id=order.user_id,
+        db, owner_user_id=order.user_id, actor_user_id=order.user_id,
         action="recharge.paid", resource_type="recharge_order", resource_id=order.id,
         metadata={"amount_fen": order.amount_fen, "credits": order.credits, "ledger_id": str(entry.id)},
     )
@@ -647,7 +647,7 @@ def build_router(get_db):
 
     @router.get("/order-attempts/{key}")
     def read_attempt(key: str, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        row = db.scalar(select(RechargeOrder).where(RechargeOrder.workspace_id == access.workspace_id,
+        row = db.scalar(select(RechargeOrder).where(RechargeOrder.account_id == access.user_id,
             RechargeOrder.user_id == access.user_id, RechargeOrder.idempotency_key == key))
         return order_read(row) if row else None
 
@@ -658,9 +658,9 @@ def build_router(get_db):
     ):
         auth.rate_limit(request, "recharge", str(access.user_id), limit=20)
         # Serialize idempotency checks even before a first order exists.
-        db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
+        db.scalar(select(User.id).where(User.id == access.user_id).with_for_update())
         order = db.scalar(select(RechargeOrder).where(
-            RechargeOrder.workspace_id == access.workspace_id,
+            RechargeOrder.account_id == access.user_id,
             RechargeOrder.user_id == access.user_id,
             RechargeOrder.idempotency_key == payload.idempotency_key,
         ))
@@ -685,7 +685,7 @@ def build_router(get_db):
         adapter = payment_adapter(selected_method["provider_key"])
         merchant = settings.ezfp_pid if adapter.provider_key == EZFP_PROVIDER_KEY else settings.zhifux_merchant_num
         order = RechargeOrder(
-            id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
+            id=uuid4(), account_id=access.user_id, user_id=access.user_id,
             idempotency_key=payload.idempotency_key,
             package_id=f"{package.id}:{package.amount_fen}" if payload.custom_amount_fen is not None else package.id,
             package_name=package.name,
@@ -699,7 +699,7 @@ def build_router(get_db):
         db.add(order)
         db.flush()
         record_audit(
-            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="recharge.created", resource_type="recharge_order", resource_id=order.id,
             metadata={"amount_fen": order.amount_fen, "credits": order.credits},
         )
@@ -735,7 +735,7 @@ def build_router(get_db):
         db: Session = Depends(get_db), access: Access = Depends(get_access),
     ):
         filters = (
-            RechargeOrder.workspace_id == access.workspace_id,
+            RechargeOrder.account_id == access.user_id,
             RechargeOrder.user_id == access.user_id,
         )
         total = db.scalar(select(func.count()).select_from(RechargeOrder).where(*filters))
@@ -748,7 +748,7 @@ def build_router(get_db):
     def read_order(order_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
         row = db.scalar(select(RechargeOrder).where(
             RechargeOrder.id == order_id,
-            RechargeOrder.workspace_id == access.workspace_id,
+            RechargeOrder.account_id == access.user_id,
             RechargeOrder.user_id == access.user_id,
         ))
         if row is None:

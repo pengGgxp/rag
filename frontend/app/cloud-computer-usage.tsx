@@ -23,7 +23,7 @@ export function CloudComputerUsage() {
   const controller = useRef<AbortController | null>(null);
   const clear = useCallback(() => {
     generation.current++; controller.current?.abort(); setPage(null); setRevoked(true);
-    setLoading(false); setError("用量暂不可查看，请重新登录或切换工作区");
+    setLoading(false); setError("用量暂不可查看，请重新登录后重试");
   }, []);
   const load = useCallback(async () => {
     if (revoked) return;

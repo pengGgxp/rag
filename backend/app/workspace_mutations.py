@@ -13,7 +13,7 @@ from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, Workspace
 
 
 def snapshot(db, access, *, refresh=True):
-    with ops.workspace_lock(db, access.workspace_id):
+    with ops.workspace_lock(db, access.user_id):
         return _snapshot(db, access, refresh=refresh)
 
 
@@ -23,9 +23,9 @@ def _snapshot(db, access, *, refresh):
         # The operation journal and maintenance own compensation.
         shared.refresh_index(db, access)
     files = {row.path: row for row in db.scalars(select(WorkspaceFile).where(
-        WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.deleted_at.is_(None)))}
+        WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.deleted_at.is_(None)))}
     explicit = {row.path: row for row in db.scalars(select(WorkspaceDirectory).where(
-        WorkspaceDirectory.workspace_id == access.workspace_id))}
+        WorkspaceDirectory.owner_user_id == access.user_id))}
     directories = set(explicit)
     for path in [*files, *explicit]:
         directories.update(str(parent) for parent in PurePosixPath(path).parents if str(parent) != ".")
@@ -46,7 +46,7 @@ def validate_destination(path, files, directories):
 
 def check_capacity(db, access, amount):
     from .storage_billing import check_capacity as check
-    check(db, access.workspace_id, max(0, amount))
+    check(db, access.user_id, max(0, amount))
 
 
 def tree_revision(paths, files, directories):
@@ -78,10 +78,10 @@ def _mark_deleted(db, access, row):
 
 
 def delete(db, access, paths, *, confirmation=None, request_id=None):
-    access.editor()
+    from .workspace_files import _current_file_version
     paths = normalize_selection(paths)
     signature = ops.fingerprint(["delete", paths, confirmation])
-    with ops.workspace_lock(db, access.workspace_id):
+    with ops.workspace_lock(db, access.user_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
             return previous
@@ -91,11 +91,11 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
         files, _, explicit = snapshot(db, access, refresh=False)
         selected_files = [row for path, row in files.items() if any(beneath(path, root) for root in paths)]
         selected_dirs = [row for path, row in explicit.items() if any(beneath(path, root) for root in paths)]
-        changes = [{"key": shared.object_key(access.workspace_id, row.path), "delete": True,
+        changes = [{"key": _current_file_version(db, row).storage_key, "delete": True,
                     "expected": ops.file_revision(row)} for row in selected_files]
         store = ops.storage(db)
-        changes += [{"key": shared.directory_marker_key(access.workspace_id, row.path), "delete": True,
-                     "expected": ops.revision(store.head(shared.directory_marker_key(access.workspace_id, row.path)))} for row in selected_dirs]
+        changes += [{"key": key, "delete": True, "expected": ops.revision(store.head(key))}
+                    for key in map(shared.stored_marker_key, selected_dirs)]
         def update():
             for row in selected_files:
                 _mark_deleted(db, access, row)
@@ -108,12 +108,11 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
 def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload", signature=None,
                preflight_snapshot=None):
     """Create a package or save files, with one quota check and one journal."""
-    access.editor()
     expected = expected or {}
-    from .workspace_files import MAX_BYTES, read_file
+    from .workspace_files import MAX_BYTES, _current_file_version, read_file
     signature = signature or ops.fingerprint(["write", source, expected,
         [(path, hashlib.sha256(data).hexdigest()) for path, (data, _) in sorted(files.items())]])
-    with ops.workspace_lock(db, access.workspace_id):
+    with ops.workspace_lock(db, access.user_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
             return previous
@@ -131,25 +130,25 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
                 raise HTTPException(409, {"message": "文件已变化或存在同名文件，请重新加载后选择",
                     "conflicts": [{"path": path, "revision": actual, "kind": "file"}]})
             increase += len(data) - (row.size_bytes if row else 0)
-            changes.append({"key": shared.object_key(access.workspace_id, path), "data": data,
+            key = _current_file_version(db, row).storage_key if row else shared.object_key(access.user_id, path)
+            changes.append({"key": key, "data": data,
                 "content_type": content_type, "expected": actual})
         check_capacity(db, access, increase)
         def update():
             result = []
-            for path, (data, content_type) in files.items():
+            for (path, (data, content_type)), change in zip(files.items(), changes):
                 item = shared.index_file(db, access, path, size=len(data), content_type=content_type,
-                    digest=hashlib.sha256(data).hexdigest(), source=source)
+                    digest=hashlib.sha256(data).hexdigest(), source=source, key=change["key"])
                 row = db.get(WorkspaceFile, __import__("uuid").UUID(item["id"]))
-                row.live_etag = ops.storage(db).head(shared.object_key(access.workspace_id, path)).get("ETag")
+                row.live_etag = ops.storage(db).head(change["key"]).get("ETag")
                 result.append(read_file(row))
             return {"items": result}
         return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
 
 
 def create_directory(db, access, path, *, request_id=None):
-    access.editor()
     signature = ops.fingerprint(["mkdir", path])
-    with ops.workspace_lock(db, access.workspace_id):
+    with ops.workspace_lock(db, access.user_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
             return previous
@@ -161,9 +160,9 @@ def create_directory(db, access, path, *, request_id=None):
         if parent != "." and parent not in directories:
             raise HTTPException(404, "上级文件夹不存在，请刷新后选择")
         def update():
-            db.add(WorkspaceDirectory(workspace_id=access.workspace_id, path=path, created_by=access.user_id))
+            db.add(WorkspaceDirectory(account_id=access.user_id, path=path, created_by=access.user_id))
             return {"kind": "directory", "name": PurePosixPath(path).name, "path": path}
-        return ops.execute(db, access, [{"key": shared.directory_marker_key(access.workspace_id, path),
+        return ops.execute(db, access, [{"key": shared.directory_marker_key(access.user_id, path),
             "data": b"", "content_type": "application/x-directory", "expected": None}], update,
             request_id=request_id, signature=signature)
 
@@ -180,11 +179,11 @@ def unique_name(path, occupied):
 
 def transfer(db, access, paths, destination="", *, move=False, rename=None, policy="error", resolutions=None,
              expected=None, request_id=None, signature=None):
-    access.editor()
+    from .workspace_files import _current_file_version
     paths = normalize_selection(paths)
     resolutions, expected = resolutions or {}, expected or {}
     signature = signature or ops.fingerprint(["move" if move else "copy", paths, destination, rename, policy, resolutions, expected])
-    with ops.workspace_lock(db, access.workspace_id):
+    with ops.workspace_lock(db, access.user_id):
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
             return previous
@@ -250,24 +249,26 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
         extra = sum(files[old].size_bytes - (files[new].size_bytes if new in files else 0) for old, new in mappings.items())
         check_capacity(db, access, extra if not move else 0)
         store = ops.storage(db)
-        changes = [{"key": shared.object_key(access.workspace_id, target), "source": shared.object_key(access.workspace_id, origin),
+        source_keys = {path: _current_file_version(db, files[path]).storage_key for path in mappings}
+        target_keys = {path: (_current_file_version(db, files[path]).storage_key if path in files else
+                              shared.object_key(access.user_id, path)) for path in mappings.values()}
+        changes = [{"key": target_keys[target], "source": source_keys[origin],
             "source_revision": ops.file_revision(files[origin]), "expected": ops.file_revision(files[target]) if target in files else None,
             "content_type": files[origin].content_type} for origin, target in mappings.items()]
         # Include all explicit nested markers and an explicit target for implicit directories.
         for origin, target in dir_mappings.items():
             if target not in explicit:
-                changes.append({"key": shared.directory_marker_key(access.workspace_id, target), "data": b"",
+                changes.append({"key": shared.directory_marker_key(access.user_id, target), "data": b"",
                     "content_type": "application/x-directory", "expected": None})
         if move:
-            changes += [{"key": shared.object_key(access.workspace_id, origin), "delete": True,
+            changes += [{"key": source_keys[origin], "delete": True,
                 "expected": ops.file_revision(files[origin])} for origin in mappings]
-            changes += [{"key": shared.directory_marker_key(access.workspace_id, origin), "delete": True,
-                "expected": ops.revision(store.head(shared.directory_marker_key(access.workspace_id, origin)))}
-                for origin in dir_mappings if origin in explicit]
+            changes += [{"key": key, "delete": True, "expected": ops.revision(store.head(key))}
+                for key in (shared.stored_marker_key(explicit[origin]) for origin in dir_mappings if origin in explicit)]
         def update():
             for origin, target in mappings.items():
                 row = files[origin]
-                existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+                existing = db.scalar(select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
                     WorkspaceFile.path == target))
                 if existing and existing.id != row.id:
                     _mark_deleted(db, access, existing)
@@ -278,13 +279,12 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
                 if move:
                     row.path = target
                     row.updated_at = now()
-                    for version in row.versions:
-                        version.object_key = shared.object_key(access.workspace_id, target)
+                    _current_file_version(db, row).storage_key = target_keys[target]
                     for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.resource_file_id == row.id)):
-                        attachment.resource_path, attachment.object_key = target, shared.object_key(access.workspace_id, target)
+                        attachment.resource_path, attachment.object_key = target, target_keys[target]
                 else:
                     shared.index_file(db, access, target, size=row.size_bytes, content_type=row.content_type,
-                        digest=row.content_hash, source=row.source)
+                        digest=row.content_hash, source=row.source, key=target_keys[target])
             for origin in dir_mappings:
                 if move and origin in explicit:
                     db.delete(explicit[origin])

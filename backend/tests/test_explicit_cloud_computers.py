@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app import cloud_computer as cloud
-from app.models import ChatMessage, Conversation, CreditLedgerEntry, CreditAccount
+from app.models import ChatMessage, Conversation, CreditLedgerEntry, UserCreditAccount
 from app.extensions import ExtensionRuntime
 from test_cloud_computer import setup
 from test_resources import resource_store
@@ -47,7 +47,7 @@ def test_missing_id_never_creates_and_cross_conversation_reuses(accounts, monkey
     assert missing.value.status_code == 422 and fake.creates == 0
     db.rollback()
     one = create(db, access, conversation)
-    other = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
+    other = Conversation(account_id=access.user_id, owner_id=access.user_id)
     db.add(other); db.commit()
     commands = [cloud.submit(db, access, other.id, uuid4(),
         {"computer_id": one["computer_id"], "command": f"echo {index}"}) for index in range(2)]

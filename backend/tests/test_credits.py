@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.credits import (
     CreditError, authorization_hold, release, reserve, settle_model_usage,
 )
-from app.models import CreditAccount, CreditLedgerEntry, UsageEvent, User
+from app.models import CreditLedgerEntry, UsageEvent, User, UserCreditAccount
 from test_auth import accounts, register
 
 def test_workspace_admin_cannot_mint_credits(accounts):
@@ -36,36 +36,36 @@ def test_workspace_admin_cannot_mint_credits(accounts):
 def test_credit_reservation_is_released_idempotently_and_cannot_overdraw(accounts):
     (owner, _, _), db = accounts
     session = register(owner)
-    workspace_id = UUID(session["workspace_id"])
     user_id = UUID(session["user"]["id"])
+    workspace_id = user_id
 
     request_id = uuid4()
     entry = reserve(db, workspace_id, user_id, request_id, amount=1000)
     db.commit()
     assert entry.amount == -1000
-    account = db.get(CreditAccount, workspace_id)
+    account = db.get(UserCreditAccount, user_id)
     assert account.balance == 0
     with pytest.raises(CreditError):
         reserve(db, workspace_id, user_id, uuid4(), amount=1)
     db.rollback()
 
-    account = db.get(CreditAccount, workspace_id)
+    account = db.get(UserCreditAccount, user_id)
     released = release(db, workspace_id, user_id, request_id, amount=1000)
     duplicate = release(db, workspace_id, user_id, request_id, amount=1000)
     db.commit()
     assert released.id == duplicate.id
-    assert db.get(CreditAccount, workspace_id).balance == 1000
+    assert db.get(UserCreditAccount, user_id).balance == 1000
 
 
 def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accounts):
     (owner, _, _), db = accounts
     session = register(owner)
-    workspace_id = UUID(session["workspace_id"])
     user_id = UUID(session["user"]["id"])
+    workspace_id = user_id
     request_id = uuid4()
     authorization_hold(db, workspace_id, user_id, request_id, amount=1)
     from app.models import UsagePolicy
-    db.add_all([UsagePolicy(workspace_id=workspace_id, capability=key, unit="tokens", unit_size=1000, credits_per_unit=rate)
+    db.add_all([UsagePolicy(account_id=workspace_id, capability=key, unit="tokens", unit_size=1000, credits_per_unit=rate)
         for key, rate in (("llm_input_tokens", 1), ("llm_output_tokens", 3))])
     db.flush()
     settle_model_usage(db, workspace_id, user_id, request_id, [{
@@ -75,7 +75,7 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
     }], hold=1)
     db.commit()
 
-    account = db.get(CreditAccount, workspace_id)
+    account = db.get(UserCreditAccount, user_id)
     assert account.balance == Decimal("996.7000")
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
     assert {(event.capability, event.units, event.credits) for event in events} == {
@@ -92,16 +92,16 @@ def test_model_usage_is_metered_by_configured_policy_and_hold_is_released(accoun
         "source": "provider",
     }], hold=1)
     db.commit()
-    assert db.get(CreditAccount, workspace_id).balance == Decimal("996.7000")
+    assert db.get(UserCreditAccount, user_id).balance == Decimal("996.7000")
 
 
-def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts):
-    (owner, viewer, _), db = accounts
+def test_workspace_policy_routes_are_removed(accounts):
+    (owner, _, _), db = accounts
     session = register(owner)
-    assert owner.get("/usage/policies").status_code == 403
+    assert owner.get("/usage/policies").status_code == 404
     db.get(User, UUID(session["user"]["id"])).is_site_admin = True
     db.commit()
-    assert owner.get("/usage/policies").status_code == 200
+    assert owner.get("/usage/policies").status_code == 404
     updated = owner.put("/usage/policies/embedding_tokens", json={
         "capability": "embedding_tokens",
         "unit": "tokens",
@@ -109,6 +109,6 @@ def test_only_site_admin_can_manage_policy_but_users_do_not_see_formula(accounts
         "credits_per_unit": 4,
         "enabled": True,
     })
-    assert updated.status_code == 410
+    assert updated.status_code == 404
     usage = owner.get("/usage").json()
     assert "credits_per_unit" not in usage

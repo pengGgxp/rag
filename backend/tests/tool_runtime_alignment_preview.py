@@ -42,7 +42,7 @@ if __name__ == "__main__":
         http = TestClient(main.app)
         user = authenticate(http, db)
         user.email_verified_at, user.is_site_admin = auth.now(), True
-        server = MCPServer(workspace_id=LEGACY_WORKSPACE_ID, owner_id=user.id,
+        server = MCPServer(account_id=LEGACY_WORKSPACE_ID, owner_id=user.id,
             name="资料查询验收服务", url="https://fixture.example/mcp", transport="streamable_http",
             version=1, authorization_version=1, enabled=False, tools=definitions(), allowed_tools=[],
             last_checked_at=datetime.now(timezone.utc), header_names=[])

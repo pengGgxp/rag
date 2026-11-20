@@ -21,7 +21,7 @@ def test_shell_edit_is_current_file_without_copy_or_body_read(accounts, monkeypa
     client, db, conversation, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
     storage.copies.clear()
-    key = shared.object_key(access.workspace_id, item["path"])
+    key = shared.object_key(access.user_id, item["path"])
     computer = db.get(cloud.Computer, submit(db, access, conversation).session_id)
     storage.objects[key] = b"cloud modification"
     monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("body downloaded"))
@@ -41,7 +41,7 @@ def test_recreation_keeps_deleted_chat_reference_unavailable(accounts, monkeypat
     item = upload(client)
     attached = client.post(f"/resources/{item['id']}/attachment").json()
     assert client.delete(f"/resources/{item['id']}").status_code == 204
-    storage.objects[shared.object_key(access.workspace_id, item["path"])] = b"new file"
+    storage.objects[shared.object_key(access.user_id, item["path"])] = b"new file"
     files = client.get("/resources").json()["items"]
     assert files[0]["id"] != item["id"]
     assert client.get(f"/resources/{item['id']}").status_code == 404
@@ -50,13 +50,13 @@ def test_recreation_keeps_deleted_chat_reference_unavailable(accounts, monkeypat
     from sqlalchemy.orm import sessionmaker
     monkeypatch.setattr(tasks, "SessionLocal", sessionmaker(bind=db.bind))
     tasks.cleanup_workspace_files()
-    assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"new file"
+    assert storage.objects[shared.object_key(access.user_id, item["path"])] == b"new file"
 
 
 def test_shell_delete_invalidates_old_links(accounts, monkeypatch, resource_store):
     client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    storage.delete(shared.object_key(access.workspace_id, item["path"]))
+    storage.delete(shared.object_key(access.user_id, item["path"]))
     assert client.get(f"/resources/{item['id']}/download").status_code == 404
     assert client.get("/resources").json()["items"] == []
 
@@ -66,7 +66,7 @@ def test_same_size_edit_invalidates_cache_metadata(accounts, monkeypatch, resour
     item = upload(client, body=b"old")
     row, version = workspace_files.resolve_input(db, access, {"id": item["id"]})
     etag = row.live_etag
-    storage.objects[shared.object_key(access.workspace_id, item["path"])] = b"new"
+    storage.objects[shared.object_key(access.user_id, item["path"])] = b"new"
     row, version = workspace_files.resolve_input(db, access, {"id": item["id"]})
     assert row.live_etag != etag and not version.content_hash
     assert client.get(f"/resources/{item['id']}/download").content == b"new"
@@ -75,8 +75,8 @@ def test_same_size_edit_invalidates_cache_metadata(accounts, monkeypatch, resour
 def test_api_write_replaces_one_current_object(accounts, monkeypatch, resource_store):
     client, db, _, access, storage = mounted(accounts, monkeypatch, resource_store)
     item = upload(client)
-    workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"API edit", "text/plain")
-    assert storage.objects[shared.object_key(access.workspace_id, item["path"])] == b"API edit"
+    workspace_files._save_bytes(access.user_id, access, db, item["path"], b"API edit", "text/plain")
+    assert storage.objects[shared.object_key(access.user_id, item["path"])] == b"API edit"
     assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
     assert not any("file-operations/" in key for key in storage.objects)
 

@@ -14,8 +14,8 @@ from fastapi import HTTPException
 from app import extensions, executor_service, workspace_files
 from app.config import get_settings
 from app.extensions import ExtensionRuntime
-from app.models import (AgentSkill, AgentSkillFile, ChatMessage, Conversation, Membership, SiteSkill,
-    WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion)
+from app.models import (AgentSkill, AgentSkillFile, ChatMessage, Conversation, SiteSkill,
+    User, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion)
 from test_extensions import access_for
 from test_shared_providers import setup_site
 
@@ -25,7 +25,7 @@ def enable_cloud(db, access, monkeypatch):
     return enable_execution(db, access, monkeypatch)
 
 
-def test_output_tools_require_cloud_and_recheck_role(accounts, monkeypatch):
+def test_output_tools_require_cloud_and_recheck_suspension(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     monkeypatch.setattr(get_settings(), "workspace_executor_url", "")
     stored = {}
@@ -41,8 +41,7 @@ def test_output_tools_require_cloud_and_recheck_role(accounts, monkeypatch):
     enable_cloud(db, access, monkeypatch)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [], request_id=uuid4())
     assert "write_file" in {item["function"]["name"] for item in runtime.tools}
-    member = db.get(Membership, (access.workspace_id, access.user_id))
-    member.role = "viewer"
+    db.get(User, access.user_id).is_suspended = True
     db.commit()
     with pytest.raises(HTTPException) as error:
         runtime.execute("write_file", {"computer_id": "00000000-0000-4000-a000-000000000112",
@@ -83,7 +82,7 @@ def test_command_never_scans_reads_or_archives_outputs(accounts, monkeypatch):
     from app.shared_resources import backend
     monkeypatch.setattr(backend(db), "put", unavailable)
     with pytest.raises(HTTPException):
-        workspace_files._save_bytes(access.workspace_id, access, db, row.path, b"changed", expected_version=1)
+        workspace_files._save_bytes(access.user_id, access, db, row.path, b"changed", expected_version=1)
     db.commit()
     db.refresh(row)
     assert row.current_version == 1 and row.size_bytes == len(b"result")
@@ -108,7 +107,7 @@ def test_executor_preserves_hidden_names_and_outputs_larger_than_five_mb(monkeyp
             return subprocess.CompletedProcess(args, 0, data.getvalue(), b"")
         return subprocess.CompletedProcess(args, 0, "" if kwargs.get("text") else b"", "" if kwargs.get("text") else b"")
     monkeypatch.setattr(executor_service.subprocess, "run", process)
-    result = executor_service.run(executor_service.RunRequest(workspace_id="test", command="true"))
+    result = executor_service.run(executor_service.RunRequest(account_id="test", command="true"))
     assert base64.b64decode(result["files"]["large.bin"]) == payload
     assert base64.b64decode(result["files"][".result.txt"]) == b"hidden"
 
@@ -120,7 +119,7 @@ def test_network_setup_failure_never_starts_untrusted_command(monkeypatch):
         return subprocess.CompletedProcess(args, 1 if "--cap-add=NET_ADMIN" in args else 0, b"", b"")
     monkeypatch.setattr(executor_service.subprocess, "run", process)
     with pytest.raises(HTTPException) as error:
-        executor_service.run(executor_service.RunRequest(workspace_id="test", command="echo untrusted"))
+        executor_service.run(executor_service.RunRequest(account_id="test", command="echo untrusted"))
     assert error.value.status_code == 503
     assert not any("--name" in args for args in calls)
 
@@ -138,6 +137,6 @@ for host in ('169.254.169.254', '10.0.0.1', '172.17.0.1'):
     raise AssertionError('private destination reachable')
 print('PUBLIC_OK PRIVATE_BLOCKED')
 """
-    result = executor_service.run(executor_service.RunRequest(workspace_id="test", command="python test/network.py",
+    result = executor_service.run(executor_service.RunRequest(account_id="test", command="python test/network.py",
         files={"test/network.py": base64.b64encode(code.encode()).decode()}))
     assert result["exit_code"] == 0 and "PUBLIC_OK PRIVATE_BLOCKED" in result["stdout"], result

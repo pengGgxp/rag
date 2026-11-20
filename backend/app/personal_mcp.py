@@ -70,13 +70,13 @@ def configure(row, payload):
 @router.get("")
 def listing(db=Depends(get_db), access=Depends(get_access)):
     return [read(row) for row in db.scalars(select(MCPServer).where(
-        MCPServer.owner_id == access.user_id, MCPServer.workspace_id == access.workspace_id)
+        MCPServer.owner_id == access.user_id, MCPServer.account_id == access.user_id)
         .order_by(MCPServer.created_at.desc(), MCPServer.id))]
 
 
 @router.post("", status_code=201)
 def create(payload: ConnectionWrite, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    row = MCPServer(owner_id=access.user_id, workspace_id=access.workspace_id, version=1,
+    row = MCPServer(owner_id=access.user_id, account_id=access.user_id, version=1,
         authorization_version=1, tools=[], allowed_tools=[], header_names=[])
     configure(row, payload)
     db.add(row)

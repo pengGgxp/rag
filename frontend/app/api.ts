@@ -76,7 +76,7 @@ export async function request<T>(
     || path.startsWith("/agent/")
     || path.startsWith("/resources/operations/")
     || path.startsWith("/resources/browse") || path.startsWith("/resources/directories")
-    || /^\/workspaces\/[^/]+\/files/.test(path)
+    || path === "/files" || path.startsWith("/files/")
     || /^\/uploads\/[^/]+\/complete$/.test(path) ? 120_000
     : options?.body instanceof FormData && /^\/knowledge-bases\/[^/]+\/documents$/.test(path)
     ? 30 * 60_000

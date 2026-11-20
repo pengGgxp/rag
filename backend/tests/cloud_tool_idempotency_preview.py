@@ -87,8 +87,8 @@ if __name__ == "__main__":
             encrypted_api_key=protect("local-only")))
         db.commit()
         session = db.get(auth.LoginSession, auth.digest(client.cookies.get(auth.COOKIE)))
-        access = auth.Access(user.id, LEGACY_WORKSPACE_ID, "admin", session.token_hash)
-        resource = workspace_files._save_bytes(access.workspace_id, access, db, path, b"quantity 17\n", "text/plain")
+        access = auth.Access(user.id, session.token_hash)
+        resource = workspace_files._save_bytes(access.user_id, access, db, path, b"quantity 17\n", "text/plain")
         cookie = client.cookies.get(auth.COOKIE)
     provider = LocalFileCloud(root / "workspace", storage, shared_resources.prefix(LEGACY_WORKSPACE_ID))
     cloud.adapter = lambda *_: provider

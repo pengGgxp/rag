@@ -45,7 +45,7 @@ export function MessageFiles({ events }: { events: ToolEvent[] }) {
         <FileText size={17} aria-hidden="true" /><span className="message-file-name">{name}</span><span>已不可用</span>
       </span> : <div key={file.id} className={/\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(name) ? "message-file-item message-file-image" : "message-file-item"}>
         {/\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(name) && <InlineFileImage file={{ type: "resource", id: file.id, name }}
-          scope={`${session.user.id}:${session.workspace_id}`} onOpen={element => {
+          scope={session.user.id} onOpen={element => {
             const trigger = element.closest(".message-file-item")?.querySelector<HTMLElement>(".message-file");
             void context.open(file.id, trigger || element);
           }} />}

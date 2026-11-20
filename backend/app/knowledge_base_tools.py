@@ -120,17 +120,15 @@ def execute(runtime, name, arguments, *, call_id=None):
                     "next_offset": payload.offset + payload.limit if len(rows) > payload.limit else None,
                     "summary": f"已查看「{library.name}」的 {min(len(rows), payload.limit)} 个文档版本状态"}
 
-        access.editor()
         payload = (CreateInput if name == "create_knowledge_base" else UpdateInput).model_validate(arguments)
         if not runtime.message_id or not runtime.request_id or not isinstance(call_id, str) or not call_id.strip():
             raise HTTPException(409, "无法确认本次操作，请在当前对话中重新提出请求")
         # Serialize writes for the same assistant message; receipt and change commit together.
         message = db.get(ChatMessage, runtime.message_id, with_for_update=True, populate_existing=True)
         access = runtime.access.revalidate(db)
-        access.editor()
         conversation = db.get(Conversation, message.conversation_id) if message else None
         if (not conversation or conversation.deleted_at is not None or conversation.owner_id != access.user_id
-            or conversation.workspace_id != access.workspace_id or message.role != "assistant"
+            or message.role != "assistant"
             or message.request_id != UUID(str(runtime.request_id))):
             raise HTTPException(404, "对话不存在或无权访问")
         identifier = uuid5(UUID(str(runtime.request_id)), "knowledge-base-tool:" + call_id)
@@ -138,7 +136,7 @@ def execute(runtime, name, arguments, *, call_id=None):
             sort_keys=True, ensure_ascii=True).encode()).hexdigest()
         previous = db.get(KnowledgeBaseToolExecution, identifier, populate_existing=True)
         if previous:
-            if (previous.workspace_id != access.workspace_id or previous.user_id != access.user_id
+            if (previous.account_id != access.user_id or previous.user_id != access.user_id
                 or previous.message_id != message.id):
                 raise HTTPException(404, "操作不存在或无权访问")
             if previous.arguments_digest != digest:
@@ -146,7 +144,7 @@ def execute(runtime, name, arguments, *, call_id=None):
             access.library(db, previous.knowledge_base_id, write=True, allow_archived=True)
             return previous.result
         if name == "create_knowledge_base":
-            library = KnowledgeBase(workspace_id=access.workspace_id, **payload.model_dump())
+            library = KnowledgeBase(account_id=access.user_id, owner_id=access.user_id, **payload.model_dump())
             db.add(library)
             action, summary = "created", "已创建"
         else:
@@ -159,10 +157,10 @@ def execute(runtime, name, arguments, *, call_id=None):
             action, summary = "updated", "已更新"
         db.flush()
         result = {"knowledge_base": library_view(library), "summary": f"{summary}「{library.name}」"}
-        record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action=f"knowledge_base.{action}", resource_type="knowledge_base", resource_id=library.id,
             metadata={"name": library.name[:100], "tags": library.tags, "source": "agent"})
-        db.add(KnowledgeBaseToolExecution(id=identifier, workspace_id=access.workspace_id, user_id=access.user_id,
+        db.add(KnowledgeBaseToolExecution(id=identifier, account_id=access.user_id, user_id=access.user_id,
             message_id=message.id, knowledge_base_id=library.id, arguments_digest=digest, result=result))
         db.commit()
         return result

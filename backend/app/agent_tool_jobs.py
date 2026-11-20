@@ -13,7 +13,7 @@ def validate_owner(db, identifier, access, conversation_id=None, request_id=None
         return
     tool = db.get(AgentToolExecution, identifier)
     conversation = db.get(Conversation, tool.conversation_id) if tool else None
-    if (not conversation or conversation.deleted_at or conversation.workspace_id != access.workspace_id
+    if (not conversation or conversation.deleted_at
             or conversation.owner_id != access.user_id
             or conversation_id is not None and conversation.id != conversation_id
             or request_id is not None and tool.request_id != request_id):

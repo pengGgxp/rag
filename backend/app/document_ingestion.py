@@ -77,7 +77,7 @@ def check_format(stream, filename):
 
 def admit(db, access, knowledge_base_id, filename, content_type, size, digest, key, version_of=None, request=None):
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, size, exclude_key=key)
+    check_capacity(db, access.user_id, size, exclude_key=key)
     library = access.library(db, knowledge_base_id, write=True)
     # Serialize hash admission and version allocation for the same library.
     db.get(KnowledgeBase, library.id, with_for_update=True, populate_existing=True)
@@ -98,7 +98,7 @@ def admit(db, access, knowledge_base_id, filename, content_type, size, digest, k
     job = IngestionJob(document_id=document.id)
     db.add(job)
     library.status = KnowledgeBaseStatus.PROCESSING
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.version_uploaded" if previous else "document.uploaded", resource_type="document",
         resource_id=document.id, request=request,
         metadata={"knowledge_base_id": str(library.id), "filename": filename, "size_bytes": size, "version_number": number})

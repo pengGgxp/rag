@@ -2,17 +2,19 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .auth import Access, get_access
 from .config import get_settings
-from .models import CreditAccount, CreditLedgerEntry, UsageEvent, UsagePolicy
-from .management_access import ManagementAccess, management_access
-from .credit_amounts import CreditRate, amount as credit_amount, exact_charge
-
-site_router = APIRouter(prefix="/site/admin/workspaces/{workspace_id}/usage-policies", tags=["site-admin"])
+from .models import (
+    CreditLedgerEntry,
+    UsageEvent,
+    UsagePolicy,
+    UserCreditAccount,
+    User,
+)
+from .credit_amounts import amount as credit_amount, exact_charge
 
 CREDIT_RESERVATION = 1
 
@@ -32,42 +34,38 @@ class CreditError(HTTPException):
         super().__init__(status_code=402, detail="积分余额不足，请前往账号的积分与充值页面充值")
 
 
-class UsagePolicyUpdate(BaseModel):
-    capability: str = Field(min_length=1, max_length=80)
-    unit: str = Field(min_length=1, max_length=40)
-    unit_size: int = Field(default=1, ge=1, le=2_147_483_647, strict=True)
-    credits_per_unit: CreditRate = 0
-    enabled: bool = True
-    version: int = Field(default=0, ge=0)
-
-
 def ensure_policies(
-    db: Session, workspace_id: UUID, provider_id: UUID | None = None,
+    db: Session, account_id: UUID, provider_id: UUID | None = None,
 ) -> list[UsagePolicy]:
     existing = {
         policy.capability: policy
         for policy in db.scalars(select(UsagePolicy).where(
-            UsagePolicy.workspace_id == workspace_id,
+            UsagePolicy.account_id == account_id,
             UsagePolicy.provider_id == provider_id,
         )).all()
     }
     return list(existing.values())
 
 
-def require_policy(db, workspace_id, capability):
+def require_policy(db, account_id, capability):
     from .workspace_billing import resolve_prices
-    return resolve_prices(db, workspace_id, (capability,))[capability]
+    return resolve_prices(db, account_id, (capability,))[capability]
 
 
-def ensure_account(db: Session, workspace_id: UUID, *, initial: int | None = None) -> CreditAccount:
-    account = db.get(CreditAccount, workspace_id, with_for_update=True, populate_existing=True)
+def ensure_account(db: Session, user_id: UUID, *, initial: int | None = None) -> UserCreditAccount:
+    account = db.get(UserCreditAccount, user_id, with_for_update=True, populate_existing=True)
+    if account is not None:
+        return account
+    if db.get(User, user_id, with_for_update=True) is None:
+        raise HTTPException(404, "账号不存在")
+    account = db.get(UserCreditAccount, user_id, with_for_update=True, populate_existing=True)
     if account is not None:
         return account
     from .site_settings import signup_grant
     grant, settings_version = signup_grant(db)
     initial = grant if initial is None else initial
-    account = CreditAccount(
-        workspace_id=workspace_id,
+    account = UserCreditAccount(
+        user_id=user_id,
         balance=initial,
         lifetime_granted=initial,
         lifetime_spent=0,
@@ -76,20 +74,20 @@ def ensure_account(db: Session, workspace_id: UUID, *, initial: int | None = Non
     db.flush()
     if initial:
         db.add(CreditLedgerEntry(
-            workspace_id=workspace_id,
+            account_id=user_id,
             actor_user_id=None,
             amount=initial,
             balance_after=initial,
             kind="initial_grant",
-            idempotency_key=f"workspace:{workspace_id}:initial",
-            metadata_json={"reason": "workspace_created", "site_settings_version": settings_version},
+            idempotency_key=f"user:{user_id}:initial",
+            metadata_json={"reason": "account_created", "site_settings_version": settings_version},
         ))
     return account
 
 
 def _entry(
     db: Session,
-    account: CreditAccount,
+    account: UserCreditAccount,
     *,
     actor_user_id: UUID | None,
     amount: Decimal | int,
@@ -111,7 +109,7 @@ def _entry(
     else:
         account.lifetime_spent += -amount
     entry = CreditLedgerEntry(
-        workspace_id=account.workspace_id,
+        account_id=account.user_id,
         actor_user_id=actor_user_id,
         amount=amount,
         balance_after=account.balance,
@@ -124,16 +122,10 @@ def _entry(
     return entry
 
 
-def adjust_balance(db, workspace_id, actor_user_id, request_id, amount, reason, expected_balance):
+def adjust_balance(db, account_id, actor_user_id, request_id, amount, reason, expected_balance):
     """Serialize manual adjustments with all existing debit and recharge paths."""
-    from .models import Workspace
-    account = db.get(CreditAccount, workspace_id, with_for_update=True, populate_existing=True)
-    if account is None:
-        workspace = db.get(Workspace, workspace_id, with_for_update=True, populate_existing=True)
-        if workspace is None:
-            raise HTTPException(404, "工作区不存在")
-        account = ensure_account(db, workspace_id, initial=0)
-    key = f"admin-credit:{workspace_id}:{request_id}"
+    account = ensure_account(db, account_id, initial=0)
+    key = f"admin-credit:{account_id}:{request_id}"
     existing = db.scalar(select(CreditLedgerEntry).where(CreditLedgerEntry.idempotency_key == key))
     if existing:
         if (existing.actor_user_id != actor_user_id or existing.amount != amount
@@ -157,12 +149,12 @@ def adjust_balance(db, workspace_id, actor_user_id, request_id, amount, reason, 
 
 def reserve(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID,
     request_id: UUID,
     amount: int = CREDIT_RESERVATION,
 ) -> CreditLedgerEntry:
-    account = ensure_account(db, workspace_id)
+    account = ensure_account(db, account_id)
     return _entry(
         db,
         account,
@@ -176,7 +168,7 @@ def reserve(
 
 def release(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
     amount: int = CREDIT_RESERVATION,
@@ -186,7 +178,7 @@ def release(
     ))
     if existing is not None:
         return existing
-    account = ensure_account(db, workspace_id, initial=0)
+    account = ensure_account(db, account_id, initial=0)
     entry = _entry(
         db,
         account,
@@ -205,7 +197,7 @@ def release(
 
 def release_hold(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
     amount: int = CREDIT_RESERVATION,
@@ -215,7 +207,7 @@ def release_hold(
     ))
     if existing is not None:
         return existing
-    account = ensure_account(db, workspace_id, initial=0)
+    account = ensure_account(db, account_id, initial=0)
     entry = _entry(
         db, account, actor_user_id=actor_user_id, amount=amount,
         kind="usage_hold_release",
@@ -230,30 +222,30 @@ def release_hold(
 
 def authorization_hold(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID,
     request_id: UUID,
     amount: int = 1,
 ) -> CreditLedgerEntry:
     """Reserve a small internal hold; final billing is based on measured usage."""
     return _entry(
-        db, ensure_account(db, workspace_id), actor_user_id=actor_user_id,
+        db, ensure_account(db, account_id), actor_user_id=actor_user_id,
         amount=-amount, kind="usage_hold",
         idempotency_key=f"usage:{request_id}:hold",
         metadata={"request_id": str(request_id), "internal": True},
     )
 
 
-def release_embedding_hold(db: Session, workspace_id: UUID, job_id: UUID) -> None:
+def release_embedding_hold(db: Session, account_id: UUID, job_id: UUID) -> None:
     hold = db.scalar(select(CreditLedgerEntry).where(
         CreditLedgerEntry.idempotency_key == f"usage:{job_id}:hold"))
     if hold is not None:
-        release_hold(db, workspace_id, None, job_id, -hold.amount)
+        release_hold(db, account_id, None, job_id, -hold.amount)
 
 
 def settle_usage(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
     capability: str,
@@ -276,16 +268,16 @@ def settle_usage(
         return existing
     from .workspace_billing import operation_snapshot, multiplier, finish_operation
     if pricing_context is None:
-        pricing_context = operation_snapshot(db, workspace_id, request_id, event_key or capability,
+        pricing_context = operation_snapshot(db, account_id, request_id, event_key or capability,
             capabilities=(capability,), provider_id=provider_id).context
     price = pricing_context["prices"][capability]
     exact = exact_charge(units, price) * multiplier(pricing_context)
     credits = credit_amount(exact)
-    account = ensure_account(db, workspace_id)
+    account = ensure_account(db, account_id)
     hold_entry = db.scalar(select(CreditLedgerEntry).where(
         CreditLedgerEntry.idempotency_key == f"usage:{request_id}:hold"))
     if hold_entry:
-        release_hold(db, workspace_id, actor_user_id, request_id, -hold_entry.amount)
+        release_hold(db, account_id, actor_user_id, request_id, -hold_entry.amount)
     if credits:
         _entry(
             db, account, actor_user_id=actor_user_id, amount=-credits,
@@ -294,7 +286,7 @@ def settle_usage(
             metadata={"request_id": str(request_id), "capability": capability, "units": units},
         )
     event = UsageEvent(
-        workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
+        account_id=account_id, actor_user_id=actor_user_id, request_id=request_id,
         provider_id=provider_id, provider_key=provider_key,
         capability=capability, units=units, credits=credits,
         policy_version=price["version"],
@@ -309,14 +301,14 @@ def settle_usage(
         metadata_json=metadata or {},
     )
     db.add(event)
-    finish_operation(db, workspace_id, request_id, event_key or capability)
+    finish_operation(db, account_id, request_id, event_key or capability)
     db.flush()
     return event
 
 
 def settle_model_usage(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
     usage_events: list[dict],
@@ -325,9 +317,9 @@ def settle_model_usage(
     provider_key: str | None = None,
 ) -> Decimal:
     if any(usage.get("billing_snapshot_id") for usage in usage_events):
-        return settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold)
+        return settle_shared_legacy_model(db, account_id, actor_user_id, request_id, usage_events, hold)
     from .workspace_billing import operation_snapshot, context_for_workspace
-    context = context_for_workspace(db, workspace_id)
+    context = context_for_workspace(db, account_id)
     event_provider_id = provider_id
     event_provider_key = provider_key
     if usage_events and event_provider_id is None:
@@ -339,29 +331,29 @@ def settle_model_usage(
         event_provider_key = usage_events[0].get("provider_key")
     prepared = []
     for index, usage in enumerate(usage_events):
-        snapshot = operation_snapshot(db, workspace_id, request_id, f"model:{index}",
+        snapshot = operation_snapshot(db, account_id, request_id, f"model:{index}",
             capabilities=("llm_input_tokens", "llm_output_tokens"),
             provider_id=event_provider_id, context=context)
         prepared.append({**usage, "billing_snapshot_id": str(snapshot.id),
             "provider_id": str(event_provider_id) if event_provider_id else None,
             "provider_key": event_provider_key})
-    return settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, prepared, hold)
+    return settle_shared_legacy_model(db, account_id, actor_user_id, request_id, prepared, hold)
 
 
-def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usage_events, hold):
+def settle_shared_legacy_model(db, account_id, actor_user_id, request_id, usage_events, hold):
     from .models import BillingSnapshot
     from .workspace_billing import allocate, multiplier, finish_operation
-    account = ensure_account(db, workspace_id)
+    account = ensure_account(db, account_id)
     charge_key = f"usage:{request_id}:legacy-model:charge"
     existing = db.scalar(select(CreditLedgerEntry).where(CreditLedgerEntry.idempotency_key == charge_key))
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id,
-        UsageEvent.workspace_id == workspace_id)).all()
+        UsageEvent.account_id == account_id)).all()
     if existing or events:
         return sum(row.credits for row in events)
     parts = []
     for index, usage in enumerate(usage_events):
         snapshot = db.get(BillingSnapshot, UUID(usage["billing_snapshot_id"]))
-        if snapshot is None or snapshot.workspace_id != workspace_id or snapshot.request_id != request_id:
+        if snapshot is None or snapshot.account_id != account_id or snapshot.request_id != request_id:
             raise ValueError("billing snapshot scope mismatch")
         for capability, field in (("llm_input_tokens", "prompt_tokens"), ("llm_output_tokens", "completion_tokens")):
             units = usage.get(field)
@@ -372,18 +364,18 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
             parts.append((index, capability, units, price, snapshot, exact))
     total, allocations = allocate([part[-1] for part in parts])
     # Return the reservation atomically before testing the full request debit.
-    release_hold(db, workspace_id, actor_user_id, request_id, hold)
+    release_hold(db, account_id, actor_user_id, request_id, hold)
     if total and account.balance >= total:
         _entry(db, account, actor_user_id=actor_user_id, amount=-total, kind="usage_settlement",
             idempotency_key=charge_key, metadata={"request_id": str(request_id), "capability": "model_tokens"})
     elif total:
         from .models import ModelUsageRequest
-        db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
+        db.add(ModelUsageRequest(request_id=request_id, account_id=account_id,
             actor_user_id=actor_user_id, status="pending", credits=total, hold=0,
             outcome="confirmed_usage", formula_version="model_decimal_v1"))
     for (index, capability, units, price, snapshot, exact), credits in zip(parts, allocations):
         usage = usage_events[index]
-        db.add(UsageEvent(workspace_id=workspace_id, actor_user_id=actor_user_id, request_id=request_id,
+        db.add(UsageEvent(account_id=account_id, actor_user_id=actor_user_id, request_id=request_id,
             provider_id=UUID(usage["provider_id"]) if usage.get("provider_id") else None,
             provider_key=usage.get("provider_key"), capability=capability, units=units, credits=credits,
             policy_version=price["version"], policy_snapshot={**price, **{
@@ -393,14 +385,14 @@ def settle_shared_legacy_model(db, workspace_id, actor_user_id, request_id, usag
             metadata_json={"round": index, "source": usage.get("source"), "snapshot_id": str(snapshot.id),
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
         snapshot.status = "complete"
-    finish_operation(db, workspace_id, request_id)
+    finish_operation(db, account_id, request_id)
     db.flush()
     return total
 
 
 def reconcile_hold(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID | None,
     request_id: UUID,
     actual_credits: Decimal | int,
@@ -408,18 +400,18 @@ def reconcile_hold(
 ) -> None:
     # The hold authorizes the request; it is always returned after measured
     # usage is charged. The measured settlement is the only final debit.
-    release_hold(db, workspace_id, actor_user_id, request_id, hold)
+    release_hold(db, account_id, actor_user_id, request_id, hold)
 
 
 def recharge(
     db: Session,
-    workspace_id: UUID,
+    account_id: UUID,
     actor_user_id: UUID,
     amount: int,
     order_id: UUID,
     amount_fen: int,
 ) -> CreditLedgerEntry:
-    account = ensure_account(db, workspace_id, initial=0)
+    account = ensure_account(db, account_id, initial=0)
     return _entry(
         db,
         account,
@@ -437,23 +429,22 @@ def build_router(get_db):
     @router.get("")
     def read_usage(db: Session = Depends(get_db), access: Access = Depends(get_access)):
         from .model_billing import pending_credits
-        account = ensure_account(db, access.workspace_id)
-        ensure_policies(db, access.workspace_id)
+        account = ensure_account(db, access.user_id)
         db.commit()
         entries = db.scalars(select(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == access.workspace_id,
+            CreditLedgerEntry.account_id == access.user_id,
             CreditLedgerEntry.kind.not_in(("usage_hold", "usage_hold_release", "usage_hold_reconciliation")),
         ).order_by(CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc()).limit(20)).all()
         usage_rows = db.execute(
             select(UsageEvent.capability, func.sum(UsageEvent.units), func.sum(UsageEvent.credits))
-            .where(UsageEvent.workspace_id == access.workspace_id)
+            .where(UsageEvent.account_id == access.user_id)
             .group_by(UsageEvent.capability)
         ).all()
         return {
             "balance": account.balance,
             "lifetime_granted": account.lifetime_granted,
             "lifetime_spent": account.lifetime_spent,
-            "pending_credits": pending_credits(db, access.workspace_id),
+            "pending_credits": pending_credits(db, access.user_id),
             "usage": {
                 "events": sum(1 for item in entries if item.kind == "usage_settlement"),
                 "units": {
@@ -473,27 +464,6 @@ def build_router(get_db):
                 for item in entries
             ],
         }
-
-    @site_router.get("")
-    @router.get("/policies")
-    def read_policies(db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
-        from .model_pricing import prices_read
-        policies = ensure_policies(db, access.workspace_id)
-        db.commit()
-        from .model_pricing import DOCUMENT_CAPABILITIES
-        result = prices_read([p for p in policies if p.capability in DOCUMENT_CAPABILITIES], all_model=False)
-        for key in DOCUMENT_CAPABILITIES:
-            if not any(p["capability"] == key for p in result):
-                result.append({"capability": key, "unit": "pages" if key == "ocr_pages" else "tokens",
-                    "unit_size": 1 if key == "ocr_pages" else 1000, "credits_per_unit": None,
-                    "enabled": True, "configured": False, "version": 0})
-        return result
-
-    @site_router.put("/{capability}")
-    @router.put("/policies/{capability}")
-    def update_policy(capability: str, payload: UsagePolicyUpdate,
-                      db: Session = Depends(get_db), access: ManagementAccess = Depends(management_access)):
-        raise HTTPException(410, "工作区独立价格已停止编辑，请在站点后台维护共享基准价与工作区倍率")
 
     @router.post("/credits")
     def add_credits(access: Access = Depends(get_access)):

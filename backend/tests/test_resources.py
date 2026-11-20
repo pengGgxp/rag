@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import io
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -13,9 +13,9 @@ from sqlalchemy.orm import Session
 
 from app import auth, chat_attachments, resource_cache, resources, storage_billing, tasks, workspace_files
 from app.config import get_settings
-from app.models import ChatAttachment, ChatMessage, Conversation, Document, KnowledgeBase, WorkspaceFile, WorkspaceFileVersion
+from app.models import ChatAttachment, ChatMessage, Conversation, Document, KnowledgeBase, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 from app.storage_models import StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
-from test_auth import register, share, switch
+from test_auth import register
 from test_chat_attachments import PNG
 
 
@@ -47,22 +47,21 @@ def upload(client, name="facts.txt", body=b"resource facts"):
 
 def access_for(client, db):
     session = db.get(auth.LoginSession, auth.digest(client.cookies.get(auth.COOKIE)))
-    return auth.Access(session.user_id, session.workspace_id, "admin", session.token_hash)
+    return auth.get_access(session)
 
 
-def test_upload_shared_reuse_and_conversation_deletion(accounts, resource_store):
-    (owner, member, _), db = accounts
-    identity = register(owner); register(member, "member@example.com")
+def test_upload_is_private_and_conversation_deletion(accounts, resource_store):
+    (owner, outsider, _), db = accounts
+    register(owner); register(outsider, "member@example.com")
     item = upload(owner)
-    assert member.get(f"/resources/{item['id']}").status_code == 404
-    share(owner, "member@example.com", "viewer"); switch(member, identity["workspace_id"])
-    assert member.get("/resources").json()["items"][0]["id"] == item["id"]
-    assert member.get(f"/resources/{item['id']}/download").content == b"resource facts"
-    assert member.delete(f"/resources/{item['id']}").status_code == 403
-    assert member.post("/resources", files={"file": ("x.txt", b"x")}).status_code == 403
-    attached = member.post(f"/resources/{item['id']}/attachment?version=1").json()
+    assert outsider.get(f"/resources/{item['id']}").status_code == 404
+    assert outsider.get("/resources").json()["items"] == []
+    assert outsider.get(f"/resources/{item['id']}/download").status_code == 404
+    assert outsider.delete(f"/resources/{item['id']}").status_code == 404
+    assert outsider.post(f"/resources/{item['id']}/attachment?version=1").status_code == 404
+    attached = owner.post(f"/resources/{item['id']}/attachment?version=1").json()
     row = db.get(ChatAttachment, UUID(attached["id"]))
-    conversations = [Conversation(owner_id=row.user_id, workspace_id=row.workspace_id) for _ in range(2)]
+    conversations = [Conversation(owner_id=row.user_id, account_id=row.account_id) for _ in range(2)]
     db.add_all(conversations); db.flush()
     messages = [ChatMessage(conversation_id=conversation.id, sequence=0, role="user", content="use",
         attachments=[row]) for conversation in conversations]
@@ -73,7 +72,7 @@ def test_upload_shared_reuse_and_conversation_deletion(accounts, resource_store)
     chat_attachments.cleanup(db, SimpleNamespace(delete=lambda _: pytest.fail("valid resource deleted")))
     assert owner.get(f"/resources/{item['id']}/download").content == b"resource facts"
     assert owner.delete(f"/resources/{item['id']}").status_code == 204
-    assert member.post(f"/resources/{item['id']}/attachment?version=1").status_code == 404
+    assert outsider.post(f"/resources/{item['id']}/attachment?version=1").status_code == 404
     db.expire_all()
     assert chat_attachments.attachment_read(messages[0].attachments[0])["available"] is False
 
@@ -82,14 +81,52 @@ def test_current_file_and_object_inventory_dedup(accounts, resource_store):
     (owner, _, _), db = accounts
     register(owner); item = upload(owner)
     actor = access_for(owner, db)
-    original_usage = storage_billing.inventory(db, actor.workspace_id)["used_bytes"]
+    original_usage = storage_billing.inventory(db, actor.user_id)["used_bytes"]
     assert original_usage == len(b"resource facts")
-    result = workspace_files._save_bytes(actor.workspace_id, actor, db, item["path"], b"changed",
+    result = workspace_files._save_bytes(actor.user_id, actor, db, item["path"], b"changed",
         "text/plain", expected_version=1)
     assert result["version"] == 1
     assert owner.get(f"/resources/{item['id']}/download").content == b"changed"
     assert len(db.scalars(select(WorkspaceFileVersion)).all()) == 1
-    assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == len(b"changed")
+    assert storage_billing.inventory(db, actor.user_id)["used_bytes"] == len(b"changed")
+
+
+def test_migrated_files_and_empty_folders_use_their_original_keys(accounts, resource_store):
+    from app.shared_resources import directory_marker_key, object_key
+
+    (owner, outsider, _), db = accounts
+    register(owner)
+    register(outsider, "other@example.com")
+    actor = access_for(owner, db)
+    original = uuid4()
+    new = upload(owner, "report.txt", b"current")
+    legacy_key = object_key(original, "report.txt")
+    marker_key = directory_marker_key(original, "empty")
+    objects, _ = resource_store
+    objects[legacy_key] = b"legacy"
+    objects[marker_key] = b""
+    old = WorkspaceFile(account_id=actor.user_id, owner_user_id=actor.user_id,
+        path="report (2).txt", created_by=actor.user_id, updated_by=actor.user_id, content_type="text/plain",
+        size_bytes=6, content_hash="")
+    db.add_all([old, WorkspaceDirectory(account_id=actor.user_id, owner_user_id=actor.user_id,
+        path="empty (2)", marker_key=marker_key, created_by=actor.user_id)])
+    db.flush()
+    db.add(WorkspaceFileVersion(file_id=old.id, account_id=actor.user_id, version=1,
+        object_key=legacy_key, content_type="text/plain", size_bytes=6, content_hash="", created_by=actor.user_id))
+    db.commit()
+
+    assert [item["path"] for item in owner.get("/resources").json()["items"]] == ["report (2).txt", "report.txt"]
+    assert owner.get(f"/resources/{old.id}/download").content == b"legacy"
+    assert outsider.get(f"/resources/{old.id}/download").status_code == 404
+    assert storage_billing.inventory(db, actor.user_id)["used_bytes"] == 13
+    workspace_files._save_bytes(actor.user_id, actor, db, old.path, b"edited", "text/plain")
+    assert objects[legacy_key] == b"edited"
+    assert owner.get(f"/resources/{new['id']}/download").content == b"current"
+
+    from app.workspace_mutations import delete, snapshot
+    assert "empty (2)" in snapshot(db, actor)[1]
+    delete(db, actor, ["empty (2)"])
+    assert marker_key not in objects
 
 
 def test_command_uses_mount_without_staging_or_internal_download(accounts, resource_store, monkeypatch):
@@ -119,7 +156,7 @@ def test_embed_image_in_mounted_document_without_archive_or_binary_stdout(accoun
     image = upload(owner, "photo.png", PNG)
     unused = upload(owner, "unused.txt", b"not selected")
     actor = access_for(owner, db)
-    document = workspace_files._save_bytes(actor.workspace_id, actor, db, "resume.html",
+    document = workspace_files._save_bytes(actor.user_id, actor, db, "resume.html",
         b'<html><img src="PHOTO"></html>', "text/html")
     from test_cloud_computer import enable_execution
     fake, execute = enable_execution(db, actor, monkeypatch)
@@ -130,7 +167,7 @@ def test_embed_image_in_mounted_document_without_archive_or_binary_stdout(accoun
     def run(sandbox, identifier, command):
         assert not sandbox["files"]
         for key, data in storage.objects.items():
-            path = key.removeprefix(prefix(actor.workspace_id))
+            path = key.removeprefix(prefix(actor.user_id))
             target = tmp_path / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
@@ -140,7 +177,7 @@ def test_embed_image_in_mounted_document_without_archive_or_binary_stdout(accoun
             "p.write_text(p.read_text().replace('PHOTO','data:image/png;base64,'+data)); print('saved')")
         completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, check=True)
         assert completed.stdout == "saved\n"
-        storage.objects[prefix(actor.workspace_id) + document["path"]] = (tmp_path / document["path"]).read_bytes()
+        storage.objects[prefix(actor.user_id) + document["path"]] = (tmp_path / document["path"]).read_bytes()
         fake.result = {"exit_code": 0, "stdout": completed.stdout, "stderr": ""}
         return 42
     monkeypatch.setattr(fake, "start", run)
@@ -174,7 +211,7 @@ def test_range_cache_tamper_and_failed_read_settles_actual_bytes(accounts, resou
     assert failed.sent_bytes == 2 and sum(part["reserved"] for part in failed.allocations) == 8
     # Finishing the same transfer again is idempotent and cannot consume more allowance.
     storage_billing.transfer_checkpoint(db, failed.id, finish="failed")
-    assert storage_billing.workspace_read(db, actor.workspace_id)["download_usage"]["model_read"] == 8
+    assert storage_billing.workspace_read(db, actor.user_id)["download_usage"]["model_read"] == 8
 
 
 def test_concurrent_same_version_merges_object_reads(accounts, resource_store):
@@ -205,18 +242,18 @@ def test_over_quota_grace_oldest_first_and_document_reference_protected(accounts
     config = StorageQuotaSettings(id=1, free_storage_bytes=8, free_download_bytes=1000,
         output_limit_bytes=1, retention_days=1, packages=[], costs={})
     db.add(config); db.commit()
-    state = storage_billing.workspace_read(db, actor.workspace_id)
-    row = db.get(WorkspaceStorageState, actor.workspace_id)
+    state = storage_billing.workspace_read(db, actor.user_id)
+    row = db.get(WorkspaceStorageState, actor.user_id)
     row.over_quota_since = auth.now()-timedelta(days=29); db.commit()
     storage_billing.maintenance(db)
     assert len(owner.get("/resources").json()["items"]) == 2
     row.over_quota_since = auth.now()-timedelta(days=31); db.commit()
     storage_billing.maintenance(db)
     assert [item["id"] for item in owner.get("/resources").json()["items"]] == [second["id"]]
-    assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == 8
+    assert storage_billing.inventory(db, actor.user_id)["used_bytes"] == 8
     # Replenishing capacity clears the continuous-overage clock.
-    assert storage_billing.workspace_read(db, actor.workspace_id)["over_quota_since"] is None
-    library = KnowledgeBase(workspace_id=actor.workspace_id, name="Protected")
+    assert storage_billing.workspace_read(db, actor.user_id)["over_quota_since"] is None
+    library = KnowledgeBase(account_id=actor.user_id, owner_id=actor.user_id, name="Protected")
     db.add(library); db.flush()
     version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(second["id"])))
     kb_key = f"{library.id}/protected.txt"
@@ -232,7 +269,7 @@ def test_over_quota_grace_oldest_first_and_document_reference_protected(accounts
     assert version.object_key not in resource_store[0]
     assert resource_store[0][kb_key] == b"kb-data!"
     assert owner.get("/resources").json()["items"] == []
-    assert storage_billing.inventory(db, actor.workspace_id)["used_bytes"] == 8
+    assert storage_billing.inventory(db, actor.user_id)["used_bytes"] == 8
 
 
 def test_missing_migrated_object_is_not_reported_as_available(accounts, resource_store):
@@ -245,24 +282,19 @@ def test_missing_migrated_object_is_not_reported_as_available(accounts, resource
     assert owner.get(f"/chat/attachments/{item['id']}/content").status_code == 404
 
 
-def test_cached_reads_revalidate_permissions_and_deleted_paths_stay_deleted(accounts, resource_store):
-    (owner, member, _), db = accounts
-    identity = register(owner); register(member, "cache-member@example.com")
+def test_cached_reads_revalidate_user_ownership_and_deleted_paths_stay_deleted(accounts, resource_store):
+    (owner, outsider, _), db = accounts
+    register(owner); register(outsider, "cache-member@example.com")
     item = upload(owner)
     actor = access_for(owner, db)
     row, version = workspace_files.resolve_input(db, actor, {"id": item["id"], "version": 1})
     assert resource_cache.read_bytes(db, actor, row, version) == b"resource facts"
-    share(owner, "cache-member@example.com", "viewer"); switch(member, identity["workspace_id"])
-    member_actor = access_for(member, db)
-    from app.models import Membership
-    db.delete(db.scalar(select(Membership).where(Membership.workspace_id == actor.workspace_id,
-        Membership.user_id == member_actor.user_id)))
-    db.commit()
     with pytest.raises(HTTPException):
-        resource_cache.read_bytes(db, member_actor, row, version)
+        outsider_actor = access_for(outsider, db)
+        resource_cache.read_bytes(db, outsider_actor, row, version)
     assert owner.delete(f"/resources/{item['id']}").status_code == 204
     with pytest.raises(HTTPException) as conflict:
-        workspace_files._save_bytes(actor.workspace_id, actor, db, item["path"], b"new")
+        workspace_files._save_bytes(actor.user_id, actor, db, item["path"], b"new")
     assert conflict.value.status_code == 409
     assert owner.get(f"/resources/{item['id']}").status_code == 404
 
@@ -281,7 +313,7 @@ def test_patch_propagates_cloud_conflict_without_cached_read(accounts, resource_
     monkeypatch.setattr("app.cloud_computer.execute", concurrent_edit)
     with pytest.raises(HTTPException) as error:
         workspace_files.execute_tool("apply_patch", {"path": item["path"], "expected_version": 1,
-            "patch": "@@ -1 +1 @@\n-old\n+patched\n"}, db, actor, actor.workspace_id)
+            "patch": "@@ -1 +1 @@\n-old\n+patched\n"}, db, actor, actor.user_id)
     assert error.value.status_code == 409
     assert owner.get(f"/resources/{item['id']}/download?version=1").content == b"old\n"
 

@@ -49,7 +49,7 @@ def main():
         subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=Path(__file__).resolve().parents[1], check=True, stdout=subprocess.DEVNULL)
         from app import auth, main as application, storage_downloads
-        from app.models import CreditAccount, LoginSession, Membership, User, Workspace, WorkspaceFile, WorkspaceFileVersion
+        from app.models import UserCreditAccount, LoginSession, Membership, User, Workspace, WorkspaceFile, WorkspaceFileVersion
         from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer
         from app.db import get_db
         engine = create_engine(url)
@@ -60,15 +60,15 @@ def main():
         with Session(engine) as db:
             user, workspace = User(email=f"storage-probe-{uuid4().hex}@example.com", name="Probe"), Workspace(name="Isolated storage probe")
             db.add_all([user,workspace]); db.flush()
-            db.add(Membership(user_id=user.id, workspace_id=workspace.id, role="admin"))
-            db.add(CreditAccount(workspace_id=workspace.id, balance=10, lifetime_granted=10, lifetime_spent=0))
-            db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id, workspace_id=workspace.id,
+            db.add(Membership(user_id=user.id, account_id=workspace.id, role="admin"))
+            db.add(UserCreditAccount(user_id=workspace.id, balance=10, lifetime_granted=10, lifetime_spent=0))
+            db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id,
                 csrf_token=csrf, expires_at=auth.now()+timedelta(hours=1)))
-            file = WorkspaceFile(workspace_id=workspace.id, path="probe.bin", size_bytes=len(body),
+            file = WorkspaceFile(account_id=workspace.id, path="probe.bin", size_bytes=len(body),
                 content_type="application/octet-stream", content_hash=hashlib.sha256(body).hexdigest(),
                 current_version=1, created_by=user.id, updated_by=user.id, expires_at=auth.now()+timedelta(days=3))
             db.add(file); db.flush()
-            db.add(WorkspaceFileVersion(file_id=file.id, workspace_id=workspace.id, version=1, object_key=key,
+            db.add(WorkspaceFileVersion(file_id=file.id, account_id=workspace.id, version=1, object_key=key,
                 size_bytes=len(body), content_type=file.content_type, content_hash=file.content_hash, created_by=user.id))
             db.add(StorageQuotaSettings(id=1, version=1, free_storage_bytes=512*1024**2,
                 free_download_bytes=20*1024**2, output_limit_bytes=512*1024**2, retention_days=3,
@@ -110,7 +110,7 @@ def main():
             assert len(rows)==3 and rows[0].sent_bytes+rows[1].sent_bytes==len(body)+1000
             assert all(row.status in ("completed","interrupted") for row in rows)
             assert all(row.reserved_bytes==0 for row in db.scalars(select(StorageEntitlement)))
-            assert str(db.get(CreditAccount,workspace_id).balance)=="9.8766"
+            assert str(db.get(UserCreditAccount,workspace_id).balance)=="9.8766"
             print(f"REAL_COS_HTTP_PROBE_PASSED bytes={len(body)} range=1000 transfers=3 debit=0.1234 once")
     finally:
         if server: server.should_exit=True

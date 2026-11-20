@@ -119,9 +119,6 @@ def test_attempt_recovery_is_scoped_and_does_not_replay_gateway(accounts, gatewa
     assert anon.get(f"/payments/order-attempts/{key}").status_code == 401
     session = register(member, "other@example.com")
     assert member.get(f"/payments/order-attempts/{key}").json() is None
-    share(owner, "other@example.com", "admin")
-    switch(member, owner.get("/auth/me").json()["workspace_id"])
-    assert member.get(f"/payments/order-attempts/{key}").json() is None
     assert member.get(f"/payments/orders/{first['id']}").status_code == 404
 
 

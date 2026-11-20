@@ -20,14 +20,14 @@ def enabled(db):
     return bool(row and row.enabled)
 
 
-def price_snapshot(db, workspace_id, provider_id=None, *, context=None):
-    return resolve_prices(db, workspace_id, CAPABILITIES, provider_id, context=context)
+def price_snapshot(db, account_id, provider_id=None, *, context=None):
+    return resolve_prices(db, account_id, CAPABILITIES, provider_id, context=context)
 
 
-def pending_credits(db, workspace_id):
+def pending_credits(db, account_id):
     from decimal import Decimal
     return db.scalar(select(func.coalesce(func.sum(ModelUsageRequest.credits), 0)).where(
-        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending")) or Decimal(0)
+        ModelUsageRequest.account_id == account_id, ModelUsageRequest.status == "pending")) or Decimal(0)
 
 
 def _pay(db, account, row):
@@ -38,10 +38,10 @@ def _pay(db, account, row):
     row.status = "settled"
 
 
-def settle_pending(db, workspace_id, hold=0):
-    account = ensure_account(db, workspace_id)
+def settle_pending(db, account_id, hold=0):
+    account = ensure_account(db, account_id)
     debts = db.scalars(select(ModelUsageRequest).where(
-        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
+        ModelUsageRequest.account_id == account_id, ModelUsageRequest.status == "pending"
     ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()
     if account.balance < sum(row.credits for row in debts) + hold:
         raise CreditError()
@@ -49,25 +49,25 @@ def settle_pending(db, workspace_id, hold=0):
         _pay(db, account, row)
 
 
-def start_request(db, workspace_id, actor_user_id, request_id, provider_id, hold, *, search_config=None, tool_only=False):
-    account = ensure_account(db, workspace_id)
+def start_request(db, account_id, actor_user_id, request_id, provider_id, hold, *, search_config=None, tool_only=False):
+    account = ensure_account(db, account_id)
     existing = db.get(ModelUsageRequest, request_id, populate_existing=True)
     if existing:
         raise HTTPException(409, "模型请求已存在，请勿重复提交")
-    context = context_for_workspace(db, workspace_id)
-    prices = {} if tool_only else price_snapshot(db, workspace_id, provider_id, context=context)
+    context = context_for_workspace(db, account_id)
+    prices = {} if tool_only else price_snapshot(db, account_id, provider_id, context=context)
     context.update(model_provider_id=str(provider_id), model_prices=prices)
     if search_config:
         context["search"] = search_config.snapshot()
     debts = db.scalars(select(ModelUsageRequest).where(
-        ModelUsageRequest.workspace_id == workspace_id, ModelUsageRequest.status == "pending"
+        ModelUsageRequest.account_id == account_id, ModelUsageRequest.status == "pending"
     ).order_by(ModelUsageRequest.created_at, ModelUsageRequest.request_id).with_for_update()).all()
     if account.balance < sum(row.credits for row in debts) + hold:
         raise CreditError()
     for row in debts:
         _pay(db, account, row)
-    authorization_hold(db, workspace_id, actor_user_id, request_id, hold)
-    db.add(ModelUsageRequest(request_id=request_id, workspace_id=workspace_id,
+    authorization_hold(db, account_id, actor_user_id, request_id, hold)
+    db.add(ModelUsageRequest(request_id=request_id, account_id=account_id,
         actor_user_id=actor_user_id, hold=hold, billing_context=context,
         formula_version="model_tools_decimal_v1" if search_config else "model_cache_decimal_v1"))
     db.flush()
@@ -77,7 +77,7 @@ def _request_locked(db, request_id):
     row = db.get(ModelUsageRequest, request_id)
     if row is None:
         raise ValueError("unknown model request")
-    account = ensure_account(db, row.workspace_id)
+    account = ensure_account(db, row.account_id)
     db.refresh(row, with_for_update=True)
     return row, account
 
@@ -88,7 +88,7 @@ def begin_call(db, request_id, provider):
         raise HTTPException(409, "模型请求已经结束")
     status = provider.status
     provider_id = UUID(status.provider_id) if status.provider_id else None
-    prices = price_snapshot(db, row.workspace_id, provider_id,
+    prices = price_snapshot(db, row.account_id, provider_id,
         context=row.billing_context or {"source_mode": "legacy", "multiplier_percent": 100})
     round_number = db.scalar(select(func.count()).select_from(ModelCallUsage).where(
         ModelCallUsage.request_id == request_id))
@@ -141,7 +141,7 @@ def finalize_request(db, request_id, outcome):
     total, allocations = allocate([item[3] for item in parts] + [item[1] for item in tool_parts])
     for (call, capability, units, exact, _), credits in zip(parts, allocations[:len(parts)]):
         price = call.prices[capability]
-        db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id,
+        db.add(UsageEvent(account_id=row.account_id, actor_user_id=row.actor_user_id,
             request_id=request_id, provider_id=call.provider_id, provider_key=call.provider_key,
             capability=capability, units=units, credits=credits, policy_version=price["version"],
             policy_snapshot={**price, "capability": capability, "formula_version": row.formula_version,
@@ -153,7 +153,7 @@ def finalize_request(db, request_id, outcome):
                 "source": call.usage.get("source"), "cache_status": call.usage.get("cache_status"),
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
     for (tool, exact), credits in zip(tool_parts, allocations[len(parts):]):
-        db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id,
+        db.add(UsageEvent(account_id=row.account_id, actor_user_id=row.actor_user_id,
             request_id=request_id, capability=tool.capability, units=tool.units, credits=credits,
             policy_version=tool.price["version"], policy_snapshot={**tool.price,
                 "formula_version": row.formula_version,
@@ -163,9 +163,9 @@ def finalize_request(db, request_id, outcome):
             metadata_json={"call_id": str(tool.id), "source": "deepseek_search",
                 "exact_numerator": str(exact.numerator), "exact_denominator": str(exact.denominator)}))
     row.credits, row.outcome = total, outcome
-    finish_operation(db, row.workspace_id, request_id)
+    finish_operation(db, row.account_id, request_id)
     row.finalized_at = datetime.now(timezone.utc)
-    release_hold(db, row.workspace_id, row.actor_user_id, request_id, row.hold)
+    release_hold(db, row.account_id, row.actor_user_id, request_id, row.hold)
     if account.balance >= total:
         _pay(db, account, row)
     else:

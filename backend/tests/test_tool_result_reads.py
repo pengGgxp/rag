@@ -68,7 +68,7 @@ def test_projection_preserves_execution_truth(data):
 
 
 def knowledge_candidates(db, manager):
-    library = KnowledgeBase(workspace_id=manager.access.workspace_id, name="source")
+    library = KnowledgeBase(account_id=manager.access.user_id, owner_id=manager.access.user_id, name="source")
     db.add(library); db.flush()
     document = Document(knowledge_base_id=library.id, filename="guide.txt", content_type="text/plain",
         size_bytes=1, object_key=str(uuid4()), content_hash="a" * 64, status=DocumentStatus.READY)
@@ -113,7 +113,7 @@ def test_candidate_pages_revalidate_versions_and_inherit_access_on_saved_pages(c
 def test_large_mcp_text_is_saved_paged_and_revocation_blocks_saved_pages(client):
     from app.mcp_client import tool_digest
     db, manager = fresh_manager(client)
-    server = MCPServer(owner_id=manager.access.user_id, workspace_id=manager.access.workspace_id,
+    server = MCPServer(owner_id=manager.access.user_id, account_id=manager.access.user_id,
         name="Remote", url="https://example.test/mcp", transport="sse", tools=[], allowed_tools=["read"],
         enabled=True, authorization_version=1, version=1, header_names=[])
     db.add(server); db.commit()
@@ -153,7 +153,7 @@ def test_mcp_evidence_fields_cannot_be_promoted_to_knowledge_citations(client):
     from app.mcp_client import tool_digest
     db, manager = fresh_manager(client)
     _, candidates = knowledge_candidates(db, manager)
-    server = MCPServer(owner_id=manager.access.user_id, workspace_id=manager.access.workspace_id,
+    server = MCPServer(owner_id=manager.access.user_id, account_id=manager.access.user_id,
         name="Remote", url="https://example.test/mcp", transport="sse", tools=[], allowed_tools=["read"],
         enabled=True, authorization_version=1, version=1, header_names=[])
     db.add(server); db.commit()
@@ -179,7 +179,8 @@ def test_mcp_evidence_fields_cannot_be_promoted_to_knowledge_citations(client):
 def test_discovery_pages_library_and_document_lists_independently(client):
     db, manager = fresh_manager(client)
     document, _ = knowledge_candidates(db, manager)
-    libraries = [KnowledgeBase(workspace_id=manager.access.workspace_id, name=f"directory-{index:02d}")
+    libraries = [KnowledgeBase(account_id=manager.access.user_id, owner_id=manager.access.user_id,
+                              name=f"directory-{index:02d}")
         for index in range(35)]
     db.add_all(libraries)
     for index in range(35):
@@ -234,7 +235,7 @@ def test_agent_discovers_loads_and_runs_over_20_fresh_mcp_observations(client, m
     manager.config = replace(manager.config, api_protocol=protocol)
     definition = {"name": "observe", "description": "observe current value", "annotations": {"readOnlyHint": True},
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}
-    server = MCPServer(owner_id=manager.access.user_id, workspace_id=manager.access.workspace_id,
+    server = MCPServer(owner_id=manager.access.user_id, account_id=manager.access.user_id,
         name="Remote", url="https://example.test/mcp", transport="sse", tools=[definition],
         allowed_tools=["observe"], enabled=True, authorization_version=1, version=1,
         last_checked_at=datetime.now(timezone.utc), header_names=[])

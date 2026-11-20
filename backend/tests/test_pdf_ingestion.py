@@ -22,7 +22,7 @@ def pdf_job(accounts, monkeypatch):
     (owner, outsider, _), db = accounts
     identity = register(owner)
     from app.models import UsagePolicy
-    db.add(UsagePolicy(workspace_id=UUID(identity["workspace_id"]), capability="ocr_pages", unit="pages", unit_size=1, credits_per_unit=10))
+    db.add(UsagePolicy(account_id=UUID(identity["user"]["id"]), capability="ocr_pages", unit="pages", unit_size=1, credits_per_unit=10))
     db.commit()
     register(outsider, "outsider@example.com")
     kb = library(owner)
@@ -93,7 +93,7 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
     ) for index in range(114))
     db.get(IngestionJob, old_job_id).state = JobState.FAILED
     db.add(UsagePolicy(
-        workspace_id=db.get(KnowledgeBase, kb_id).workspace_id, capability="embedding_tokens",
+        account_id=db.get(KnowledgeBase, kb_id).account_id, capability="embedding_tokens",
         unit="tokens", unit_size=1000, credits_per_unit=1,
     ))
     db.commit()
@@ -231,15 +231,15 @@ def test_pdf_ingestion_preserves_original_version_and_single_processing(pdf_job,
     (b"%PDF-1.7\nbroken", "已损坏或格式无效"),
     (b"", "为空或没有页面"),
     (make_pdf(page_count=0), "为空或没有页面"),
-])
+], ids=["password-required", "broken", "empty", "no-pages"])
 def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatch, parser, content, reason):
-    from app.models import CreditAccount, CreditLedgerEntry
+    from app.models import UserCreditAccount, CreditLedgerEntry
 
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
     settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
     monkeypatch.setattr(tasks, "get_settings", lambda: settings)
-    before = [(row.workspace_id, row.balance, row.lifetime_spent) for row in db.scalars(select(CreditAccount))]
+    before = [(row.user_id, row.balance, row.lifetime_spent) for row in db.scalars(select(UserCreditAccount))]
     ledger_before = list(db.scalars(select(CreditLedgerEntry.id)))
     calls = fake_provider(monkeypatch)
     with pytest.raises(ValueError, match=reason):
@@ -256,7 +256,7 @@ def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatc
     assert db.get(IngestionJob, next_id).state == JobState.FAILED
     assert reason in db.get(Document, doc_id).error_detail
     assert not calls and not embedded and not db.scalars(select(UsageEvent)).all()
-    assert [(row.workspace_id, row.balance, row.lifetime_spent) for row in db.scalars(select(CreditAccount))] == before
+    assert [(row.user_id, row.balance, row.lifetime_spent) for row in db.scalars(select(UserCreditAccount))] == before
     assert list(db.scalars(select(CreditLedgerEntry.id))) == ledger_before
 
 
@@ -347,7 +347,7 @@ def test_completed_parse_cache_is_reused_on_retry(pdf_job, monkeypatch):
 def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
     _, _, db, _, doc_id, job_id, _ = pdf_job
     from app.credits import ensure_account
-    account = ensure_account(db, db.get(Document, doc_id).knowledge_base.workspace_id)
+    account = ensure_account(db, db.get(Document, doc_id).knowledge_base.account_id)
     account.balance += 10000
     account.lifetime_granted += 10000
     db.commit()

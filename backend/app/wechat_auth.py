@@ -168,10 +168,8 @@ def unlink(request: Request, db: Session = Depends(get_db), session=Depends(auth
     rows = db.scalars(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ExternalIdentity.provider.like("senyu:%")).with_for_update()).all()
     for row in rows:
         db.delete(row)
-    from .audit_log import record_audit
     from .site_audit import record
     record(db, user, "auth.wechat_unlinked", "user", user.id, request=request)
-    record_audit(db, workspace_id=session.workspace_id, actor_user_id=user.id,
-                 action="auth.wechat_unlinked", resource_type="user", resource_id=user.id, request=request)
+    auth.record_account_audit(db, user.id, "auth.wechat_unlinked", "user", resource_id=user.id, request=request)
     db.commit()
     return {"message": "已解除微信绑定"}

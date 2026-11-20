@@ -168,12 +168,11 @@ def owner(db, access, conversation_id):
 
 
 def session_access(db, row):
-    from .models import Membership, User
-    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True)
+    from .models import User
     user = db.get(User, row.user_id, populate_existing=True)
-    if member is None or user is None or user.is_suspended:
+    if user is None or user.is_suspended:
         raise HTTPException(403, "云电脑访问权限已失效")
-    return Access(row.user_id, row.workspace_id, member.role, row.session_hash)
+    return Access(row.user_id, row.session_hash)
 
 
 def owned_computer(db, access, identifier, *, write=False):
@@ -183,10 +182,8 @@ def owned_computer(db, access, identifier, *, write=False):
     except (ValueError, TypeError):
         raise HTTPException(422, "请指定有效的 computer_id") from None
     row = db.get(Computer, identifier, populate_existing=True)
-    if row is None or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+    if row is None or row.user_id != access.user_id:
         raise HTTPException(404, "云电脑不存在或无权访问")
-    if write:
-        access.editor()
     return row
 
 
@@ -216,13 +213,13 @@ def reconcile(db, row, end, final=False) -> ReconcileResult:
         total = amount(rate * seconds / 60)
     delta = max(Decimal(0), total - row.charged_credits)
     if row.held_credits:
-        release_hold(db, row.workspace_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), row.held_credits)
+        release_hold(db, row.account_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), row.held_credits)
     row.held_credits = Decimal(0)
     if delta:
-        _entry(db, ensure_account(db, row.workspace_id), actor_user_id=row.user_id, amount=-delta,
+        _entry(db, ensure_account(db, row.account_id), actor_user_id=row.user_id, amount=-delta,
             kind="usage_settlement", idempotency_key=f"cloud:{row.id}:charge:{row.billing_sequence}",
             metadata={"capability": "cloud_computer", "computer_id": str(row.id), "seconds": seconds - row.billed_seconds})
-        db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.user_id, request_id=row.id,
+        db.add(UsageEvent(account_id=row.account_id, actor_user_id=row.user_id, request_id=row.id,
             capability="cloud_computer", units=max(0, seconds-row.billed_seconds), credits=delta,
             policy_version=row.snapshot["version"], policy_snapshot={k: v for k, v in row.snapshot.items() if k != "blocked_hosts"},
             idempotency_key=f"cloud:{row.id}:usage:{row.billing_sequence}", metadata_json={"computer_id": str(row.id)}))
@@ -230,13 +227,13 @@ def reconcile(db, row, end, final=False) -> ReconcileResult:
     row.billing_sequence += 1
     if not final and not row.billing_stopped_at:
         reserve = renewal_reserve(row)
-        account = ensure_account(db, row.workspace_id)
+        account = ensure_account(db, row.account_id)
         if account.balance < reserve:
             row.billing_stopped_at = end
             set_stop_reason(db, row, "insufficient_balance")
             return ReconcileResult.INSUFFICIENT_BALANCE
         if reserve:
-            authorization_hold(db, row.workspace_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), reserve)
+            authorization_hold(db, row.account_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), reserve)
         row.held_credits = reserve
     return result
 
@@ -273,7 +270,7 @@ def catalog(db=Depends(get_db), access=Depends(get_access)):
 def computer_list(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                   active_only: bool = False, db=Depends(get_db), access=Depends(get_access)):
     access = access.revalidate(db)
-    query = select(Computer).where(Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id)
+    query = select(Computer).where(Computer.user_id == access.user_id)
     if active_only:
         query = query.where(Computer.ended_at.is_(None))
     rows = db.scalars(query.order_by(Computer.ended_at.is_not(None), Computer.created_at.desc(), Computer.id)
@@ -320,7 +317,7 @@ def command_list(identifier: UUID, db=Depends(get_db), access=Depends(get_access
 def own_command(db, access, identifier):
     command = db.get(Command, identifier, with_for_update=True)
     row = db.get(Computer, command.session_id) if command else None
-    if not row or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+    if not row or row.user_id != access.user_id:
         raise HTTPException(404, "命令不存在")
     owned_computer(db, access, row.id, write=True)
     return command, row
@@ -381,7 +378,6 @@ def instance_lease(factory, identifier):
 def create_computer(db, access, conversation_id, request_id, arguments, *,
                     agent_tool_execution_id=None, check_active=None, on_progress=None):
     access = owner(db, access, conversation_id)
-    access.editor()
     if check_active:
         check_active()
     from .agent_tool_jobs import validate_owner
@@ -390,7 +386,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
     digest = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
     row = db.scalar(select(Computer).where(Computer.creation_request_id == request_id))
     if row:
-        if row.user_id != access.user_id or row.workspace_id != access.workspace_id or row.creation_digest != digest:
+        if row.user_id != access.user_id or row.creation_digest != digest:
             raise HTTPException(409, "同一次创建的内容已变化，请先核对原实例")
         return {"computer_id": str(row.id), "cloud_computer": read(row, db), "uncertain": row.status == "uncertain"}
     settings = db.get(Settings, 1, populate_existing=True)
@@ -401,15 +397,17 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
     if not settings.config.get("oss_role_arn") or not storage or storage.provider != "oss":
         raise HTTPException(503, "云电脑工作区挂载尚未就绪，请联系管理员")
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, 0)
+    from .shared_resources import materialize_legacy_mount, prefix
+    check_capacity(db, access.user_id, 0)
+    materialize_legacy_mount(db, access.user_id)
     identifier = uuid4()
     snapshot = {key: value for key, value in settings.config.items() if key != "concurrency"}
     snapshot.update(version=settings.version, resource_mount={"bucket": storage.bucket, "region": storage.region,
-        "prefix": f"workspaces/{access.workspace_id}/resource-directory/", "mode": "shared"})
+        "prefix": prefix(access.user_id), "mode": "shared"})
     reserve = amount(Decimal(str(snapshot["credits_per_minute"])) * snapshot["idle_seconds"] / 60)
     if reserve:
-        authorization_hold(db, access.workspace_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
-    row = Computer(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
+        authorization_hold(db, access.user_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
+    row = Computer(id=identifier, user_id=access.user_id, account_id=access.user_id,
         conversation_id=conversation_id, session_hash=access.session_hash, creation_request_id=request_id,
         creation_digest=digest, name=arguments.get("name"), snapshot=snapshot,
         encrypted_api_key=settings.encrypted_api_key, status="starting", held_credits=reserve)
@@ -443,7 +441,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
                     db.refresh(row)
                     from .credits import release_hold
                     if row.held_credits:
-                        release_hold(db, row.workspace_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), row.held_credits)
+                        release_hold(db, row.account_id, row.user_id, uuid5(row.id, f"hold:{row.billing_sequence}"), row.held_credits)
                         row.held_credits = Decimal(0)
                     row.status, row.ended_at = "failed", now()
                     row.stop_reason = "user_requested"
@@ -468,11 +466,9 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
     from .agent_tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access, conversation_id)
     file_operation = arguments.get("file_operation")
-    if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image"}:
-        access.editor()
-        if not file_operation or file_operation.get("name") != "delete_file":
-            from .storage_billing import check_capacity
-            check_capacity(db, access.workspace_id, 0)
+    if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image", "delete_file"}:
+        from .storage_billing import check_capacity
+        check_capacity(db, access.user_id, 0)
     row = owned_computer(db, access, arguments.get("computer_id"), write=True)
     # Serialize only retransmissions of this invocation, never unrelated instances.
     invocation_lock(db, request_id)
@@ -486,8 +482,7 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
     if arguments.get("file_operation"):
         payload["file_operation"] = arguments["file_operation"]
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    existing = db.scalar(select(Command).join(Computer).where(Computer.workspace_id == access.workspace_id,
-        Computer.user_id == access.user_id,
+    existing = db.scalar(select(Command).join(Computer).where(Computer.user_id == access.user_id,
         Command.request_id == request_id))
     if existing:
         if existing.digest != digest or existing.agent_tool_execution_id != agent_tool_execution_id:
@@ -496,7 +491,7 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
             dispatch(existing.id)
         return existing
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, 1)
+    check_capacity(db, access.user_id, 1)
     row = db.get(Computer, row.id, with_for_update=True, populate_existing=True)
     if row.ended_at or row.status not in ("ready", "running") or row.stop_requested_at:
         raise HTTPException(409, "指定云电脑暂不可执行，请查询状态或明确创建另一台")
@@ -618,7 +613,6 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
         try:
             provider = adapter(row.snapshot, row.encrypted_api_key)
             access = session_access(db, row)
-            access.editor()
             if row.snapshot.get("resource_mount", {}).get("mode") != "shared":
                 raise HTTPException(503, "云电脑未挂载工作区资源目录")
             if not row.provider_id:
@@ -659,7 +653,7 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
             while True:
                 db.refresh(command)
                 db.refresh(row)
-                session_access(db, row).editor()
+                session_access(db, row)
                 if cancelled() or row.status == "stopping" or now() >= aware(row.started_at)+timedelta(seconds=row.snapshot["max_seconds"]):
                     if command.payload.get("preview"):
                         from .cloud_preview import stop
@@ -982,7 +976,7 @@ def _maintain(db, identifier):
     elif row.status in ("ready", "running"):
         row.status = "running" if commands else "ready"
     try:
-        session_access(db, row).editor()
+        session_access(db, row)
     except HTTPException:
         row.status, row.billing_stopped_at = "stopping", row.billing_stopped_at or now()
         set_stop_reason(db, row, "access_revoked")

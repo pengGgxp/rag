@@ -36,7 +36,7 @@ def test_feedback_persists_updates_and_can_be_removed_idempotently(client):
     row = db.scalar(select(AnswerFeedback))
     conversation = db.get(Conversation, UUID(conversation_id))
     assert row.user_id == conversation.owner_id
-    assert row.workspace_id == conversation.workspace_id
+    assert row.account_id == conversation.account_id
     assert row.message_id == UUID(message_id)
     assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 1
     # Switching to positive feedback clears old categories and comments.
@@ -90,8 +90,6 @@ def test_feedback_remains_private_to_conversation_owner_and_honors_revocation(ac
     a = register(owner)
     b = register(viewer, "viewer@example.com", "Viewer")
     id = library(owner)
-    share(owner, "viewer@example.com")
-    switch(viewer, a["workspace_id"])
     conversation = viewer.post("/conversations", json={}).json()
     message = ChatMessage(
         conversation_id=UUID(conversation["id"]), sequence=1,
@@ -107,11 +105,12 @@ def test_feedback_remains_private_to_conversation_owner_and_honors_revocation(ac
     assert viewer.post("/feedback", json=payload).status_code == 200
     assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 1
     assert owner.get(f"/conversations/{conversation['id']}").status_code == 404
-    assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 200
+    assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 404
     assert viewer.post("/feedback", json=payload).status_code == 200
     assert viewer.delete(f"/feedback/{message_id}").status_code == 204
     assert viewer.get(f"/conversations/{conversation['id']}").status_code == 200
-    # A different active workspace never grants access even to one's own old messages.
-    switch(viewer, b["workspace_id"])
-    assert viewer.post("/feedback", json=payload).status_code == 404
+    from app.models import User
+    db.get(User, UUID(b["user"]["id"])).is_suspended = True
+    db.commit()
+    assert viewer.post("/feedback", json=payload).status_code == 401
     assert db.scalar(select(func.count()).select_from(AnswerFeedback)) == 0

@@ -12,7 +12,7 @@ type Settings = { version: number; generate_model_id: string | null; edit_model_
 
 export function ImageModelSettings({ state }: { state: (dirty: boolean, busy: boolean) => void }) {
   const { session } = useAuth();
-  const attemptKey = `rag-image-test:${session.user.id}:${session.workspace_id}`;
+  const attemptKey = `rag-image-test:${session.user.id}`;
   const resource = useAdminResource<Settings>("/site/admin/image-models");
   const models = useAdminResource<ModelProvider[]>("/site/admin/llm-providers");
   const [form, setForm] = useState<Settings | null>(null);
@@ -97,7 +97,7 @@ export function ImageModelSettings({ state }: { state: (dirty: boolean, busy: bo
           {operation === "edit" && <><label>参考资源 ID<input value={reference} disabled={busy} onChange={event => { setReference(event.target.value); setConfirmTest(false); }} /></label><label>资源版本<input type="number" min={1} value={referenceVersion} onChange={event => { setReferenceVersion(Number(event.target.value)); setConfirmTest(false); }} /></label></>}
         </div>
         <button type="button" className="secondary" disabled={busy || restoring || dirty || !spec || !prompt.trim() || !!task && (!task.terminal || ["uncertain", "save_failed"].includes(task.status))} onClick={() => setConfirmTest(true)}>测试当前默认模型</button>
-        {confirmTest && spec && <div className="admin-inline-confirm" role="alert"><span>将调用 {selected?.name}，按 {spec.credits_per_image} 积分/张及当前工作区倍率计费，生成 1 张，并使用存储与下载额度。</span>
+        {confirmTest && spec && <div className="admin-inline-confirm" role="alert"><span>将调用 {selected?.name}，按 {spec.credits_per_image} 积分/张计费，生成 1 张，并使用存储与下载额度。</span>
           <button type="button" className="secondary" onClick={() => setConfirmTest(false)}>取消</button><button type="button" className="primary" disabled={busy} onClick={() => void test()}>确认付费测试</button></div>}
         {task && <ImageTaskActivity key={task.task_id} initial={task} onUpdate={setTask} />}
       </details>
@@ -108,7 +108,7 @@ export function ImageModelSettings({ state }: { state: (dirty: boolean, busy: bo
   </section>;
 }
 
-type ReviewTask = ImageTaskResult & { workspace_id: string; actor_user_id: string; upstream_request_id: string | null; held_credits: string; requested_images: number };
+type ReviewTask = ImageTaskResult & { account_id: string; actor_user_id: string; upstream_request_id: string | null; held_credits: string; requested_images: number };
 
 function ImageTaskReview() {
   const resource = useAdminResource<ReviewTask[]>("/site/admin/image-models/tasks");
@@ -136,7 +136,7 @@ function ImageTaskResolution({ task, reload }: { task: ReviewTask; reload: () =>
     finally { setBusy(false); }
   }
   return <section className="image-review-row"><strong>{task.summary}</strong>
-    <dl><dt>任务</dt><dd>{task.task_id}</dd><dt>工作区</dt><dd>{task.workspace_id}</dd>
+    <dl><dt>任务</dt><dd>{task.task_id}</dd>
       <dt>上游请求</dt><dd>{task.upstream_request_id || "未返回"}</dd><dt>预留积分</dt><dd>{task.held_credits}</dd></dl>
     {task.status === "save_failed" ? <p className="billing-muted">请由任务发起人恢复权限或空间后重试保存。</p> : <form onSubmit={event => { event.preventDefault(); setConfirm(true); }}>
       <fieldset className="provider-form-fields" disabled={busy}><div className="provider-form-grid">

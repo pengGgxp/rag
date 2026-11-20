@@ -45,7 +45,8 @@ def test_upgrade_preserves_models_and_does_not_merge_equal_connections(auth_post
     admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
     with admin.connect() as db:
         db.execute(text(f'CREATE DATABASE "{name}"'))
-    env = {**os.environ, "DATABASE_URL": url.set(database=name).render_as_string(hide_password=False)}
+    database_url = url.set(database=name).render_as_string(hide_password=False)
+    env = {**os.environ, "DATABASE_URL": database_url, "MIGRATION_DATABASE_URL": database_url}
     root = Path(__file__).resolve().parents[1]
     engine = create_engine(env["DATABASE_URL"])
     def migrate(target):

@@ -54,7 +54,7 @@ def verify(client, sent):
 
 
 def legacy(db, email="legacy@example.com", verified=False):
-    user, _ = auth.create_user(db, email, "Legacy", PASSWORD)
+    user = auth.create_user(db, email, "Legacy", PASSWORD)
     if verified: user.email_verified_at = auth.now()
     db.commit()
     return user

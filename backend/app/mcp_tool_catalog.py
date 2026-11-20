@@ -130,7 +130,7 @@ class Catalog:
             with self.runtime.factory() as db:
                 access = self.runtime.access.revalidate(db)
                 servers = {row.id: row for row in db.scalars(select(MCPServer).where(
-                    MCPServer.owner_id == access.user_id, MCPServer.workspace_id == access.workspace_id,
+                    MCPServer.owner_id == access.user_id, MCPServer.account_id == access.user_id,
                     MCPServer.enabled.is_(True)))}
                 current = {identifier: {tool["name"]: tool for tool in row.tools}
                     for identifier, row in servers.items()}

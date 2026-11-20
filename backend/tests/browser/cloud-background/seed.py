@@ -11,7 +11,8 @@ from app.site_auth import protect
 
 with SessionLocal() as db:
     assert db.bind.url.database == "rag_auth_test_issue118_browser"
-    user, workspace = auth.create_user(db, "issue118-local@example.com", "Issue118 Acceptance", "Pr117-local-only-2026!")
+    user = auth.create_user(db, "issue118-local@example.com", "Issue118 Acceptance", "Pr117-local-only-2026!")
+    workspace = user.id
     user.email_verified_at = auth.now()
     user.is_site_admin = True
     account = ensure_account(db, workspace)

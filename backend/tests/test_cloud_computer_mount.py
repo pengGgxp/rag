@@ -67,7 +67,7 @@ def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accoun
     row = db.get(cloud.Computer, command.session_id)
     cloud.stage_mount(db, row, access, [])
     prefix = row.snapshot["resource_mount"]["prefix"]
-    assert prefix == f"workspaces/{access.workspace_id}/resource-directory/"
+    assert prefix == f"accounts/{access.user_id}/resource-directory/"
     assert storage.objects[prefix + own["path"]] == b"own data"
     assert not any(path.startswith(prefix) and path.endswith('other.txt') for path in storage.objects)
     assert row.manifest == {}
@@ -118,7 +118,7 @@ def test_mount_direct_edit_and_explicit_overwrite_have_no_history(accounts, monk
     prefix = row.snapshot["resource_mount"]["prefix"]
     storage.objects[prefix + item["path"]] = b"cloud edit"
     assert client.get(f"/resources/{item['id']}/download").content == b"cloud edit"
-    workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"external edit")
+    workspace_files._save_bytes(access.user_id, access, db, item["path"], b"external edit")
     cloud.cleanup_mount(db, row)
     assert storage.objects[prefix + item["path"]] == b"external edit"
     assert cloud.recover_mount(db, row) == []
@@ -131,7 +131,7 @@ def test_mount_never_stages_legacy_input_versions(accounts, monkeypatch, resourc
     storage.objects = resource_store[0]
     configure_mount(db, monkeypatch, storage)
     item = upload(client, "resume.txt", b"version one")
-    workspace_files._save_bytes(access.workspace_id, access, db, item["path"], b"version two", expected_version=1)
+    workspace_files._save_bytes(access.user_id, access, db, item["path"], b"version two", expected_version=1)
     command = submit(db, access, conversation, inputs=[{"id": item["id"], "version": 1}])
     row = db.get(cloud.Computer, command.session_id)
     cloud.stage_mount(db, row, access, command.payload["inputs"])
@@ -150,7 +150,7 @@ def test_legacy_mount_mode_cannot_read_resource_bodies(accounts, monkeypatch):
     _, db, conversation, access, _, _ = setup(accounts, monkeypatch)
     from app.models import CloudComputerSession
     from uuid import uuid4
-    row = CloudComputerSession(id=uuid4(), workspace_id=access.workspace_id, user_id=access.user_id,
+    row = CloudComputerSession(id=uuid4(), account_id=access.user_id, user_id=access.user_id,
         conversation_id=conversation.id, session_hash=access.session_hash, status="ready",
         snapshot={"resource_mount": {"mode": "legacy"}}, encrypted_api_key="test",
         manifest={}, held_credits=0, charged_credits=0, billed_seconds=0, billing_sequence=0)
@@ -225,5 +225,5 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
             computer.error = None
             cloud.cleanup_mount(db, computer)
             # Test-only explicit cleanup, never part of instance destruction.
-            for key in list(storage.iter_objects(f"workspaces/{access.workspace_id}/")):
+            for key in list(storage.iter_objects(f"accounts/{access.user_id}/")):
                 storage.delete(key["Key"])

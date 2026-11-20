@@ -80,7 +80,7 @@ if __name__ == "__main__":
                     {"id": "low", "label": "低", "value": "low"}], "default_option_id": "high"}
             shared.thinking_version = 1
         db.add(ModelBillingSettings(id=1, default_provider_id=shared.id, enabled=False, shared_pricing_enabled=False))
-        ensure_account(db, binding.workspace_id)
+        ensure_account(db, binding.account_id)
         db.commit()
         cookie = client.cookies.get(auth.COOKIE)
         @main.app.get("/__fixture/session")

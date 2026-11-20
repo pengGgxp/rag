@@ -57,9 +57,9 @@ if __name__ == "__main__":
         document.filename = "项目说明.txt"
         db.commit()
         session = db.get(auth.LoginSession, auth.digest(client.cookies.get(auth.COOKIE)))
-        access = auth.Access(user.id, LEGACY_WORKSPACE_ID, "admin", session.token_hash)
+        access = auth.Access(user.id, session.token_hash)
         for path in ["项目说明.txt", "项目/交付/项目说明.txt", "研发/需求/交付验收与资源文件路径展示长名称检查.txt"]:
-            workspace_files._save_bytes(access.workspace_id, access, db, path, b"LOCAL SYNTHETIC FILE", "text/plain")
+            workspace_files._save_bytes(access.user_id, access, db, path, b"LOCAL SYNTHETIC FILE", "text/plain")
         cookie = client.cookies.get(auth.COOKIE)
 
     @main.app.get("/__fixture/session")

@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app import payments
 from app.auth import now
 from app.config import Settings
-from app.models import AuditLog, CreditAccount, CreditLedgerEntry, RechargeOrder
+from app.models import AuditLog, UserCreditAccount, CreditLedgerEntry, RechargeOrder
 from app.payments import CALLBACK_PATH, Checkout, GatewayError, accept_payment, md5_sign
 from test_auth import accounts, register, share, switch
 
@@ -242,23 +242,18 @@ def test_signature_uses_raw_amount_and_not_floating_actual_amount(accounts, gate
     assert owner.get("/usage").json()["balance"] == 3500
 
 
-def test_orders_are_private_even_to_other_workspace_admins(accounts, gateway):
+def test_orders_are_private_to_the_purchasing_account(accounts, gateway):
     (owner, other, anonymous), _ = accounts
     first = register(owner)
     second = register(other, "other@example.com")
     order = create(owner).json()
     assert anonymous.get(f"/payments/orders/{order['id']}").status_code == 401
     assert other.get(f"/payments/orders/{order['id']}").status_code == 404
-    share(owner, "other@example.com", "admin")
-    switch(other, first["workspace_id"])
-    assert other.get(f"/payments/orders/{order['id']}").status_code == 404
     assert other.get("/payments/orders").json()["items"] == []
-    # A member can fund shared credits, but cannot read another user's orders.
     own_order = create(other).json()
     assert own_order["id"] != order["id"]
     assert owner.get(f"/payments/orders/{own_order['id']}").status_code == 404
-    switch(other, second["workspace_id"])
-    assert other.get(f"/payments/orders/{own_order['id']}").status_code == 404
+    assert other.get(f"/payments/orders/{own_order['id']}").status_code == 200
 
 
 @pytest.mark.parametrize("rejected, expected", [(False, "confirming"), (True, "failed")])
@@ -326,7 +321,7 @@ def test_transaction_rolls_back_all_posting_on_audit_failure(accounts, gateway, 
     with pytest.raises(RuntimeError):
         accept_payment(db, notification(order, settings), settings)
     db.rollback()
-    assert db.get(CreditAccount, UUID(session["workspace_id"])).balance == 1000
+    assert db.get(UserCreditAccount, UUID(session["user"]["id"])).balance == 1000
     assert db.get(RechargeOrder, UUID(order["id"])).status == "pending"
     assert db.scalar(select(CreditLedgerEntry).where(CreditLedgerEntry.kind == "paid_recharge")) is None
 

@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select, text
 
@@ -13,7 +13,7 @@ from .audit_log import record_audit
 from .credit_amounts import CreditRate
 from .credits import _entry, ensure_account
 from .db import get_db
-from .models import AgentSkill, ChatAttachment, Document, DocumentUpload, KnowledgeBase, Workspace, WorkspaceFile
+from .models import AgentSkill, ChatAttachment, Document, DocumentUpload, KnowledgeBase, User, WorkspaceFile, WorkspaceFileVersion
 from .site_auth import site_admin
 from .site_audit import record
 from .storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
@@ -89,8 +89,8 @@ def settings(db, *, lock=False):
 
 
 def lock_workspace(db, identifier):
-    if db.get(Workspace, identifier, with_for_update=True, populate_existing=True) is None:
-        raise HTTPException(404, "工作区不存在")
+    if db.get(User, identifier, with_for_update=True, populate_existing=True) is None:
+        raise HTTPException(404, "账号不存在")
 
 
 def inventory(db, identifier, *, exclude_key=None):
@@ -99,25 +99,26 @@ def inventory(db, identifier, *, exclude_key=None):
     groups = {"documents": 0, "attachments": 0, "outputs": 0, "skills": 0, "reserved": 0}
     sources = [
         ("documents", db.execute(select(Document.object_key, Document.size_bytes).join(KnowledgeBase)
-            .where(KnowledgeBase.workspace_id == identifier))),
+            .where(KnowledgeBase.account_id == identifier))),
         ("attachments", db.execute(select(ChatAttachment.object_key, ChatAttachment.size_bytes)
-            .where(ChatAttachment.workspace_id == identifier, ChatAttachment.object_deleted_at.is_(None),
+            .where(ChatAttachment.account_id == identifier, ChatAttachment.object_deleted_at.is_(None),
                 ChatAttachment.resource_file_id.is_(None)))),
     ]
-    from .shared_resources import object_key
     from .shared_resources import backend, prefix
     mounted = backend(db)
     if mounted is not None:
         sources.append(("outputs", ((item["Key"], int(item["Size"]))
             for item in mounted.iter_objects(prefix(identifier))
             if not item["Key"].endswith("/") and item["Key"].rsplit("/", 1)[-1] != ".rag-directory")))
-    else:
-        sources.append(("outputs", ((object_key(row.workspace_id, row.path), row.size_bytes)
-            for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,
-                WorkspaceFile.deleted_at.is_(None))))))
+    indexed = select(WorkspaceFileVersion.storage_key, WorkspaceFileVersion.size_bytes).join(WorkspaceFile).where(
+        WorkspaceFile.account_id == identifier, WorkspaceFile.deleted_at.is_(None),
+        WorkspaceFile.current_version == WorkspaceFileVersion.version)
+    if mounted is not None:
+        indexed = indexed.where(~WorkspaceFileVersion.storage_key.startswith(prefix(identifier), autoescape=True))
+    sources.append(("outputs", db.execute(indexed)))
     reserved = db.execute(
         select(DocumentUpload.object_key, DocumentUpload.size_bytes).where(
-            DocumentUpload.workspace_id == identifier,
+            DocumentUpload.account_id == identifier,
             DocumentUpload.state.not_in(["cleaned", "cancelled", "completed"]),
         )
     )
@@ -127,13 +128,13 @@ def inventory(db, identifier, *, exclude_key=None):
             if key != exclude_key and key not in objects:
                 objects[key] = size
                 groups[group] += size
-    for row in db.scalars(select(AgentSkill).where(AgentSkill.workspace_id == identifier)):
+    for row in db.scalars(select(AgentSkill).where(AgentSkill.account_id == identifier)):
         groups["skills"] += len(row.markdown.encode("utf-8")) + sum(len(f.content) for f in row.files)
     return {"used_bytes": sum(groups.values()), "breakdown": groups}
 
 
 def active_entitlements(db, identifier, at=None):
-    return list(db.scalars(select(StorageEntitlement).where(StorageEntitlement.workspace_id == identifier,
+    return list(db.scalars(select(StorageEntitlement).where(StorageEntitlement.account_id == identifier,
         StorageEntitlement.expires_at > (at or now())).order_by(StorageEntitlement.expires_at,
             StorageEntitlement.kind, StorageEntitlement.id)))
 
@@ -147,7 +148,7 @@ def check_capacity(db, identifier, additional, *, exclude_key=None, skill_replac
     config = settings(db)
     usage = inventory(db, identifier, exclude_key=exclude_key)
     if usage["used_bytes"] - skill_replaced_bytes + additional > storage_limit(db, identifier, config):
-        raise HTTPException(413, "工作区存储空间不足，请联系工作区管理员增加额度")
+        raise HTTPException(413, "存储空间不足，请清理文件或购买额外空间")
     state = db.get(WorkspaceStorageState, identifier)
     if state is not None:
         state.over_quota_since = None
@@ -164,10 +165,10 @@ def month_bounds(at):
 def free_month(db, identifier):
     start, end = month_bounds(now())
     key = f"free:{start:%Y-%m}"
-    row = db.scalar(select(StorageEntitlement).where(StorageEntitlement.workspace_id == identifier,
+    row = db.scalar(select(StorageEntitlement).where(StorageEntitlement.account_id == identifier,
         StorageEntitlement.request_key == key))
     if row is None:
-        row = StorageEntitlement(workspace_id=identifier, request_key=key, kind="free", name="每月免费额度",
+        row = StorageEntitlement(account_id=identifier, request_key=key, kind="free", name="每月免费额度",
             download_bytes=settings(db).free_download_bytes, storage_bytes=0, expires_at=end.astimezone(timezone.utc),
             snapshot={}, used_bytes=0, reserved_bytes=0, price_credits=0)
         db.add(row)
@@ -191,18 +192,18 @@ def finish_transfer(db, transfer, status):
 
 
 def recover_transfers(db, identifier):
-    for transfer in db.scalars(select(StorageTransfer).where(StorageTransfer.workspace_id == identifier,
+    for transfer in db.scalars(select(StorageTransfer).where(StorageTransfer.account_id == identifier,
             StorageTransfer.status == "active", StorageTransfer.lease_until <= now())):
         finish_transfer(db, transfer, "interrupted")
 
 
 def reserve_download(db, access, size, resource):
-    lock_workspace(db, access.workspace_id)
-    recover_transfers(db, access.workspace_id)
-    free_month(db, access.workspace_id)
-    grants = active_entitlements(db, access.workspace_id)
+    lock_workspace(db, access.user_id)
+    recover_transfers(db, access.user_id)
+    free_month(db, access.user_id)
+    grants = active_entitlements(db, access.user_id)
     if sum(max(0, e.download_bytes-e.used_bytes-e.reserved_bytes) for e in grants) < size:
-        raise HTTPException(402, "工作区下载额度不足，请联系工作区管理员增加额度")
+        raise HTTPException(402, "下载额度不足，请增加额度后重试")
     left, allocations = size, []
     for grant in grants:
         count = min(left, max(0, grant.download_bytes-grant.used_bytes-grant.reserved_bytes))
@@ -210,7 +211,7 @@ def reserve_download(db, access, size, resource):
             grant.reserved_bytes += count
             allocations.append({"id": str(grant.id), "reserved": count})
             left -= count
-    row = StorageTransfer(workspace_id=access.workspace_id, user_id=access.user_id, resource=resource,
+    row = StorageTransfer(account_id=access.user_id, user_id=access.user_id, resource=resource,
         requested_bytes=size, allocations=allocations, lease_until=now()+timedelta(minutes=2),
         sent_bytes=0, inflight_bytes=0, uncertain_bytes=0, status="active")
     db.add(row)
@@ -222,7 +223,7 @@ def transfer_checkpoint(db, identifier, *, preparing=0, sent=0, finish=None):
     row = db.get(StorageTransfer, identifier)
     if row is None:
         raise RuntimeError("Missing transfer reservation")
-    lock_workspace(db, row.workspace_id)
+    lock_workspace(db, row.account_id)
     db.refresh(row)
     if row.status != "active":
         if finish == row.status and not preparing and not sent:
@@ -269,13 +270,13 @@ def workspace_read(db, identifier):
     limit = storage_limit(db, identifier, config)
     state = db.get(WorkspaceStorageState, identifier)
     if state is None:
-        state = WorkspaceStorageState(workspace_id=identifier)
+        state = WorkspaceStorageState(account_id=identifier)
         db.add(state)
     state.over_quota_since = (state.over_quota_since or now()) if usage["used_bytes"] > limit else None
-    history = db.scalars(select(StorageEntitlement).where(StorageEntitlement.workspace_id == identifier,
+    history = db.scalars(select(StorageEntitlement).where(StorageEntitlement.account_id == identifier,
         StorageEntitlement.kind != "free").order_by(StorageEntitlement.created_at.desc()).limit(100)).all()
     transfers = list(db.execute(select(StorageTransfer.resource, func.sum(StorageTransfer.sent_bytes)).where(
-        StorageTransfer.workspace_id == identifier, StorageTransfer.created_at >= month_bounds(now())[0])
+        StorageTransfer.account_id == identifier, StorageTransfer.created_at >= month_bounds(now())[0])
         .group_by(StorageTransfer.resource)))
     result = {**usage, "limit_bytes": limit,
         "download_remaining_bytes": sum(max(0, e.download_bytes-e.used_bytes-e.reserved_bytes) for e in grants),
@@ -317,7 +318,7 @@ def put_config(payload: QuotaWrite, db=Depends(get_db), actor=Depends(site_admin
 
 @router.get("/storage/allowances")
 def get_allowances(db=Depends(get_db), access: Access=Depends(get_access)):
-    return workspace_read(db, access.workspace_id)
+    return workspace_read(db, access.user_id)
 
 
 class Purchase(BaseModel):
@@ -328,12 +329,10 @@ class Purchase(BaseModel):
 
 
 def purchase(db, access, payload, request=None):
-    if access.role != "admin":
-        raise HTTPException(403, "只有工作区管理员可以购买额度")
     config = settings(db, lock=True)
-    lock_workspace(db, access.workspace_id)
+    lock_workspace(db, access.user_id)
     key = f"purchase:{payload.request_id}"
-    existing = db.scalar(select(StorageEntitlement).where(StorageEntitlement.workspace_id == access.workspace_id,
+    existing = db.scalar(select(StorageEntitlement).where(StorageEntitlement.account_id == access.user_id,
         StorageEntitlement.request_key == key))
     if existing:
         if existing.snapshot.get("package_id") != payload.package_id or existing.snapshot.get("version") != payload.version:
@@ -345,8 +344,8 @@ def purchase(db, access, payload, request=None):
     if not package or package["price_credits"] is None:
         raise HTTPException(409, "此套餐暂不可购买")
     price = Decimal(str(package["price_credits"]))
-    account = ensure_account(db, access.workspace_id, initial=0)
-    row = StorageEntitlement(workspace_id=access.workspace_id, actor_user_id=access.user_id, request_key=key,
+    account = ensure_account(db, access.user_id, initial=0)
+    row = StorageEntitlement(account_id=access.user_id, actor_user_id=access.user_id, request_key=key,
         kind="purchase", name=package["name"], storage_bytes=package["storage_bytes"],
         download_bytes=package["download_bytes"], price_credits=price,
         expires_at=now()+timedelta(days=package["days"]),
@@ -354,9 +353,9 @@ def purchase(db, access, payload, request=None):
     db.add(row)
     db.flush()
     _entry(db, account, actor_user_id=access.user_id, amount=-price, kind="storage_package_purchase",
-        idempotency_key=f"storage:{access.workspace_id}:{payload.request_id}",
+        idempotency_key=f"storage:{access.user_id}:{payload.request_id}",
         metadata={"entitlement_id": str(row.id), "name": row.name, "package_id": payload.package_id})
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="storage.purchased", resource_type="storage_entitlement", resource_id=row.id, request=request,
         metadata={"credits": str(price), "package_id": payload.package_id})
     db.commit()
@@ -372,9 +371,11 @@ def buy(payload: Purchase, request: Request, db=Depends(get_db), access=Depends(
         raise
 
 
-@router.get("/site/admin/workspaces/{workspace_id}/storage")
-def admin_workspace(workspace_id: UUID, db=Depends(get_db), actor=Depends(site_admin)):
-    return workspace_read(db, workspace_id)
+@router.get("/site/admin/users/{user_id}/storage")
+def admin_user_storage(user_id: UUID, db=Depends(get_db), actor=Depends(site_admin)):
+    if db.get(User, user_id) is None:
+        raise HTTPException(404, "账号不存在")
+    return workspace_read(db, user_id)
 
 
 class Grant(BaseModel):
@@ -386,40 +387,36 @@ class Grant(BaseModel):
     request_id: UUID
 
 
-@router.post("/site/admin/workspaces/{workspace_id}/storage/grants", status_code=201)
-def grant(workspace_id: UUID, payload: Grant, db=Depends(get_db), actor=Depends(site_admin)):
-    lock_workspace(db, workspace_id)
+@router.post("/site/admin/users/{user_id}/storage/grants", status_code=201)
+def grant(user_id: UUID, payload: Grant, db=Depends(get_db), actor=Depends(site_admin)):
+    if db.get(User, user_id) is None:
+        raise HTTPException(404, "账号不存在")
+    lock_workspace(db, user_id)
     key = f"grant:{payload.request_id}"
-    row = db.scalar(select(StorageEntitlement).where(StorageEntitlement.workspace_id == workspace_id,
-        StorageEntitlement.request_key == key))
+    row = db.scalar(select(StorageEntitlement).where(
+        StorageEntitlement.account_id == user_id, StorageEntitlement.request_key == key))
     snapshot = payload.model_dump(mode="json")
-    if row and row.snapshot != snapshot:
-        raise HTTPException(409, "该操作已用于其他调整，请重新提交")
-    if row is None:
-        if not payload.storage_bytes and not payload.download_bytes:
-            raise HTTPException(422, "请填写需要增加的额度")
-        row = StorageEntitlement(workspace_id=workspace_id, actor_user_id=actor.id, request_key=key,
-            kind="grant", name="管理员调整", storage_bytes=payload.storage_bytes,
-            download_bytes=payload.download_bytes, expires_at=now()+timedelta(days=payload.days), snapshot=snapshot)
-        db.add(row)
-        db.flush()
-        record(db, actor, "storage.granted", "workspace", workspace_id,
-            details={"resource_id": str(row.id), "amount": {"storage_bytes": payload.storage_bytes,
-                "download_bytes": payload.download_bytes, "days": payload.days}, "request_id": str(payload.request_id)})
-        db.commit()
+    if row is not None:
+        if row.snapshot != snapshot:
+            raise HTTPException(409, "该操作已用于其他调整，请重新提交")
+        return entitlement_read(row)
+    if not payload.storage_bytes and not payload.download_bytes:
+        raise HTTPException(422, "请填写需要增加的额度")
+    row = StorageEntitlement(account_id=user_id, actor_user_id=actor.id, request_key=key,
+        kind="grant", name="管理员调整", storage_bytes=payload.storage_bytes,
+        download_bytes=payload.download_bytes, expires_at=now()+timedelta(days=payload.days), snapshot=snapshot)
+    db.add(row)
+    db.flush()
+    record(db, actor, "storage.granted", "user", user_id,
+        details={"resource_id": str(row.id), "amount": {"storage_bytes": payload.storage_bytes,
+            "download_bytes": payload.download_bytes, "days": payload.days}, "request_id": str(payload.request_id)})
+    db.commit()
     return entitlement_read(row)
-
-
-@router.get("/site/admin/storage/workspaces")
-def workspace_list(page: int=Query(1, ge=1), db=Depends(get_db), actor=Depends(site_admin)):
-    rows = db.scalars(select(Workspace).order_by(Workspace.created_at, Workspace.id).offset((page-1)*25).limit(26)).all()
-    return {"items": [{"id": str(row.id), "name": row.name, **workspace_read(db, row.id)} for row in rows[:25]],
-        "page": page, "has_more": len(rows) > 25}
 
 
 def maintenance(db):
     from .models import ChatAttachment, WorkspaceFile
-    for identifier in list(db.scalars(select(Workspace.id))):
+    for identifier in list(db.scalars(select(User.id).where(User.is_suspended.is_(False)))):
         state = workspace_read(db, identifier)
         if not state["over_quota_since"] or aware(state["over_quota_since"])+timedelta(days=30) > now():
             continue
@@ -432,10 +429,10 @@ def maintenance(db):
         config = settings(db)
         limit = storage_limit(db, identifier, config)
         candidates = []
-        for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == identifier,
+        for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.account_id == identifier,
                 WorkspaceFile.deleted_at.is_(None)).order_by(WorkspaceFile.created_at, WorkspaceFile.id)):
             candidates.append((row.created_at, str(row.id), "file", row, row.size_bytes))
-        for row in db.scalars(select(ChatAttachment).where(ChatAttachment.workspace_id == identifier,
+        for row in db.scalars(select(ChatAttachment).where(ChatAttachment.account_id == identifier,
                 ChatAttachment.resource_file_id.is_(None), ChatAttachment.deleted_at.is_(None), ChatAttachment.over_quota_deleted_at.is_(None))
                 .order_by(ChatAttachment.created_at, ChatAttachment.id)):
             candidates.append((row.created_at, str(row.id), "attachment", row, row.size_bytes))
@@ -463,7 +460,7 @@ def maintenance(db):
                         row.object_deleted_at = now()
                 except Exception:
                     pass
-            record_audit(db, action="resource.auto_deleted", workspace_id=identifier,
+            record_audit(db, action="resource.auto_deleted", owner_user_id=identifier,
                 resource_type="resource", resource_id=row.id, metadata={"reason": "storage_over_quota"})
             db.flush()
         db.commit()

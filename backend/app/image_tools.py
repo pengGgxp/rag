@@ -12,8 +12,6 @@ LABELS = {"generate_image": "生成图片", "edit_image": "编辑图片"}
 
 def tools(db, access):
     result = []
-    if access.role not in ("admin", "editor"):
-        return result
     for name, operation in (("generate_image", "generate"), ("edit_image", "edit")):
         try:
             _, _, config = selected_model(db, operation)

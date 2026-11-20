@@ -12,8 +12,8 @@ from app import main, conversations as chat
 from app.db import Base
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
-    ChatMessage, Conversation, ConversationLibrary, CreditAccount, DocumentStatus,
-    Document, KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, Membership, QueryTrace, User, Workspace,
+    ChatMessage, Conversation, ConversationLibrary, UserCreditAccount, DocumentStatus,
+    Document, KnowledgeBase, KnowledgeBaseStatus, QueryTrace, User,
 )
 from test_retrieval import add_document, add_library
 from auth_helpers import authenticate, model_id, generation_response
@@ -55,10 +55,9 @@ def client(monkeypatch, tmp_path):
     ))
     main.app.dependency_overrides[main.get_db] = lambda: db
     http = TestClient(main.app)
-    authenticate(http, db)
+    user = authenticate(http, db)
     from auth_helpers import configured_model
-    from app.models import LEGACY_WORKSPACE_ID
-    configured_model(db, LEGACY_WORKSPACE_ID, monkeypatch)
+    configured_model(db, user.id, monkeypatch)
     try:
         yield http, db, captured
     finally:
@@ -248,8 +247,6 @@ def test_document_mentions_persist_by_id_without_forcing_retrieval_scope(client)
 
 def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(client):
     http, db, _ = client
-    from app.models import LEGACY_WORKSPACE_ID
-
     library = add_library(db)
     document = add_document(db, library, "needle private historical evidence")
     conversation = create(http)
@@ -261,10 +258,10 @@ def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(c
     answer = events[-1][1]
     assert answer["citations"][0]["text"] == "needle private historical evidence"
 
-    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
-    membership = db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id))
-    membership.role = "viewer"
-    library.restricted = True
+    other = User(email="outside@example.com", name="Other")
+    db.add(other)
+    db.flush()
+    library.owner_id = library.account_id = other.id
     db.commit()
 
     listed = http.get("/conversations").json()["items"]
@@ -460,31 +457,27 @@ def test_agent_discovers_and_searches_documents_without_mentions(client, monkeyp
 
 
 @pytest.mark.parametrize("change", [
-    "revoked", "deleted", "inactive", "processing", "archived", "moved", "workspace_moved",
+    "ownership_changed", "deleted", "inactive", "processing", "archived", "moved",
     "missing", "foreign_document", "foreign_library",
 ])
 def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, change):
     http, db, _ = client
-    from app.models import LEGACY_WORKSPACE_ID
-
     library = add_library(db)
     library.name = "needle authorized"
     document = add_document(db, library, "needle authorized evidence")
     other_library = add_library(db)
-    foreign_workspace = Workspace(name="Other workspace")
-    db.add(foreign_workspace); db.flush()
-    foreign_library = KnowledgeBase(workspace_id=foreign_workspace.id, name="needle foreign")
+    other = User(email="outside@example.com", name="Other")
+    db.add(other); db.flush()
+    foreign_library = KnowledgeBase(account_id=other.id, owner_id=other.id, name="needle foreign")
     db.add(foreign_library); db.flush()
     foreign_document = add_document(db, foreign_library, "needle forbidden evidence")
     owner = db.scalar(select(User).where(User.email == "owner@example.com"))
-    db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
-    library.restricted = True
-    db.add(LibraryGrant(knowledge_base_id=library.id, user_id=owner.id))
+    library.owner_id = owner.id
+    other_owner_id = other.id
     db.commit()
     library_id, document_id = library.id, document.id
-    other_id, foreign_workspace_id = other_library.id, foreign_workspace.id
+    other_id = other_library.id
     foreign_library_id, foreign_document_id = foreign_library.id, foreign_document.id
-    owner_id = owner.id
     original_retrieve = main.retrieve_knowledge_base
     retrieval_calls = []
 
@@ -501,9 +494,9 @@ def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, 
                 catalog = json.loads(messages[-1]["content"])
                 assert {row["id"] for row in catalog["documents"]} == {str(document_id)}
                 with Session(db.get_bind()) as changed:
-                    if change == "revoked":
-                        changed.execute(delete(LibraryGrant).where(
-                            LibraryGrant.knowledge_base_id == library_id, LibraryGrant.user_id == owner_id))
+                    if change == "ownership_changed":
+                        changed_library = changed.get(KnowledgeBase, library_id)
+                        changed_library.owner_id = changed_library.account_id = other_owner_id
                     elif change == "deleted":
                         changed.get(Document, document_id).status = DocumentStatus.DELETED
                     elif change == "inactive":
@@ -514,8 +507,6 @@ def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, 
                         changed.get(KnowledgeBase, library_id).status = KnowledgeBaseStatus.ARCHIVED
                     elif change == "moved":
                         changed.get(Document, document_id).knowledge_base_id = other_id
-                    elif change == "workspace_moved":
-                        changed.get(KnowledgeBase, library_id).workspace_id = foreign_workspace_id
                     changed.commit()
                 requested_document = (uuid4() if change == "missing" else foreign_document_id
                     if change in ("foreign_document", "foreign_library") else document_id)
@@ -650,10 +641,10 @@ def test_failed_retry_keeps_history_but_drops_revoked_mentions(client, monkeypat
     failed = events[-1][1]
     assert failed["status"] == "failed"
 
-    from app.models import LEGACY_WORKSPACE_ID
-    owner = db.scalar(select(User).where(User.email == "owner@example.com"))
-    db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
-    library.restricted = True
+    other = User(email="outside@example.com", name="Other")
+    db.add(other)
+    db.flush()
+    library.owner_id = library.account_id = other.id
     db.commit()
 
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", original)

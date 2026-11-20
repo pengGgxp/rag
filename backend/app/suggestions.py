@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 
 from .auth import get_access
 from .db import get_db
-from .models import ProductSuggestion, User, Workspace
+from .models import ProductSuggestion, User
 from .site_auth import site_admin
 from .site_audit import record
 
@@ -46,17 +46,16 @@ def submit(payload: SuggestionWrite, db=Depends(get_db), access=Depends(get_acce
         ProductSuggestion.created_at >= datetime.now(timezone.utc) - timedelta(minutes=1)))
     if recent >= 3:
         raise HTTPException(429, "提交较频繁，请稍后再试")
-    row = ProductSuggestion(user_id=access.user_id, workspace_id=access.workspace_id, **payload.model_dump())
+    row = ProductSuggestion(user_id=access.user_id, account_id=access.user_id, **payload.model_dump())
     db.add(row)
     db.commit()
     return {"id": str(row.id)}
 
 
 def read(db, row, detail=False):
-    user, workspace = db.get(User, row.user_id), db.get(Workspace, row.workspace_id)
+    user = db.get(User, row.user_id)
     result = {"id": str(row.id), "category": row.category, "status": row.status,
-        "summary": row.content[:120], "user_name": user.name, "workspace_name": workspace.name,
-        "user_id": str(row.user_id), "workspace_id": str(row.workspace_id),
+        "summary": row.content[:120], "user_name": user.name, "user_id": str(row.user_id),
         "created_at": row.created_at, "version": row.version, "handled_at": row.handled_at}
     if detail:
         handler = db.get(User, row.handled_by) if row.handled_by else None

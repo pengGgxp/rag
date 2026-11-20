@@ -20,9 +20,8 @@ def catalog(db, access, query):
     pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     rows = db.scalars(select(WorkspaceFile).join(WorkspaceFileVersion,
         WorkspaceFileVersion.file_id == WorkspaceFile.id).where(
-        WorkspaceFile.workspace_id == checked.workspace_id, WorkspaceFile.deleted_at.is_(None),
+        WorkspaceFile.owner_user_id == checked.user_id, WorkspaceFile.deleted_at.is_(None),
         WorkspaceFile.path.ilike(pattern, escape="\\"), WorkspaceFileVersion.version == 1,
-        WorkspaceFileVersion.workspace_id == checked.workspace_id,
         WorkspaceFileVersion.deleted_at.is_(None), WorkspaceFileVersion.available.is_not(False),
     ).order_by(WorkspaceFile.path, WorkspaceFile.id).limit(20)).all()
     return [snapshot(row) for row in rows]
@@ -35,7 +34,7 @@ def resolve(db, access, identifiers, *, skip_unavailable=False):
     for identifier in dict.fromkeys(identifiers):
         try:
             row = db.get(WorkspaceFile, UUID(str(identifier)), populate_existing=True)
-            if row is None or row.workspace_id != checked.workspace_id or row.deleted_at:
+            if row is None or row.owner_user_id != checked.user_id or row.deleted_at:
                 raise HTTPException(404, "资源不存在")
             row, _version = resolve_input(db, checked, {"id": str(row.id)})
         except HTTPException as error:

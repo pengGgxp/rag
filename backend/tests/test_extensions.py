@@ -21,7 +21,7 @@ from test_request_models import send
 
 def access_for(client, db):
     session = db.get(LoginSession, auth.digest(client.cookies.get("rag_session")))
-    return auth.get_access(session, db)
+    return auth.get_access(session)
 
 
 def test_non_tool_model_ignores_platform_and_historical_extensions(accounts, monkeypatch):

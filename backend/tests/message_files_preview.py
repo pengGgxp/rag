@@ -110,7 +110,7 @@ if __name__ == "__main__":
         actor = access_for(http, db)
         cookie = http.cookies.get(fixture.auth.COOKIE)
     root = Path(tempfile.mkdtemp(prefix="rag-issue106-files-"))
-    prefix = shared_resources.prefix(actor.workspace_id)
+    prefix = shared_resources.prefix(actor.user_id)
 
     class LocalCommandCloud(LocalFileCloud):
         def start_file(self, sandbox, identifier, operation):

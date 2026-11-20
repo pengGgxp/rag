@@ -13,15 +13,16 @@ from app.extensions import ExtensionRuntime
 from app.knowledge_base_tools import LABELS, TOOLS
 from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (AuditLog, ChatMessage, DocumentStatus, IngestionJob, JobState,
-                        KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution, Membership)
-from test_auth import library, register, share, switch
+                        KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution, User)
+from test_auth import library, register
+from test_resources import access_for
 from test_retrieval import add_document
 
 
 @pytest.fixture
 def saving(accounts):
     (owner, other, anonymous), db = accounts
-    identity = register(owner)
+    register(owner)
     library_id = library(owner)
     conversation = owner.post("/conversations", json={}).json()
     # SQLite's UUID column has numeric affinity; an a-prefix prevents rare
@@ -30,8 +31,7 @@ def saving(accounts):
     message = ChatMessage(id=UUID("a" + uuid4().hex[1:]), conversation_id=UUID(conversation["id"]),
         sequence=2, role="assistant", request_id=request_id, content="Synthetic output", status="completed")
     db.add(message); db.commit()
-    access = auth.Access(UUID(identity["user"]["id"]), UUID(identity["workspace_id"]), "admin",
-        auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = access_for(owner, db)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message.id, request_id=request_id)
     return SimpleNamespace(owner=owner, other=other, anonymous=anonymous, db=db, library=library_id,
@@ -52,7 +52,7 @@ def test_create_receipt_survives_response_loss_runtime_rebuild_and_conflicts(sav
     first = execute(e)
     assert first["summary"] == "已创建「项目资料」"
     row = e.db.get(KnowledgeBase, UUID(first["knowledge_base"]["id"]))
-    assert row.workspace_id == e.access.workspace_id and row.name == "项目资料"
+    assert row.account_id == e.access.user_id and row.name == "项目资料"
     assert first["knowledge_base"]["url"] == f"/?library={row.id}&view=documents"
     e.runtime = ExtensionRuntime(e.runtime.factory, e.access, message_id=e.message.id, request_id=e.message.request_id)
     assert execute(e) == first
@@ -110,8 +110,7 @@ def test_identity_missing_call_and_receipt_revalidation(saving):
     assert execute(e, call_id=None).get("error")
     first = execute(e)
     row = e.db.get(KnowledgeBase, UUID(first["knowledge_base"]["id"]))
-    row.restricted = True
-    e.db.get(Membership, (e.access.workspace_id, e.access.user_id)).role = "editor"
+    e.db.get(User, e.access.user_id).is_suspended = True
     e.db.commit()
     assert execute(e).get("error")  # Revocation applies even to a completed receipt.
     e.runtime.request_id = uuid4()
@@ -133,23 +132,18 @@ def test_partial_update_does_not_revalidate_unchanged_legacy_description(saving)
 def test_another_user_cannot_reuse_message_or_receipt_identity(saving):
     e = saving
     execute(e)
-    other = register(e.other, "coworker@example.com")
-    share(e.owner, "coworker@example.com", "editor")
-    switch(e.other, str(e.access.workspace_id))
-    access = auth.Access(UUID(other["user"]["id"]), e.access.workspace_id, "editor", auth.digest(e.other.cookies.get(auth.COOKIE)))
+    register(e.other, "coworker@example.com")
+    access = access_for(e.other, e.db)
     e.runtime = ExtensionRuntime(e.runtime.factory, access, message_id=e.message.id, request_id=e.message.request_id)
     assert execute(e).get("error")
     assert count(e, KnowledgeBaseToolExecution) == 1
 
 
-def test_cross_workspace_restricted_and_readonly_permissions(saving):
+def test_knowledge_base_tools_are_scoped_to_the_logged_in_user(saving):
     e = saving
-    other = register(e.other, "other@example.com")
+    register(e.other, "other@example.com")
     other_library = library(e.other)
     other_document = add_document(e.db, e.db.get(KnowledgeBase, other_library), "Synthetic private evidence")
-    private = e.db.get(KnowledgeBase, e.library)
-    private.restricted = True
-    e.db.commit()
     assert execute(e, "update_knowledge_base", {"knowledge_base_id": str(other_library), "name": "越权"}).get("error")
     assert execute(e, "get_knowledge_base_document_status", {"knowledge_base_id": str(other_library)}).get("error")
     foreign = execute(e, "get_knowledge_base_document_status", {"knowledge_base_id": str(e.library), "document_id": str(other_document.id)})
@@ -157,24 +151,13 @@ def test_cross_workspace_restricted_and_readonly_permissions(saving):
     assert foreign == missing_document and foreign.get("error")
     listed = execute(e, "list_knowledge_bases", {})["knowledge_bases"]
     assert [row["id"] for row in listed] == [str(e.library)]
-    share(e.owner, "other@example.com", "editor")
-    switch(e.other, str(e.access.workspace_id))
-    access = auth.Access(UUID(other["user"]["id"]), e.access.workspace_id, "editor", auth.digest(e.other.cookies.get(auth.COOKIE)))
+    access = access_for(e.other, e.db)
     e.runtime = ExtensionRuntime(e.runtime.factory, access)
     inaccessible = execute(e, "get_knowledge_base_document_status", {"knowledge_base_id": str(e.library)})
     missing = execute(e, "get_knowledge_base_document_status", {"knowledge_base_id": str(uuid4())})
     assert inaccessible == missing
-    assert execute(e, "list_knowledge_bases", {})["knowledge_bases"] == []
-    private.restricted = False
-    e.db.get(Membership, (e.access.workspace_id, access.user_id)).role = "viewer"
-    e.db.commit()
-    fresh = ExtensionRuntime(e.runtime.factory, access)
-    names = {item["function"]["name"] for item in fresh.tools}
-    assert {"list_knowledge_bases", "get_knowledge_base_document_status"} <= names
-    assert not {"create_knowledge_base", "update_knowledge_base"} & names
-    assert fresh.execute("list_knowledge_bases", {})["knowledge_bases"][0]["id"] == str(e.library)
-    assert fresh.execute("create_knowledge_base", {"name": "越权"}, call_id="x").get("error")
-    assert fresh.execute("update_knowledge_base", {"knowledge_base_id": str(e.library), "name": "越权"}, call_id="y").get("error")
+    assert [row["id"] for row in execute(e, "list_knowledge_bases", {})["knowledge_bases"]] == [str(other_library)]
+    assert execute(e, "update_knowledge_base", {"knowledge_base_id": str(e.library), "name": "越权"}).get("error")
 
 
 def test_document_states_versions_deletion_and_pagination(saving):

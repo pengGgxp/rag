@@ -28,7 +28,7 @@ def prepare_runner_network(docker, runner_image):
     if secured.returncode != 0:
         raise HTTPException(503, "执行网络暂时不可用")
 class RunRequest(BaseModel):
-    workspace_id: str
+    account_id: str
     command: str = Field(min_length=1, max_length=2000)
     files: dict[str,str] = Field(default_factory=dict)
 

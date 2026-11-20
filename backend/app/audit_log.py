@@ -9,7 +9,7 @@ from .models import AuditLog
 def record_audit(
     db: Session,
     *,
-    workspace_id: UUID,
+    owner_user_id: UUID,
     action: str,
     resource_type: str,
     actor_user_id: UUID | None = None,
@@ -20,7 +20,7 @@ def record_audit(
     client = request.client if request else None
     user_agent = request.headers.get("user-agent", "")[:500] if request else None
     db.add(AuditLog(
-        workspace_id=workspace_id,
+        owner_user_id=owner_user_id,
         actor_user_id=actor_user_id,
         action=action,
         resource_type=resource_type,

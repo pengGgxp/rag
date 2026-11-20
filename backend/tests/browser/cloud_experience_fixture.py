@@ -55,7 +55,7 @@ identity = identity.json()
 client.headers["X-CSRF-Token"] = identity["csrf_token"]
 with SessionLocal() as db:
     db.get(User, UUID(identity["user"]["id"])).is_site_admin = True
-    account = ensure_account(db, UUID(identity["workspace_id"]))
+    account = ensure_account(db, UUID(identity["user"]["id"]))
     account.balance = Decimal("100")
     account.lifetime_granted = Decimal("100")
     db.commit()
@@ -75,12 +75,12 @@ with SessionLocal() as db:
     started = auth.now() - timedelta(seconds=149)
     from app.models import CloudComputerSettings, Conversation
     config = db.get(CloudComputerSettings, 1)
-    computer = CloudComputerSession(workspace_id=UUID(identity["workspace_id"]), user_id=UUID(identity["user"]["id"]),
+    computer = CloudComputerSession(account_id=UUID(identity["user"]["id"]), user_id=UUID(identity["user"]["id"]),
         conversation_id=conversation_id, session_hash=auth.digest(client.cookies.get(auth.COOKIE)), status="ready",
         provider_id="local-synthetic", snapshot={**config.config, "version": config.version}, encrypted_api_key=protect("fake"),
         held_credits=Decimal("20"), started_at=started, last_activity_at=auth.now())
     db.add(computer); db.flush()
-    authorization_hold(db, computer.workspace_id, computer.user_id, uuid5(computer.id, "hold:0"), Decimal("20"))
+    authorization_hold(db, computer.account_id, computer.user_id, uuid5(computer.id, "hold:0"), Decimal("20"))
     fake.instances["local-synthetic"] = {"files": {}, "started_at": started}
     command = CloudComputerCommand(session_id=computer.id, request_id=uuid4(), digest="a" * 64, payload={},
         status="completed", started_at=started, finished_at=auth.now(), result={"exit_code": 0})
@@ -108,5 +108,5 @@ with SessionLocal() as db:
     db.get(Conversation, conversation_id).title = "冒泡排序可视化"
     db.commit()
     receipt = {"email": email, "password": password, "conversation_id": str(conversation_id),
-        "workspace_id": identity["workspace_id"], "preview_id": str(preview.id), "file_id": file["id"]}
+        "workspace_id": identity["user"]["id"], "preview_id": str(preview.id), "file_id": file["id"]}
 Path("/tmp/cloud-107-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")

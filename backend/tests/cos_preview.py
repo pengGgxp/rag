@@ -95,11 +95,11 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at, user.is_site_admin = auth.now(), True
-        library = KnowledgeBase(workspace_id=auth.LEGACY_WORKSPACE_ID, name="COS 上传验收")
-        other = KnowledgeBase(workspace_id=auth.LEGACY_WORKSPACE_ID, name="另一知识库")
+        library = KnowledgeBase(account_id=auth.LEGACY_WORKSPACE_ID, owner_id=user.id, name="COS 上传验收")
+        other = KnowledgeBase(account_id=auth.LEGACY_WORKSPACE_ID, owner_id=user.id, name="另一知识库")
         alternate = Workspace(name="另一测试工作区")
         db.add_all([library, other, alternate]); db.flush()
-        db.add(Membership(workspace_id=alternate.id, user_id=user.id, role="admin"))
+        db.add(Membership(account_id=alternate.id, user_id=user.id, role="admin"))
         db.commit()
         cookie = client.cookies.get(auth.COOKIE)
         ids = {"library": str(library.id), "other": str(other.id), "workspace": str(auth.LEGACY_WORKSPACE_ID),

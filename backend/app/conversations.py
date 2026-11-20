@@ -173,8 +173,8 @@ def recover_interrupted_conversations(db: Session):
         hold = db.scalar(select(CreditLedgerEntry).where(
             CreditLedgerEntry.idempotency_key == f"usage:{snapshot.request_id}:hold"))
         if hold:
-            settle_model_usage(db, snapshot.workspace_id, hold.actor_user_id, snapshot.request_id,
-                legacy_call_usage(db, snapshot.workspace_id, snapshot.request_id), -hold.amount)
+            settle_model_usage(db, snapshot.account_id, hold.actor_user_id, snapshot.request_id,
+                legacy_call_usage(db, snapshot.account_id, snapshot.request_id), -hold.amount)
         snapshot.status = "interrupted"
     for message in db.scalars(select(ChatMessage).where(ChatMessage.status == "streaming", ~ChatMessage.request_id.in_(owned))):
         message.status = "interrupted"
@@ -233,7 +233,7 @@ def chat_router(get_db, retrieve):
                 raise HTTPException(403, "请先授权题目工作台")
         conversation = Conversation(
             title=payload.title, title_source="temporary" if payload.title == "新对话" else "manual",
-            owner_id=access.user_id, workspace_id=access.workspace_id, extensions_initialized=True,
+            owner_id=access.user_id, account_id=access.user_id, extensions_initialized=True,
             skill_ids=list(dict.fromkeys(map(str, payload.skill_ids))),
             question_workbench=payload.question_workbench,
             mcp_server_ids=list(dict.fromkeys(map(str, payload.mcp_server_ids))),
@@ -241,7 +241,7 @@ def chat_router(get_db, retrieve):
         db.add(conversation)
         db.flush()
         record_audit(
-            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="conversation.created", resource_type="conversation",
             resource_id=conversation.id, metadata={"knowledge_base_count": 0}, request=request,
         )
@@ -371,7 +371,7 @@ def chat_router(get_db, retrieve):
         from sqlalchemy.orm.attributes import flag_modified
         flag_modified(conversation, "updated_at")
         record_audit(
-            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="conversation.renamed", resource_type="conversation",
             resource_id=conversation.id, metadata={"pinned": payload.pinned}, request=request,
         )
@@ -393,7 +393,7 @@ def chat_router(get_db, retrieve):
         conversation.deleted_at = datetime.now(timezone.utc)
         conversation.active_request_id = None
         record_audit(
-            db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="conversation.deleted", resource_type="conversation",
             resource_id=conversation.id, request=request,
         )
@@ -527,7 +527,7 @@ def chat_router(get_db, retrieve):
             return StreamingResponse(repeat(), media_type="text/event-stream")
         if conversation.active_request_id:
             raise HTTPException(409, "请先停止或等待当前操作完成")
-        config = request_provider_config(db, access.workspace_id, payload.provider_id,
+        config = request_provider_config(db, access.user_id, payload.provider_id,
             payload.thinking_option_id, payload.thinking_config_version)
         if not config.context_capacity or not config.max_output_tokens:
             raise HTTPException(409, "上下文保护未就绪，请联系管理员配置模型容量")
@@ -549,14 +549,14 @@ def chat_router(get_db, retrieve):
             return StreamingResponse(nothing(), media_type="text/event-stream")
         hold = authorization_hold_amount()
         if model_billing.enabled(db):
-            model_billing.start_request(db, access.workspace_id, access.user_id, payload.request_id,
+            model_billing.start_request(db, access.user_id, access.user_id, payload.request_id,
                 UUID(config.provider_id), hold)
         else:
             from .workspace_billing import operation_snapshot
-            model_billing.settle_pending(db, access.workspace_id, hold)
-            operation_snapshot(db, access.workspace_id, payload.request_id, "model",
+            model_billing.settle_pending(db, access.user_id, hold)
+            operation_snapshot(db, access.user_id, payload.request_id, "model",
                 capabilities=model_billing.CAPABILITIES, provider_id=UUID(config.provider_id))
-            authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold)
+            authorization_hold(db, access.user_id, access.user_id, payload.request_id, hold)
         conversation.active_request_id = payload.request_id
         db.add(ContextOperation(request_id=payload.request_id, conversation_id=conversation_id))
         from .conversation_jobs import enqueue, dispatch, public_status
@@ -678,7 +678,7 @@ def chat_router(get_db, retrieve):
             hold_amount = authorization_hold_amount()
             metered = model_billing.enabled(db)
             search_config = None
-            provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
+            provider_config = request_provider_config(db, access.user_id, payload.provider_id,
                 payload.thinking_option_id, payload.thinking_config_version)
             if not provider_config.thinking.supports_tools and (mention_ids or knowledge_base_mention_ids
                     or current_resource_mentions):
@@ -693,14 +693,14 @@ def chat_router(get_db, retrieve):
                 if payload.web_search and provider_config.thinking.supports_tools:
                     from .search_settings import runtime_config
                     search_config = runtime_config(db)
-                model_billing.start_request(db, access.workspace_id, access.user_id,
+                model_billing.start_request(db, access.user_id, access.user_id,
                     payload.request_id, UUID(provider_config.provider_id), hold_amount, search_config=search_config)
             else:
                 from .workspace_billing import operation_snapshot
-                model_billing.settle_pending(db, access.workspace_id, hold_amount)
-                operation_snapshot(db, access.workspace_id, payload.request_id, "model",
+                model_billing.settle_pending(db, access.user_id, hold_amount)
+                operation_snapshot(db, access.user_id, payload.request_id, "model",
                     capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
-                authorization_hold(db, access.workspace_id, access.user_id, payload.request_id, hold_amount)
+                authorization_hold(db, access.user_id, access.user_id, payload.request_id, hold_amount)
         except CreditError:
             db.rollback()
             raise
@@ -792,8 +792,8 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
     with factory() as metering_db:
         metered = metering_db.get(ModelUsageRequest, request_id) is not None
         from .workspace_billing import LegacyPriceMeter
-    meter = (model_billing.ModelMeter(factory, request_id) if metered else
-             LegacyPriceMeter(factory, access.workspace_id, request_id))
+        meter = (model_billing.ModelMeter(factory, request_id) if metered else
+                 LegacyPriceMeter(factory, access.user_id, request_id))
 
     def emit(name, data):
         nonlocal sequence
@@ -1100,9 +1100,10 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                 with factory() as credit_db:
                     try:
                         from .workspace_billing import finish_operation, legacy_call_usage
-                        settle_model_usage(credit_db, access.workspace_id, access.user_id, request_id,
-                            legacy_call_usage(credit_db, access.workspace_id, request_id), hold_amount)
-                        finish_operation(credit_db, access.workspace_id, request_id)
+                        partition = access.user_id
+                        settle_model_usage(credit_db, partition, access.user_id, request_id,
+                            legacy_call_usage(credit_db, partition, request_id), hold_amount)
+                        finish_operation(credit_db, partition, request_id)
                         credit_db.commit()
                     except Exception:
                         credit_db.rollback()

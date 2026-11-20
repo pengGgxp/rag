@@ -68,8 +68,8 @@ if __name__ == "__main__":
         shared.context_capacity, shared.max_output_tokens = 16000, 2000
         shared.name = "本地重试验收"
         db.add(ModelBillingSettings(id=1, default_provider_id=shared.id, enabled=False, shared_pricing_enabled=False))
-        ensure_account(db, binding.workspace_id)
-        conversation = Conversation(workspace_id=LEGACY_WORKSPACE_ID, owner_id=user.id, title="上游重试验收",
+        ensure_account(db, binding.account_id)
+        conversation = Conversation(account_id=LEGACY_WORKSPACE_ID, owner_id=user.id, title="上游重试验收",
             title_source="manual")
         db.add(conversation)
         db.commit()

@@ -117,7 +117,7 @@ def _mutation_allowed(path: str) -> bool:
         return True
     if re.fullmatch(r"/payments/(?:orders|order-attempts)/[^/]+", path):
         return True
-    if path in {"/auth/login", "/auth/logout", "/auth/workspace"}:
+    if path in {"/auth/login", "/auth/logout"}:
         return True
     if re.fullmatch(r"/conversations/[^/]+/stop", path):
         return True

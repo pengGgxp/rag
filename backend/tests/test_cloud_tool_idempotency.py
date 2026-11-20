@@ -9,9 +9,10 @@ from sqlalchemy import select
 
 from app import auth, cloud_computer as cloud
 from app.agent import AgentCancelled, run_retrieval_agent
+from app.credits import ensure_account
 from app.extensions import ExtensionRuntime
 from app.llm import ChatProviderConfig, ToolCall, ToolResponse
-from app.models import ChatMessage, CreditAccount, CreditLedgerEntry, LoginSession, UsageEvent
+from app.models import ChatMessage, UserCreditAccount, CreditLedgerEntry, LoginSession, UsageEvent
 from cloud_command_fixtures import LocalFileCloud
 from test_cloud_computer import setup
 from test_cloud_computer_mount import MemoryMount, configure_mount
@@ -25,8 +26,8 @@ def runtime(accounts, monkeypatch, resource_store, tmp_path):
     storage.objects = resource_store[0]
     configure_mount(db, monkeypatch, storage)
     item = upload(client, "count.txt", b"quantity 17\n")
-    prefix = f"workspaces/{access.workspace_id}/resource-directory/"
-    provider = LocalFileCloud(tmp_path / "workspace", storage, prefix)
+    from app.shared_resources import prefix
+    provider = LocalFileCloud(tmp_path / "workspace", storage, prefix(access.user_id))
     monkeypatch.setattr(cloud, "adapter", lambda *_: provider)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
     provider.computer_id = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "幂等测试"})["computer_id"]
@@ -95,13 +96,13 @@ def test_runtime_recreation_and_worker_replay_preserve_command_and_ledger(runtim
     client.post(f"/cloud-computers/{fake.computer_id}/end")
     cloud.maintenance(factory)
     db.expire_all()
-    balance = db.get(CreditAccount, access.workspace_id).balance
+    balance = ensure_account(db, access.user_id).balance
     ledger = [row.id for row in db.scalars(select(CreditLedgerEntry))]
     events = [row.id for row in db.scalars(select(UsageEvent))]
     assert extensions().execute("run_command", {"computer_id": fake.computer_id, "command": "echo synthetic"}, call_id="tool-1-run")["command_id"] == first["command_id"]
     cloud.maintenance(factory)
     db.expire_all()
-    assert db.get(CreditAccount, access.workspace_id).balance == balance
+    assert ensure_account(db, access.user_id).balance == balance
     assert [row.id for row in db.scalars(select(CreditLedgerEntry))] == ledger
     assert [row.id for row in db.scalars(select(UsageEvent))] == events
     assert fake.creates == fake.starts == 1
@@ -138,16 +139,31 @@ def test_identical_commands_in_one_model_response_have_distinct_invocations(runt
     assert commands[0].request_id != commands[1].request_id
 
 
-@pytest.mark.parametrize("scope", ["user", "workspace", "conversation"])
+@pytest.mark.parametrize("scope", ["user", "conversation"])
 def test_invocation_replay_cannot_bypass_access_scope(runtime, scope):
     _, _, conversation, access, factory, fake, _, extensions, request_id = runtime
     extensions().execute("run_command", {"computer_id": fake.computer_id, "command": "echo synthetic"}, call_id="tool-1-run")
     checked = auth.Access(uuid4() if scope == "user" else access.user_id,
-        uuid4() if scope == "workspace" else access.workspace_id, access.role, access.session_hash)
+         access.session_hash)
     with factory() as db, pytest.raises(HTTPException) as error:
         cloud.submit(db, checked, uuid4() if scope == "conversation" else conversation.id,
             cloud.tool_request_id(request_id, "tool-1-run"), {"computer_id": fake.computer_id, "command": "echo synthetic"})
     assert error.value.status_code in (403, 404) and fake.starts == 1
+
+
+def test_invocation_replay_ignores_legacy_workspace_scope(runtime):
+    _, _, conversation, access, factory, fake, _, extensions, request_id = runtime
+    extensions().execute("run_command", {"computer_id": fake.computer_id, "command": "echo synthetic"}, call_id="tool-1-run")
+    checked = auth.Access(access.user_id, access.session_hash)
+    with factory() as db:
+        command = cloud.submit(
+            db,
+            checked,
+            conversation.id,
+            cloud.tool_request_id(request_id, "tool-1-run"),
+            {"computer_id": fake.computer_id, "command": "echo synthetic"},
+        )
+    assert command and fake.starts == 1
 
 
 @pytest.mark.parametrize("status", ["queued", "preparing", "running", "completed", "cancelled", "uncertain"])

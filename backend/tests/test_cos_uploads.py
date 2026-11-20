@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from app import auth, document_uploads as uploads, site_auth, storage_settings, tasks
 from app.cos_storage import CosStorage
 from app.models import (
-    Chunk, CreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
-    IngestionJob, JobState, Membership, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
+    Chunk, UserCreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
+    IngestionJob, JobState, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
 )
 from test_auth import library, register, share, switch
 
@@ -141,7 +141,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     from app.upstream_retries import RetryBudget
 
     owner, outsider, db, identity, kb, storage, _, _ = direct
-    workspace_id = UUID(identity["workspace_id"])
+    account_id = UUID(identity["user"]["id"])
     payload = b"retry document"
     row = send(owner, db, storage, create(owner, kb, payload), payload)
     upload_id = str(row.id)
@@ -159,11 +159,11 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         ordinal=i, text=str(i), token_count=10, char_start=i, char_end=i + 1,
         content_hash=str(i),
     ) for i in range(21))
-    db.add(UsagePolicy(workspace_id=workspace_id, capability="embedding_tokens",
+    db.add(UsagePolicy(account_id=account_id, capability="embedding_tokens",
                        unit="tokens", unit_size=1000, credits_per_unit=1))
     db.commit()
     job_id = job.id
-    balance = db.get(CreditAccount, workspace_id).balance
+    balance = db.get(UserCreditAccount, account_id).balance
 
     settings = Settings(embedding_base_url="https://embedding.invalid", embedding_api_key="test",
                         embedding_model="test-model")
@@ -233,7 +233,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert listed["job"]["state"] == "failed"
         assert listed["job"]["id"] == str(job_id)
     assert db.get(IngestionJob, job_id).retry_progress is None
-    assert db.get(CreditAccount, workspace_id).balance == balance - (Decimal("0.2100") if outcome == "recover" else 0)
+    assert db.get(UserCreditAccount, account_id).balance == balance - (Decimal("0.2100") if outcome == "recover" else 0)
     keys = list(db.scalars(select(CreditLedgerEntry.idempotency_key).where(
         CreditLedgerEntry.idempotency_key.like(f"usage:{job_id}:%"))))
     expected_keys = [f"usage:{job_id}:{suffix}" for suffix in ("hold", "release")]
@@ -256,7 +256,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert calls[-2:] == ["0", "20"]
         assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
         db.expire_all()
-        assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
+        assert db.get(UserCreditAccount, account_id).balance == balance - Decimal("0.2100")
     elif outcome == "delete":
         assert owner.post(f"/jobs/{job_id}/retry").status_code == 409
 
@@ -318,7 +318,7 @@ def test_scope_size_parts_fingerprint_and_expiry(direct):
     assert db.get(DocumentUpload, row.id).state == "cleaned"
 
 
-@pytest.mark.parametrize("failure", ["hash", "format", "suspended", "permission", "size"])
+@pytest.mark.parametrize("failure", ["hash", "format", "suspended", "size"])
 def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct, failure):
     owner, _, db, identity, kb, storage, _, processed = direct
     content = b"not a pdf" if failure == "format" else b"original"
@@ -331,8 +331,6 @@ def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct
         storage.objects[row.object_key] = content + b"more"
     elif failure == "suspended":
         db.get(User, UUID(identity["user"]["id"])).is_suspended = True
-    elif failure == "permission":
-        db.get(Membership, (UUID(identity["workspace_id"]), UUID(identity["user"]["id"]))).role = "viewer"
     db.commit()
     uploads.finalize_upload(str(row.id))
     db.expire_all()
@@ -368,9 +366,7 @@ def test_duplicate_versions_cancel_and_reader_permissions(direct):
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
     assert owner.post(f"/uploads/{cancelled['id']}/complete").status_code == 409
-    share(owner, "outsider@example.com", "viewer")
-    switch(other, identity["workspace_id"])
-    assert other.post(f"/knowledge-bases/{kb}/uploads", json={"filename": "x.txt", "size_bytes": 1}).status_code == 403
+    assert other.post(f"/knowledge-bases/{kb}/uploads", json={"filename": "x.txt", "size_bytes": 1}).status_code == 404
 
 
 def test_storage_admin_encryption_version_test_and_secret_redaction(accounts, monkeypatch):

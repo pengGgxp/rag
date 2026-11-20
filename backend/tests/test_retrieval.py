@@ -17,6 +17,7 @@ from app.models import (
     EmbeddingStatus,
     KnowledgeBase,
     QueryTrace,
+    User,
 )
 from auth_helpers import authenticate
 
@@ -81,7 +82,8 @@ def add_document(session, library, text, *, status=DocumentStatus.READY):
 
 
 def add_library(session):
-    library = KnowledgeBase(name="retrieval test")
+    user_id = session.scalar(select(User.id).where(User.email == "owner@example.com"))
+    library = KnowledgeBase(account_id=user_id, owner_id=user_id, name="retrieval test")
     session.add(library)
     session.commit()
     return library

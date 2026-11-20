@@ -66,13 +66,11 @@ def read(row):
 def owned(db, access, identifier, live=False):
     row = db.get(Preview, identifier)
     computer = db.get(cloud.Computer, row.session_id) if row else None
-    if not computer or computer.user_id != access.user_id or computer.workspace_id != access.workspace_id:
+    if not computer or computer.user_id != access.user_id:
         raise HTTPException(404, "预览不存在")
     cloud.owned_computer(db, access, computer.id)
-    if live:
-        access.editor()
-        if not get_settings().preview_enabled:
-            raise HTTPException(503, "成果预览尚未开放，请联系管理员")
+    if live and not get_settings().preview_enabled:
+        raise HTTPException(503, "成果预览尚未开放，请联系管理员")
     if live and (row.status != "ready" or row.ended_at or computer.ended_at or computer.status in ("stopping", "uncertain")
             or computer.billing_stopped_at or not computer.started_at
             or now() >= aware(computer.started_at) + timedelta(seconds=computer.snapshot["max_seconds"])):
@@ -155,7 +153,6 @@ def finish_command(db, command, computer, provider, sandbox):
 
 
 def stop(db, access, row, computer):
-    access.editor()
     computer = db.get(cloud.Computer, computer.id, with_for_update=True, populate_existing=True)
     if row.ended_at:
         return read(row)
@@ -218,7 +215,7 @@ def execute(runtime, name, arguments, check_active, *, call_id=None, **execution
         message = db.get(ChatMessage, runtime.message_id)
         if not message:
             raise HTTPException(404, "当前会话不可用")
-        cloud.owner(db, access, message.conversation_id).editor()
+        cloud.owner(db, access, message.conversation_id)
         computer = cloud.owned_computer(db, access, arguments.get("computer_id"), write=True)
         if name == "stop_preview":
             if set(arguments) != {"computer_id"}:

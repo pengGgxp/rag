@@ -37,8 +37,7 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    access.admin()
-    conditions = [AuditLog.workspace_id == access.workspace_id]
+    conditions = [AuditLog.owner_user_id == access.user_id]
     if action:
         conditions.append(AuditLog.action == action)
     if resource_type:

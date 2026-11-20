@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth, document_uploads, main, tasks
-from app.models import Document, DocumentUpload, KnowledgeBase, LoginSession, Membership, User, Workspace
+from app.models import Document, DocumentUpload, KnowledgeBase, LoginSession, User
 from test_auth_postgres import auth_postgres
 from test_cos_uploads import FakeCos
 
@@ -25,13 +25,11 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     processed = []
     monkeypatch.setattr(tasks.process_document, "run", lambda *a, **kw: processed.append(a))
     with Session(engine) as db:
-        workspace = Workspace(name="COS isolation")
         user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
-        db.add_all([workspace, user]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id, workspace_id=workspace.id,
+        db.add(user); db.flush()
+        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
             expires_at=auth.now()+timedelta(hours=1)))
-        kb = KnowledgeBase(workspace_id=workspace.id, name="Multipart tests")
+        kb = KnowledgeBase(account_id=user.id, owner_id=user.id, name="Multipart tests")
         db.add(kb); db.commit(); kb_id = kb.id
     headers = {"X-RAG-Request": "1", "X-CSRF-Token": csrf}
     with TestClient(main.app, headers=headers) as client:

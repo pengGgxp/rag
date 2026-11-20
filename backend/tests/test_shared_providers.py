@@ -8,8 +8,11 @@ from sqlalchemy import select
 from app import shared_providers as shared, llm_providers
 from app.config import Settings
 from app.llm import OpenAICompatibleChatProvider
-from app.models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, User, Workspace
-from test_auth import accounts, register, share, switch
+from app.models import (
+    LLMProviderConfig, ModelBillingSettings, ModelConnection,
+    SiteModelProvider, UsagePolicy, User,
+)
+from test_auth import accounts, register
 
 
 def prices(rate=4):
@@ -52,8 +55,8 @@ def provider(client, key="one", rate=4):
 def choose(client, identifier):
     from app.main import app, get_db
     db = app.dependency_overrides[get_db]()
-    workspace_id = UUID(client.get("/auth/me").json()["workspace_id"])
-    binding, _ = shared.request_binding(db, workspace_id, UUID(identifier))
+    user_id = UUID(client.get("/auth/me").json()["user"]["id"])
+    binding, _ = shared.request_binding(db, user_id, UUID(identifier))
     db.commit()
     return binding
 
@@ -92,12 +95,12 @@ def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts
     assert updated.status_code == 200
     choose(owner, q["id"])
     choose(owner, p["id"])
-    assert len(db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(session["workspace_id"]))).all()) == 2
+    assert len(db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.account_id == UUID(session["user"]["id"]))).all()) == 2
     for a in associations:
         assert db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == a.id)).all() == []
     from app.model_billing import price_snapshot
-    assert price_snapshot(db, associations[0].workspace_id, associations[0].id)["llm_input_tokens"]["credits_per_unit"] == 20
-    config = llm_providers.request_provider_config(db, UUID(other_session["workspace_id"]), UUID(p["id"]))
+    assert price_snapshot(db, associations[0].account_id, associations[0].id)["llm_input_tokens"]["credits_per_unit"] == 20
+    config = llm_providers.request_provider_config(db, UUID(other_session["user"]["id"]), UUID(p["id"]))
     assert config.model == "model-one" and config.api_key == "secret"
     assert config.site_provider_id == p["id"]
 
@@ -118,14 +121,16 @@ def test_permissions_universal_visibility_versions_and_secrets(accounts, monkeyp
     assert "published" not in owner.get(f"/site/admin/llm-providers/{private['id']}").text
     assert owner.post(f"/site/admin/llm-providers/{private['id']}/default",
         json={"version": private["version"]}).status_code == 200
-    shared.request_binding(db, UUID(other.get("/auth/me").json()["workspace_id"]), UUID(private["id"]))
+    other_id = UUID(other.get("/auth/me").json()["user"]["id"])
+    other_workspace = other_id
+    shared.request_binding(db, other_workspace, UUID(private["id"]))
     db.rollback()
-    share(owner, "viewer@example.com", "viewer")
-    switch(other, session["workspace_id"])
-    assert other.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 403
+    assert owner.put("/auth/members", json={"email": "viewer@example.com", "role": "viewer"}).status_code == 404
+    assert other.post("/auth/workspace", json={"workspace_id": session["user"]["id"]}).status_code == 404
+    assert other.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code != 200
     choose(owner, p["id"])
-    assert owner.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 410
-    assert owner.post("/settings/llm-providers", json={}).status_code == 410
+    assert owner.put("/settings/models", json={"provider_id": p["id"], "version": 0}).status_code == 404
+    assert owner.post("/settings/llm-providers", json={}).status_code == 404
     assert owner.request("DELETE", f"/site/admin/llm-providers/{p['id']}", json={"version": p["version"]}).status_code == 409
 
 
@@ -139,41 +144,41 @@ def test_template_documents_drafts_default_and_no_backfill(accounts, monkeypatch
     assert owner.post(f"/site/admin/llm-providers/{p['id']}/default", json={"version": p["version"]}).status_code == 200
     (_, other, _), _ = accounts
     registered = register(other, "new@example.com")
-    workspace = UUID(registered["workspace_id"])
-    policies = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
+    workspace = UUID(registered["user"]["id"])
+    policies = db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all()
     assert len(policies) == 0
     assert other.get("/models/available").json()["default_provider_id"] == p["id"]
-    assert not db.scalar(select(LLMProviderConfig.id).where(LLMProviderConfig.workspace_id == workspace))
-    assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == UUID(first["workspace_id"]))).all() == []
+    assert not db.scalar(select(LLMProviderConfig.id).where(LLMProviderConfig.account_id == workspace))
+    assert db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == UUID(first["user"]["id"]))).all() == []
     draft = owner.put("/site/admin/pricing-template", json={"version": 1, "policies": []})
     assert draft.status_code == 200 and not draft.json()["configured"]
     assert db.get(ModelBillingSettings, 1).enabled is False
-    assert len(db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()) == 0
+    assert len(db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all()) == 0
 
 
 def test_migration_idempotent_preserves_ids_and_partial_prices(accounts, monkeypatch):
     owner, db, session = setup_site(accounts, monkeypatch)
-    workspace = UUID(session["workspace_id"])
-    old = LLMProviderConfig(workspace_id=workspace, key="old", name="Old", model="old-model",
+    workspace = UUID(session["user"]["id"])
+    old = LLMProviderConfig(account_id=workspace, key="old", name="Old", model="old-model",
         base_url="https://old.example/v1", encrypted_api_key="enc:key", active=True, enabled=True)
     db.add(old)
     db.flush()
     old_id = old.id
-    policy = UsagePolicy(workspace_id=workspace, provider_id=old.id, capability="llm_input_tokens",
+    policy = UsagePolicy(account_id=workspace, provider_id=old.id, capability="llm_input_tokens",
         unit="tokens", unit_size=1000, credits_per_unit=19, version=6)
     db.add(policy)
-    db.add(Workspace(name="Environment workspace"))
+    db.add(User(name="Environment account", email="environment@example.com"))
     db.commit()
     settings = Settings(llm_base_url="https://env.example/v1", llm_api_key=SecretStr("env-secret"), llm_model="env-model")
     assert shared.migrate_connections(db, settings) == 2
     db.commit()
     assert shared.migrate_connections(db, settings) == 0
     db.commit()
-    later = Workspace(name="Not an environment migration target")
+    later = User(name="Not an environment migration target", email="later@example.com")
     db.add(later)
     db.commit()
     assert shared.migrate_connections(db, settings) == 0
-    assert not db.scalar(select(LLMProviderConfig.id).where(LLMProviderConfig.workspace_id == later.id))
+    assert not db.scalar(select(LLMProviderConfig.id).where(LLMProviderConfig.account_id == later.id))
     assert db.get(LLMProviderConfig, old_id).site_provider_id
     assert not db.get(LLMProviderConfig, old_id).encrypted_api_key
     assert db.get(SiteModelProvider, old.site_provider_id).published is False
@@ -197,7 +202,7 @@ def test_incomplete_enable_and_disabled_resolution(accounts, monkeypatch):
     db.commit()
     from fastapi import HTTPException
     with pytest.raises(HTTPException):
-        llm_providers.request_provider_config(db, UUID(session["workspace_id"]), UUID(p["id"]))
+        llm_providers.request_provider_config(db, UUID(session["user"]["id"]), UUID(p["id"]))
 
 
 @pytest.mark.parametrize("mode,reason", [
@@ -231,7 +236,7 @@ def test_choice_and_save_share_availability(accounts, monkeypatch, mode, reason)
     if reason:
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc:
-            shared.request_binding(db, UUID(session["workspace_id"]), UUID(p["id"]))
+            shared.request_binding(db, UUID(session["user"]["id"]), UUID(p["id"]))
         assert exc.value.status_code == 409
         db.rollback()
     else:
@@ -248,4 +253,4 @@ def test_legacy_binding_missing_prices_cannot_be_selected(accounts, monkeypatch)
     result = owner.get("/models/available").json()
     assert result["providers"][0]["unavailable_reason"] is None
     assert owner.put("/settings/models", json={"provider_id": p["id"],
-        "version": 0}).status_code == 410
+        "version": 0}).status_code == 404

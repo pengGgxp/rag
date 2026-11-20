@@ -33,7 +33,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     first, second = result.json()
     assert first["prices"] != second["prices"]
     assert first["connection_id"] == second["connection_id"] == c["id"]
-    config = llm_providers.request_provider_config(db, UUID(identity["workspace_id"]), UUID(first["id"]))
+    config = llm_providers.request_provider_config(db, UUID(identity["user"]["id"]), UUID(first["id"]))
     db.commit()
     changed = client.put(f"/site/admin/model-connections/{c['id']}", json={
         "name": "Renamed", "api_protocol": "chat_completions", "base_url": "https://other.example/v1", "api_key": "replacement", "version": 1})
@@ -44,7 +44,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     from app.llm import LLMConfigurationError
     from sqlalchemy.orm import sessionmaker
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=db.get_bind()))
-    current = llm_providers.request_provider_config(db, UUID(identity["workspace_id"]), UUID(second["id"]))
+    current = llm_providers.request_provider_config(db, UUID(identity["user"]["id"]), UUID(second["id"]))
     assert current.api_key == "replacement" and current.connection_version == 2
     db.commit()
     assert client.put(f"/site/admin/model-connections/{c['id']}", json={
@@ -166,7 +166,7 @@ def test_explicit_protocol_saved_frozen_validated_and_not_public(accounts, monke
     assert preview.status_code == 200, preview.text
     assert preview.json()["parameters"]["reasoning"] == {"effort": "high"}
     assert preview.json()["parameters"]["max_output_tokens"] == 128
-    chosen = llm_providers.request_provider_config(db, UUID(identity["workspace_id"]), UUID(configured["id"]))
+    chosen = llm_providers.request_provider_config(db, UUID(identity["user"]["id"]), UUID(configured["id"]))
     db.commit()
     assert chosen.api_protocol == "responses"
     assert client.put(path, json={**payload, "api_protocol": "chat_completions", "version": 1}).status_code == 200
@@ -174,7 +174,7 @@ def test_explicit_protocol_saved_frozen_validated_and_not_public(accounts, monke
         "version": configured["version"], "connection_id": c["id"], "connection_version": 1,
         "thinking": effort("openai")}).status_code == 409
     assert chosen.api_protocol == "responses"
-    assert llm_providers.request_provider_config(db, UUID(identity["workspace_id"]),
+    assert llm_providers.request_provider_config(db, UUID(identity["user"]["id"]),
         UUID(configured["id"])).api_protocol == "responses"
     db.commit()
     public = client.get("/models/available").text

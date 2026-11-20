@@ -18,17 +18,18 @@ from test_auth_postgres import auth_postgres
 def test_postgres_install_serializes_competing_replacements(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
-        user, workspace = auth.create_user(db, f"window-{uuid4().hex}@example.test", "Window test")
+        user = auth.create_user(db, f"window-{uuid4().hex}@example.test", "Window test")
+        workspace = user.id
         raw = uuid4().hex
-        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id, workspace_id=workspace,
+        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id,
             csrf_token="test-only", expires_at=auth.now() + timedelta(hours=1)))
         shared = SiteModelProvider(key=uuid4().hex, name="Local fake", model="test", connection_id=connection_id(db))
         db.add(shared); db.flush()
-        binding = LLMProviderConfig(workspace_id=workspace, site_provider_id=shared.id,
+        binding = LLMProviderConfig(account_id=workspace, site_provider_id=shared.id,
             key="test", name="Local fake", model="test", base_url="", encrypted_api_key="")
-        conversation = Conversation(workspace_id=workspace, owner_id=user.id, active_request_id=uuid4())
+        conversation = Conversation(account_id=workspace, owner_id=user.id, active_request_id=uuid4())
         db.add_all([binding, conversation]); db.flush()
-        access = Access(user.id, workspace, "admin", auth.digest(raw))
+        access = Access(user.id, auth.digest(raw))
         config = ChatProviderConfig("", "", "test", provider_id=str(binding.id))
         store = WindowStore(access, conversation.id, config)
         state, _ = store.load(db)
@@ -67,13 +68,14 @@ def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_pos
     engine = auth_postgres
     request = uuid4()
     with Session(engine) as db:
-        user, workspace = auth.create_user(db, f"tool-{uuid4().hex}@example.test", "Tool test")
+        user = auth.create_user(db, f"tool-{uuid4().hex}@example.test", "Tool test")
+        workspace = user.id
         raw = uuid4().hex
-        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id, workspace_id=workspace,
+        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id,
             csrf_token="test-only", expires_at=auth.now() + timedelta(hours=1)))
-        conversation = Conversation(workspace_id=workspace, owner_id=user.id, active_request_id=request)
+        conversation = Conversation(account_id=workspace, owner_id=user.id, active_request_id=request)
         db.add(conversation); db.flush()
-        access = Access(user.id, workspace, "admin", auth.digest(raw))
+        access = Access(user.id, auth.digest(raw))
         manager = ContextManager(sessionmaker(bind=engine), access, conversation.id,
             ChatProviderConfig("", "", "test"), None, None, request)
         manager.history(db, conversation); db.commit()

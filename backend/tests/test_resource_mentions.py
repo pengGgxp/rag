@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app import auth, conversations as chat, workspace_files
 from app.llm import LLMProviderError, ToolCall, ToolResponse
 from app.models import (ChatAttachment, ChatMessage, CloudComputerCommand, CloudComputerSession,
-    CreditLedgerEntry, Membership, ModelUsageRequest, Workspace, WorkspaceFile, WorkspaceFileVersion)
+    CreditLedgerEntry, ModelUsageRequest, User, WorkspaceFile, WorkspaceFileVersion)
 from auth_helpers import model_id
 from test_conversations import client, create, turn
 from test_resources import access_for, resource_store, upload
@@ -45,13 +45,13 @@ def test_catalog_groups_filters_and_workspace_isolation(client, resource_store):
     db.commit()
     item = upload(http)
     actor = access_for(http, db)
-    other = workspace_files._save_bytes(actor.workspace_id, actor, db, "reports/facts.txt",
+    other = workspace_files._save_bytes(actor.user_id, actor, db, "reports/facts.txt",
         b"second", "text/plain")
-    literal = workspace_files._save_bytes(actor.workspace_id, actor, db, "100%_facts.txt",
+    literal = workspace_files._save_bytes(actor.user_id, actor, db, "100%_facts.txt",
         b"literal", "text/plain")
-    outside = Workspace(name="outside")
+    outside = User(name="Outside", email="outside-resource@example.com")
     db.add(outside); db.flush()
-    outside_actor = auth.Access(actor.user_id, outside.id, "admin", "")
+    outside_actor = auth.Access(outside.id, "")
     workspace_files._save_bytes(outside.id, outside_actor, db, "facts.txt", b"outside", "text/plain")
     result = http.get("/conversations/knowledge-catalog?q=facts.txt").json()
     assert result["documents"][0]["id"] == str(document.id)
@@ -119,7 +119,7 @@ def test_retry_uses_current_metadata_and_preserves_history(client, resource_stor
     failed = events[-1][1]
     from app.shared_resources import object_key
     actor = access_for(http, db)
-    resource_store[0][object_key(actor.workspace_id, item["path"])] = b"new current bytes"
+    resource_store[0][object_key(actor.user_id, item["path"])] = b"new current bytes"
     calls.clear(); provider(monkeypatch, calls)
     events, _ = turn(http, conversation["id"], None, retry_message_id=failed["id"])
     assert events[-1][1]["status"] == "completed"
@@ -142,8 +142,10 @@ def test_invalid_reference_rejected_before_messages_and_billing(client, resource
     if state == "unavailable": version.available = False
     if state == "version_deleted": version.deleted_at = auth.now()
     if state == "outside":
-        workspace = Workspace(name="outside"); db.add(workspace); db.flush()
-        row.workspace_id = workspace.id
+        outside = User(name="Outside", email="outside-resource@example.com")
+        db.add(outside)
+        db.flush()
+        row.owner_user_id = outside.id
     db.commit()
     conversation = create(http)
     before = len(db.scalars(select(CreditLedgerEntry)).all())
@@ -165,7 +167,7 @@ def test_worker_revalidates_after_submission(client, resource_store, monkeypatch
     if change == "deleted":
         resource_store[0].clear()
     else:
-        db.delete(db.get(Membership, (access_for(http, db).workspace_id, access_for(http, db).user_id)))
+        db.get(User, access_for(http, db).user_id).is_suspended = True
         db.commit()
     from app.conversation_jobs import run
     from app import main

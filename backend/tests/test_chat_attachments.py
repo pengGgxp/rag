@@ -16,7 +16,7 @@ from app import auth, chat_attachments as attachments, conversations as chat
 from app.conversation_context import estimate_input
 from app.llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, ToolResponse
 from app.models import ChatAttachment, CreditLedgerEntry, SiteModelProvider
-from test_auth import accounts, register, share, switch
+from test_auth import accounts, register
 from test_conversations import client, create, turn
 from auth_helpers import model_id
 
@@ -47,7 +47,7 @@ def upload(http, filename="note.txt", data=b"Private attached facts"):
 
 def test_attachment_ownership_expiry_and_deletion(accounts, objects):
     (owner, outsider, anonymous), db = accounts
-    identity = register(owner)
+    register(owner)
     register(outsider, "outsider@example.com")
     response = upload(owner)
     assert response.status_code == 201, response.text
@@ -58,9 +58,7 @@ def test_attachment_ownership_expiry_and_deletion(accounts, objects):
     assert outsider.get(path + "/content").status_code == 404
     assert anonymous.get(path + "/content").status_code == 401
     assert outsider.delete(path).status_code == 404
-    share(owner, "outsider@example.com", "admin")
-    switch(outsider, identity["workspace_id"])
-    assert outsider.get(path + "/content").status_code == 200
+    assert outsider.get(path + "/content").status_code == 404
     result = owner.get(path + "/content")
     assert result.content == b"Private attached facts" and "no-store" in result.headers["cache-control"]
     assert owner.delete(path).status_code == 204
@@ -278,15 +276,18 @@ def test_images_reach_actual_http_stream_and_usage_is_authoritative(objects, pro
 def test_compaction_treats_images_as_images_and_retains_original(client, objects, monkeypatch):
     from test_conversation_streaming import context_fixture, summary_provider, compact
     from app.models import ChatMessage, ContextCheckpoint
-    http, db, conversation, provider = context_fixture(client, length=60)
-    db.get(SiteModelProvider, UUID(provider)).supports_images = True
+    http, db, conversation, provider = context_fixture(client, length=20)
+    model = db.get(SiteModelProvider, UUID(provider))
+    model.supports_images = True
+    model.context_capacity = 100000
     item = upload(http, "image.png", PNG).json()
     original = db.scalar(select(ChatMessage).where(
         ChatMessage.conversation_id == UUID(conversation), ChatMessage.sequence == 0))
     original.attachments.append(db.get(ChatAttachment, UUID(item["id"])))
     db.commit(); db.expire_all()
     calls = summary_provider(monkeypatch)
-    assert compact(http, conversation, provider)[-1][1]["status"] == "completed"
+    events = compact(http, conversation, provider)
+    assert events[-1][1]["status"] == "completed", events
     summary = calls[0][1]["content"]
     assert summary[1]["type"] == "chat_image"
     assert "_chat/" not in summary[0]["text"]

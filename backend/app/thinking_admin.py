@@ -76,7 +76,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
     db.get(User, actor.id, with_for_update=True)
     existing = db.get(ThinkingTest, payload.request_id, populate_existing=True)
     if existing:
-        if (existing.actor_user_id != actor.id or existing.workspace_id != access.workspace_id
+        if (existing.actor_user_id != actor.id or existing.account_id != access.user_id
                 or existing.provider_id != identifier or existing.version != payload.version
                 or existing.connection_version != payload.connection_version
                 or existing.thinking_version != payload.thinking_config_version
@@ -96,7 +96,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
             or db.scalar(select(ChatMessage.id).where(ChatMessage.request_id == payload.request_id))
             or db.scalar(select(BillingSnapshot.id).where(BillingSnapshot.request_id == payload.request_id))):
         raise HTTPException(409, "测试请求已被使用，请重新发起")
-    config = request_provider_config(db, access.workspace_id, identifier, payload.option_id,
+    config = request_provider_config(db, access.user_id, identifier, payload.option_id,
         payload.thinking_config_version)
     if config.config_version != payload.version or config.connection_version != payload.connection_version:
         raise HTTPException(409, "供应商已更新，请重新加载后测试")
@@ -105,14 +105,14 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
     metered = model_billing.enabled(db)
     hold = authorization_hold_amount()
     if metered:
-        model_billing.start_request(db, access.workspace_id, actor.id, payload.request_id,
+        model_billing.start_request(db, access.user_id, actor.id, payload.request_id,
             UUID(config.provider_id), hold)
     else:
-        model_billing.settle_pending(db, access.workspace_id, hold)
-        operation_snapshot(db, access.workspace_id, payload.request_id, "model",
+        model_billing.settle_pending(db, access.user_id, hold)
+        operation_snapshot(db, access.user_id, payload.request_id, "model",
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(config.provider_id))
-        authorization_hold(db, access.workspace_id, actor.id, payload.request_id, hold)
-    row = ThinkingTest(request_id=payload.request_id, actor_user_id=actor.id, workspace_id=access.workspace_id,
+        authorization_hold(db, access.user_id, actor.id, payload.request_id, hold)
+    row = ThinkingTest(request_id=payload.request_id, actor_user_id=actor.id, account_id=access.user_id,
         provider_id=identifier, version=payload.version, connection_version=config.connection_version,
         thinking_version=payload.thinking_config_version,
         option_id=payload.option_id, status="running", result={})
@@ -120,7 +120,7 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
     db.commit()
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     meter = (model_billing.ModelMeter(factory, payload.request_id) if metered else
-        LegacyPriceMeter(factory, access.workspace_id, payload.request_id))
+        LegacyPriceMeter(factory, access.user_id, payload.request_id))
     provider = OpenAICompatibleChatProvider(config=config)
     messages = [{"role": "user", "content": "计算17乘23，只输出结果。"}]
     result = {"request_id": str(payload.request_id), "version": payload.version,
@@ -151,9 +151,10 @@ def test_configuration(identifier: UUID, payload: TestInput, request: Request,
                 credits = model_billing.finalize_request(settled, payload.request_id,
                     "completed" if result["completed"] else "failed")
             else:
-                credits = settle_model_usage(settled, access.workspace_id, actor.id, payload.request_id,
-                    legacy_call_usage(settled, access.workspace_id, payload.request_id), hold)
-                finish_operation(settled, access.workspace_id, payload.request_id)
+                partition = access.user_id
+                credits = settle_model_usage(settled, partition, actor.id, payload.request_id,
+                    legacy_call_usage(settled, partition, payload.request_id), hold)
+                finish_operation(settled, partition, payload.request_id)
             result["credits"] = float(credits)
             test = settled.get(ThinkingTest, payload.request_id, with_for_update=True)
             test.status = "completed" if result["completed"] else "failed"

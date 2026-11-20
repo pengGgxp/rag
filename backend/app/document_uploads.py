@@ -13,7 +13,7 @@ from sqlalchemy import select, func
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_ingestion import admit, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
-from .models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, Membership, User
+from .models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, User
 from .storage_backend import current_storage
 
 router = APIRouter(tags=["document-uploads"])
@@ -42,7 +42,7 @@ def view(row, parts=None):
 
 def owned(db, access, identifier):
     row = db.get(DocumentUpload, identifier, with_for_update=True, populate_existing=True)
-    if not row or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+    if not row or row.user_id != access.user_id:
         raise HTTPException(404, "上传任务不存在")
     access.library(db, row.knowledge_base_id, write=True)
     if aware(row.expires_at) <= now() and row.state in ("uploading", "completing"):
@@ -61,7 +61,7 @@ def cloud_parts(storage, row):
 def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), access=Depends(get_access)):
     access.library(db, library_id, write=True)
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, payload.size_bytes)
+    check_capacity(db, access.user_id, payload.size_bytes)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
         raise HTTPException(415, "不支持的文件名或文档格式")
@@ -77,7 +77,7 @@ def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), ac
     identifier = uuid4()
     key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
     multipart_id = storage.begin(key, payload.content_type)
-    row = DocumentUpload(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
+    row = DocumentUpload(id=identifier, user_id=access.user_id, account_id=access.user_id,
         knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
         size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
         multipart_id=multipart_id, state="uploading", expires_at=now()+timedelta(hours=24))
@@ -227,10 +227,9 @@ def finalize_upload(identifier):
 
 def worker_access(db, row):
     user = db.get(User, row.user_id, populate_existing=True, with_for_update=True)
-    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True, with_for_update=True)
-    if not user or user.is_suspended or not member:
+    if not user or user.is_suspended:
         raise HTTPException(403, "上传权限已失效")
-    return Access(row.user_id, row.workspace_id, member.role, "")
+    return Access(row.user_id, "")
 
 
 def cleanup_uploads():

@@ -14,7 +14,7 @@ from test_auth_postgres import auth_postgres
 def test_stale_user_cannot_issue_session_after_suspension(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
-        user, _ = auth.create_user(db, f"suspend-{uuid4().hex}@example.com", "Suspend")
+        user = auth.create_user(db, f"suspend-{uuid4().hex}@example.com", "Suspend")
         db.commit(); user_id = user.id
     loaded, suspended = Event(), Event()
     def issue():
@@ -44,7 +44,7 @@ def test_stale_user_cannot_issue_session_after_suspension(auth_postgres):
 def test_suspension_waits_for_issuance_then_revokes_session(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
-        user, _ = auth.create_user(db, f"serialize-{uuid4().hex}@example.com", "Serialize")
+        user = auth.create_user(db, f"serialize-{uuid4().hex}@example.com", "Serialize")
         db.commit(); user_id = user.id
     locked, attempted = Event(), Event()
     def issue():
