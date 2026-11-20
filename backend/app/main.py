@@ -186,10 +186,12 @@ async def document_request(request, call_next):
     request.state.document_stage = stage
     request.state.document_request_id = str(uuid4())
     exception_type = None
+    sqlstate = None
     try:
         response = await call_next(request)
     except Exception as error:
         exception_type = type(error).__name__
+        sqlstate = document_failures.database_sqlstate(error)
         response = document_failures.error_response(request, error)
     response.headers["X-Request-ID"] = request.state.document_request_id
     route = request.scope.get("route")
@@ -202,8 +204,8 @@ async def document_request(request, call_next):
     )
     if response.status_code >= 400:
         document_failures.log.warning(
-            "document_request_failed request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s library_id=%s exception_type=%s",
-            *common, exception_type,
+            "document_request_failed request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s library_id=%s exception_type=%s sqlstate=%s",
+            *common, exception_type, sqlstate,
         )
     elif request.method == "POST":
         document_failures.log.info(
@@ -511,11 +513,15 @@ def preview_document(
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id)
     job = latest_document_job(db, document)
-    job_failure = document_failures.safe_job_failure(job, document) if job else None
+    retrying = job and document.status == DocumentStatus.PROCESSING and (
+        (job.state == JobState.QUEUED and job.retry_after is not None)
+        or (job.state == JobState.RUNNING and job.retry_progress)
+    )
+    job_failure = document_failures.safe_job_failure(job, document) if job and not retrying else None
     return DocumentPreviewRead.model_validate(document).model_copy(
         update={
             "parsed_text": None if document.status == DocumentStatus.DELETED else document.parsed_text,
-            "error_detail": document_failures.safe_document_message(document, job_failure),
+            "error_detail": None if retrying else document_failures.safe_document_message(document, job_failure),
             "failure": DocumentFailureRead.model_validate(job_failure) if job_failure else None,
         }
     )

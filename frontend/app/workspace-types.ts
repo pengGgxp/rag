@@ -20,6 +20,22 @@ export function ingestionRetryLabel(progress?: IngestionRetryProgress | null) {
   return progress ? `正在自动重试 ${progress.number}/${progress.maximum}` : undefined;
 }
 
+export function documentRetryLabel(
+  status: string | undefined,
+  state: string | undefined,
+  retryAfter?: string | null,
+  progress?: IngestionRetryProgress | null,
+) {
+  if (status !== "processing") return;
+  if (state === "queued" && retryAfter) return "解析中 · 正在自动重试";
+  if (state === "running") return ingestionRetryLabel(progress);
+}
+
+export function documentIssue(doc: SourceDocument) {
+  return documentRetryLabel(doc.status, doc.job?.state, doc.job?.retry_after, doc.job?.retry_progress)
+    ? undefined : doc.failure?.message || doc.job?.failure?.message;
+}
+
 export type SourceDocument = {
   id: string;
   knowledge_base_id: string;
@@ -41,6 +57,7 @@ export type SourceDocument = {
     state: string;
     error_detail?: string | null;
     retry_progress?: IngestionRetryProgress | null;
+    retry_after?: string | null;
     failure?: DocumentFailure | null;
     phase?: string | null;
   };

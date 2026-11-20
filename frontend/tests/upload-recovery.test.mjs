@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canResumeTransfer, isRestorableUploadTask, restoreUploadState, requiresFreshUpload } from "../app/upload-recovery.ts";
+import { canResumeTransfer, isRestorableUploadTask, restoreUploadState, requiresFreshUpload, uploadIssue } from "../app/upload-recovery.ts";
+import { documentIssue, documentRetryLabel } from "../app/workspace-types.ts";
 
 test("keeps recoverable verification failures actionable after reload", () => {
   assert.equal(restoreUploadState("failed", { stage: "verification", retryable: true }), "failed");
@@ -36,4 +37,20 @@ test("restored transport failures can reselect the original file, unlike verific
   assert.equal(canResumeTransfer({ stage: "upload", code: "transfer_failed" }), true);
   assert.equal(canResumeTransfer({ stage: "verification", retryable: true }), false);
   assert.equal(canResumeTransfer({ stage: "upload", code: "permission_denied", retryable: false }), false);
+});
+
+test("automatic verification recovery does not display a failure, but terminal and paused queries do", () => {
+  assert.equal(uploadIssue("verifying", "temporary outage", "retrying"), undefined);
+  assert.equal(uploadIssue("verifying", "query paused", "retrying", true), "query paused");
+  assert.equal(uploadIssue("failed", "retry verification"), "retry verification");
+});
+
+test("document alerts distinguish scheduled retries from terminal failures", () => {
+  const retryAfter = "2026-11-20T10:00:00Z";
+  const failure = { message: "temporary outage", retryable: true };
+  assert.equal(documentRetryLabel("processing", "queued", retryAfter), "解析中 · 正在自动重试");
+  assert.equal(documentRetryLabel("processing", "running", null, { number: 1, maximum: 3 }), "正在自动重试 1/3");
+  assert.equal(documentIssue({ status: "processing", failure, job: { state: "queued", retry_after: retryAfter } }), undefined);
+  assert.equal(documentIssue({ status: "failed", failure, job: { state: "failed", retry_after: retryAfter } }), failure.message);
+  assert.equal(documentRetryLabel("processing", "queued", null), undefined);
 });

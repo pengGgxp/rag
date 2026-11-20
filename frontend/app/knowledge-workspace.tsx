@@ -11,7 +11,7 @@ import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
 import { KnowledgeNavigation } from "./knowledge-navigation";
 import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import { useDocumentUploads } from "./document-uploads";
-import { ingestionRetryLabel } from "./workspace-types";
+import { documentIssue, documentRetryLabel } from "./workspace-types";
 import type {
   Health,
   KnowledgeBase,
@@ -406,7 +406,7 @@ export default function KnowledgeWorkspace() {
       filename: doc.filename,
       text: "正在加载解析内容…",
       detail: `${extension(doc.filename)} · ${sizeLabel(doc.size_bytes)}${doc.parser_name ? ` · ${doc.parser_name}` : ""}`,
-      error: doc.failure?.message || doc.job?.failure?.message,
+      error: documentIssue(doc),
     });
     try {
       const preview = await request<{
@@ -845,7 +845,9 @@ export default function KnowledgeWorkspace() {
                               </td>
                             </tr>
                           ))
-                        : visibleDocuments.map((doc) => (
+                        : visibleDocuments.map((doc) => {
+                          const issue = documentIssue(doc);
+                          return (
                             <tr key={doc.id}>
                               <td>
                                 <button
@@ -870,18 +872,14 @@ export default function KnowledgeWorkspace() {
                               <td>
                                 <span
                                   className={`status-badge ${doc.status}`}
-                                  title={doc.failure?.message || doc.job?.failure?.message || undefined}
+                                  title={issue}
                                   role="status"
                                 >
                                   <span className="status-dot" />
-                                  {(doc.status === "processing" && doc.job?.state === "running"
-                                    && ingestionRetryLabel(doc.job.retry_progress)) || STATUS[doc.status] || doc.status}
+                                  {documentRetryLabel(doc.status, doc.job?.state, doc.job?.retry_after, doc.job?.retry_progress)
+                                    || STATUS[doc.status] || doc.status}
                                 </span>
-                                {(doc.failure?.message || doc.job?.failure?.message) && (
-                                  <small className="document-error">
-                                    {doc.failure?.message || doc.job?.failure?.message}
-                                  </small>
-                                )}
+                                {issue && <small className="document-error">{issue}</small>}
                               </td>
                               <td className="size-column metadata">
                                 {sizeLabel(doc.size_bytes)}
@@ -982,7 +980,8 @@ export default function KnowledgeWorkspace() {
                                 </div>
                               </td>
                             </tr>
-                          ))}
+                          );
+                        })}
                     </tbody>
                   </table>
                   {!loading && !documentError && !visibleDocuments.length && (

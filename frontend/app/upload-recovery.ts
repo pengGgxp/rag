@@ -29,3 +29,8 @@ export function canResumeTransfer(failure?: { stage?: string; code?: string; ret
   return !failure || failure.stage !== "verification"
     && (failure.retryable || failure.code === "transfer_failed");
 }
+
+export function uploadIssue(state: string, message?: string, retryLabel?: string, queryPaused = false) {
+  if (!queryPaused && (state === "verifying" || retryLabel)) return;
+  return message;
+}

@@ -10,10 +10,11 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, func, or_, text
+from sqlalchemy.exc import OperationalError
 
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
-from .document_failures import classify, failure, log_worker_failure, rejection
+from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
 from .document_ingestion import admit, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
 from .models import Document, DocumentStatus, DocumentUpload, Membership, User
 from .storage_backend import current_storage
@@ -42,6 +43,7 @@ def view(row, parts=None):
         "size_bytes": row.size_bytes, "part_size": PART_SIZE, "state": row.state,
         "error": row.failure.get("message") if row.failure else ("上传任务未完成，请重试" if row.error else None),
         "failure": row.failure,
+        "verify_after": row.verify_after.isoformat() if row.verify_after else None,
         "expires_at": row.expires_at.isoformat(), "parts": parts or [],
         "document_id": str(row.document_id) if row.document_id else None}
 
@@ -151,6 +153,8 @@ def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)
                 if job_failure:
                     result["failure"] = job_failure
                 result["retry_progress"] = job.retry_progress
+                result["retry_after"] = job.retry_after.isoformat() if job.retry_after else None
+                result["job_state"] = job.state.value
     return result
 
 
@@ -241,6 +245,7 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
 
 
 def finalize_upload(identifier):
+    from .storage_billing import lock_workspace
     from .tasks import process_document
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
@@ -264,7 +269,8 @@ def finalize_upload(identifier):
                 chunk = content[(number-1)*PART_SIZE:number*PART_SIZE]
                 if hashlib.sha256(chunk).hexdigest() != row.parts.get(str(number)):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
-            access = worker_access(db, row)
+            lock_workspace(db, row.workspace_id)
+            access = worker_access(db, row, lock_user=True)
             document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
                 size, digest, row.object_key, row.version_of)
             row.document_id, row.state = document.id, "completed"
@@ -287,6 +293,7 @@ def finalize_upload(identifier):
                     code=row.failure["code"],
                     retryable=bool(row.failure["retryable"]),
                     exception_type=type(error).__name__,
+                    sqlstate=database_sqlstate(error),
                 )
                 if row.failure["retryable"] and row.verify_attempts < 4:
                     headers = getattr(error, "headers", None) or {}
@@ -319,15 +326,20 @@ def finalize_upload(identifier):
     process_document.delay(job_id)
 
 
-def worker_access(db, row):
-    user = db.get(User, row.user_id, populate_existing=True, with_for_update=True)
-    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True, with_for_update=True)
+def worker_access(db, row, *, lock_user=False):
+    # Workspace locking covers membership/grants during admission. Do not wait
+    # for user writers here: some account flows lock the user before the workspace.
+    user = db.get(User, row.user_id, populate_existing=True,
+                  with_for_update={"read": True, "nowait": True} if lock_user else None)
+    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True)
     if not user or user.is_suspended or not member:
         raise HTTPException(403, "上传权限已失效")
     return Access(row.user_id, row.workspace_id, member.role, "")
 
 
 def classify_verification_error(error, row):
+    if isinstance(error, OperationalError):
+        return classify("verification", error, request_id=str(row.id))
     if isinstance(error, HTTPException):
         status = error.status_code
         if status == 409 and any(word in str(error.detail) for word in ("大小", "摘要", "fingerprint", "size")):

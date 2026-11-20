@@ -715,6 +715,8 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
     assert failed_attempt.state == "verifying"
     assert failed_attempt.failure["retryable"] is True
     assert failed_attempt.verify_after is not None
+    status = owner.get(f"/uploads/{row.id}").json()
+    assert status["state"] == "verifying" and status["verify_after"]
     assert row.object_key in storage.objects
     assert db.scalar(select(func.count()).select_from(Document)) == 0
 
@@ -726,10 +728,34 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
     recovered = db.get(DocumentUpload, row.id)
     assert recovered.state == "completed"
     assert recovered.failure is None
+    assert owner.get(f"/uploads/{row.id}").json()["verify_after"] is None
     assert recovered.verify_attempts == 1
     assert row.object_key in storage.objects
     assert db.scalar(select(func.count()).select_from(Document)) == 1
     assert len(processed) == 1
+
+
+def test_verification_database_failure_is_not_reported_as_storage_failure(direct, monkeypatch, caplog):
+    from psycopg.errors import DeadlockDetected
+    from sqlalchemy.exc import OperationalError
+
+    owner, _, db, _, kb, storage, _, processed = direct
+    content = b"sealed content"
+    row = send(owner, db, storage, create(owner, kb, content), content)
+    assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+    monkeypatch.setattr(tasks.verify_upload, "apply_async", lambda **_: None)
+
+    def fail_admission(*_args):
+        raise OperationalError("test SQL", {"private": "test parameter"}, DeadlockDetected("test DB error"))
+
+    monkeypatch.setattr(uploads, "admit", fail_admission)
+    uploads.finalize_upload(str(row.id))
+    status = owner.get(f"/uploads/{row.id}").json()
+    assert status["state"] == "verifying" and status["verify_after"]
+    assert status["failure"]["code"] == "database_unavailable" and status["failure"]["retryable"]
+    assert row.object_key in storage.objects and not processed
+    assert "sqlstate=40P01" in caplog.text
+    assert "test SQL" not in caplog.text and "test parameter" not in caplog.text
 
 
 def test_queued_ingestion_is_redispatched_until_worker_claims_it(direct, monkeypatch):

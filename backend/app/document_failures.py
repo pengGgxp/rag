@@ -3,6 +3,7 @@ import re
 from uuid import uuid4
 
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 log = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ def processing_failure(stage, error, request_id):
                        "付费处理请求结果需要核对，暂不能重复提交",
                        request_id=request_id)
     status = getattr(error, "status_code", None)
-    if status is not None:
+    if status is not None or isinstance(error, OperationalError):
         return classify(stage, error, request_id)
     error_type = type(error).__name__
     if stage == "parsing":
@@ -106,7 +107,15 @@ def classify(stage, error, request_id=None):
         415: ("invalid_format", "不支持此文件格式，或文件内容与格式不符"),
         429: ("rate_limited", "请求过于频繁，请稍后重试"),
     }.get(status, ("invalid_request", "请求不符合要求，请检查后重试"))
-    if status >= 500:
+    if isinstance(error, OperationalError):
+        code, message = "database_unavailable", {
+            "query": "暂时无法获取进度，请重试查询",
+            "upload": "暂时无法开始上传，请继续上传",
+            "verification": "暂时无法完成校验，请重试校验",
+            "parsing": "暂时无法保存解析结果，请重试处理",
+            "indexing": "暂时无法保存索引进度，请重试处理",
+        }.get(stage, "暂时无法完成操作，请重试")
+    elif status >= 500:
         code, message = "service_unavailable", "服务暂时不可用，请稍后重试"
     return failure(stage, code, message, status == 429 or status >= 500, request_id)
 
@@ -134,11 +143,15 @@ def error_response(request, error):
     return JSONResponse({"detail": classify(stage, error, request.state.document_request_id)}, status, headers)
 
 
+def database_sqlstate(error):
+    return getattr(error.orig, "sqlstate", None) if isinstance(error, DBAPIError) else None
+
+
 def log_worker_failure(*, stage, route, request_id, upload_id=None, job_id=None,
                        document_id=None, status=None, content_type=None,
-                       code=None, retryable=False, exception_type=None):
+                       code=None, retryable=False, exception_type=None, sqlstate=None):
     log.warning(
-        "document_worker_failed request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s document_id=%s code=%s retryable=%s exception_type=%s",
+        "document_worker_failed request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s document_id=%s code=%s retryable=%s exception_type=%s sqlstate=%s",
         request_id, stage, route, status, content_type, upload_id, job_id,
-        document_id, code, retryable, exception_type,
+        document_id, code, retryable, exception_type, sqlstate,
     )
