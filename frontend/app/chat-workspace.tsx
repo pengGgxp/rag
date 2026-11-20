@@ -365,6 +365,7 @@ export function ChatWorkspace({
   const [asking, setAsking] = useState(false);
   const [phase, setPhase] = useState("");
   const [browserReconnecting, setBrowserReconnecting] = useState(false);
+  const [drainAttempt, setDrainAttempt] = useState(0);
   const [clock, setClock] = useState(Date.now);
   const [contextInfo, setContextInfo] = useState<ConversationContextState>(emptyContext);
   const [contextLoading, setContextLoading] = useState(false);
@@ -824,6 +825,7 @@ export function ChatWorkspace({
       }
     } finally {
       stopping.current = false;
+      setDrainAttempt(value => value + 1);
     }
   }
 
@@ -1125,6 +1127,7 @@ export function ChatWorkspace({
         setPhase("");
         setBrowserReconnecting(false);
         setContextAttempt(value => value + 1);
+        setDrainAttempt(value => value + 1);
       }
       void refreshList();
     }
@@ -1246,7 +1249,7 @@ export function ChatWorkspace({
   const elapsed = startedAt ? Math.max(0, Math.floor((clock - Date.parse(startedAt)) / 1000)) : 0;
   const drainInputs = useRef<() => void>(() => {});
   drainInputs.current = () => {
-    if (stopping.current || !conversation || loading || heldScope !== inputScope || !heldInputs.length) return;
+    if (stopping.current || sending.current || !conversation || loading || heldScope !== inputScope || !heldInputs.length) return;
     const accepted = new Set(conversation.messages.flatMap(message => message.display_blocks ?? [])
       .filter(block => block.type === "user").map(block => block.id));
     if (heldInputs.some(item => item.turn && accepted.has(item.id))) {
@@ -1270,7 +1273,7 @@ export function ChatWorkspace({
   useEffect(() => {
     const timer = setTimeout(() => drainInputs.current(), 100);
     return () => clearTimeout(timer);
-  }, [running, conversation, loading, held, heldScope, selectedModel?.available]);
+  }, [running, conversation, loading, held, heldScope, selectedModel?.available, drainAttempt]);
   useEffect(() => {
     if (!running) return;
     setClock(Date.now());

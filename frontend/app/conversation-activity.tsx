@@ -153,7 +153,7 @@ export function ConversationActivity({ items, finished, workspaceId, detailRoot,
     </div>)}
     {savedDocuments.map(saved => <SavedDocumentResult key={saved.save_id} initial={saved} onUpdate={updateSaved} showStatus />)}
     {imageTasks.map(image => <ImageTaskActivity key={image.task_id} initial={image} onUpdate={updateImage}
-      showStatus={false} showFiles={false} />)}
+      showStatus={false} showFiles={false} showCancel={false} />)}
     {items.filter(item => item.knowledge_base && item.status === "completed").map(item => <div className="activity-file-downloads" key={item.id}>
       <Link className="activity-file-download" href={`/?library=${encodeURIComponent(item.knowledge_base!.id)}&view=documents`}>
         <ExternalLink size={15} aria-hidden="true" /><span>打开知识库 · {item.knowledge_base!.name}</span>

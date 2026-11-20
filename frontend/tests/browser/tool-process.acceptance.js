@@ -52,7 +52,7 @@ async (page) => {
     kind: "document", content_type: "text/plain", size_bytes: 10, available: true };
   const mentioned = { id: "referenced-doc", filename: "验收资料.pdf",
     knowledge_base_id: "reference-library", knowledge_base_name: "验收知识库" };
-  let simulateComposer = false, dropped = false;
+  let simulateComposer = false, dropped = false, holdLocalGeneration = false;
   const computer = { id: "fixture-computer", status: "ready", terminal: false, summary: "云电脑运行中",
     credits: "0.5", credits_per_minute: "0.5", seconds: 60, idle_ends_at: null, max_ends_at: null };
   const preview = tools.find(item => item.call_id === "preview").preview;
@@ -96,14 +96,22 @@ async (page) => {
       return send({ id: input.message_id, status: "pending" });
     }
     if (simulateComposer && path.endsWith("/stop")) {
-      stops.push(route.request().postDataJSON().request_id);
+      const requestId = route.request().postDataJSON().request_id;
+      stops.push(requestId);
       current.active_request_id = null;
-      current.messages[1].status = "cancelled";
-      return send(current.messages[1]);
+      const stopped = current.messages.find(message => message.request_id === requestId);
+      if (stopped) stopped.status = "cancelled";
+      return send(stopped ?? current.messages[1]);
     }
     if (simulateComposer && path.endsWith("/messages")) {
       const input = route.request().postDataJSON();
       submissions.push(input);
+      if (holdLocalGeneration && input.query === "正在生成的请求") {
+        current.active_request_id = input.request_id;
+        current.messages.push({ ...assistant, id: "local-running-answer", sequence: current.messages.length,
+          request_id: input.request_id, status: "streaming", content: "", tool_events: [], display_blocks: [] });
+        return send({ request_id: input.request_id, status: "queued" });
+      }
       const sequence = current.messages.length;
       current.messages.push({ ...user, id: `user-${sequence}`, sequence, content: input.query },
         { ...assistant, sequence: sequence + 1, id: `reply-${sequence}`, request_id: input.request_id,
@@ -148,6 +156,7 @@ async (page) => {
   await process.waitFor();
   assert(await process.count() === 1, "连续操作应只有一个过程入口");
   assert(await page.locator(".image-task-result").count() === 1, "查询同一图片任务不能重复呈现产物");
+  assert(await page.locator(".image-task-result button").count() === 0, "聊天过程不能重复呈现生图停止入口");
   assert(await page.locator(".activity-details").count() === 0, "详情应默认收起");
   assert(!await page.getByText("我会先制作可交互页面，再核对生成的文件。", { exact: true }).isVisible(), "过程说明随活动收起");
   assert(!await page.getByText("path 必须是文本", { exact: true }).count(), "参数反馈不应铺在正文");
@@ -254,6 +263,12 @@ async (page) => {
     await page.reload();
     await page.getByRole("button", { name: "停止回答", exact: true }).waitFor();
   };
+  const openIdle = async () => {
+    current = structuredClone(initial);
+    current.active_request_id = null;
+    await page.reload();
+    await page.getByRole("textbox", { name: "发送消息" }).waitFor();
+  };
   await openTurn();
   const composer = page.getByRole("textbox", { name: "发送消息" });
   await page.getByText("正在恢复对话连接…", { exact: true }).waitFor();
@@ -304,6 +319,19 @@ async (page) => {
   await page.getByRole("button", { name: "中断并发送", exact: true }).click();
   await page.getByText("下一轮已完成", { exact: true }).waitFor();
   assert(stops.length === 2 && submissions.length === 1 && submissions[0].query === "现在就发送", "中断后只立即提交所选输入");
+  holdLocalGeneration = true;
+  await openIdle();
+  await composer.fill("正在生成的请求");
+  const localSubmission = page.waitForResponse(response => response.url().endsWith("/conversations/fixture/messages"));
+  await composer.press("Enter");
+  await localSubmission;
+  await page.getByRole("button", { name: "停止回答", exact: true }).waitFor();
+  await composer.fill("本轮中断后发送");
+  await page.getByRole("button", { name: "中断并发送", exact: true }).click();
+  await page.getByText("下一轮已完成", { exact: true }).waitFor();
+  assert(submissions.length === 3 && submissions[1].query === "正在生成的请求"
+    && submissions[2].query === "本轮中断后发送", "本页生成中断后必须再次发出新一轮消息请求");
+  holdLocalGeneration = false;
   await openTurn();
   const queuedText = await mention("自动接续");
   await addAttachment();
@@ -318,8 +346,8 @@ async (page) => {
   current.messages[1].status = "failed";
   current.messages[1].error_detail = "回答暂时中断";
   await page.getByText("下一轮已完成", { exact: true }).waitFor();
-  assert(submissions.length === 2 && submissions[1].query === queuedText
-    && submissions[1].attachment_ids[0] === attachment.id && submissions[1].document_ids[0] === mentioned.id,
+  assert(submissions.length === 4 && submissions[3].query === queuedText
+    && submissions[3].attachment_ids[0] === attachment.id && submissions[3].document_ids[0] === mentioned.id,
     "通常终止失败后串行发送队列并保留原始引用");
   assert(errors.length === 0, `浏览器异常：${errors.join("; ")}`);
   assert(unexpected.length === 0, `缺失夹具：${[...new Set(unexpected)].join(", ")}`);
