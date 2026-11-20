@@ -105,7 +105,8 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
         return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
 
 
-def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload", signature=None):
+def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload", signature=None,
+               preflight_snapshot=None):
     """Create a package or save files, with one quota check and one journal."""
     access.editor()
     expected = expected or {}
@@ -116,7 +117,7 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
         previous = ops.replay(db, access, request_id, signature)
         if previous is not None:
             return previous
-        current, directories, _ = snapshot(db, access)
+        current, directories, _ = preflight_snapshot or snapshot(db, access)
         changes, increase = [], 0
         for path, (data, content_type) in files.items():
             validate_destination(path, current, directories)

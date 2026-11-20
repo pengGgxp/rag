@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from .config import get_settings
 from .cos_storage import CosStorage
 from .db import SessionLocal
-from .models import Document, DocumentUpload, IngestionJob, JobState
+from .models import Document, DocumentUpload, SkillUpload, IngestionJob, JobState
 from .storage import client
 from .storage_settings import locked
 from .site_audit import record
@@ -38,6 +38,9 @@ def migrate(db, *, execute=False, version=None, legacy=None):
     if db.scalar(select(func.count()).select_from(DocumentUpload).where(
             DocumentUpload.state.in_(["uploading", "completing", "verifying"]))):
         raise ValueError("仍有未完成上传，请先暂停并排空")
+    if db.scalar(select(func.count()).select_from(SkillUpload).where(
+            SkillUpload.state.not_in(["cleaned", "cancelled"]))):
+        raise ValueError("仍有待处理的 Skill 上传，请先完成或取消")
     source = legacy or client()
     target = CosStorage(row)
     for document in documents:

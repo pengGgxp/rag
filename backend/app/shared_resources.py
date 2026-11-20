@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .auth import now
 from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
@@ -98,13 +98,15 @@ def index_file(db, access, path, *, size, content_type=None, digest="", source="
     return read_file(row)
 
 
-def refresh_index(db, access, q="", offset=0, limit=100, source="", *, commit=True):
+def refresh_index(db, access, q="", offset=0, limit=100, source="", *, commit=True,
+                  path_prefix="", filename=None):
     from .file_operations import workspace_lock
     with workspace_lock(db, access.workspace_id):
-        return _refresh_index(db, access, q, offset, limit, source, commit=commit)
+        return _refresh_index(db, access, q, offset, limit, source, commit=commit,
+            path_prefix=path_prefix, filename=filename)
 
 
-def _refresh_index(db, access, q, offset, limit, source, *, commit):
+def _refresh_index(db, access, q, offset, limit, source, *, commit, path_prefix="", filename=None):
     """Discover files created by shell commands from object metadata, never read bodies."""
     storage = backend(db)
     if storage is None:
@@ -114,11 +116,13 @@ def _refresh_index(db, access, q, offset, limit, source, *, commit):
     from .storage_billing import lock_workspace
     root = prefix(access.workspace_id)
     objects, marked_directories = {}, set()
-    for item in storage.iter_objects(root):
+    for item in storage.iter_objects(root + path_prefix):
         key = item["Key"]
         if not key.startswith(root):
             raise HTTPException(502, "资源目录返回了无效文件")
         path = key[len(root):]
+        if not path.startswith(path_prefix) or (filename and path.rsplit("/", 1)[-1].casefold() != filename.casefold()):
+            continue
         if str(item.get("Type", "")).lower() == "symlink":
             continue
         if not path or any(part in EXCLUDED for part in path.split("/")):
@@ -133,8 +137,9 @@ def _refresh_index(db, access, q, offset, limit, source, *, commit):
         objects[path] = item
     rows = []
     lock_workspace(db, access.workspace_id)
-    directories = {row.path: row for row in db.scalars(select(WorkspaceDirectory).where(
-        WorkspaceDirectory.workspace_id == access.workspace_id))}
+    directories = {} if filename else {row.path: row for row in db.scalars(select(WorkspaceDirectory).where(
+        WorkspaceDirectory.workspace_id == access.workspace_id,
+        WorkspaceDirectory.path.startswith(path_prefix, autoescape=True)))}
     for path in marked_directories - directories.keys():
         db.add(WorkspaceDirectory(workspace_id=access.workspace_id, path=path, created_by=access.user_id))
     for path, row in directories.items():
@@ -193,8 +198,11 @@ def _refresh_index(db, access, q, offset, limit, source, *, commit):
         if q.lower() in path.lower() and (not source or row.source == source):
             rows.append(row)
     present = set(objects)
-    for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
-            WorkspaceFile.deleted_at.is_(None))):
+    missing_query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+        WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(path_prefix, autoescape=True))
+    if filename:
+        missing_query = missing_query.where(func.lower(WorkspaceFile.path).endswith("/" + filename.lower(), autoescape=True))
+    for row in db.scalars(missing_query):
         if row.path in present:
             continue
         row.deleted_at = now()
@@ -205,7 +213,8 @@ def _refresh_index(db, access, q, offset, limit, source, *, commit):
         db.commit()
     else:
         db.flush()
-    return [read_file(row) for row in rows[offset:offset + limit]], len(rows) > offset + limit
+    end = None if limit is None else offset + limit
+    return [read_file(row) for row in rows[offset:end]], end is not None and len(rows) > end
 
 
 def remove_live(db, resource):

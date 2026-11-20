@@ -78,6 +78,19 @@ def test_folder_import_preserves_nested_structure_and_does_not_start_cloud(accou
         f"{body['directory']}/SKILL.md", f"{body['directory']}/assets/data.csv"}
 
 
+def test_folder_import_accepts_more_than_one_thousand_files(accounts, monkeypatch, resource_store):
+    client, _, _ = setup_site(accounts, monkeypatch)
+    files = [("files", ("SKILL.md", FILES["SKILL.md"]))]
+    paths = ["package/SKILL.md"]
+    for index in range(1000):
+        path = f"package/data/{index}.txt"
+        files.append(("files", (f"{index}.txt", b"x")))
+        paths.append(path)
+    response = client.post("/agent/skills/import-folder", files=files, data={"paths": paths})
+    assert response.status_code == 201, response.text
+    assert len(response.json()["items"]) == 1001
+
+
 def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(accounts, monkeypatch, resource_store):
     client, db, _ = setup_site(accounts, monkeypatch)
     result = importing(client)
@@ -95,6 +108,46 @@ def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(ac
     (_, other, _), _ = accounts
     register(other, "skill-file-list-outsider@example.com")
     assert other.get(f"/agent/skills/{item['id']}/files").status_code == 404
+
+
+def test_skill_catalog_indexes_only_manifests_and_reads_only_their_headers(accounts, monkeypatch, resource_store):
+    client, db, _ = setup_site(accounts, monkeypatch)
+    access = access_for(client, db)
+    store = shared_resources.backend(db)
+    prefix = shared_resources.prefix(access.workspace_id)
+    manifest = prefix + ".skills/external/SKILL.md"
+    unrelated = prefix + "documents/large.md"
+    resource_store[0][manifest] = b"---\nname: external\ndescription: found\n---\n" + b"x" * 1_000_000
+    resource_store[0][unrelated] = b"unrelated"
+    ranged = []
+    original = store.download_range
+    def read_range(key, start, end):
+        ranged.append(key)
+        return original(key, start, end)
+    monkeypatch.setattr(store, "download_range", read_range)
+    catalog = client.get("/agent/skills")
+    assert catalog.status_code == 200
+    assert [item["name"] for item in catalog.json()] == ["external"]
+    assert ranged == [manifest]
+    indexed = {row.path for row in db.scalars(select(WorkspaceFile)).all()}
+    assert ".skills/external/SKILL.md" in indexed
+    assert "documents/large.md" not in indexed
+    resource_store[0].pop(manifest)
+    assert client.get("/agent/skills").json() == []
+    assert db.scalar(select(WorkspaceFile).where(WorkspaceFile.path == ".skills/external/SKILL.md")).deleted_at
+
+
+def test_skill_manifest_over_five_megabytes_can_be_imported_and_opened(accounts, monkeypatch, resource_store):
+    from app import skill_files
+    monkeypatch.setattr(skill_files, "MAX_FILE_BYTES", 6 * 1024 * 1024)
+    monkeypatch.setattr(skill_files, "MAX_BUNDLE_BYTES", 6 * 1024 * 1024)
+    markdown = b"---\nname: large\n---\n" + b"x" * (5 * 1024 * 1024)
+    client, _, _ = setup_site(accounts, monkeypatch)
+    result = importing(client, files={"SKILL.md": markdown})
+    item = next(row for row in result["items"] if row["path"].endswith("/SKILL.md"))
+    detail = client.get(f"/agent/skills/{item['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["markdown"].encode() == markdown
 
 
 def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(accounts, monkeypatch, resource_store):
@@ -128,7 +181,10 @@ def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(acc
 @pytest.mark.parametrize("path", ["../escape", "/absolute", "a/../escape", "a//file", "a\\file", "C:/file"])
 def test_unsafe_unpack_paths_are_rejected(accounts, monkeypatch, resource_store, path):
     client, _, _ = setup_site(accounts, monkeypatch)
-    result = client.post("/agent/skills/import", files={"file": ("bad.zip", zipped({"SKILL.md": b"ok", path: b"bad"}))})
+    # ZipInfo normalizes Windows separators on Windows; preserve the malicious bytes.
+    normalized = path.replace("\\", "/")
+    data = zipped({"SKILL.md": b"ok", normalized: b"bad"}).replace(normalized.encode(), path.encode())
+    result = client.post("/agent/skills/import", files={"file": ("bad.zip", data)})
     assert result.status_code == 422
     assert resource_store[0] == {}
 
@@ -144,8 +200,34 @@ def test_unpack_rejects_links_duplicate_roots_and_limits(accounts, monkeypatch, 
     assert client.post("/agent/skills/import", files={"file": ("bad.zip", output.getvalue())}).status_code == 422
     for files in ({"a/SKILL.md": b"one", "b/SKILL.md": b"two"}, {"SKILL.md": b"one", "skill.md": b"two"}, {"README.md": b"none"}):
         assert client.post("/agent/skills/import", files={"file": ("bad.zip", zipped(files))}).status_code == 422
-    assert client.post("/agent/skills/import", files={"file": ("large.zip", zipped({"SKILL.md": b"x" * (5*1024*1024+1)}))}).status_code == 413
+    monkeypatch.setattr("app.skill_files.MAX_FILE_BYTES", 1024)
+    assert client.post("/agent/skills/import", files={"file": ("large.zip", zipped({"SKILL.md": b"x" * 1025}))}).status_code == 413
     assert resource_store[0] == {}
+
+
+def test_zip_splits_multiple_skills_and_keeps_each_resource_with_its_manifest():
+    from app.skill_files import unzip_packages
+    packages = unzip_packages(zipped({
+        "collection/one/SKILL.md": b"---\nname: one\n---\nOne body",
+        "collection/one/data.txt": b"one resource",
+        "collection/two/SKILL.md": b"---\nname: two\n---\nTwo body",
+        "collection/two/data.txt": b"two resource",
+    }))
+    assert [folder for folder, _ in packages] == ["one", "two"]
+    assert packages[0][1] == {"SKILL.md": b"---\nname: one\n---\nOne body", "data.txt": b"one resource"}
+    assert packages[1][1] == {"SKILL.md": b"---\nname: two\n---\nTwo body", "data.txt": b"two resource"}
+
+
+def test_nested_skill_files_do_not_leak_into_parent_package():
+    from app.skill_files import unzip_packages
+    packages = unzip_packages(zipped({
+        "parent/SKILL.md": b"---\nname: parent\n---\nParent",
+        "parent/parent.txt": b"parent resource",
+        "parent/child/SKILL.md": b"---\nname: child\n---\nChild",
+        "parent/child/child.txt": b"child resource",
+    }))
+    assert packages[0][1] == {"SKILL.md": b"---\nname: parent\n---\nParent", "parent.txt": b"parent resource"}
+    assert packages[1][1] == {"SKILL.md": b"---\nname: child\n---\nChild", "child.txt": b"child resource"}
 
 
 def test_capacity_is_checked_before_writes_and_failed_import_removes_partial_objects(accounts, monkeypatch, resource_store):

@@ -457,6 +457,8 @@ def maintain_uploads() -> None:
     prune_cache()
     from .document_uploads import cleanup_uploads, cleanup_orphans, recover_uploads
     cleanup_uploads()
+    from .skill_uploads import cleanup_expired
+    cleanup_expired()
     recover_uploads()
     cleanup_orphans()
     cleanup_workspace_files()

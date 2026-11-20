@@ -3,13 +3,16 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, Loader2, Save, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Save, Trash2, Upload, X } from "lucide-react";
 import * as Tabs from "../../../components/ui/tabs";
 import { ApiError, request } from "../../api";
 import { AdminHeading, AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
 import type { PackageReview, Skill } from "./page";
 import { SkillResources } from "./skill-resources";
+import { skillUploadError } from "../../extensions/skill-upload";
+import { uploadSkillPackage, type SkillPackagePreview } from "../../extensions/skill-package-upload";
+import { SkillPackagePicker } from "../../extensions/skill-package-picker";
 import "../../billing.css";
 import "../platform-content.css";
 
@@ -33,6 +36,11 @@ export function SkillEditor({ id }: { id?: string }) {
   const [tab, setTab] = useState("edit");
   const [resourcePath, setResourcePath] = useState("");
   const [checked, setChecked] = useState<ReturnType<typeof checkedPackage>>();
+  const [packages, setPackages] = useState<SkillPackagePreview[]>([]);
+  const [uploadId, setUploadId] = useState("");
+  const [selectedPackages, setSelectedPackages] = useState<number[]>([]);
+  const [activePackage, setActivePackage] = useState(0);
+  const activePreviewPackage = packages.find(item => item.id === activePackage);
   const packageReview = checked?.markdown === form.markdown && checked?.files === form.files ? checked.result : undefined;
   const input = useRef<HTMLInputElement>(null);
   const dirty = form.name !== saved.name || form.description !== saved.description ||
@@ -61,14 +69,14 @@ export function SkillEditor({ id }: { id?: string }) {
     <AdminHeading title={id ? saved.name || "编辑 Skill" : "新建 Skill"}>
       <input ref={input} type="file" accept=".md,.zip" hidden onChange={async event => {
         const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-        if (file.size > 25 * 1024 * 1024) { setError("Skill 包不能超过 25 MiB"); return; }
+        const error = skillUploadError([file]);
+        if (error) { setError(error); return; }
         setBusy(true); setError(""); setNotice("");
         try {
-          const data = new FormData(); data.append("file", file);
-          const value = await request<Draft & { package_review: PackageReview }>("/site/admin/skills/import", { method: "POST", body: data });
-          const draft = { name: value.name, description: value.description, markdown: value.markdown, files: value.files, enabled: false };
-          setForm(draft); setChecked(checkedPackage(draft, value.package_review));
-          setResourcePath(""); setTab(value.files.length ? "files" : "edit"); setNotice("已导入草稿，请检查内容后保存");
+          const result = await uploadSkillPackage(file, "site");
+          setPackages(result.items); setUploadId(result.uploadId);
+          setSelectedPackages(result.items.map(item => item.id)); setActivePackage(result.items[0]?.id ?? 0);
+          setNotice(`识别到 ${result.items.length} 个 Skill，请检查正文并确认导入`);
         } catch (reason) { setError(reason instanceof Error ? reason.message : "导入失败，请重试"); }
         finally { setBusy(false); }
       }} />
@@ -80,9 +88,41 @@ export function SkillEditor({ id }: { id?: string }) {
     <AdminLoad loading={resource.loading} error={resource.error} retry={resource.reload}>
       {error && <p className="admin-error" role="alert">{error}</p>}
       {notice && <p className="billing-notice" role="status">{notice}</p>}
-      {replacing && <div className="admin-inline-confirm" role="alert"><span>导入将替换当前草稿，保存后才会更新 Skill。</span>
+      {!!packages.length && <section className="skill-package-review" aria-label="识别到的 Skill">
+        <header><strong>识别到 {packages.length} 个 Skill</strong><span>检查每个 Skill 的名称、描述和完整正文</span></header>
+        <div className="skill-package-review-body">
+          <SkillPackagePicker packages={packages} selected={selectedPackages} activePackage={activePackage}
+            onSelectedChange={setSelectedPackages} onActivePackageChange={setActivePackage} />
+          {activePreviewPackage && <article>
+            <h3>{activePreviewPackage.name}</h3>
+            <p>{activePreviewPackage.description}</p>
+            <div className="skill-package-markdown"><ReactMarkdown skipHtml>{activePreviewPackage.markdown}</ReactMarkdown></div>
+            {!!activePreviewPackage.resources.length && <details><summary>附属文件 · {activePreviewPackage.resources.length}</summary>
+              <ul>{activePreviewPackage.resources.map(file => <li key={file.path}>{file.path}</li>)}</ul>
+            </details>}
+          </article>}
+        </div>
+        <footer><button type="button" className="secondary" disabled={busy} onClick={async () => {
+          await request(`/site/admin/skills/uploads/${uploadId}`, { method: "DELETE" }).catch(() => undefined);
+          setPackages([]); setUploadId(""); setSelectedPackages([]);
+        }}><X size={15} />取消</button>
+          <button type="button" className="primary" disabled={busy || !selectedPackages.length} onClick={async () => {
+            setBusy(true); setError("");
+            try {
+              const result = await request<{ items: { id: string; name: string }[] }>(
+                `/site/admin/skills/uploads/${uploadId}/import`,
+                json({ items: selectedPackages }),
+              );
+              setNotice(`已导入 ${result.items.length} 个 Skill`);
+              router.replace("/admin/skills");
+            } catch (reason) { setError(reason instanceof Error ? reason.message : "导入失败，请重试"); }
+            finally { setBusy(false); }
+          }}><Check size={15} />导入所选 {selectedPackages.length} 个 Skill</button>
+        </footer>
+      </section>}
+      {replacing && <div className="admin-inline-confirm" role="alert"><span>导入会新建独立 Skill，当前草稿不会被修改。</span>
         <button className="secondary" disabled={busy} onClick={() => setReplacing(false)}>继续编辑</button>
-        <button className="secondary" disabled={busy} onClick={() => { setReplacing(false); input.current?.click(); }}>选择文件并替换</button>
+        <button className="secondary" disabled={busy} onClick={() => { setReplacing(false); input.current?.click(); }}>选择 Skill 包</button>
       </div>}
       {conflict && <div className="admin-inline-confirm"><span>重新加载会放弃当前修改。</span><button className="secondary" onClick={() => {
         setConflict(false); setError(""); setDeleting(false); void resource.reload();
@@ -96,7 +136,7 @@ export function SkillEditor({ id }: { id?: string }) {
           </div>
           <Tabs.Root value={tab} onValueChange={setTab} className="skill-content">
             <Tabs.List className="skill-content-tabs" aria-label="指令内容"><Tabs.Trigger value="edit">编辑指令</Tabs.Trigger><Tabs.Trigger value="preview">预览</Tabs.Trigger><Tabs.Trigger value="files">补充资料{form.files.length ? ` (${form.files.length})` : ""}</Tabs.Trigger></Tabs.List>
-            <Tabs.Content value="edit" forceMount className="skill-text-panel"><label>指令正文<textarea required maxLength={50000} rows={18} value={form.markdown} onInvalid={event => {
+            <Tabs.Content value="edit" forceMount className="skill-text-panel"><label>指令正文<textarea required rows={18} value={form.markdown} onInvalid={event => {
               if (tab !== "edit") { const textarea = event.currentTarget; event.preventDefault(); setTab("edit"); requestAnimationFrame(() => textarea.focus()); }
             }} onChange={event => setForm({ ...form, markdown: event.target.value })} /></label></Tabs.Content>
             <Tabs.Content value="preview"><div className="answer-markdown skill-preview"><ReactMarkdown skipHtml components={{

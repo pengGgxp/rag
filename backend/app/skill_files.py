@@ -12,10 +12,9 @@ from hashlib import sha256
 
 from fastapi import HTTPException
 
-MAX_FILES = 200
-MAX_FILE_BYTES = 5 * 1024 * 1024
-MAX_BUNDLE_BYTES = 20 * 1024 * 1024
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+MAX_SIZE_MIB = 200
+MAX_FILE_BYTES = MAX_BUNDLE_BYTES = MAX_UPLOAD_BYTES = MAX_SIZE_MIB * 1024 * 1024
+MAX_ENCODED_FILE_CHARS = 4 * ((MAX_FILE_BYTES + 2) // 3)
 
 SCRIPT_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".sh", ".bash")
 WINDOWS_RESOURCE_SUFFIXES = (".bat", ".cmd", ".com", ".exe", ".msi", ".ps1")
@@ -69,8 +68,8 @@ def manifest(files: dict[str, bytes]) -> list[dict]:
 
 
 def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
-    if not files or len(files) > MAX_FILES:
-        raise HTTPException(422, f"Skill 必须包含 1–{MAX_FILES} 个文件")
+    if not files:
+        raise HTTPException(422, "Skill 至少需要包含一个文件")
     seen = set()
     total = 0
     for path, content in files.items():
@@ -80,12 +79,12 @@ def validate_files(files: dict[str, bytes]) -> dict[str, bytes]:
             raise HTTPException(422, "Skill 存在大小写冲突的重复路径")
         seen.add(key)
         if len(content) > MAX_FILE_BYTES:
-            raise HTTPException(413, "单个 Skill 文件不能超过 5 MiB")
+            raise HTTPException(413, f"单个 Skill 文件不能超过 {MAX_SIZE_MIB} MiB")
         total += len(content)
     if any("/".join(key.split("/")[:i]) in seen for key in seen for i in range(1, len(key.split("/")))):
         raise HTTPException(422, "Skill 路径存在文件与目录冲突")
     if total > MAX_BUNDLE_BYTES:
-        raise HTTPException(413, "Skill 总大小不能超过 20 MiB")
+        raise HTTPException(413, f"Skill 总大小不能超过 {MAX_SIZE_MIB} MiB")
     if "SKILL.md" not in files or text_content(files["SKILL.md"]) is None:
         raise HTTPException(422, "Skill 根目录必须包含 UTF-8 编码的 SKILL.md")
     return files
@@ -135,13 +134,11 @@ def imported_files(entries: list[tuple[str, bytes]]) -> tuple[dict[str, bytes], 
 
 def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "ZIP 不能超过 25 MiB")
+        raise HTTPException(413, f"ZIP 不能超过 {MAX_SIZE_MIB} MiB")
     try:
         _reject_raw_zip_paths(content)
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             infos = archive.infolist()
-            if len(infos) > MAX_FILES * 3:
-                raise HTTPException(413, "ZIP 条目过多")
             entries, total = [], 0
             for info in infos:
                 safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
@@ -153,14 +150,69 @@ def unzip(content: bytes) -> tuple[dict[str, bytes], str | None]:
                 if info.is_dir():
                     continue
                 total += info.file_size
-                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                    raise HTTPException(413, "ZIP 超出 Skill 文件数量或大小限制")
+                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, "ZIP 超出 Skill 文件大小限制")
                 with archive.open(info) as source:
                     data = source.read(MAX_FILE_BYTES + 1)
                 if len(data) != info.file_size:
                     raise HTTPException(422, "ZIP 文件大小不一致")
                 entries.append((info.filename, data))
             return imported_files(entries)
+    except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, RuntimeError, NotImplementedError, EOFError, ValueError) as exc:
+        raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持") from exc
+
+
+def unzip_packages(content: bytes) -> list[tuple[str, dict[str, bytes]]]:
+    """Read a ZIP once and split it into packages by each SKILL.md directory."""
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"ZIP 不能超过 {MAX_SIZE_MIB} MiB")
+    try:
+        _reject_raw_zip_paths(content)
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            entries, total = [], 0
+            for info in archive.infolist():
+                safe_path(info.orig_filename.rstrip("/") if info.is_dir() else info.orig_filename)
+                safe_path(info.filename.rstrip("/") if info.is_dir() else info.filename)
+                mode = info.external_attr >> 16
+                kind = stat.S_IFMT(mode)
+                if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or info.flag_bits & 1:
+                    raise HTTPException(422, "ZIP 不允许链接、特殊文件或加密条目")
+                if info.is_dir():
+                    continue
+                total += info.file_size
+                if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                    raise HTTPException(413, "ZIP 超出 Skill 文件大小限制")
+                with archive.open(info) as source:
+                    data = source.read(MAX_FILE_BYTES + 1)
+                if len(data) != info.file_size:
+                    raise HTTPException(422, "ZIP 文件大小不一致")
+                entries.append((info.filename, data))
+        if len({path.casefold() for path, _ in entries}) != len(entries):
+            raise HTTPException(422, "ZIP 存在重复文件路径")
+        manifests = [path for path, _ in entries if path.rsplit("/", 1)[-1].casefold() == "skill.md"]
+        if not manifests:
+            raise HTTPException(422, "ZIP 中没有找到 SKILL.md")
+        roots = [(path.rsplit("/", 1)[0] + "/" if "/" in path else "") for path in manifests]
+        packages = []
+        for root in roots:
+            files = {}
+            for path, data in entries:
+                if not path.startswith(root):
+                    continue
+                if any(other.startswith(root) and path.startswith(other) for other in roots if other != root):
+                    continue
+                relative = path[len(root):]
+                if not relative:
+                    continue
+                if relative.casefold() == "skill.md":
+                    relative = "SKILL.md"
+                elif relative.rsplit("/", 1)[-1].casefold() == "skill.md":
+                    continue
+                files[relative] = data
+            files = validate_files(files)
+            label = root.rstrip("/").rsplit("/", 1)[-1] if root else "SKILL.md"
+            packages.append((label, files))
+        return packages
     except (zipfile.BadZipFile, zlib.error, lzma.LZMAError, RuntimeError, NotImplementedError, EOFError, ValueError) as exc:
         raise HTTPException(422, "ZIP 无效、损坏或压缩方式不支持") from exc
 
@@ -173,8 +225,6 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
             _reject_raw_zip_paths(content)
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 infos = archive.infolist()
-                if len(infos) > MAX_FILES * 3:
-                    raise HTTPException(413, "压缩包条目过多")
                 entries, total = [], 0
                 for info in infos:
                     member = info.filename.rstrip("/") if info.is_dir() else info.filename
@@ -186,8 +236,8 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
                     if info.is_dir():
                         continue
                     total += info.file_size
-                    if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                        raise HTTPException(413, "压缩包超出 Skill 文件数量或大小限制")
+                    if info.file_size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                        raise HTTPException(413, "压缩包超出 Skill 文件大小限制")
                     with archive.open(info) as source:
                         data = source.read(MAX_FILE_BYTES + 1)
                     if len(data) != info.file_size:
@@ -195,20 +245,17 @@ def archive_entries(path: str, content: bytes) -> list[dict]:
                     entries.append({"path": member, "size": info.file_size})
                 return entries
         if name.endswith((".tar", ".tar.gz", ".tgz")):
-            entries, total, members = [], 0, 0
+            entries, total = [], 0
             with tarfile.open(fileobj=io.BytesIO(content), mode="r:*") as archive:
                 for info in archive:
-                    members += 1
-                    if members > MAX_FILES * 3:
-                        raise HTTPException(413, "压缩包条目过多")
                     safe_path(info.name.rstrip("/") if info.isdir() else info.name)
                     if not (info.isfile() or info.isdir()):
                         raise HTTPException(422, "TAR 不允许链接或特殊文件")
                     if info.isdir():
                         continue
                     total += info.size
-                    if info.size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES or len(entries) >= MAX_FILES:
-                        raise HTTPException(413, "TAR 超出 Skill 文件数量或大小限制")
+                    if info.size > MAX_FILE_BYTES or total > MAX_BUNDLE_BYTES:
+                        raise HTTPException(413, "TAR 超出 Skill 文件大小限制")
                     source = archive.extractfile(info)
                     if source is None or len(source.read(MAX_FILE_BYTES + 1)) != info.size:
                         raise HTTPException(422, "压缩包文件大小不一致")
