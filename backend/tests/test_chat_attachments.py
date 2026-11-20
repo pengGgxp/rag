@@ -216,6 +216,66 @@ def test_send_history_retry_and_no_extra_attachment_charge(client, objects, monk
     assert objects
 
 
+@pytest.mark.parametrize("remove_access", [False, True])
+def test_steering_checks_references_at_admission_and_keeps_attachments(client, objects, monkeypatch, remove_access):
+    from sqlalchemy.orm import Session
+    from app import conversation_jobs
+    from app.models import Document
+    from test_conversations import add_document, add_library
+
+    http, db, _ = client
+    library = add_library(db)
+    document = add_document(db, library, "referenced text")
+    selected = db.get(SiteModelProvider, UUID(model_id(http)))
+    selected.supports_images = True
+    db.commit()
+    document_id = document.id
+    engine = db.get_bind()
+    image = upload(http, "added.png", PNG).json()
+    attachment = upload(http, "added.txt").json()
+    chat_id = create(http, [])["id"]
+    request_id, message_id = str(uuid4()), str(uuid4())
+    path = f"/conversations/{chat_id}/requests/{request_id}/steer"
+    payload = {"message_id": message_id, "text": "对照 @资料.pdf",
+        "attachment_ids": [image["id"], attachment["id"]], "document_ids": [str(document_id)]}
+    calls = []
+
+    def stream(self, messages, tools, **_):
+        calls.append(messages)
+        if len(calls) == 1:
+            assert http.post(path, json=payload).json()["status"] == "pending"
+            if remove_access:
+                with Session(engine) as changed:
+                    changed.get(Document, document_id).is_active = False
+                    changed.commit()
+        text = f"回答 {len(calls)}"
+        yield "delta", {"text": text}
+        yield "complete", ToolResponse(text, [])
+
+    monkeypatch.setattr(conversation_jobs, "queue_title", lambda *_: None)
+    monkeypatch.setattr(OpenAICompatibleChatProvider, "stream_with_tools", stream)
+    monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", OpenAICompatibleChatProvider)
+    events, _ = turn(http, chat_id, "请分析", request_id=request_id)
+    assert events[-1][1]["status"] == "completed"
+    blocks = [block for block in events[-1][1]["display_blocks"] if block["type"] == "user"]
+    if remove_access:
+        assert len(calls) == 1 and blocks == []
+        assert any(name == "steering_rejected" and data["id"] == message_id for name, data in events)
+        assert http.post(path, json=payload).json()["status"] == "rejected"
+    else:
+        assert len(calls) == 2
+        parts = calls[1][-1]["content"]
+        assert any(part["type"] == "chat_image" and part["attachment_id"] == image["id"] for part in parts)
+        assert any("Private attached facts" in part.get("text", "") for part in parts)
+        assert any(str(document_id) in part.get("text", "") for part in parts)
+        assert [item["id"] for item in blocks[0]["attachments"]] == [image["id"], attachment["id"]]
+        assert blocks[0]["document_mentions"][0]["id"] == str(document_id)
+        assert http.post(path, json=payload).json()["status"] == "accepted"
+        saved = http.get(f"/conversations/{chat_id}").json()["messages"][-1]
+        assert [block for block in saved["display_blocks"] if block["type"] == "user"] == blocks
+        assert "object_key" not in str(saved) and "Private attached facts" not in str(saved)
+
+
 def test_text_model_accepts_documents_rejects_image_before_hold(client, objects, monkeypatch):
     http, db, _ = client
     conv = create(http, [])
@@ -278,7 +338,7 @@ def test_images_reach_actual_http_stream_and_usage_is_authoritative(objects, pro
 def test_compaction_treats_images_as_images_and_retains_original(client, objects, monkeypatch):
     from test_conversation_streaming import context_fixture, summary_provider, compact
     from app.models import ChatMessage, ContextCheckpoint
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=26000)
     db.get(SiteModelProvider, UUID(provider)).supports_images = True
     item = upload(http, "image.png", PNG).json()
     original = db.scalar(select(ChatMessage).where(

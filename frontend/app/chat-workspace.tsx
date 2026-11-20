@@ -85,6 +85,7 @@ type Message = {
   sequence: number;
   role: "user" | "assistant";
   content: string;
+  created_at?: string;
   attachments?: ChatAttachment[];
   document_mentions?: MentionDocument[];
   knowledge_base_mentions?: MentionKnowledgeBase[];
@@ -152,6 +153,15 @@ type Generation = {
   requestId: string;
   epoch: number;
 };
+type HeldInput = { id: string; text: string; turn?: string; immediate?: boolean;
+  attachments?: ChatAttachment[]; mentions?: DraftMention[]; error?: string };
+
+function recoveryStatus(data: unknown) {
+  const recovery = data as { category: string; attempt: number; max_attempts: number };
+  if (recovery.category === "network_wait") return "正在等待网络恢复";
+  if (recovery.category === "http_fallback") return "已切换连接方式，正在继续";
+  return `${recovery.category === "busy" ? "服务繁忙，" : ""}正在重新连接… ${recovery.attempt}/${recovery.max_attempts}`;
+}
 
 function upsert(messages: Message[], message: Message) {
   const previous = messages.find(item => item.id === message.id && item.request_id === message.request_id);
@@ -218,6 +228,15 @@ function mentionRanges(text: string, mentions: PositionedMention[]) {
   }
   if (cursor < text.length || !parts.length) parts.push({ text: text.slice(cursor) });
   return parts;
+}
+function questionText(text: string, mentions: PositionedMention[]) {
+  if (!text) return null;
+  return <p className="chat-question">{mentionRanges(text, mentions).map((part, index) => part.mention
+    ? <span key={index} className="chat-document-mention"
+      title={part.mention.kind === "knowledge_base" ? part.mention.name
+        : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
+        : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
+    : <Fragment key={index}>{part.text}</Fragment>)}</p>;
 }
 function pruneMentions(previous: string, text: string, caret: number, mentions: DraftMention[]) {
   if (previous === text) return mentions;
@@ -345,6 +364,9 @@ export function ChatWorkspace({
   const [reloadAttempt, setReloadAttempt] = useState(0);
   const [asking, setAsking] = useState(false);
   const [phase, setPhase] = useState("");
+  const [browserReconnecting, setBrowserReconnecting] = useState(false);
+  const [drainAttempt, setDrainAttempt] = useState(0);
+  const [clock, setClock] = useState(Date.now);
   const [contextInfo, setContextInfo] = useState<ConversationContextState>(emptyContext);
   const [contextLoading, setContextLoading] = useState(false);
   const [contextError, setContextError] = useState("");
@@ -368,12 +390,30 @@ export function ChatWorkspace({
   const epoch = useRef(0);
   const viewRef = useRef<Conversation | null>(null);
   const sending = useRef(false);
+  const stopping = useRef(false);
   const scrollArea = useRef<HTMLDivElement>(null);
   const pendingScroll = useRef<{ id: string; top: number } | null>(null);
   const follow = useRef(true);
   const restoredModelFor = useRef<string | null>(null);
   const cache = useRef(new Map<string, Conversation>());
   const draftPrefix = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
+  const [heldScope, setHeldScope] = useState("");
+  const [held, setHeld] = useState<HeldInput[]>([]);
+  const inputScope = `${draftPrefix}${conversation?.id ?? "new"}:pending`;
+  const heldInputs = heldScope === inputScope ? held : [];
+  useEffect(() => {
+    let items: HeldInput[] = [];
+    try { items = JSON.parse(sessionStorage.getItem(inputScope) ?? "[]"); } catch { /* Recover the empty list. */ }
+    setHeld(Array.isArray(items) ? items : []);
+    setHeldScope(inputScope);
+  }, [inputScope]);
+  useEffect(() => {
+    if (heldScope !== inputScope) return;
+    try {
+      if (held.length) sessionStorage.setItem(inputScope, JSON.stringify(held));
+      else sessionStorage.removeItem(inputScope);
+    } catch { /* Storage is optional. */ }
+  }, [held, heldScope, inputScope]);
   const draftKey = useRef(draftPrefix + (conversationId ?? "new"));
   const draftReady = useRef(false);
   const draftSending = useRef(false);
@@ -384,6 +424,31 @@ export function ChatWorkspace({
   const liveDraft = useRef({ text: question, mentions: documentMentions, attachments: attachments.ready, scroll: 0, follow: true });
   liveDraft.current = { text: question, mentions: documentMentions,
     attachments: attachments.ready.filter(item => !!item.resource_id), scroll: scrollArea.current?.scrollTop ?? 0, follow: follow.current };
+  function restoreHeld(entries: HeldInput[], prepend = false) {
+    const draft = liveDraft.current;
+    const ordered = prepend ? [...entries, draft] : [draft, ...entries];
+    let text = "";
+    const mentions: DraftMention[] = [];
+    for (const input of ordered) {
+      if (!input.text) continue;
+      if (text) text += "\n\n";
+      const offset = text.length;
+      text += input.text;
+      mentions.push(...(input.mentions ?? []).map(item => ({ ...item, start: item.start + offset, end: item.end + offset })));
+    }
+    liveDraft.current = { ...draft, text, mentions };
+    setQuestion(text);
+    setDocumentMentions(mentions);
+    attachments.merge(entries.flatMap(item => item.attachments ?? []));
+  }
+  function updateHeldFromEvent(name: string, data: unknown) {
+    if (name === "steered") setHeld(items => items.filter(item => item.id !== (data as { id: string }).id));
+    if (name === "steering_rejected") {
+      const rejection = data as { id: string; error: string };
+      setHeld(items => items.map(item => item.id === rejection.id ? { ...item, error: rejection.error } : item));
+      report(new Error(rejection.error));
+    }
+  }
   const searchParams = useSearchParams();
   const targetMessage = searchParams.get("message");
   const [highlightedMessage, setHighlightedMessage] = useState<string | null>(null);
@@ -509,7 +574,6 @@ export function ChatWorkspace({
   const stopGeneration = useCallback(async () => {
     const active = generation.current;
     if (!active) return;
-    active.controller.abort();
     await request(`/conversations/${active.conversationId}/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -556,6 +620,8 @@ export function ChatWorkspace({
     generation.current = null;
     sending.current = false;
     setAsking(false);
+    setPhase("");
+    setBrowserReconnecting(false);
     draftKey.current = draftPrefix + (conversationId ?? "new");
     let draft: typeof liveDraft.current | null = null;
     try { draft = JSON.parse(sessionStorage.getItem(draftKey.current) ?? "null"); } catch { /* Ignore malformed local drafts. */ }
@@ -656,7 +722,16 @@ export function ChatWorkspace({
           }
         });
     };
-    void streamRequest(`/conversations/${id}/requests/${conversation.active_request_id}/events`, undefined, controller.signal, () => {
+    void streamRequest(`/conversations/${id}/requests/${conversation.active_request_id}/events`, undefined, controller.signal, (name, data) => {
+      if (controller.signal.aborted) return;
+      updateHeldFromEvent(name, data);
+      if (name === "browser_connection") setBrowserReconnecting((data as { reconnecting: boolean }).reconnecting);
+      if (name === "model_recovering") setPhase(recoveryStatus(data));
+      if (name === "model_resuming" || name === "phase" || name === "agent_step") setPhase("处理中");
+      if (name === "thinking_delta") setPhase("正在思考");
+      if (name === "delta") setPhase("正在生成回答");
+      if (name === "tool_started") setPhase(`正在执行${(data as { label?: string }).label ?? "工具"}`);
+      if (name === "done") { setPhase(""); setBrowserReconnecting(false); }
       if (!pending) pending = setTimeout(() => { pending = undefined; reload(); }, 250);
     }).catch(() => { if (!controller.signal.aborted) reload(); });
     const timer = setInterval(reload, 1500);
@@ -717,28 +792,97 @@ export function ChatWorkspace({
       if (epoch.current === currentEpoch) report(error);
     }
   }
-  async function stop() {
-    if (generation.current) {
-      const active = generation.current;
-      try {
+  async function stop(immediate?: HeldInput) {
+    const id = generation.current?.conversationId ?? conversation?.id;
+    const requestId = generation.current?.requestId ?? conversation?.active_request_id;
+    if (!id || !requestId || stopping.current) return;
+    const currentEpoch = epoch.current;
+    stopping.current = true;
+    try {
+      if (generation.current) {
+        const active = generation.current;
         await stopGeneration();
-        await reloadCurrent(active.conversationId, active.epoch);
-      } catch (error) {
-        report(error);
-      }
-    } else if (conversation?.active_request_id) {
-      const id = conversation.id;
-      try {
+        active.controller.abort();
+      } else {
         await request(`/conversations/${id}/stop`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ request_id: conversation.active_request_id }),
+          body: JSON.stringify({ request_id: requestId }),
         });
-        await reloadCurrent(id, epoch.current);
-      } catch (error) {
+      }
+      const saved = await reloadCurrent(id, currentEpoch);
+      if (epoch.current !== currentEpoch) return;
+      const accepted = new Set(saved?.messages.flatMap(message => message.display_blocks ?? [])
+        .filter(block => block.type === "user").map(block => block.id));
+      const restore = heldInputs.filter(item => item.id !== immediate?.id && !accepted.has(item.id));
+      setHeld(immediate && !accepted.has(immediate.id) ? [{ ...immediate, id: crypto.randomUUID(), turn: undefined, immediate: true }] : []);
+      if (restore.length) restoreHeld(restore);
+    } catch (error) {
+      if (epoch.current === currentEpoch) {
+        if (immediate && !heldInputs.some(item => item.id === immediate.id))
+          restoreHeld([immediate], true);
+        report(error);
+      }
+    } finally {
+      stopping.current = false;
+      setDrainAttempt(value => value + 1);
+    }
+  }
+
+  async function holdInput(mode: "steer" | "queue" | "interrupt") {
+    const id = conversation?.id;
+    const turn = conversation?.active_request_id;
+    const text = question.trim();
+    if (!canFollowUp || !id || !turn || stopping.current) return;
+    const leading = question.length - question.trimStart().length;
+    const mentions = documentMentions.map(item => ({ ...item, start: item.start - leading, end: item.end - leading }));
+    const entry: HeldInput = { id: crypto.randomUUID(), text, turn: mode === "steer" ? turn : undefined,
+      attachments: attachments.ready, mentions };
+    setQuestion("");
+    setDocumentMentions([]);
+    liveDraft.current = { ...liveDraft.current, text: "", mentions: [], attachments: [] };
+    attachments.reset(false);
+    if (mode === "interrupt") {
+      await stop(entry);
+      return;
+    }
+    setHeld(items => [...items, entry]);
+    if (mode === "queue") return;
+    const submit = () => request<{ id: string; status: string; error?: string }>(`/conversations/${id}/requests/${turn}/steer`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: entry.id, text, attachment_ids: entry.attachments?.map(item => item.id),
+        document_ids: mentions.filter(item => item.kind === "document").map(item => item.id),
+        knowledge_base_ids: mentions.filter(item => item.kind === "knowledge_base").map(item => item.id),
+        resource_ids: mentions.filter(item => item.kind === "resource").map(item => item.id) }),
+    });
+    try {
+      const result = await submit().catch(error => { if (error instanceof ApiError) throw error; return submit(); });
+      if (viewRef.current?.id === id && result.status === "accepted")
+        setHeld(items => items.filter(item => item.id !== entry.id));
+      if (viewRef.current?.id === id && result.status === "rejected" && result.error)
+        updateHeldFromEvent("steering_rejected", { id: entry.id, error: result.error });
+    } catch (error) {
+      if (viewRef.current?.id === id && error instanceof ApiError && error.status < 500) {
+        setHeld(items => items.filter(item => item.id !== entry.id));
+        restoreHeld([entry], true);
         report(error);
       }
     }
+  }
+
+  async function editHeld(entry: HeldInput) {
+    const id = conversation?.id;
+    if (!id) return;
+    if (entry.turn) {
+      try {
+        const result = await request<{ status: string }>(`/conversations/${id}/requests/${entry.turn}/steer/${entry.id}`, { method: "DELETE" });
+        if (viewRef.current?.id !== id) return;
+        setHeld(items => items.filter(item => item.id !== entry.id));
+        if (result.status === "accepted") return;
+      } catch (error) { report(error); return; }
+    } else setHeld(items => items.filter(item => item.id !== entry.id));
+    restoreHeld([entry], true);
+    composerInput.current?.focus();
   }
   async function changeExtensions(value: ExtensionSelection) {
     if (!conversation) { setDraftExtensions(value); return; }
@@ -752,23 +896,27 @@ export function ChatWorkspace({
     } finally { setExtensionBusy(false); }
   }
 
-  async function send(retryId?: string) {
+  async function send(queued?: HeldInput) {
+    const input = queued?.text ?? question;
+    const turnAttachments = queued ? queued.attachments ?? [] : attachments.ready;
     if (
-      sending.current || extensionBusy ||
+      sending.current || stopping.current || extensionBusy || !!conversationError ||
       modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available) ||
       loading ||
-      (!retryId && (!question.trim() && !attachments.ready.length || attachments.blocked ||
-        attachments.hasImages && !selectedModel?.supports_images)) ||
+      (!input.trim() && !turnAttachments.length) || (!queued && attachments.blocked) ||
+      (!queued && tooManyMentions) ||
+      (turnAttachments.some(item => item.kind === "image") && !selectedModel?.supports_images) ||
       conversation?.active_request_id
     )
       return;
     sending.current = true;
     setAsking(true);
-    setPhase("正在分析问题…");
+    setPhase("处理中");
+    setBrowserReconnecting(false);
     const currentEpoch = epoch.current;
-    const query = question.trim();
-    const leading = question.length - question.trimStart().length;
-    const turnDraftMentions = documentMentions.map(item => ({ ...item,
+    const query = input.trim();
+    const leading = input.length - input.trimStart().length;
+    const turnDraftMentions = (queued ? queued.mentions ?? [] : documentMentions).map(item => ({ ...item,
       start: item.start - leading, end: item.end - leading }));
     const turnMentions = [...turnDraftMentions].sort((a, b) => a.start - b.start)
       .map(({ start: _start, end: _end, ...item }) => item);
@@ -800,19 +948,19 @@ export function ChatWorkspace({
       active = {
         controller,
         conversationId: current.id,
-        requestId: crypto.randomUUID(),
+        requestId: queued?.id ?? crypto.randomUUID(),
         epoch: currentEpoch,
       };
       generation.current = active;
-      draftSending.current = true;
-      setQuestion("");
+      draftSending.current = !queued;
+      if (!queued) setQuestion("");
       follow.current = true;
       const pendingUser: Message = {
         id: `pending-${active.requestId}`,
         sequence: (current.messages.at(-1)?.sequence ?? -1) + 1,
         role: "user",
         content: query,
-        attachments: attachments.ready,
+        attachments: turnAttachments,
         document_mentions: turnDocumentMentions,
         knowledge_base_mentions: turnKnowledgeBaseMentions,
         resource_mentions: turnResourceMentions,
@@ -823,20 +971,7 @@ export function ChatWorkspace({
       };
       setConversation({
         ...current,
-        messages: retryId
-          ? current.messages.map((item) =>
-              item.id === retryId
-                ? {
-                    ...item,
-                    content: "",
-                    status: "streaming",
-                    error_detail: null,
-                    citations: [],
-                    traces: [], web_sources: [], tool_events: [], display_blocks: [],
-                  }
-                : item,
-            )
-          : [...current.messages, pendingUser],
+        messages: [...current.messages, pendingUser],
       });
       await streamRequest(
         `/conversations/${current.id}/messages`,
@@ -849,27 +984,33 @@ export function ChatWorkspace({
           knowledge_base_ids: turnKnowledgeBaseMentions.map(item => item.id),
           resource_ids: turnResourceMentions.map(item => item.id),
           ...(thinkingId ? { thinking_option_id: thinkingId } : {}),
-          ...(retryId ? { retry_message_id: retryId } : {
-            ...(query ? { query } : {}), attachment_ids: attachments.ready.map(item => item.id),
-          }),
+          ...(query ? { query } : {}), attachment_ids: turnAttachments.map(item => item.id),
         },
         controller.signal,
         (name, data) => {
           if (name === "submitted") {
+            setConversation(item => item?.id === current!.id ? { ...item, active_request_id: active!.requestId } : item);
             received = true;
-            try { sessionStorage.removeItem(draftPrefix + current!.id); } catch { /* Optional persistence. */ }
+            if (!queued) try { sessionStorage.removeItem(draftPrefix + current!.id); } catch { /* Optional persistence. */ }
           }
           if (epoch.current !== currentEpoch || controller.signal.aborted)
             return;
           if (name === "submitted") {
-            draftSending.current = false;
-            setDocumentMentions([]);
-            if (!retryId) attachments.reset(false);
+            if (queued) setHeld(items => items.filter(item => item.id !== queued.id));
+            else {
+              draftSending.current = false;
+              setDocumentMentions([]);
+              attachments.reset(false);
+            }
           }
+          if (name === "browser_connection") setBrowserReconnecting((data as { reconnecting: boolean }).reconnecting);
+          if (name === "model_recovering") setPhase(recoveryStatus(data));
+          if (name === "model_resuming") setPhase("处理中");
+          updateHeldFromEvent(name, data);
           if (name === "phase")
             setPhase(
               (data as { phase: string }).phase === "planning"
-                ? "正在分析问题…"
+                ? "处理中"
                 : (data as { phase: string }).phase === "retrieving"
                   ? "正在检索资料…"
                   : "正在生成回答…",
@@ -878,7 +1019,7 @@ export function ChatWorkspace({
             setPhase(
               (data as { status?: string }).status === "decided"
                 ? "Agent 正在整理检索结果…"
-                : "正在分析问题…",
+                : "处理中",
             );
           if (name === "tool_started")
             setPhase(`正在执行${(data as { label?: string }).label ?? "工具"}…`);
@@ -898,10 +1039,6 @@ export function ChatWorkspace({
           }
           if (name === "message" || name === "done") {
             received = true;
-            draftSending.current = false;
-            try { sessionStorage.removeItem(draftPrefix + current!.id); } catch { /* Optional persistence. */ }
-            setDocumentMentions([]);
-            if (!retryId) attachments.reset(false);
           }
           setConversation((item) => {
             if (!item || item.id !== current!.id) return item;
@@ -912,7 +1049,7 @@ export function ChatWorkspace({
                 active_request_id: name === "done" ? null : active!.requestId,
               };
             }
-            const messages = item.messages.map((message) => {
+            const messages = item.messages.map((message): Message => {
               if (message.request_id !== active!.requestId) return message;
               if (name === "thinking_delta" || name === "thinking_status") {
                 return { ...message, display_blocks: updateThinking(message.display_blocks ?? [],
@@ -927,10 +1064,23 @@ export function ChatWorkspace({
                   display_blocks: appendText(blocks, delta.block_id, delta.text),
                 };
               }
+              if (name === "text_complete") {
+                const update = data as { block_id: string; stage: "commentary" | "intermediate" | "final"; status: string };
+                return { ...message, display_blocks: message.display_blocks?.map(block => block.id === update.block_id && block.type === "text"
+                  ? { ...block, stage: update.stage, status: update.status } : block) };
+              }
+              if (name === "steered") {
+                const entry = data as Extract<DisplayBlock, { type: "user" }>;
+                const blocks = message.display_blocks ?? [];
+                return blocks.some(block => block.id === entry.id) ? message
+                  : { ...message, display_blocks: [...blocks, { ...entry, type: "user" }] };
+              }
               if (["tool_call", "tool_started", "tool_result", "compaction"].includes(name)) {
                 const update = data as ToolEvent;
                 const tools = message.tool_events ?? [];
                 const existing = tools.find(tool => tool.call_id === update.call_id);
+                if (existing && !["waiting", "running"].includes(existing.status) &&
+                    ["waiting", "running"].includes(update.status)) return message;
                 const next = { ...existing, ...update, ...(name === "compaction" ? { kind: "compaction", name: "compact_context" } : {}) };
                 return { ...message, tool_events: existing
                   ? tools.map(tool => tool.call_id === update.call_id ? next : tool) : [...tools, next],
@@ -955,16 +1105,19 @@ export function ChatWorkspace({
           setModelAttempt(value => value + 1);
         }
         report(error);
-        if (!received && !retryId) { setQuestion(query); setDocumentMentions(turnDraftMentions); }
+        if (!received && !queued) { setQuestion(value => value || query); setDocumentMentions(turnDraftMentions); }
       }
     } finally {
       if (epoch.current === currentEpoch) {
         if (current) {
           const saved = await reloadCurrent(current.id, currentEpoch);
           const acceptedRequestId = active?.requestId;
-          if (!retryId && !received && acceptedRequestId && saved?.messages.some(message => message.request_id === acceptedRequestId)) {
-            attachments.reset(false);
-            setQuestion("");
+          if (!received && acceptedRequestId && saved?.messages.some(message => message.request_id === acceptedRequestId)) {
+            if (queued) setHeld(items => items.filter(item => item.id !== queued.id));
+            else { attachments.reset(false); setQuestion(text => text === query ? "" : text); }
+          } else if (queued && !received) {
+            setHeld(items => items.filter(item => item.id !== queued.id));
+            restoreHeld([queued], true);
           }
         }
         generation.current = null;
@@ -972,7 +1125,9 @@ export function ChatWorkspace({
         sending.current = false;
         setAsking(false);
         setPhase("");
+        setBrowserReconnecting(false);
         setContextAttempt(value => value + 1);
+        setDrainAttempt(value => value + 1);
       }
       void refreshList();
     }
@@ -1084,6 +1239,47 @@ export function ChatWorkspace({
     }
   }
   const running = asking || !!conversation?.active_request_id;
+  const activeTurn = conversation?.active_request_id ?? generation.current?.requestId;
+  const draftReferencesDisabled = loading || (running && !conversation?.active_request_id);
+  const tooManyMentions = new Set(documentMentions.map(item => `${item.kind}:${item.id}`)).size > 8;
+  const canFollowUp = !!conversation?.active_request_id && contextInfo.status !== "running"
+    && (!!question.trim() || !!attachments.ready.length) && !attachments.blocked && !tooManyMentions
+    && (!attachments.hasImages || !!selectedModel?.supports_images);
+  const startedAt = conversation?.messages.find(item => item.request_id === activeTurn)?.created_at;
+  const elapsed = startedAt ? Math.max(0, Math.floor((clock - Date.parse(startedAt)) / 1000)) : 0;
+  const drainInputs = useRef<() => void>(() => {});
+  drainInputs.current = () => {
+    if (stopping.current || sending.current || !conversation || loading || heldScope !== inputScope || !heldInputs.length) return;
+    const accepted = new Set(conversation.messages.flatMap(message => message.display_blocks ?? [])
+      .filter(block => block.type === "user").map(block => block.id));
+    if (heldInputs.some(item => item.turn && accepted.has(item.id))) {
+      setHeld(items => items.filter(item => !item.turn || !accepted.has(item.id)));
+      return;
+    }
+    if (running) return;
+    const dealtWith = heldInputs.filter(item => item.turn || conversation.messages.some(message => message.request_id === item.id));
+    const origin = conversation.messages.findLast(message => message.role === "assistant");
+    const restore = dealtWith.filter(item => item.turn && !accepted.has(item.id));
+    if (origin?.status === "cancelled") restore.push(...heldInputs.filter(item => !item.turn && !item.immediate && !dealtWith.includes(item)));
+    if (dealtWith.length || restore.length) {
+      const removed = new Set([...dealtWith, ...restore].map(item => item.id));
+      setHeld(items => items.filter(item => !removed.has(item.id)));
+      if (restore.length) restoreHeld(restore);
+      return;
+    }
+    const next = heldInputs[0];
+    if (!next.turn && selectedModel?.available) void send(next);
+  };
+  useEffect(() => {
+    const timer = setTimeout(() => drainInputs.current(), 100);
+    return () => clearTimeout(timer);
+  }, [running, conversation, loading, held, heldScope, selectedModel?.available, drainAttempt]);
+  useEffect(() => {
+    if (!running) return;
+    setClock(Date.now());
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
   return (
     <CloudComputerProvider
       scope={{ userId: session.user.id, workspaceId: session.workspace_id, conversationId: conversation?.id ?? null }}>
@@ -1139,7 +1335,7 @@ export function ChatWorkspace({
             </Motion.div>
           ) : (
             <div className="chat-transcript">
-              {conversation.messages.map((message, index) => (
+              {conversation.messages.map(message => (
                 <Fragment key={message.id}>
                 <article
                   id={`chat-message-${message.id}`}
@@ -1161,16 +1357,15 @@ export function ChatWorkspace({
                   </span>
                   {message.role === "user" ? (
                     <><MessageAttachments items={message.attachments} />
-                      {message.content && <p className="chat-question">{mentionRanges(message.content, storedMentions(message)).map((part, partIndex) => part.mention
-                        ? <span key={`${part.mention.kind}-${part.mention.id}-${partIndex}`} className="chat-document-mention"
-                          title={part.mention.kind === "knowledge_base" ? part.mention.name
-                            : part.mention.kind === "resource" ? `资源文件 · ${part.mention.path}`
-                            : `${part.mention.filename} · ${part.mention.knowledge_base_name ?? "知识库"}`}>{part.text}</span>
-                        : <Fragment key={partIndex}>{part.text}</Fragment>)}</p>}</>
+                      {questionText(message.content, storedMentions(message))}</>
                   ) : (
                     <MessageFileProvider key={message.id} scope={`${session?.user.id}:${session?.workspace_id}`}>
                       {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
+                        if (block.type === "user") return <div key={block.id} className="turn-steering">
+                          <span className="answer-label">你</span><MessageAttachments items={block.attachments} />
+                          {questionText(block.text, storedMentions(block))}
+                        </div>;
                         const thinking = (detail: Extract<DisplayBlock, { type: "thinking" }>) =>
                           <ConversationThinking key={detail.id} block={detail} conversationId={conversation.id}
                             messageId={message.id} messageStatus={message.status} />;
@@ -1180,43 +1375,25 @@ export function ChatWorkspace({
                         const sources = message.web_sources?.filter(source => source.call_ids?.length
                           ? source.call_ids.some(id => callIds.has(id)) : !!firstWebCall && callIds.has(firstWebCall.call_id)) ?? [];
                         return <ConversationActivity key={block.id} items={activities.map(activityItem)} workspaceId={session?.workspace_id}
+                          detailRoot={message.request_id ? `/conversations/${conversation.id}/requests/${message.request_id}/tools` : undefined}
+                          turnFinished={message.status !== "streaming"}
                           finished={message.status !== "streaming" || block.blocks.at(-1)?.id !== message.display_blocks?.at(-1)?.id}
                           thinking={block.blocks.some(detail => detail.type === "thinking" && detail.status === "running")}
                           steps={block.blocks.map(detail => detail.type === "activity"
                             ? { type: "activity", id: detail.call_id }
-                            : { type: "detail", id: detail.id, content: thinking(detail) })}>
+                            : { type: "detail", id: detail.id, content: detail.type === "thinking" ? thinking(detail)
+                              : <AnswerMarkdown message={message} text={detail.text} onCitation={setPreview} /> })}>
                           {!!sources.length && <div className="source-list activity-sources" aria-label="网页来源">{sources.map(source => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
                             <Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
                           </a>)}</div>}
                         </ConversationActivity>;
                       }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
-                      {message.status === "streaming" && !message.display_blocks?.length && (
-                        <Motion.div
-                          className="thinking"
-                          role="status"
-                          initial={{ opacity: 0, y: 4 }}
-                          animate={{ opacity: 1, y: 0 }}
-                        >
-                          <Loader2 size={15} className="spin" />
-                          {phase || "正在生成回答…"}
-                        </Motion.div>
-                      )}
                       {["failed", "cancelled", "interrupted"].includes(
                         message.status,
                       ) && (
                         <div className="chat-message-error">
                           <CircleAlert size={15} />
                           <span>{message.error_detail || "已停止生成"}</span>
-                          {index === conversation.messages.length - 1 && (
-                            <button
-                              className="text-button"
-                              disabled={running || modelLoading || !!modelError || thinkingStale || !modelOptions?.providers.some(item => item.id === modelId && item.available)}
-                              onClick={() => void send(message.id)}
-                            >
-                              <RefreshCw size={13} />
-                              重试
-                            </button>
-                          )}
                         </div>
                       )}
                       {!!message.citations.length && (
@@ -1252,7 +1429,7 @@ export function ChatWorkspace({
                           </div>
                         </details>
                       )}
-                      <MessageFiles events={message.tool_events ?? []} />
+                      {message.status !== "streaming" && <MessageFiles events={message.tool_events ?? []} />}
                       {message.status !== "streaming" && (
                         <div className="answer-actions">
                           {message.content && (
@@ -1332,22 +1509,6 @@ export function ChatWorkspace({
               ))}
             </div>
           )}
-          {asking &&
-            !conversation?.messages.some(
-              (item) => item.status === "streaming",
-            ) && (
-              <div className="chat-transcript">
-                <Motion.div
-                  className="thinking"
-                  role="status"
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                >
-                  <Loader2 size={16} className="spin" />
-                  {phase}
-                </Motion.div>
-              </div>
-            )}
         </section>
         {latest && <div className="conversation-latest"><button type="button" onClick={() => {
           scrollArea.current?.scrollTo({ top: scrollArea.current.scrollHeight, behavior: "instant" });
@@ -1355,6 +1516,24 @@ export function ChatWorkspace({
         }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
           <ConversationPreview key={`${session.user.id}:${session.workspace_id}:${conversation?.id ?? "new"}`} />
+          {running && <div className="turn-status">
+            <Loader2 size={15} className="spin" aria-hidden="true" />
+            <span role="status">{browserReconnecting ? "正在恢复对话连接…" : phase || "处理中"}</span>
+            {startedAt && <time>{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, "0")}</time>}
+            <button type="button" className="icon-button turn-stop" title="停止回答" aria-label="停止回答" onClick={() => void stop()}>
+              <Square size={14} aria-hidden="true" />
+            </button>
+          </div>}
+          {[...heldInputs.filter(item => item.turn && !conversation?.messages.some(message =>
+            message.request_id === item.turn && message.display_blocks?.some(block => block.type === "user" && block.id === item.id))),
+            ...heldInputs.filter(item => !item.turn)].map(item => {
+            const summary = [item.text, ...(item.attachments ?? []).map(attachment => attachment.filename)].filter(Boolean).join(" · ");
+            return <div className="turn-held-input" key={item.id}>
+              <small>{item.error ? "未接纳" : item.turn ? "待补充" : "下一轮"}</small><span title={item.error ?? summary}>{summary}</span>
+              <button type="button" className="text-button" onClick={() => void editHeld(item)}>取回编辑</button>
+              {item.turn && item.turn === activeTurn && running && !item.error && <button type="button" className="text-button" onClick={() => void stop(item)}>中断并发送</button>}
+            </div>;
+          })}
           {modelError && <div className="model-status form-error" role="alert">
             <span>{modelError}</span><button className="text-button" onClick={() => setModelAttempt(value => value + 1)}><RefreshCw size={14} />重试</button>
           </div>}
@@ -1372,21 +1551,24 @@ export function ChatWorkspace({
             onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }}
             onDrop={event => {
               event.preventDefault(); setDragging(false);
-              if (running || loading) return;
+              if (draftReferencesDisabled) return;
               const error = attachments.add(Array.from(event.dataTransfer.files), !!selectedModel?.supports_images);
               if (error) report(new Error(error));
             }}
             onSubmit={(event) => {
               event.preventDefault();
-              void send();
+              if (running) { if (canFollowUp) void holdInput("steer"); }
+              else void send();
             }}
           >
-            <DraftAttachments items={attachments.items} disabled={running || loading}
+            <DraftAttachments items={attachments.items} disabled={draftReferencesDisabled}
               onRemove={attachments.remove} onRetry={item => void attachments.retry(item)} />
+            {attachments.limitError && <p className="chat-attachment-warning" role="alert">{attachments.limitError}</p>}
+            {tooManyMentions && <p className="chat-attachment-warning" role="alert">每条消息最多可以提及 8 项资料。</p>}
             {attachments.hasImages && !selectedModel?.supports_images &&
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
             <DocumentMentionMenu key={`mentions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
-              draft={question} caret={caret} disabled={running || loading || extensionBusy}
+              draft={question} caret={caret} disabled={draftReferencesDisabled || extensionBusy}
               supportsTools={selectedModel?.supports_tools !== false}
               selected={documentMentions} input={composerInput} onActive={updateMentionState}
               onChoose={(item, start, end) => {
@@ -1427,7 +1609,7 @@ export function ChatWorkspace({
               placeholder="输入消息，@ 引用资料，/ 命令与扩展"
               rows={2}
               value={question}
-              disabled={running || loading || extensionBusy}
+              disabled={loading || extensionBusy}
               onChange={(event) => { const value = event.target.value; const position = event.target.selectionStart; setQuestion(value); setCaret(position); setDocumentMentions(items => pruneMentions(question, value, position, items)); }}
               onSelect={event => setCaret(event.currentTarget.selectionStart)}
               onScroll={event => { const overlay = event.currentTarget.parentElement?.querySelector<HTMLElement>(".composer-mention-overlay"); if (overlay) overlay.scrollTop = event.currentTarget.scrollTop; }}
@@ -1435,11 +1617,17 @@ export function ChatWorkspace({
                 const files = Array.from(event.clipboardData?.files ?? []);
                 if (!files.length) return;
                 event.preventDefault();
+                if (draftReferencesDisabled) return;
                 const error = attachments.add(files, !!selectedModel?.supports_images);
                 if (error) report(new Error(error));
               }}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                 if (mentionMenu.current?.keyDown(event) || slashMenu.current?.keyDown(event)) return;
+                if (event.key === "Escape" && running) { event.preventDefault(); void stop(); return; }
+                if (event.key === "Tab" && !event.shiftKey && canFollowUp) {
+                  event.preventDefault(); void holdInput("queue"); return;
+                }
                 if (
                   event.key === "Enter" &&
                   !event.shiftKey &&
@@ -1452,7 +1640,7 @@ export function ChatWorkspace({
             />
             </div>
             <div className="composer-footer">
-              <AttachmentButton disabled={running || loading || modelLoading || !selectedModel?.available}
+              <AttachmentButton disabled={draftReferencesDisabled || modelLoading || !selectedModel?.available}
                 select={item => attachments.selectResource(item, !!selectedModel?.supports_images)}
                 add={files => { const error = attachments.add(files, !!selectedModel?.supports_images); if (error) report(new Error(error)); }} />
               <RequestModelPicker models={modelOptions?.providers ?? []} modelId={modelId} thinkingId={thinkingId}
@@ -1475,19 +1663,15 @@ export function ChatWorkspace({
                   else setContextAttempt(value => value + 1);
                 }} onCompact={() => void compact()} />
               {running ? (
-                <button
-                  key="stop"
-                  className="send-button"
-                  type="button"
-                  title={contextInfo.status === "running" ? "停止整理" : "停止回答"}
-                  aria-label={contextInfo.status === "running" ? "停止整理" : "停止回答"}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void stop();
-                  }}
-                >
-                  <Square size={14} />
-                </button>
+                <div className="turn-input-actions">
+                  {canFollowUp && <>
+                    <button className="text-button" type="button" onClick={() => void holdInput("interrupt")}>中断并发送</button>
+                    <button className="text-button" type="button" onClick={() => void holdInput("queue")}>排到下一轮</button>
+                  </>}
+                  <button className="send-button" type="submit" aria-label="补充当前回答" title="补充当前回答" disabled={!canFollowUp}>
+                    <ArrowUp size={19} />
+                  </button>
+                </div>
               ) : (
                 <button
                   key="send"
@@ -1495,7 +1679,7 @@ export function ChatWorkspace({
                   title="发送问题"
                   aria-label="发送问题"
                   disabled={
-                    (!question.trim() && !attachments.ready.length) || attachments.blocked ||
+                    (!question.trim() && !attachments.ready.length) || attachments.blocked || tooManyMentions ||
                     (attachments.hasImages && !selectedModel?.supports_images) ||
                     loading || extensionBusy || !!conversationError || modelLoading || !!modelError || thinkingStale ||
                     !modelOptions?.providers.some(item => item.id === modelId && item.available)

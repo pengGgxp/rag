@@ -780,6 +780,7 @@ class AgentToolExecution(Base):
     name: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="running")
     encrypted_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_arguments: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -194,11 +194,11 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
         return httpx.Response(200, json={"choices": [{"message": message}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 20}})
     monkeypatch.setattr(httpx, "post", post)
-    from contextlib import contextmanager
-    @contextmanager
-    def streaming(_method, url, **kwargs):
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def streaming(_client, _method, url, **kwargs):
         yield post(url, **kwargs)
-    monkeypatch.setattr(httpx, "stream", streaming)
+    monkeypatch.setattr(httpx.AsyncClient, "stream", streaming)
     conversation = client.post("/conversations", json={}).json()["id"]
     events, _ = send(client, conversation, first["id"], thinking_option_id="strong", thinking_config_version=1)
     final = events[-1].json()

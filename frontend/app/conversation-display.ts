@@ -2,28 +2,33 @@ import type { ConversationActivityItem, KnowledgeBaseResult, SavedDocument } fro
 import type { ImageTaskResult } from "./image-task-result";
 import type { Preview } from "./cloud-preview";
 import type { WorkspaceFileReference } from "./workspace-file-link";
+import type { ChatAttachment } from "./chat-attachments";
+import type { MentionDocument, MentionKnowledgeBase, MentionResource } from "./document-mention-menu";
 
-export type DisplayBlock = { id: string; type: "text"; text: string }
+export type DisplayBlock = { id: string; type: "text"; text: string; stage?: "pending" | "commentary" | "intermediate" | "final"; status?: string }
+  | { id: string; type: "user"; text: string; attachments?: ChatAttachment[];
+    document_mentions?: MentionDocument[]; knowledge_base_mentions?: MentionKnowledgeBase[]; resource_mentions?: MentionResource[] }
   | { id: string; type: "activity"; call_id: string }
   | { id: string; type: "thinking"; round: number; status: string; text?: string };
 export type ToolEvent = {
-  call_id: string; name: string; label: string; kind: string; status: string;
+  call_id: string; execution_id?: string; name: string; label: string; kind: string; status: string;
   outcome?: "success" | "feedback" | "blocked" | "failed" | "uncertain";
   summary?: string; result_count?: number;
   files?: WorkspaceFileReference[];
+  deliverables?: WorkspaceFileReference[];
   saved_document?: SavedDocument;
   image_task?: ImageTaskResult;
   preview?: Preview;
   knowledge_base?: KnowledgeBaseResult;
 };
 
-export type ProcessBlock = { id: string; type: "process"; blocks: Exclude<DisplayBlock, { type: "text" }>[] };
+type Narrative = Extract<DisplayBlock, { type: "text" | "user" }>;
+export type ProcessBlock = { id: string; type: "process"; blocks: Exclude<DisplayBlock, { type: "user" }>[] };
 
-// Keep canonical events untouched. Assistant text is always a presentation boundary.
-export function processBlocks(blocks: DisplayBlock[]): (Extract<DisplayBlock, { type: "text" }> | ProcessBlock)[] {
-  const result: (Extract<DisplayBlock, { type: "text" }> | ProcessBlock)[] = [];
+export function processBlocks(blocks: DisplayBlock[]): (Narrative | ProcessBlock)[] {
+  const result: (Narrative | ProcessBlock)[] = [];
   for (const block of blocks) {
-    if (block.type === "text") {
+    if (block.type === "user" || (block.type === "text" && block.stage !== "commentary")) {
       if (block.text) result.push(block);
       continue;
     }
@@ -37,7 +42,10 @@ export function processBlocks(blocks: DisplayBlock[]): (Extract<DisplayBlock, { 
 export function activityItem(item: ToolEvent): ConversationActivityItem {
   return {
     id: item.call_id, label: item.label, summary: item.summary,
+    executionId: item.execution_id,
     files: item.files,
+    deliverables: item.deliverables ?? (["read_file", "read_image", "get_workspace_file_link", "list_files"].includes(item.name)
+      ? [] : item.files),
     saved_document: item.saved_document,
     image_task: item.image_task,
     preview: item.preview,
@@ -60,10 +68,14 @@ export function processHeadline(items: ConversationActivityItem[], finished: boo
   return items.length ? `处理记录 · ${items.length} 项操作` : "思考记录";
 }
 
-export function activityFiles(items: ConversationActivityItem[]) {
-  const files = new Map<string, NonNullable<ConversationActivityItem["files"]>[number]>();
-  for (const item of items) for (const file of [...(item.files ?? []), ...(item.image_task?.files ?? [])]) {
-    files.set(file.id, { ...files.get(file.id), ...file });
+export function activityFiles(items: ConversationActivityItem[], workspace = "") {
+  const key = (file: WorkspaceFileReference) => `${workspace}:${file.id}`;
+  const deliverables = new Set(items.flatMap(item => [...(item.deliverables ?? item.files ?? []),
+    ...(item.image_task?.files ?? [])].map(key)));
+  const files = new Map<string, WorkspaceFileReference>();
+  for (const item of items) for (const file of [...(item.files ?? []), ...(item.deliverables ?? []), ...(item.image_task?.files ?? [])]) {
+    const id = key(file);
+    if (deliverables.has(id)) files.set(id, { ...files.get(id), ...file });
   }
   return [...files.values()];
 }
@@ -72,7 +84,7 @@ export function appendText(blocks: DisplayBlock[], blockId: string, text: string
   const exists = blocks.some(block => block.id === blockId);
   return exists ? blocks.map(block => block.id === blockId && block.type === "text"
     ? { ...block, text: block.text + text } : block)
-    : [...blocks, { id: blockId, type: "text" as const, text }];
+    : [...blocks, { id: blockId, type: "text" as const, text, stage: "pending" as const, status: "running" }];
 }
 
 export function appendActivity(blocks: DisplayBlock[], callId: string) {

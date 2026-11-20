@@ -14,7 +14,13 @@ export type ImageTaskResult = {
   updated_at?: string;
 };
 
-export function ImageTaskActivity({ initial, onUpdate, showStatus = true, showFiles = true }: { initial: ImageTaskResult; onUpdate?: (value: ImageTaskResult) => void; showStatus?: boolean; showFiles?: boolean }) {
+export function ImageTaskActivity({ initial, onUpdate, showStatus = true, showFiles = true, showCancel = true }: {
+  initial: ImageTaskResult;
+  onUpdate?: (value: ImageTaskResult) => void;
+  showStatus?: boolean;
+  showFiles?: boolean;
+  showCancel?: boolean;
+}) {
   const [snapshot, setValue] = useState(initial);
   const value = latestImageTask(snapshot, initial);
   const [error, setError] = useState("");
@@ -54,7 +60,7 @@ export function ImageTaskActivity({ initial, onUpdate, showStatus = true, showFi
   }
   return <div ref={element} className="image-task-result">
     {showStatus && <span className="activity-step-summary" role="status">{!value.terminal && <Loader2 size={14} className="spin" />}{value.summary}</span>}
-    {!value.terminal && !value.cancel_requested && <button type="button" className="secondary" disabled={busy} onClick={() => void act("cancel")}><Square size={14} />停止</button>}
+    {showCancel && !value.terminal && !value.cancel_requested && <button type="button" className="secondary" disabled={busy} onClick={() => void act("cancel")}><Square size={14} />停止</button>}
     {value.status === "save_failed" && <button type="button" className="secondary" disabled={busy} onClick={() => void act("retry-save")}><RotateCcw size={14} />重试保存</button>}
     {showFiles && value.files.map(file => <div key={file.id} className="image-task-files">
       <GeneratedImagePreview id={file.id} name={file.path.split("/").at(-1) || "图片"} />

@@ -147,7 +147,7 @@ def test_length_finish_still_reads_the_final_usage_frame():
         provider = OpenAICompatibleChatProvider(config=ChatProviderConfig(url, "test-only", "test"))
         stream = provider.stream_with_tools([], [])
         assert next(stream)[1]["text"] == "部分正文"
-        with pytest.raises(LLMProviderError, match="未完整生成"):
+        with pytest.raises(LLMProviderError, match="输出长度上限"):
             list(stream)
         assert provider.last_usage.prompt_tokens == 17 and provider.last_usage.completion_tokens == 9
 
@@ -178,7 +178,7 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
     selected.chat_protocol = protocol
     db.commit()
     if after_compaction:
-        http, db, conversation_id, identifier = context_fixture(client, length=60)
+        http, db, conversation_id, identifier = context_fixture(client, length=60, capacity=26000)
         conversation = {"id": conversation_id}
         summary_provider(monkeypatch)
         assert compact(http, conversation_id, identifier)[-1][1]["status"] == "completed"
@@ -308,11 +308,11 @@ def test_each_tool_is_interleaved_persisted_and_has_a_unique_public_id(client, m
     assert sequences == list(range(1, len(sequences) + 1))
 
 
-def context_fixture(client, *, length=1000):
+def context_fixture(client, *, length=1000, capacity=16000):
     http, db, _ = client
     identifier = model_id(http)
     provider = db.get(SiteModelProvider, UUID(identifier))
-    provider.context_capacity, provider.max_output_tokens = 16000, 2000
+    provider.context_capacity, provider.max_output_tokens = capacity, 2000
     conversation = create(http, [])
     for sequence in range(8):
         db.add(ChatMessage(conversation_id=UUID(conversation["id"]), sequence=sequence,
@@ -347,7 +347,8 @@ def compact(http, conversation, provider, request_id=None):
 
 
 def test_manual_compaction_preserves_budgeted_users_and_repeat_is_free(client, monkeypatch):
-    http, db, conversation, provider = context_fixture(client, length=60)
+    # Allow the current system instructions and tool definitions plus the handoff.
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=26000)
     calls = summary_provider(monkeypatch)
     before = http.get(f"/conversations/{conversation}/context?provider_id={provider}").json()
     request_id = str(uuid4())
@@ -381,7 +382,7 @@ def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinki
     from types import SimpleNamespace
     key = SecretStr(Fernet.generate_key().decode())
     monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=key))
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=26000)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
     skill = AgentSkill(owner_id=session.user_id, workspace_id=session.workspace_id,
         name="Test method", description="Check facts", markdown="Read and verify.", enabled=True)

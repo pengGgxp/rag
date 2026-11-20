@@ -246,6 +246,39 @@ def test_document_mentions_persist_by_id_without_forcing_retrieval_scope(client)
         "knowledge_base_id": str(library.id), "knowledge_base_name": library.name}]
 
 
+@pytest.mark.parametrize("change", ["revoke", "delete", "replace"])
+def test_retrieval_receipt_rechecks_access_and_document_version(client, change):
+    from app.models import LEGACY_WORKSPACE_ID
+    http, db, _ = client
+    library = add_library(db)
+    document = add_document(db, library, "needle retained evidence")
+    chat_id = create(http)["id"]
+    events, submitted = turn(http, chat_id)
+    answer = events[-1][1]
+    assert answer["status"] == "completed"
+    tool = next(item for item in answer["tool_events"] if item["name"] == "search_knowledge_base")
+    path = f"/conversations/{chat_id}/requests/{submitted['request_id']}/tools/{tool['execution_id']}"
+
+    receipt = http.get(path)
+    assert receipt.status_code == 200
+    assert "no-store" in receipt.headers["Cache-Control"]
+    assert "needle retained evidence" in receipt.json()["text"]
+    assert http.get(path.replace(submitted["request_id"], str(uuid4()))).status_code == 404
+
+    if change == "revoke":
+        owner = db.scalar(select(User).where(User.email == "owner@example.com"))
+        db.get(Membership, (LEGACY_WORKSPACE_ID, owner.id)).role = "viewer"
+        library.restricted = True
+    elif change == "delete":
+        document.status = DocumentStatus.DELETED
+    else:
+        document.is_active = False
+    db.commit()
+    denied = http.get(path)
+    assert denied.status_code in (403, 404)
+    assert "needle retained evidence" not in denied.text
+
+
 def test_revoked_library_keeps_legacy_history_but_not_new_catalog_or_retrieval(client):
     http, db, _ = client
     from app.models import LEGACY_WORKSPACE_ID
@@ -620,10 +653,11 @@ def test_failure_retry_and_duplicate_request_do_not_duplicate_user_turn(client, 
     assert len(http.get(f"/conversations/{conversation['id']}").json()["messages"]) == 2
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", original)
     completed, _ = turn(http, conversation["id"], None, retry_message_id=failed["id"])
-    assert completed[-1][1]["id"] == failed["id"]
+    assert completed[-1][1]["id"] != failed["id"]
     assert completed[-1][1]["status"] == "completed"
     messages = http.get(f"/conversations/{conversation['id']}").json()["messages"]
-    assert len(messages) == 2
+    assert len(messages) == 4
+    assert messages[1]["id"] == failed["id"] and messages[1]["status"] == "failed"
     assert messages[0]["document_mentions"][0]["id"] == str(document.id)
     invalid = http.post(f"/conversations/{conversation['id']}/messages", json={
         "request_id": str(uuid4()), "provider_id": model_id(http), "retry_message_id": failed["id"],
