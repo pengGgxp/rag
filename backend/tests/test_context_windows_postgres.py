@@ -116,11 +116,11 @@ def test_postgres_steering_admission_and_stop_are_atomic(auth_postgres):
     engine = auth_postgres
     request_id, supplement = uuid4(), str(uuid4())
     with Session(engine) as db:
-        user, workspace = auth.create_user(db, f"steering-{uuid4().hex}@example.test", "Steering test")
+        user = auth.create_user(db, f"steering-{uuid4().hex}@example.test", "Steering test")
         token = uuid4().hex
-        db.add(LoginSession(token_hash=auth.digest(token), user_id=user.id, workspace_id=workspace,
+        db.add(LoginSession(token_hash=auth.digest(token), user_id=user.id,
             csrf_token="test-only", expires_at=auth.now() + timedelta(hours=1)))
-        conv = Conversation(workspace_id=workspace, owner_id=user.id, active_request_id=request_id, next_sequence=2)
+        conv = Conversation(account_id=user.id, owner_id=user.id, active_request_id=request_id, next_sequence=2)
         db.add(conv)
         db.flush()
         conv_id = conv.id
@@ -128,7 +128,7 @@ def test_postgres_steering_admission_and_stop_are_atomic(auth_postgres):
         answer = ChatMessage(conversation_id=conv_id, role="assistant", sequence=1, request_id=request_id, status="streaming")
         db.add_all([original, answer])
         db.flush()
-        access = Access(user.id, workspace, "admin", auth.digest(token))
+        access = Access(user.id, auth.digest(token))
         config = ChatProviderConfig("", "", "test")
         manager = ContextManager(sessionmaker(bind=engine), access, conv_id, config, None, None, request_id)
         conversation_jobs.enqueue(db, conv_id, answer.id, request_id, access, 0, config)
