@@ -7,6 +7,12 @@ export type KnowledgeBase = {
   document_count: number;
 };
 
+export type IngestionRetryProgress = { number: number; maximum: number };
+
+export function ingestionRetryLabel(progress?: IngestionRetryProgress | null) {
+  return progress ? `正在自动重试 ${progress.number}/${progress.maximum}` : undefined;
+}
+
 export type SourceDocument = {
   id: string;
   knowledge_base_id: string;
@@ -22,7 +28,7 @@ export type SourceDocument = {
   created_at: string;
   parser_name?: string | null;
   error_detail?: string | null;
-  job?: { id: string; state: string; error_detail?: string | null };
+  job?: { id: string; state: string; error_detail?: string | null; retry_progress?: IngestionRetryProgress | null };
 };
 
 export type Health = {

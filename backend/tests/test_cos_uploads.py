@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 
 from app import auth, document_uploads as uploads, site_auth, storage_settings, tasks
 from app.cos_storage import CosStorage
-from app.models import Document, DocumentUpload, IngestionJob, Membership, SiteAuditEvent, SiteStorageSettings, User
+from app.models import (
+    Chunk, CreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
+    IngestionJob, JobState, Membership, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
+)
 from test_auth import library, register, share, switch
 
 
@@ -127,6 +130,135 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     assert owner.get(f"/uploads/{row.id}").json()["document_status"] == "queued"
     assert db.scalar(select(func.count()).select_from(IngestionJob)) == 1
     assert owner.post(f"/uploads/{row.id}/complete").json()["document_id"] == str(document.id)
+
+
+@pytest.mark.parametrize("outcome", ["recover", "exhaust", "cancel", "delete", "settlement_error"])
+def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcome):
+    from decimal import Decimal
+    import httpx
+    from app.config import Settings
+    from app.embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
+    from app.upstream_retries import RetryBudget
+
+    owner, outsider, db, identity, kb, storage, _, _ = direct
+    workspace_id = UUID(identity["workspace_id"])
+    payload = b"retry document"
+    row = send(owner, db, storage, create(owner, kb, payload), payload)
+    upload_id = str(row.id)
+    assert owner.post(f"/uploads/{upload_id}/complete").status_code == 202
+    uploads.finalize_upload(upload_id)
+    db.expire_all()
+    doc_id = row.document_id
+    document = db.get(Document, doc_id)
+    document.parsed_text = payload.decode()
+    old_job = document.jobs[0]
+    old_job.state = JobState.SUCCEEDED
+    job = IngestionJob(document_id=doc_id, created_at=old_job.created_at)
+    db.add(job)
+    document.chunks.extend(Chunk(
+        ordinal=i, text=str(i), token_count=10, char_start=i, char_end=i + 1,
+        content_hash=str(i),
+    ) for i in range(21))
+    db.add(UsagePolicy(workspace_id=workspace_id, capability="embedding_tokens",
+                       unit="tokens", unit_size=1000, credits_per_unit=1))
+    db.commit()
+    job_id = job.id
+    balance = db.get(CreditAccount, workspace_id).balance
+
+    settings = Settings(embedding_base_url="https://embedding.invalid", embedding_api_key="test",
+                        embedding_model="test-model")
+    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider", lambda: OpenAICompatibleEmbeddingProvider(settings))
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind()))
+    dispatched = []
+    monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: dispatched.append(args))
+    calls, seen = [], []
+    manual_retry = False
+
+    def wait(_budget, _seconds):
+        db.expire_all()
+        upload = owner.get(f"/uploads/{upload_id}").json()
+        detail = owner.get(f"/jobs/{job_id}").json()
+        assert upload["document_status"] == "processing" and not upload["document_error"]
+        assert detail["state"] == "running" and not detail["error_detail"]
+        seen.append(upload["retry_progress"])
+        assert detail["retry_progress"] == seen[-1]
+        documents = owner.get(f"/knowledge-bases/{kb}/documents").json()
+        assert documents[0]["job"]["retry_progress"] == seen[-1]
+        assert owner.post(f"/jobs/{job_id}/retry").status_code == 409
+        assert outsider.get(f"/uploads/{upload_id}").status_code == 404
+        tasks.embed_document.run(doc_id, job_id)
+        if outcome == "cancel":
+            assert owner.post(f"/jobs/{job_id}/cancel").status_code == 200
+        elif outcome == "delete":
+            assert owner.delete(f"/documents/{doc_id}").status_code == 200
+
+    def post(_url, *, json, **_):
+        inputs = json["input"]
+        calls.append(inputs[0])
+        if not manual_retry and inputs[0] == "20" and (
+            outcome in ("exhaust", "cancel", "delete") or
+            outcome == "recover" and len(calls) <= 4
+        ):
+            return httpx.Response(429, json={"error": "private provider response"})
+        return httpx.Response(200, json={"data": [
+            {"index": i, "embedding": [float(text)] + [0.0] * 1023}
+            for i, text in reversed(list(enumerate(inputs)))
+        ]})
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(RetryBudget, "wait", wait)
+    if outcome == "settlement_error":
+        def fail_settlement(*_, **__):
+            raise RuntimeError("database write failed")
+        monkeypatch.setattr(tasks, "settle_usage", fail_settlement)
+        with pytest.raises(RuntimeError, match="database write failed"):
+            tasks.embed_document.run(doc_id, job_id)
+    elif outcome == "exhaust":
+        with pytest.raises(EmbeddingProviderError):
+            tasks.embed_document.run(doc_id, job_id)
+    else:
+        tasks.embed_document.run(doc_id, job_id)
+    tasks.embed_document.run(doc_id, job_id)
+
+    assert calls == ["0"] + ["20"] * (4 if outcome in ("recover", "exhaust") else 1)
+    retries = {"recover": 3, "exhaust": 3, "cancel": 1, "delete": 1}.get(outcome, 0)
+    assert seen == [{"number": n, "maximum": 3} for n in range(1, retries + 1)]
+    db.expire_all()
+    upload = owner.get(f"/uploads/{upload_id}").json()
+    assert upload["document_status"] == {"recover": "ready", "delete": "deleted"}.get(outcome, "failed")
+    assert not upload.get("retry_progress")
+    if outcome == "exhaust":
+        assert upload["document_error"] == "处理服务暂时繁忙，请稍后重试"
+        listed = owner.get(f"/knowledge-bases/{kb}/documents").json()[0]
+        assert listed["job"]["state"] == "failed"
+        assert listed["job"]["id"] == str(job_id)
+    assert db.get(IngestionJob, job_id).retry_progress is None
+    assert db.get(CreditAccount, workspace_id).balance == balance - (Decimal("0.2100") if outcome == "recover" else 0)
+    keys = list(db.scalars(select(CreditLedgerEntry.idempotency_key).where(
+        CreditLedgerEntry.idempotency_key.like(f"usage:{job_id}:%"))))
+    expected_keys = [f"usage:{job_id}:{suffix}" for suffix in ("hold", "release")]
+    if outcome == "recover":
+        expected_keys.append(f"usage:{job_id}:embedding:charge")
+    assert sorted(keys) == sorted(expected_keys)
+    assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.request_id == job_id)))) == (outcome == "recover")
+    chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    assert [c.embedding[0] if c.embedding is not None else None for c in chunks] == (
+        list(range(21)) if outcome == "recover" else [None] * 21)
+    assert all(c.embedding_status == (EmbeddingStatus.READY if outcome == "recover" else EmbeddingStatus.FAILED)
+               for c in chunks)
+    if outcome in ("exhaust", "cancel"):
+        manual = owner.post(f"/jobs/{job_id}/retry")
+        assert manual.status_code == 202
+        assert dispatched == [(str(doc_id), manual.json()["id"])]
+        assert not manual.json()["retry_progress"]
+        manual_retry = True
+        tasks.embed_document.run(*dispatched[0])
+        assert calls[-2:] == ["0", "20"]
+        assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
+        db.expire_all()
+        assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
+    elif outcome == "delete":
+        assert owner.post(f"/jobs/{job_id}/retry").status_code == 409
 
 
 def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct):

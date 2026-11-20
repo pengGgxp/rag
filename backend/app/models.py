@@ -709,6 +709,7 @@ class IngestionJob(Base):
     document_id: Mapped[UUID] = mapped_column(ForeignKey("documents.id"), index=True)
     state: Mapped[JobState] = mapped_column(SqlEnum(JobState), default=JobState.QUEUED)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_progress: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

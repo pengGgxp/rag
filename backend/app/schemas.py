@@ -50,6 +50,11 @@ class KnowledgeBaseRead(BaseModel):
     document_count: int = 0
 
 
+class IngestionRetryProgress(BaseModel):
+    number: int
+    maximum: int
+
+
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -57,6 +62,7 @@ class JobRead(BaseModel):
     document_id: UUID
     state: JobState
     error_detail: str | None
+    retry_progress: IngestionRetryProgress | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -11,7 +11,7 @@ import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import case, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -71,6 +71,7 @@ from .credits import (
     authorization_hold,
     authorization_hold_amount,
     build_router as build_usage_router,
+    release_embedding_hold,
     release_hold,
     settle_model_usage,
 )
@@ -427,7 +428,16 @@ def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), acces
         job = db.scalar(
             select(IngestionJob)
             .where(IngestionJob.document_id == document.id)
-            .order_by(IngestionJob.created_at.desc())
+            .order_by(
+                IngestionJob.created_at.desc(),
+                case(
+                    (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
+                    (IngestionJob.state == JobState.SUCCEEDED, 1 if document.status == DocumentStatus.READY else 2),
+                    else_=2 if document.status == DocumentStatus.READY else 1,
+                ),
+                IngestionJob.updated_at.desc(),
+            )
+            .limit(1)
         )
         result.append(
             DocumentRead.model_validate(document).model_copy(
@@ -498,7 +508,7 @@ def activate_document_version(
 
 @app.delete("/documents/{document_id}", response_model=DocumentRead)
 def delete_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id)
+    document = db.get(Document, document_id, with_for_update=True)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id, write=True)
@@ -511,8 +521,7 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
     document.error_detail = None
     for job in document.jobs:
         if job.state in (JobState.QUEUED, JobState.RUNNING):
-            job.state = JobState.CANCELLED
-            job.error_detail = "Document deleted"
+            stop_ingestion_job(db, document, job, "Document deleted")
     if was_active:
         replacement = db.scalar(
             select(Document)
@@ -550,12 +559,13 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
 
 @app.post("/documents/{document_id}/restore", response_model=DocumentRead)
 def restore_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id)
+    document = db.get(Document, document_id, with_for_update=True)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id, write=True)
     if document.status != DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
+    require_indexing_stopped(document)
 
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
@@ -601,6 +611,36 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     return job
 
 
+def require_indexing_stopped(document):
+    if any(chunk.embedding_status == EmbeddingStatus.RUNNING for chunk in document.chunks):
+        raise HTTPException(status_code=409, detail="上一次文档处理尚未结束，请稍后重试")
+
+
+def lock_ingestion_job(db, job_id, access):
+    document_id = db.scalar(select(IngestionJob.document_id).where(IngestionJob.id == job_id))
+    if document_id is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    document = db.get(Document, document_id, with_for_update=True)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    access.library(db, document.knowledge_base_id, write=True)
+    job = db.get(IngestionJob, job_id, with_for_update=True)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job, document
+
+
+def stop_ingestion_job(db, document, job, reason):
+    if job.state == JobState.RUNNING:
+        running_chunks = [chunk for chunk in document.chunks
+                          if chunk.embedding_status == EmbeddingStatus.RUNNING]
+        if running_chunks:
+            release_embedding_hold(db, document.knowledge_base.workspace_id, job.id)
+            for chunk in running_chunks:
+                chunk.embedding_status, chunk.embedding_error = EmbeddingStatus.FAILED, reason
+    job.state, job.error_detail, job.retry_progress = JobState.CANCELLED, reason, None
+
+
 @app.post("/jobs/{job_id}/cancel", response_model=JobRead)
 def cancel_job(
     job_id: UUID,
@@ -608,18 +648,14 @@ def cancel_job(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    job = db.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update())
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    access.library(db, job.document.knowledge_base_id, write=True)
+    job, document = lock_ingestion_job(db, job_id, access)
     if job.state not in (JobState.QUEUED, JobState.RUNNING):
         raise HTTPException(status_code=409, detail="Only queued or running jobs can be cancelled")
-    job.state = JobState.CANCELLED
-    job.error_detail = "任务已取消"
-    if job.document.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
-        job.document.status = DocumentStatus.FAILED
-        job.document.error_detail = "任务已取消"
-        job.document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+    stop_ingestion_job(db, document, job, "任务已取消")
+    if document.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
+        document.status = DocumentStatus.FAILED
+        document.error_detail = "任务已取消"
+        document.knowledge_base.status = KnowledgeBaseStatus.ERROR
     record_audit(
         db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
         action="job.cancelled", resource_type="ingestion_job", resource_id=job.id,
@@ -637,11 +673,9 @@ def retry_job(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    old_job = db.scalar(select(IngestionJob).where(IngestionJob.id == job_id).with_for_update())
-    if old_job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    document = old_job.document
-    access.library(db, document.knowledge_base_id, write=True)
+    old_job, document = lock_ingestion_job(db, job_id, access)
+    if document.status == DocumentStatus.DELETED:
+        raise HTTPException(status_code=409, detail="请先恢复文档，再重试处理")
     if old_job.state not in (JobState.FAILED, JobState.CANCELLED):
         raise HTTPException(status_code=409, detail="Only failed or cancelled jobs can be retried")
     active = db.scalar(select(IngestionJob).where(
@@ -650,6 +684,7 @@ def retry_job(
     ))
     if active is not None:
         raise HTTPException(status_code=409, detail="This document already has an active job")
+    require_indexing_stopped(document)
     document.status = DocumentStatus.QUEUED
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
@@ -694,10 +729,13 @@ def list_chunks(document_id: UUID, db: Session = Depends(get_db), access: Access
 
 @app.post("/documents/{document_id}/reindex", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
 def reindex_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id)
+    document = db.get(Document, document_id, with_for_update=True)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id, write=True)
+    if document.status in (DocumentStatus.DELETED, DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
+        raise HTTPException(status_code=409, detail="请在文档处理结束后重新索引，已删除的文档需先恢复")
+    require_indexing_stopped(document)
     for chunk in document.chunks:
         chunk.embedding = None
         chunk.embedding_status = EmbeddingStatus.PENDING
