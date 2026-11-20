@@ -52,9 +52,12 @@ def submission_ranges(content: bytes, pages) -> list[tuple[int, int]]:
 
 
 class DocMindError(ValueError):
-    def __init__(self, message: str, *, uncertain: bool = False):
+    def __init__(self, message: str, *, uncertain: bool = False,
+                 code: str = "parsing_failed", retryable: bool = False):
         super().__init__(message)
         self.uncertain = uncertain
+        self.code = code
+        self.retryable = retryable
 
 
 class ParsingCancelled(Exception):
@@ -65,12 +68,22 @@ def _safe_error(code: str) -> DocMindError:
     # Provider messages can contain credentials, file URLs or document content.
     lowered = code.casefold()
     if any(word in lowered for word in ("access", "forbidden", "permission", "unauthorized")):
-        return DocMindError("阿里云文档解析鉴权失败，请检查 AccessKey、RAM 权限及服务开通状态")
+        return DocMindError("文档解析权限不足，请联系管理员",
+                            code="permission_denied")
     if any(word in lowered for word in ("balance", "arrears", "payment", "quota")):
-        return DocMindError("阿里云文档解析额度或账户状态异常，请检查云端控制台")
+        return DocMindError("文档解析额度不足，请联系管理员",
+                            code="quota_exceeded")
     if any(word in lowered for word in ("throttl", "limit")):
-        return DocMindError("阿里云文档解析请求受限，请稍后重试")
-    return DocMindError("阿里云文档解析请求失败，请检查云端服务状态后重试")
+        return DocMindError("文档解析请求过于频繁，请稍后重试",
+                            code="rate_limited", retryable=True)
+    retryable = not code or any(word in lowered for word in (
+        "timeout", "internal", "network", "unavailable", "service", "temporarily",
+    ))
+    return DocMindError(
+        "文档解析服务暂时不可用，请稍后重试" if retryable else "文档解析失败，请检查文件后重试",
+        code="service_unavailable" if retryable else "parsing_failed",
+        retryable=retryable,
+    )
 
 
 class AliyunDocMind:
@@ -90,13 +103,18 @@ class AliyunDocMind:
             connect_timeout=10000, read_timeout=30000, autoretry=False,
         )
 
-    def _request(self, method, request):
+    def _request(self, method, request, *, submission=False):
         try:
             body = method(request, self.runtime).body
         except Exception as exc:
             code = str(getattr(exc, "code", ""))
             error = _safe_error(code)
-            error.uncertain = not code or any(word in code.casefold() for word in ("timeout", "internal", "network"))
+            ambiguous = not code or any(word in code.casefold() for word in (
+                "timeout", "internal", "network", "unavailable", "service",
+            ))
+            error.uncertain = submission and ambiguous
+            if not submission and ambiguous:
+                error.retryable = True
             raise error from None
         if str(getattr(body, "code", "") or "").casefold() not in ("", "200", "success", "ok"):
             raise _safe_error(str(body.code)) from None
@@ -112,7 +130,7 @@ class AliyunDocMind:
                                  page_index=f"1-{page_count}",
                                  output_format=["markdown", "visualLayoutInfo"],
                                  llm_enhancement=False, formula_enhancement=False,
-                             ))
+                             ), submission=True)
         if data is None or not data.id:
             raise DocMindError("阿里云未返回解析任务标识，未自动重复提交", uncertain=True)
         return data.id
@@ -123,7 +141,8 @@ class AliyunDocMind:
         def check():
             check_active()
             if monotonic() >= deadline:
-                raise DocMindError("阿里云文档解析等待超时，重试将继续查询原任务")
+                raise DocMindError("文档解析等待超时，重试将继续查询原任务",
+                                   code="service_unavailable", retryable=True)
 
         while True:
             check()
@@ -165,7 +184,7 @@ class AliyunDocMind:
             models.SubmitDocParserJobRequest(file_url=url, file_name="document.pdf",
                 file_name_extension="pdf", page_index=f"1-{page_count}",
                 output_format=["markdown", "visualLayoutInfo"],
-                llm_enhancement=False, formula_enhancement=False))
+                llm_enhancement=False, formula_enhancement=False), submission=True)
         if data is None or not data.id:
             raise DocMindError("阿里云未返回解析任务标识，未自动重复提交", uncertain=True)
         return data.id

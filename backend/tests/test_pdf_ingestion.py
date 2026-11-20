@@ -77,7 +77,8 @@ def fake_provider(monkeypatch, *, collect=None, submit=None, original=None):
     return calls
 
 
-def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pdf_job, monkeypatch):
+@pytest.mark.parametrize("interrupt", [None, "rejected", "commit_failed", "response_lost"])
+def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pdf_job, monkeypatch, interrupt):
     import httpx
     from app.config import Settings
     from app.embedding import OpenAICompatibleEmbeddingProvider
@@ -105,11 +106,30 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
     monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider",
                         lambda: OpenAICompatibleEmbeddingProvider(settings))
     batches = []
+    checkpoint_seen = []
+    commit = Session.commit
+    fail_vector_commit = False
+
+    def commit_with_fault(session):
+        nonlocal fail_vector_commit
+        if fail_vector_commit and any(isinstance(row, Chunk) for row in session.dirty):
+            fail_vector_commit = False
+            raise OSError("vector checkpoint failed")
+        commit(session)
 
     def fake_post(url, **kwargs):
+        nonlocal fail_vector_commit
         inputs = kwargs["json"]["input"]
         assert len(inputs) <= 20
         batches.append(inputs)
+        checkpoint_seen.append(db.get(IngestionJob, job_id).embedding_submitting)
+        if inputs[0] == "20" and len(batches) == 2:
+            if interrupt == "rejected":
+                return httpx.Response(429, headers={"Retry-After": "600"}, json={})
+            if interrupt == "commit_failed":
+                fail_vector_commit = True
+            if interrupt == "response_lost":
+                raise httpx.ReadTimeout("response lost after submission")
         return httpx.Response(200, json={"data": [
             {"index": index, "embedding": [float(text)] + [0.0] * 1023}
             for index, text in reversed(list(enumerate(inputs)))
@@ -120,13 +140,38 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
     assert response.status_code == 202
     job_id = UUID(response.json()["id"])
     assert embedded == [(str(doc_id), str(job_id))]
+    monkeypatch.setattr(Session, "commit", commit_with_fault)
+    if interrupt:
+        from app.embedding import EmbeddingProviderError
+
+        with pytest.raises((EmbeddingProviderError, OSError)):
+            tasks.embed_document.run(doc_id, job_id)
+        db.expire_all()
+        job = db.get(IngestionJob, job_id)
+        assert job.state == JobState.FAILED
+        assert db.scalar(select(Chunk).where(Chunk.document_id == doc_id, Chunk.ordinal == 0)).embedding[0] == 0.0
+        retry = owner.post(f"/jobs/{job_id}/retry")
+        if interrupt != "rejected":
+            assert job.embedding_submitting
+            assert retry.status_code == 409
+            assert retry.json()["detail"]["code"] == "needs_reconciliation"
+            tasks.embed_document.run(doc_id, job_id)
+            assert len(batches) == 2 and all(checkpoint_seen)
+            assert db.scalars(select(UsageEvent)).all() == []
+            return
+        assert not job.embedding_submitting
+        assert retry.status_code == 202
+        job_id = UUID(retry.json()["id"])
     tasks.embed_document.run(doc_id, job_id)
     tasks.embed_document.run(doc_id, job_id)
     db.expire_all()
     document = db.get(Document, doc_id)
     assert document.status == DocumentStatus.READY
     assert db.get(IngestionJob, job_id).state == JobState.SUCCEEDED
-    assert [len(batch) for batch in batches] == [20, 20, 20, 20, 20, 14]
+    assert all(checkpoint_seen)
+    assert [batch[0] for batch in batches] == (
+        ["0", "20", "20", "40", "60", "80", "100"] if interrupt else ["0", "20", "40", "60", "80", "100"]
+    )
     chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
     assert [chunk.id for chunk in chunks] == chunk_ids
     assert [chunk.embedding[0] for chunk in chunks] == list(range(114))
@@ -248,7 +293,13 @@ def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatc
     document = db.get(Document, doc_id)
     assert document.status == DocumentStatus.FAILED
     assert document.error_detail == db.get(IngestionJob, job_id).error_detail
-    assert reason in owner.get(f"/jobs/{job_id}").json()["error_detail"]
+    job_response = owner.get(f"/jobs/{job_id}").json()
+    assert job_response["error_detail"] == job_response["failure"]["message"]
+    assert reason in job_response["error_detail"]
+    listed = owner.get(f"/knowledge-bases/{document.knowledge_base_id}/documents").json()[0]
+    assert listed["error_detail"] == listed["failure"]["message"]
+    preview = owner.get(f"/documents/{doc_id}/preview").json()
+    assert preview["error_detail"] == preview["failure"]["message"]
     next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
     with pytest.raises(ValueError, match=reason):
         tasks.process_document.run(str(next_id))
@@ -319,12 +370,13 @@ def test_ambiguous_submission_is_not_paid_for_again_on_retry(pdf_job, monkeypatc
     calls = fake_provider(monkeypatch, submit=uncertain)
     with pytest.raises(DocMindError):
         tasks.process_document.run(str(job_id))
-    next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
-    with pytest.raises(DocMindError, match="阻止重复"):
-        tasks.process_document.run(str(next_id))
+    retry = owner.post(f"/jobs/{job_id}/retry")
+    assert retry.status_code == 409
     assert calls == [("submit", 2)]
     db.expire_all()
     assert db.get(Document, doc_id).parsing_metadata["status"] == "submitting"
+    failure = db.get(IngestionJob, job_id).failure
+    assert failure["code"] == "needs_reconciliation" and not failure["retryable"]
 
 
 def test_completed_parse_cache_is_reused_on_retry(pdf_job, monkeypatch):
@@ -432,14 +484,14 @@ def test_batch_retry_keeps_completed_results_task_ids_and_original_pages(pdf_job
     db.expire_all()
     metadata = db.get(Document, doc_id).parsing_metadata
     assert metadata["parts"][0]["status"] == "complete"
-    next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
     before_retry = list(calls)
     if failure == "uncertain":
-        with pytest.raises(DocMindError, match="阻止重复"):
-            tasks.process_document.run(str(next_id))
+        retry = owner.post(f"/jobs/{job_id}/retry")
+        assert retry.status_code == 409
         assert calls == before_retry
         assert not embedded
         return
+    next_id = UUID(owner.post(f"/jobs/{job_id}/retry").json()["id"])
     tasks.process_document.run(str(next_id))
     assert calls.count(("collect", "batch-1")) == 1
     assert len([call for call in calls if call[0] == "submit"]) == (2 if failure == "timeout" else 3)

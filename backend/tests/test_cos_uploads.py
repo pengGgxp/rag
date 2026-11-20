@@ -60,8 +60,9 @@ class FakeCos:
     def put(self, key, stream, _=None):
         self.objects[key] = stream.read()
 
-    def incomplete_uploads(self):
-        return []
+    def incomplete_uploads(self, prefix=None):
+        return [{"Key": upload["key"], "UploadId": identifier} for identifier, upload in self.uploads.items()
+                if prefix is None or upload["key"].startswith(prefix)]
 
     def iter_objects(self):
         return []
@@ -88,6 +89,7 @@ def direct(accounts, monkeypatch):
     monkeypatch.setattr(tasks.verify_upload, "delay", queued.append)
     processed = []
     monkeypatch.setattr(tasks.process_document, "run", lambda *args, **kwargs: processed.append((args, kwargs)))
+    monkeypatch.setattr(tasks.process_document, "delay", lambda job_id: processed.append(((job_id,), {})))
     return owner, outsider, db, identity, kb, storage, queued, processed
 
 
@@ -126,10 +128,70 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     document = db.get(Document, row.document_id)
     assert document.content_hash == hashlib.sha256(content).hexdigest()
     assert storage.downloads == 1
-    assert len(processed) == 1 and processed[0][1]["prepared_content"] == content
+    assert len(processed) == 1 and processed[0][0] == (str(db.scalar(
+        select(IngestionJob.id).where(IngestionJob.document_id == document.id)
+    )),)
     assert owner.get(f"/uploads/{row.id}").json()["document_status"] == "queued"
     assert db.scalar(select(func.count()).select_from(IngestionJob)) == 1
     assert owner.post(f"/uploads/{row.id}/complete").json()["document_id"] == str(document.id)
+
+
+def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch):
+    from docx import Document as WordDocument
+    from types import SimpleNamespace
+    from app import main
+
+    owner, outsider, db, identity, kb, storage, _, _ = direct
+    db.add(UsagePolicy(workspace_id=UUID(identity["workspace_id"]), capability="embedding_tokens",
+                       unit="tokens", unit_size=1000, credits_per_unit=1))
+    db.commit()
+    word = WordDocument()
+    word.add_heading("Reference section", level=1)
+    word.add_paragraph("Orchid checkpoint phrase.")
+    buffer = io.BytesIO()
+    word.save(buffer)
+    content = buffer.getvalue()
+    row = send(owner, db, storage, create(owner, kb, content, "reference.docx"), content)
+    identifier = str(row.id)
+    assert owner.post(f"/uploads/{identifier}/complete").status_code == 202
+
+    def offline(*_):
+        raise OSError("broker unavailable")
+
+    monkeypatch.setattr(tasks.process_document, "delay", offline)
+    with pytest.raises(OSError):
+        uploads.finalize_upload(identifier)
+    scheduled, vectors = [], []
+    monkeypatch.setattr(tasks.process_document, "delay", scheduled.append)
+    uploads.recover_uploads()
+    assert len(scheduled) == 1
+    monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
+    monkeypatch.setattr(tasks, "download_fileobj", storage.download)
+    monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: vectors.append(args))
+    with Session(db.get_bind()) as worker:
+        tasks._process_document(tasks.process_document, worker, UUID(scheduled[0]), None)
+
+    def fake_embed(texts, *, batch_start, batch_success, **_):
+        batch_start()
+        result = [[1.0] + [0.0] * 1023 for _ in texts]
+        batch_success(0, result)
+        return result
+
+    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(embed_texts=fake_embed))
+    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider",
+                        lambda: SimpleNamespace(status=SimpleNamespace(configured=False, provider=None, model=None)))
+    tasks.embed_document.run(*vectors[0])
+    assert owner.get(f"/uploads/{identifier}").json()["document_status"] == "ready"
+
+    response = owner.post(f"/knowledge-bases/{kb}/retrieval", json={"query": "orchid"})
+    assert response.status_code == 200, response.text
+    chunk = response.json()["results"][0]["chunk"]
+    preview = owner.get(f"/documents/{chunk['document_id']}/preview").json()
+    assert chunk["version_number"] == 1
+    assert preview["parsed_text"][chunk["char_start"]:chunk["char_end"]] == chunk["text"]
+    assert "Orchid checkpoint phrase." in chunk["text"]
+    assert outsider.post(f"/knowledge-bases/{kb}/retrieval", json={"query": "orchid"}).status_code == 404
+    assert db.scalar(select(func.count()).select_from(UsageEvent)) == 1
 
 
 @pytest.mark.parametrize("outcome", ["recover", "exhaust", "cancel", "delete", "settlement_error"])
@@ -178,7 +240,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         db.expire_all()
         upload = owner.get(f"/uploads/{upload_id}").json()
         detail = owner.get(f"/jobs/{job_id}").json()
-        assert upload["document_status"] == "processing" and not upload["document_error"]
+        assert upload["document_status"] == "processing" and not upload.get("failure")
         assert detail["state"] == "running" and not detail["error_detail"]
         seen.append(upload["retry_progress"])
         assert detail["retry_progress"] == seen[-1]
@@ -208,11 +270,13 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     monkeypatch.setattr(httpx, "post", post)
     monkeypatch.setattr(RetryBudget, "wait", wait)
     if outcome == "settlement_error":
+        settle_usage = tasks.settle_usage
         def fail_settlement(*_, **__):
             raise RuntimeError("database write failed")
         monkeypatch.setattr(tasks, "settle_usage", fail_settlement)
         with pytest.raises(RuntimeError, match="database write failed"):
             tasks.embed_document.run(doc_id, job_id)
+        monkeypatch.setattr(tasks, "settle_usage", settle_usage)
     elif outcome == "exhaust":
         with pytest.raises(EmbeddingProviderError):
             tasks.embed_document.run(doc_id, job_id)
@@ -228,12 +292,13 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     assert upload["document_status"] == {"recover": "ready", "delete": "deleted"}.get(outcome, "failed")
     assert not upload.get("retry_progress")
     if outcome == "exhaust":
-        assert upload["document_error"] == "处理服务暂时繁忙，请稍后重试"
+        assert upload["failure"]["message"] == "处理服务暂时繁忙，请稍后重试"
         listed = owner.get(f"/knowledge-bases/{kb}/documents").json()[0]
         assert listed["job"]["state"] == "failed"
         assert listed["job"]["id"] == str(job_id)
     assert db.get(IngestionJob, job_id).retry_progress is None
-    assert db.get(CreditAccount, workspace_id).balance == balance - (Decimal("0.2100") if outcome == "recover" else 0)
+    assert db.get(CreditAccount, workspace_id).balance == balance - (
+        Decimal("0.2100") if outcome == "recover" else 0)
     keys = list(db.scalars(select(CreditLedgerEntry.idempotency_key).where(
         CreditLedgerEntry.idempotency_key.like(f"usage:{job_id}:%"))))
     expected_keys = [f"usage:{job_id}:{suffix}" for suffix in ("hold", "release")]
@@ -242,10 +307,11 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     assert sorted(keys) == sorted(expected_keys)
     assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.request_id == job_id)))) == (outcome == "recover")
     chunks = db.scalars(select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.ordinal)).all()
+    persisted_count = 21 if outcome in ("recover", "settlement_error") else 20
     assert [c.embedding[0] if c.embedding is not None else None for c in chunks] == (
-        list(range(21)) if outcome == "recover" else [None] * 21)
-    assert all(c.embedding_status == (EmbeddingStatus.READY if outcome == "recover" else EmbeddingStatus.FAILED)
-               for c in chunks)
+        list(range(persisted_count)) + [None] * (21 - persisted_count))
+    assert [c.embedding_status for c in chunks] == (
+        [EmbeddingStatus.READY] * persisted_count + [EmbeddingStatus.FAILED] * (21 - persisted_count))
     if outcome in ("exhaust", "cancel"):
         manual = owner.post(f"/jobs/{job_id}/retry")
         assert manual.status_code == 202
@@ -253,12 +319,21 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert not manual.json()["retry_progress"]
         manual_retry = True
         tasks.embed_document.run(*dispatched[0])
-        assert calls[-2:] == ["0", "20"]
+        assert calls[-1:] == ["20"]
         assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
         db.expire_all()
         assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
     elif outcome == "delete":
         assert owner.post(f"/jobs/{job_id}/retry").status_code == 409
+    elif outcome == "settlement_error":
+        manual = owner.post(f"/jobs/{job_id}/retry")
+        assert manual.status_code == 202
+        tasks.embed_document.run(doc_id, manual.json()["id"])
+        assert calls == ["0", "20"]
+        assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
+        db.expire_all()
+        assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
+        assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.request_id == job_id)))) == 1
 
 
 def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct):
@@ -277,7 +352,9 @@ def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct
         assert document.content_hash == hashlib.sha256(content).hexdigest()
         assert document.size_bytes == len(content)
         assert storage.objects[document.object_key] == content
-        assert processed[-1][1]["prepared_content"] == content
+        assert processed[-1][0] == (str(db.scalar(
+            select(IngestionJob.id).where(IngestionJob.document_id == document.id)
+        )),)
         assert document.version_number == len(versions) + 1
         if previous:
             assert document.supersedes_id == previous.id
@@ -305,7 +382,10 @@ def test_scope_size_parts_fingerprint_and_expiry(direct):
             f"/uploads/{identifier}{action}", json={"sha256": "a"*64} if "parts" in action else {})
         assert response.status_code == 404
     assert owner.post(f"/uploads/{identifier}/parts/2", json={"sha256": "a"*64}).status_code == 422
-    assert owner.post(f"/uploads/{identifier}/complete").status_code == 409
+    incomplete = owner.post(f"/uploads/{identifier}/complete")
+    assert incomplete.status_code == 409
+    assert incomplete.json()["detail"]["stage"] == "verification"
+    assert incomplete.json()["detail"]["code"] == "conflict"
     assert owner.post(f"/uploads/{identifier}/parts/1", json={"sha256": "a"*64}).status_code == 200
     assert owner.post(f"/uploads/{identifier}/parts/1", json={"sha256": "a"*64}).status_code == 200
     assert owner.post(f"/uploads/{identifier}/parts/1", json={"sha256": "b"*64}).status_code == 409
@@ -337,6 +417,11 @@ def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct
     uploads.finalize_upload(str(row.id))
     db.expire_all()
     assert db.get(DocumentUpload, row.id).state == "failed"
+    failure_detail = db.get(DocumentUpload, row.id).failure
+    assert failure_detail["retryable"] is False
+    assert failure_detail["code"] in (
+        "integrity_mismatch", "invalid_format", "permission_denied",
+    )
     assert processed == []
     assert db.scalar(select(func.count()).select_from(Document)) == 0
     assert row.object_key not in storage.objects
@@ -515,3 +600,213 @@ def test_completion_recovers_sealed_object_after_lost_response(direct):
     assert storage.seals == 1
     uploads.finalize_upload(str(row.id))
     assert len(processed) == 1
+
+
+def test_upload_request_key_replays_session_and_rejects_changed_parameters(direct):
+    owner, _, db, _, kb, storage, _, _ = direct
+    key = str(uuid4())
+    payload = {"filename": "same.txt", "size_bytes": 4}
+    headers = {"Idempotency-Key": key}
+    first = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+    replay = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+    assert first.status_code == replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    assert len(storage.uploads) == 1
+
+    conflict = owner.post(f"/knowledge-bases/{kb}/uploads", json={**payload, "filename": "other.txt"}, headers=headers)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+    assert db.query(DocumentUpload).count() == 1
+
+
+def test_upload_create_commit_response_loss_keeps_replayable_storage_session(direct, monkeypatch):
+    owner, _, db, _, kb, storage, _, _ = direct
+    key = str(uuid4())
+    payload = {"filename": "response-lost.txt", "size_bytes": 4}
+    headers = {"Idempotency-Key": key}
+    commit = db.commit
+    commits_before_loss = 2
+
+    def commit_then_lose_response():
+        nonlocal commits_before_loss
+        commit()
+        commits_before_loss -= 1
+        if commits_before_loss == 0:
+            raise OSError("database commit response was lost")
+
+    monkeypatch.setattr(db, "commit", commit_then_lose_response)
+    first = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+    assert first.status_code == 500
+    assert len(storage.uploads) == 1
+
+    replay = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+
+    assert replay.status_code == 201
+    assert len(storage.uploads) == 1
+    assert db.query(DocumentUpload).count() == 1
+
+
+def test_multipart_begin_response_loss_recovers_original_session(direct, monkeypatch):
+    owner, _, db, _, kb, storage, _, _ = direct
+    original_begin = storage.begin
+    calls = []
+
+    def begin_then_lose_response(*args):
+        calls.append(original_begin(*args))
+        raise OSError("storage response lost")
+
+    monkeypatch.setattr(storage, "begin", begin_then_lose_response)
+    url = f"/knowledge-bases/{kb}/uploads"
+    headers = {"Idempotency-Key": str(uuid4())}
+    payload = {"filename": "storage-response-lost.txt", "size_bytes": 4}
+    assert owner.post(url, json=payload, headers=headers).status_code == 500
+    db.expire_all()
+    reservation = db.scalar(select(DocumentUpload))
+    assert reservation.state == "creating"
+    replay = owner.post(url, json=payload, headers=headers)
+    assert replay.status_code == 201
+    db.refresh(reservation)
+    assert replay.json()["id"] == str(reservation.id)
+    assert reservation.multipart_id == calls[0]
+    assert len(calls) == len(storage.uploads) == 1
+
+
+def test_expired_idempotency_key_returns_original_terminal_session(direct):
+    owner, _, db, _, kb, storage, _, _ = direct
+    key = str(uuid4())
+    payload = {"filename": "expired.txt", "size_bytes": 4}
+    headers = {"Idempotency-Key": key}
+    first = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+    row = db.get(DocumentUpload, UUID(first.json()["id"]))
+    row.expires_at = uploads.now() - timedelta(seconds=1)
+    db.commit()
+
+    replay = owner.post(f"/knowledge-bases/{kb}/uploads", json=payload, headers=headers)
+
+    assert replay.status_code == 201
+    assert replay.json()["id"] == first.json()["id"]
+    assert replay.json()["state"] == "expired"
+    assert replay.json()["failure"]["code"] == "upload_expired"
+    assert len(storage.uploads) == 1
+    assert db.query(DocumentUpload).count() == 1
+
+
+def test_temporary_verification_read_failure_preserves_object_and_recovers(direct, monkeypatch):
+    owner, _, db, _, kb, storage, _, processed = direct
+    content = b"recover verification"
+    row = send(owner, db, storage, create(owner, kb, content), content)
+    assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+    monkeypatch.setattr(tasks.verify_upload, "apply_async", lambda **_: None)
+
+    download = storage.download
+    attempts = 0
+
+    def read_once_with_temporary_failure(key):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary object-store interruption")
+        return download(key)
+
+    monkeypatch.setattr(storage, "download", read_once_with_temporary_failure)
+    uploads.finalize_upload(str(row.id))
+    db.expire_all()
+    failed_attempt = db.get(DocumentUpload, row.id)
+    assert failed_attempt.state == "verifying"
+    assert failed_attempt.failure["retryable"] is True
+    assert failed_attempt.verify_after is not None
+    assert row.object_key in storage.objects
+    assert db.scalar(select(func.count()).select_from(Document)) == 0
+
+    failed_attempt.verify_after = uploads.now() - timedelta(seconds=1)
+    db.commit()
+    uploads.finalize_upload(str(row.id))
+    db.expire_all()
+
+    recovered = db.get(DocumentUpload, row.id)
+    assert recovered.state == "completed"
+    assert recovered.failure is None
+    assert recovered.verify_attempts == 1
+    assert row.object_key in storage.objects
+    assert db.scalar(select(func.count()).select_from(Document)) == 1
+    assert len(processed) == 1
+
+
+def test_queued_ingestion_is_redispatched_until_worker_claims_it(direct, monkeypatch):
+    owner, _, db, _, kb, storage, _, _ = direct
+    payload = b"recover a lost queue delivery"
+    row = send(owner, db, storage, create(owner, kb, payload), payload)
+    assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+    uploads.finalize_upload(str(row.id))
+
+    db.expire_all()
+    job = db.scalar(select(IngestionJob).where(IngestionJob.document_id == row.document_id))
+    assert job.state == JobState.QUEUED
+    assert job.submission_pending is True
+
+    dispatched = []
+    monkeypatch.setattr(tasks.process_document, "delay", dispatched.append)
+    uploads.recover_uploads()
+    assert dispatched == [str(job.id)]
+    db.expire_all()
+    assert db.get(IngestionJob, job.id).submission_pending is True
+
+    job.submission_pending = False
+    db.commit()
+    dispatched.clear()
+    uploads.recover_uploads()
+    assert dispatched == []
+
+
+@pytest.mark.parametrize("first,second", [("61", None), ("30", "31")])
+def test_verification_retry_after_never_exceeds_total_wait(direct, monkeypatch, first, second):
+    from fastapi import HTTPException
+
+    owner, _, db, _, kb, storage, _, processed = direct
+    content = b"respect retry after"
+    row = send(owner, db, storage, create(owner, kb, content), content)
+    assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+    waits = []
+    monkeypatch.setattr(tasks.verify_upload, "apply_async", lambda **kwargs: waits.append(kwargs["countdown"]))
+    values = iter([first, second])
+
+    def unavailable(_):
+        raise HTTPException(503, headers={"Retry-After": next(values)})
+
+    monkeypatch.setattr(storage, "download", unavailable)
+    uploads.finalize_upload(str(row.id))
+    db.refresh(row)
+    if second:
+        assert waits == [30] and row.verify_wait_ms == 30_000 and row.state == "verifying"
+        row.verify_after = uploads.now() - timedelta(seconds=1)
+        db.commit()
+        uploads.finalize_upload(str(row.id))
+        db.refresh(row)
+    assert waits == ([30] if second else [])
+    assert row.state == "failed" and row.failure["retryable"]
+    assert row.object_key in storage.objects and not processed
+
+
+def test_queued_indexing_is_redispatched_to_embedding_worker(direct, monkeypatch):
+    owner, _, db, _, kb, storage, _, _ = direct
+    payload = b"recover indexing delivery"
+    row = send(owner, db, storage, create(owner, kb, payload), payload)
+    assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
+    uploads.finalize_upload(str(row.id))
+
+    db.expire_all()
+    document = db.get(Document, row.document_id)
+    parse_job = db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id))
+    parse_job.state = JobState.SUCCEEDED
+    parse_job.submission_pending = False
+    indexing = IngestionJob(document_id=document.id, phase="indexing", submission_pending=True)
+    db.add(indexing)
+    db.commit()
+
+    processing, embedding = [], []
+    monkeypatch.setattr(tasks.process_document, "delay", processing.append)
+    monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: embedding.append(args))
+    uploads.recover_uploads()
+
+    assert processing == []
+    assert embedding == [(str(document.id), str(indexing.id))]

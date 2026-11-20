@@ -406,7 +406,7 @@ export default function KnowledgeWorkspace() {
       filename: doc.filename,
       text: "正在加载解析内容…",
       detail: `${extension(doc.filename)} · ${sizeLabel(doc.size_bytes)}${doc.parser_name ? ` · ${doc.parser_name}` : ""}`,
-      error: doc.error_detail || doc.job?.error_detail,
+      error: doc.failure?.message || doc.job?.failure?.message,
     });
     try {
       const preview = await request<{
@@ -416,6 +416,7 @@ export default function KnowledgeWorkspace() {
         content_origin?: string;
         parsed_text?: string | null;
         error_detail?: string | null;
+        failure?: { message: string } | null;
       }>(`/documents/${doc.id}/preview`);
       setPreview((current) =>
         current?.id === doc.id
@@ -423,7 +424,7 @@ export default function KnowledgeWorkspace() {
               ...current,
               text: preview.parsed_text || "暂无解析内容",
               detail: `${extension(preview.filename)} · ${sizeLabel(doc.size_bytes)}${preview.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}`,
-              error: preview.error_detail || current.error,
+              error: preview.failure?.message || preview.error_detail || current.error,
             }
           : current,
       );
@@ -869,16 +870,16 @@ export default function KnowledgeWorkspace() {
                               <td>
                                 <span
                                   className={`status-badge ${doc.status}`}
-                                  title={doc.error_detail || doc.job?.error_detail || undefined}
+                                  title={doc.failure?.message || doc.job?.failure?.message || undefined}
                                   role="status"
                                 >
                                   <span className="status-dot" />
                                   {(doc.status === "processing" && doc.job?.state === "running"
                                     && ingestionRetryLabel(doc.job.retry_progress)) || STATUS[doc.status] || doc.status}
                                 </span>
-                                {(doc.error_detail || doc.job?.error_detail) && (
+                                {(doc.failure?.message || doc.job?.failure?.message) && (
                                   <small className="document-error">
-                                    {doc.error_detail || doc.job?.error_detail}
+                                    {doc.failure?.message || doc.job?.failure?.message}
                                   </small>
                                 )}
                               </td>
@@ -926,10 +927,10 @@ export default function KnowledgeWorkspace() {
                                   </button>
                                   {!trash && canEdit && (
                                     <>
-                                      {doc.status === "failed" && doc.job &&
-                                        ["failed", "cancelled"].includes(
-                                          doc.job.state,
-                                        ) && (
+                                      {doc.job &&
+                                        ["failed", "cancelled"].includes(doc.job.state) &&
+                                        doc.job.failure?.code !== "needs_reconciliation" &&
+                                        (doc.job.state === "cancelled" || doc.job.failure?.retryable !== false) && (
                                           <button
                                             className="icon-button"
                                             title="重试处理"

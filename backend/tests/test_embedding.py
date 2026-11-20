@@ -164,7 +164,7 @@ def test_ingestion_retries_only_the_rate_limited_batch(monkeypatch, retry_clock)
 @pytest.mark.parametrize(("status", "header", "code", "attempts"), [
     (429, "", None, 4), (429, "61", None, 1), (429, "60", None, 2),
     (429, "10", "insufficient_quota", 1), (401, "", None, 1), (400, "", None, 1),
-    (503, "", None, 4),
+    (503, "", None, 1),
 ])
 def test_ingestion_retry_admission(monkeypatch, retry_clock, status, header, code, attempts):
     from app.embedding import INGESTION_RETRY

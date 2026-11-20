@@ -10,7 +10,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth, document_uploads, main, tasks
-from app.models import Document, DocumentUpload, KnowledgeBase, LoginSession, Membership, User, Workspace
+from app.ingestion_recovery import recover_interrupted_ingestion, worker_claim
+from app.models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, KnowledgeBase, LoginSession, Membership, User, Workspace
 from test_auth_postgres import auth_postgres
 from test_cos_uploads import FakeCos
 
@@ -23,7 +24,7 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     monkeypatch.setattr(tasks.verify_upload, "delay", lambda _: None)
     processed = []
-    monkeypatch.setattr(tasks.process_document, "run", lambda *a, **kw: processed.append(a))
+    monkeypatch.setattr(tasks.process_document, "delay", lambda *a, **kw: processed.append(a))
     with Session(engine) as db:
         workspace = Workspace(name="COS isolation")
         user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
@@ -58,3 +59,80 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     assert len(processed) == storage.downloads == 1
     with Session(engine) as db:
         assert db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb_id)) == 1
+        assert db.scalar(select(func.count()).select_from(IngestionJob).join(
+            Document, Document.id == IngestionJob.document_id
+        ).where(Document.knowledge_base_id == kb_id)) == 1
+
+
+def test_parallel_upload_creation_reuses_idempotency_session(auth_postgres, monkeypatch):
+    engine = auth_postgres
+    raw, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
+    storage = FakeCos()
+    monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
+    monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
+    with Session(engine) as db:
+        workspace = Workspace(name="COS idempotency")
+        user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
+        db.add_all([workspace, user]); db.flush()
+        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
+        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id, workspace_id=workspace.id,
+            expires_at=auth.now()+timedelta(hours=1)))
+        kb = KnowledgeBase(workspace_id=workspace.id, name="Idempotent uploads")
+        db.add(kb); db.commit(); kb_id = kb.id
+
+    headers = {"X-RAG-Request": "1", "X-CSRF-Token": csrf}
+    key = str(uuid4())
+    barrier = Barrier(3)
+
+    def create(_):
+        with TestClient(main.app, headers=headers) as client:
+            client.cookies.set(auth.COOKIE, raw)
+            barrier.wait(timeout=10)
+            return client.post(
+                f"/knowledge-bases/{kb_id}/uploads",
+                json={"filename": "sample.txt", "size_bytes": 6},
+                headers={"Idempotency-Key": key},
+            )
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        responses = list(pool.map(create, range(3)))
+
+    assert all(response.status_code == 201 for response in responses), [response.text for response in responses]
+    assert len({response.json()["id"] for response in responses}) == 1
+    assert len(storage.uploads) == 1
+    with Session(engine) as db:
+        assert db.scalar(select(func.count()).select_from(DocumentUpload).where(
+            DocumentUpload.request_key == UUID(key)
+        )) == 1
+
+
+def test_recovery_skips_active_worker_and_does_not_replay_uncertain_paid_batch(auth_postgres):
+    from test_retrieval import add_document
+
+    engine = auth_postgres
+    with Session(engine) as db:
+        workspace = Workspace(name="Ingestion recovery isolation")
+        db.add(workspace)
+        db.flush()
+        kb = KnowledgeBase(workspace_id=workspace.id, name="Recovery")
+        db.add(kb)
+        db.flush()
+        safe = add_document(db, kb, "safe resume", status=DocumentStatus.PROCESSING)
+        uncertain = add_document(db, kb, "uncertain payment", status=DocumentStatus.PROCESSING)
+        active = IngestionJob(document_id=safe.id, phase="parsing", state=JobState.RUNNING)
+        ambiguous = IngestionJob(document_id=uncertain.id, phase="indexing", state=JobState.RUNNING,
+                                 embedding_submitting=True)
+        db.add_all([active, ambiguous])
+        db.commit()
+        active_id, ambiguous_id = active.id, ambiguous.id
+    with Session(engine) as worker, Session(engine) as scanner:
+        with worker_claim(worker, active_id) as acquired:
+            assert acquired
+            recover_interrupted_ingestion(scanner)
+            assert scanner.get(IngestionJob, active_id).state == JobState.RUNNING
+            paid_job = scanner.get(IngestionJob, ambiguous_id)
+            assert paid_job.state == JobState.FAILED
+            assert paid_job.failure["code"] == "needs_reconciliation"
+        recover_interrupted_ingestion(scanner)
+        recovered = scanner.get(IngestionJob, active_id)
+        assert recovered.state == JobState.QUEUED and recovered.submission_pending
