@@ -90,7 +90,7 @@ def test_each_message_and_compact_recovery_uses_current_skill_metadata(client, r
     from app.llm import LLMUsage, ToolResponse
     from test_conversations import turn
     from test_conversation_streaming import context_fixture, compact
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=32000)
     from test_extensions import access_for
     access = access_for(http, db)
     key = shared_resources.object_key(access.user_id, ".skills/report/SKILL.md")

@@ -196,7 +196,10 @@ def test_retry_keeps_historical_reference_but_skips_missing_file(client, resourc
     assert events[-1][1]["status"] == "completed"
     assert item["id"] not in calls[0][0]["content"]
     messages = http.get(f"/conversations/{conversation['id']}").json()["messages"]
-    assert len(messages) == 2 and messages[0]["resource_mentions"][0]["id"] == item["id"]
+    assert len(messages) == 4
+    assert messages[1]["id"] == failed["id"] and messages[1]["status"] == "failed"
+    assert messages[0]["resource_mentions"][0]["id"] == item["id"]
+    assert messages[2]["resource_mentions"] == messages[0]["resource_mentions"]
 
 
 def test_combined_mention_limit(client, resource_store):
