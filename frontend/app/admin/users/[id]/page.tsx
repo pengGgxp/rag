@@ -7,6 +7,7 @@ import { Dialog } from "../../../../components/ui/dialog";
 import { ApiError, request } from "../../../api";
 import { useAuth } from "../../../auth";
 import { StoragePanel } from "../../../storage-panel";
+import "../../../billing.css";
 import type { AdminUser } from "../page";
 import { useAdminChanges } from "../../admin-changes";
 import { UserCredits } from "../../user-credits";
@@ -44,6 +45,7 @@ export default function UserDetailPage() {
   const [policyDefault, setPolicyDefault] = useState("");
   const [policyMultiplier, setPolicyMultiplier] = useState("100");
   const [storageBusy, setStorageBusy] = useState(false);
+  const chatModels = models.data?.filter(model => model.enabled && model.supports_chat !== false) ?? [];
   useAdminChanges(false, storageBusy || policyBusy || accessBusy || busy);
   useEffect(() => {
     if (!user) return;
@@ -51,6 +53,13 @@ export default function UserDetailPage() {
     setPolicyDefault(user.model_policy.default_model || "");
     setPolicyMultiplier(String(user.model_policy.billing_multiplier_percent));
   }, [user?.id, user?.model_policy.version]);
+  function togglePolicyModel(modelId: string, checked: boolean) {
+    const selected = chatModels.filter(model =>
+      model.id === modelId ? checked : policyModels.includes(model.id),
+    ).map(model => model.id);
+    setPolicyModels(selected);
+    if (!selected.includes(policyDefault)) setPolicyDefault("");
+  }
   async function savePolicy() {
     if (!user) return;
     setPolicyBusy(true); setPolicyError(""); setNotice("");
@@ -250,33 +259,50 @@ export default function UserDetailPage() {
                   .map(model => model.name).join("、") || "未设置"}</dd></div>
               </dl>
               <UserCredits id={id} name={user.name} changed={message => { setNotice(message); void reload(); }} />
-              <div className="admin-form-grid">
-                <label>
-                  可用模型
-                  <select multiple value={policyModels} disabled={policyBusy || models.loading}
-                    onChange={event => setPolicyModels(Array.from(event.target.selectedOptions, option => option.value))}>
-                    {models.data?.filter(model => model.enabled && model.supports_chat !== false).map(model =>
-                      <option key={model.id} value={model.id}>{model.name}</option>)}
-                  </select>
-                </label>
-                <label>
-                  默认模型
-                  <select value={policyDefault} disabled={policyBusy} onChange={event => setPolicyDefault(event.target.value)}>
-                    <option value="">未设置</option>
-                    {models.data?.filter(model => policyModels.includes(model.id)).map(model =>
-                      <option key={model.id} value={model.id}>{model.name}</option>)}
-                  </select>
-                </label>
-                <label>
-                  消费倍率（百分比）
-                  <input type="number" min={1} max={10000} value={policyMultiplier} disabled={policyBusy}
-                    onChange={event => setPolicyMultiplier(event.target.value)} />
-                </label>
-              </div>
-              {policyError && <p className="form-error" role="alert">{policyError}</p>}
-              <button className="primary" disabled={policyBusy || models.loading} onClick={() => void savePolicy()}>
-                {policyBusy ? "保存中" : "保存模型策略"}
-              </button>
+              <AdminLoad loading={models.loading} error={models.error} retry={models.reload}>
+                {models.data && !models.error && (
+                  <form className="provider-form" onSubmit={event => {
+                    event.preventDefault();
+                    void savePolicy();
+                  }}>
+                    <fieldset className="provider-form-fields policy-field" disabled={policyBusy}>
+                      <legend>可用模型</legend>
+                      {chatModels.length ? (
+                        <div className="model-candidates">
+                          {chatModels.map(model => (
+                            <label className="model-candidate" key={model.id}>
+                              <input type="checkbox" checked={policyModels.includes(model.id)}
+                                onChange={event => togglePolicyModel(model.id, event.target.checked)} />
+                              <span>{model.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : <p>暂无可用模型</p>}
+                    </fieldset>
+                    <div className="provider-form-grid">
+                      <label>
+                        默认模型
+                        <select value={policyDefault} disabled={policyBusy} onChange={event => setPolicyDefault(event.target.value)}>
+                          <option value="">未设置</option>
+                          {models.data.filter(model => policyModels.includes(model.id)).map(model =>
+                            <option key={model.id} value={model.id}>{model.name}</option>)}
+                        </select>
+                      </label>
+                      <label>
+                        消费倍率（百分比）
+                        <input type="number" min={1} max={10000} step={1} required value={policyMultiplier}
+                          disabled={policyBusy} onChange={event => setPolicyMultiplier(event.target.value)} />
+                      </label>
+                    </div>
+                    {policyError && <p className="form-error" role="alert">{policyError}</p>}
+                    <div className="provider-form-actions">
+                      <button className="primary" type="submit" disabled={policyBusy}>
+                        {policyBusy ? "保存中" : "保存模型策略"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </AdminLoad>
             </section>
           </>
         )}
