@@ -21,6 +21,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Scan repository for credentials
         uses: gitleaks/gitleaks-action@v2
         env:
@@ -48,7 +50,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://rag:rag@127.0.0.1:5432/rag
       TEST_DATABASE_URL: postgresql+psycopg://rag:rag@127.0.0.1:5432/rag
       SITE_CONFIG_ENCRYPTION_KEY: uyq8T_9zj1cVz0w5L1yUDf4qNzN7Zvo7zGvWr3a0X6E= # gitleaks:allow
-      MCP_CREDENTIAL_KEY: kK4tD7q9Xz2hN6pQ8rS1uV3wY5aB0cE7fG9jL2mP4s= # gitleaks:allow
+      MCP_CREDENTIAL_KEY: bWNwLWNyZWRlbnRpYWwtdGVzdC1rZXktMzItYnl0ZXM= # gitleaks:allow
       AUTH_SECRET_KEY: test-only-auth-secret-key-at-least-32-characters # gitleaks:allow
       AUTH_COOKIE_SECURE: "false"
       FRONTEND_URL: http://localhost:3000
@@ -116,6 +118,7 @@ jobs:
           python-version: "3.12"
       - name: Validate production compose
         run: |
+          python -m pip install pyyaml
           python deploy/validate_config.py --app-template deploy/app.env.example --deployment-template deploy/deployment.env.example
           python deploy/alembic_head.py backend
           POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
