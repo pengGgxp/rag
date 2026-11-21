@@ -478,7 +478,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   const open = (destination?: Destination) => { selection.current?.abort(); setPreparing(false); setDialog({ destination }); setSelected([]); setIssues([]); setSelectionError(""); };
   return <Context.Provider value={{ tasks: visible, open }}>
     {children}
-    {dialog && <Dialog title={dialog.destination?.versionOf ? `上传 ${dialog.destination.filename} 的新版本` : dialog.destination ? "上传文档" : "上传任务"}
+    {dialog && <Dialog title={dialog.destination?.versionOf ? `替换 ${dialog.destination.filename} 的原件` : dialog.destination ? "上传文档" : "上传任务"}
       onClose={closeDialog} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
       <div className="upload-window">
         {dialog.destination && <>

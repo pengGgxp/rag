@@ -277,10 +277,10 @@ def finalize_upload(identifier):
             lock_workspace(db, row.account_id)
             access = worker_access(db, row)
             library = access.library(db, row.knowledge_base_id, write=True)
-            if library.directory_path and row.version_of is None:
+            if library.directory_path:
                 from .personal_library_files import publish_upload
                 document, job = publish_upload(db, access, library, row.relative_path or row.filename,
-                    row.content_type, content, digest, upload_row=row)
+                    row.content_type, content, digest, upload_row=row, replace_id=row.version_of)
             else:
                 document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
                     size, digest, row.object_key, row.version_of)

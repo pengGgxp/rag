@@ -62,6 +62,7 @@ type Library = {
   document_count: number;
 };
 type Citation = {
+  version_id?: string; document_hash?: string; relative_path?: string;
   content_origin?: string;
   chunk_id: string;
   filename: string;
@@ -379,6 +380,16 @@ export function ChatWorkspace({
     error?: boolean;
   } | null>(null);
   const [preview, setPreview] = useState<Citation | null>(null);
+  const [sourceLocation, setSourceLocation] = useState<{ state: string; path?: string; file_id?: string } | null>(null);
+  useEffect(() => {
+    setSourceLocation(null);
+    if (!preview?.version_id || !preview.document_hash) return;
+    const controller = new AbortController();
+    request<{ state: string; path?: string; file_id?: string }>(`/documents/${preview.version_id}/citation-location?content_hash=${encodeURIComponent(preview.document_hash)}`, { signal: controller.signal })
+      .then(value => { if (!controller.signal.aborted) setSourceLocation(value); })
+      .catch(() => { if (!controller.signal.aborted) setSourceLocation({ state: "unavailable" }); });
+    return () => controller.abort();
+  }, [preview]);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [editing, setEditing] = useState(false);
   const [renameTarget, setRenameTarget] = useState<HistoryItem | null>(null);
@@ -1420,7 +1431,7 @@ export function ChatWorkspace({
                                 <span>{number + 1}</span>
                                 <FileText size={14} />
                                 <strong>
-                                  {citation.knowledge_base_name} · {citation.filename} · v{citation.version_number ?? 1}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
+                                  {citation.knowledge_base_name} · {citation.filename}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
                                   {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />
@@ -1721,13 +1732,16 @@ export function ChatWorkspace({
             <div>
               <h3>{preview.filename}</h3>
               <p>
-                {preview.knowledge_base_name} · v{preview.version_number ?? 1} ·{" "}
+                {preview.knowledge_base_name} ·{" "}
                 {preview.page_number ? `第 ${preview.page_number} 页 · ` : ""}
                 {preview.heading_path ? `${preview.heading_path} · ` : ""}字符{" "}
                 {preview.char_start}–{preview.char_end}
               </p>
             </div>
           </div>
+          {sourceLocation?.state === "changed" && <p>原文已变化</p>}
+          {sourceLocation?.state === "unavailable" && <p>原文不可用</p>}
+          {sourceLocation?.state === "current" && sourceLocation.file_id && <a href={`/resources?file=${sourceLocation.file_id}`}>{sourceLocation.path}</a>}
           <div className="preview-text">{preview.text}</div>
         </Modal>
       )}

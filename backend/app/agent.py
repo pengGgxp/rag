@@ -827,7 +827,9 @@ def stream_retrieval_agent(
                         ranking = rankings[str(result.chunk.id)]
                         found.append((result.score, {
                             "chunk_id": str(result.chunk.id),
-                            "document_id": str(result.chunk.version_group_id or result.chunk.document_id),
+                            "document_id": str(result.chunk.document_id if getattr(result.chunk, "relative_path", None) else result.chunk.version_group_id or result.chunk.document_id),
+                            "relative_path": getattr(result.chunk, "relative_path", None),
+                            "document_hash": getattr(result.chunk, "document_hash", None),
                             "version_id": str(result.chunk.document_id),
                             "filename": result.filename,
                             "content_origin": getattr(result.chunk, "content_origin", "uploaded"),

@@ -663,6 +663,11 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+    @property
+    def relative_path(self):
+        prefix = f"accounts/{self.knowledge_base.account_id}/resource-directory/"
+        return self.object_key[len(prefix):] if self.personal_file_id and self.object_key.startswith(prefix) else None
+
     jobs: Mapped[list["IngestionJob"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )

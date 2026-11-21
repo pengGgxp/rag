@@ -43,10 +43,10 @@ def stage_upload(db, access, library_id, filename, content_type, stream, version
     size, digest = inspect_file(stream)
     check_format(stream, filename)
     library = access.library(db, library_id, write=True)
-    if library.directory_path and version_of is None:
+    if library.directory_path:
         from .personal_library_files import publish_upload
         return publish_upload(db, access, library, filename, content_type or "application/octet-stream",
-                              stream.read(), digest, request)
+                              stream.read(), digest, request, replace_id=version_of)
     key = f"{library_id}/{uuid4()}{Path(filename).suffix.lower()}"
     document, job = admit(db, access, library_id, filename, content_type, size, digest, key, version_of, request)
     try:
