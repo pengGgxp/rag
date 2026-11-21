@@ -81,6 +81,8 @@ def upgrade():
 
     inspector = sa.inspect(connection)
     for table in ACCOUNT_TABLES:
+        if not inspector.has_table(table):
+            continue
         for constraint in inspector.get_foreign_keys(table):
             if constraint["referred_table"] == "workspaces":
                 op.drop_constraint(constraint["name"], table, type_="foreignkey")
