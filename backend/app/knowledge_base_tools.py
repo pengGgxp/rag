@@ -145,7 +145,6 @@ def execute(runtime, name, arguments, *, call_id=None):
             return previous.result
         if name == "create_knowledge_base":
             library = KnowledgeBase(account_id=access.user_id, owner_id=access.user_id, **payload.model_dump())
-            db.add(library)
             action, summary = "created", "已创建"
         else:
             library = access.library(db, payload.knowledge_base_id, write=True, allow_archived=True)
@@ -155,12 +154,19 @@ def execute(runtime, name, arguments, *, call_id=None):
             for key, value in changes.items():
                 setattr(library, key, value)
             action, summary = "updated", "已更新"
-        db.flush()
-        result = {"knowledge_base": library_view(library), "summary": f"{summary}「{library.name}」"}
-        record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-            action=f"knowledge_base.{action}", resource_type="knowledge_base", resource_id=library.id,
-            metadata={"name": library.name[:100], "tags": library.tags, "source": "agent"})
-        db.add(KnowledgeBaseToolExecution(id=identifier, account_id=access.user_id, user_id=access.user_id,
-            message_id=message.id, knowledge_base_id=library.id, arguments_digest=digest, result=result))
+        def finish():
+            db.flush()
+            result = {"knowledge_base": library_view(library), "summary": f"{summary}「{library.name}」"}
+            record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
+                action=f"knowledge_base.{action}", resource_type="knowledge_base", resource_id=library.id,
+                metadata={"name": library.name[:100], "tags": library.tags, "source": "agent"})
+            db.add(KnowledgeBaseToolExecution(id=identifier, account_id=access.user_id, user_id=access.user_id,
+                message_id=message.id, knowledge_base_id=library.id, arguments_digest=digest, result=result))
+            return result
+
+        if name == "create_knowledge_base":
+            from .personal_library_files import create_library_directory
+            return create_library_directory(db, access, library, finish, request_id=str(identifier), signature=digest)
+        result = finish()
         db.commit()
         return result

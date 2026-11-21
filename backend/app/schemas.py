@@ -43,6 +43,7 @@ class KnowledgeBaseRead(BaseModel):
 
     id: UUID
     name: str
+    directory_path: str | None = None
     description: str | None
     tags: list[str]
     status: KnowledgeBaseStatus
@@ -82,6 +83,7 @@ class DocumentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    personal_file_id: UUID | None = None
     knowledge_base_id: UUID
     version_group_id: UUID
     version_number: int

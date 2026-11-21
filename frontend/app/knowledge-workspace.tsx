@@ -947,6 +947,7 @@ export default function KnowledgeWorkspace() {
                                       >
                                         <Upload size={16} />
                                       </button>
+                                      {doc.personal_file_id && <a className="icon-button" href={`/resources?file=${doc.personal_file_id}`} title="在个人文件中查看" aria-label={`在个人文件中查看 ${doc.filename}`}><FolderClosed size={16} /></a>}
                                       <button
                                         className="icon-button"
                                         title="查看版本"

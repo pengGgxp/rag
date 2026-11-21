@@ -325,18 +325,19 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
         account_id=access.user_id,
         owner_id=access.user_id,
     )
-    db.add(knowledge_base)
-    db.flush()
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="knowledge_base.created", resource_type="knowledge_base",
-        resource_id=knowledge_base.id,
-        metadata={"name": payload.name[:100], "tags": payload.tags},
-        request=request,
-    )
-    db.commit()
-    db.refresh(knowledge_base)
-    return KnowledgeBaseRead.model_validate(knowledge_base)
+    from .personal_library_files import create_library_directory
+
+    def finish():
+        record_audit(
+            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
+            action="knowledge_base.created", resource_type="knowledge_base",
+            resource_id=knowledge_base.id,
+            metadata={"name": payload.name[:100], "tags": payload.tags},
+            request=request,
+        )
+        return KnowledgeBaseRead.model_validate(knowledge_base).model_dump(mode="json")
+
+    return create_library_directory(db, access, knowledge_base, finish)
 
 
 @app.patch("/knowledge-bases/{knowledge_base_id}", response_model=KnowledgeBaseRead)
