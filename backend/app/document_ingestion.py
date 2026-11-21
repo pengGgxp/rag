@@ -16,12 +16,20 @@ SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".csv", ".xlsx"}
 
 def latest_document_job(db, document):
     ready = document.status == DocumentStatus.READY
+    ordering = [case(
+        (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
+        (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
+        else_=2 if ready else 1,
+    )]
+    if ready:
+        ordering.append(case(
+            (IngestionJob.phase == "indexing", 0),
+            else_=1,
+        ))
+    ordering.extend((IngestionJob.created_at.desc(), IngestionJob.updated_at.desc(),
+                    IngestionJob.id.desc()))
     return db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id)
-                     .order_by(IngestionJob.created_at.desc(), case(
-                         (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
-                         (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
-                         else_=2 if ready else 1,
-                     ), IngestionJob.updated_at.desc(), IngestionJob.id.desc()).limit(1))
+                     .order_by(*ordering).limit(1))
 
 
 def inspect_file(stream):
