@@ -18,8 +18,8 @@ def setup_store(client):
     http, db, _ = client
     identifier = UUID(create(http)["id"])
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
-    access = Access(session.user_id, session.workspace_id, "admin", session.token_hash)
-    config = request_provider_config(db, access.workspace_id, UUID(model_id(http)))
+    access = auth.get_access(session)
+    config = request_provider_config(db, access.user_id, UUID(model_id(http)))
     request = uuid4()
     db.get(Conversation, identifier).active_request_id = request
     db.commit()

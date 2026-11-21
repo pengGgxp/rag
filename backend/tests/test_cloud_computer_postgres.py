@@ -20,11 +20,12 @@ from test_cloud_computer import FakeCloud
 def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
     engine = auth_postgres
     with Session(engine) as db:
-        user, workspace_id = auth.create_user(db, f"cloud-{uuid4().hex}@example.com", "Cloud test")
+        user = auth.create_user(db, f"cloud-{uuid4().hex}@example.com", "Cloud test")
+        account_id = user.id
         session_hash = uuid4().hex + uuid4().hex
-        db.add(LoginSession(token_hash=session_hash, user_id=user.id, workspace_id=workspace_id,
+        db.add(LoginSession(token_hash=session_hash, user_id=user.id,
             csrf_token=uuid4().hex, expires_at=auth.now()+timedelta(hours=1)))
-        conversation = Conversation(workspace_id=workspace_id, owner_id=user.id)
+        conversation = Conversation(account_id=account_id, owner_id=user.id)
         db.add(conversation)
         settings = db.get(CloudComputerSettings, 1)
         if not settings:
@@ -35,7 +36,7 @@ def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
         settings.config = cloud.Configuration(region="cn-hangzhou", template="fake", specification="fake", credits_per_minute=0,
             oss_role_arn="acs:ram::123:role/test").model_dump(mode="json")
         db.commit()
-        access = auth.Access(user.id, workspace_id, "admin", session_hash)
+        access = auth.Access(user.id, session_hash)
         conversation_id = conversation.id
     monkeypatch.setattr(cloud, "dispatch", lambda *_: None)
     monkeypatch.setattr("app.storage_backend.active_settings", lambda _db: SimpleNamespace(
@@ -74,11 +75,12 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
     request_id = uuid4()
     execution_id, second_execution_id = (uuid4(), uuid4()) if inline else (None, None)
     with Session(engine) as db:
-        user, workspace_id = auth.create_user(db, f"cloud-call-{uuid4().hex}@example.com", "Cloud call test")
+        user = auth.create_user(db, f"cloud-call-{uuid4().hex}@example.com", "Cloud call test")
+        account_id = user.id
         session_hash = uuid4().hex + uuid4().hex
-        db.add(LoginSession(token_hash=session_hash, user_id=user.id, workspace_id=workspace_id,
+        db.add(LoginSession(token_hash=session_hash, user_id=user.id,
             csrf_token=uuid4().hex, expires_at=auth.now()+timedelta(hours=1)))
-        conversation = Conversation(workspace_id=workspace_id, owner_id=user.id, active_request_id=request_id)
+        conversation = Conversation(account_id=account_id, owner_id=user.id, active_request_id=request_id)
         db.add(conversation)
         db.flush()
         if inline:
@@ -93,7 +95,7 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
         settings.config = cloud.Configuration(region="cn-hangzhou", template="fake", specification="fake",
             credits_per_minute="0.6", oss_role_arn="acs:ram::123:role/test").model_dump(mode="json")
         db.commit()
-        access = auth.Access(user.id, workspace_id, "admin", session_hash)
+        access = auth.Access(user.id, session_hash)
         conversation_id = conversation.id
     fake = FakeCloud()
     monkeypatch.setattr("app.shared_resources.backend", lambda _: None)
@@ -120,9 +122,9 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
         ids = list(pool.map(submit_duplicate, range(4)))
     assert len(set(ids)) == 1
     with Session(engine) as db:
-        from app.models import CreditAccount, CreditLedgerEntry, UsageEvent
+        from app.models import UserCreditAccount, CreditLedgerEntry, UsageEvent
         held_entries = [row.id for row in db.scalars(select(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == workspace_id))]
+            CreditLedgerEntry.account_id == account_id))]
         assert db.scalar(select(func.count()).select_from(CloudComputerSession).where(
             CloudComputerSession.user_id == access.user_id)) == 1
     # Duplicate deliveries to replacement Workers only execute the durable command once.
@@ -145,7 +147,7 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
     assert outcomes.count(409) == 3 and outcomes[0] == ids[0]
     with Session(engine) as db:
         assert [row.id for row in db.scalars(select(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == workspace_id))] == held_entries
+            CreditLedgerEntry.account_id == account_id))] == held_entries
         second = cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-2-same"),
             {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=second_execution_id)
         second_id = second.id
@@ -162,9 +164,9 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
     with Session(engine) as db:
         computer = db.get(CloudComputerSession, computer_id)
         assert computer.ended_at and computer.held_credits == 0 and computer.charged_credits > 0
-        before = (db.get(CreditAccount, workspace_id).balance,
-            [row.id for row in db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.workspace_id == workspace_id))],
-            [row.id for row in db.scalars(select(UsageEvent).where(UsageEvent.workspace_id == workspace_id))])
+        before = (db.get(UserCreditAccount, account_id).balance,
+            [row.id for row in db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.account_id == account_id))],
+            [row.id for row in db.scalars(select(UsageEvent).where(UsageEvent.account_id == account_id))])
         assert cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-1-same"),
             {"computer_id": computer_id, "command": "echo synthetic"}, agent_tool_execution_id=execution_id).id == ids[0]
         assert cloud.submit(db, access, conversation_id, cloud.tool_request_id(request_id, "tool-2-same"),
@@ -172,7 +174,7 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
     cloud.run(ids[0], sessionmaker(bind=engine), agent_tool_execution_id=execution_id)
     cloud.maintain_one(computer_id, sessionmaker(bind=engine))
     with Session(engine) as db:
-        assert (db.get(CreditAccount, workspace_id).balance,
-            [row.id for row in db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.workspace_id == workspace_id))],
-            [row.id for row in db.scalars(select(UsageEvent).where(UsageEvent.workspace_id == workspace_id))]) == before
+        assert (db.get(UserCreditAccount, account_id).balance,
+            [row.id for row in db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.account_id == account_id))],
+            [row.id for row in db.scalars(select(UsageEvent).where(UsageEvent.account_id == account_id))]) == before
     assert fake.creates == fake.kills == 1 and fake.starts == 2

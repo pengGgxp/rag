@@ -15,7 +15,7 @@ import "./uploads.css";
 const LIMIT = DOCUMENT_LIMIT;
 type Destination = { id: string; name: string; versionOf?: string; filename?: string };
 type Task = {
-  key: string; uploadId?: string; workspace: string; library: Destination;
+  key: string; uploadId?: string; library: Destination;
   name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
   hashes: Record<number, string>; state: string; transferred: number;
   error?: string; failure?: DocumentFailure; documentId?: string; retryLabel?: string;
@@ -149,8 +149,6 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const current = useRef<Task[]>([]);
-  const workspace = useRef(session.workspace_id);
-  workspace.current = session.workspace_id;
   const files = useRef(new Map<string, File>());
   const running = useRef(new Map<string, AbortController>());
   const [dialog, setDialog] = useState<{ destination?: Destination } | null>(null);
@@ -165,8 +163,8 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     current.current = next; setTasks(next);
     try {
       // Never serialize File objects, URLs, credentials or transient errors.
-      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state, error, failure, documentId, queryPaused }) =>
-        ({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state,
+      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state, error, failure, documentId, queryPaused }) =>
+        ({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state,
           failure: error ? failure : undefined, documentId, queryPaused }))));
     } catch { /* Uploads remain usable if browser storage is unavailable. */ }
   }
@@ -185,18 +183,6 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const controllers = running.current;
     return () => { controllers.forEach(controller => controller.abort()); selection.current?.abort(); };
   }, [storageKey]);
-  useEffect(() => {
-    let changed = false;
-    const next = current.current.map(task => {
-      if (task.workspace === session.workspace_id || !["uploading", "queued"].includes(task.state)) return task;
-      changed = true; running.current.get(task.key)?.abort();
-      return { ...task, state: "paused", error: "已切换工作区，返回原工作区后可继续" };
-    });
-    if (changed) publish(next);
-    selection.current?.abort(); setPreparing(false); setDialog(null); setSelected([]); setIssues([]);
-    // Upload state remains mounted outside the workspace-keyed page.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.workspace_id]);
   function acceptRemote(task: Task, remote: Remote) {
     let state = remote.state;
     if (state === "uploading" && task.state !== "uploading") state = "paused";
@@ -221,21 +207,28 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     if (remote.document_id && !task.documentId)
       window.dispatchEvent(new CustomEvent("rag-upload-admitted", { detail: { library: task.library.id } }));
   }
-  const pollInFlight = useRef(new Set<string>());
+  const pollInFlight = useRef(new Map<string, AbortController>());
+  useEffect(() => {
+    const controllers = pollInFlight.current;
+    return () => controllers.forEach(controller => controller.abort());
+  }, []);
   async function poll(taskKey?: string) {
-    const candidates = current.current.filter(task => task.workspace === workspace.current && task.uploadId
+    const candidates = current.current.filter(task => task.uploadId
       && ["verifying", "processing"].includes(task.state)
       && (!taskKey || task.key === taskKey)
       && (!task.queryPaused || task.key === taskKey)
       && !pollInFlight.current.has(task.key)
       && !running.current.has(task.key));
     await Promise.all(candidates.map(async task => {
-      pollInFlight.current.add(task.key);
+      const controller = new AbortController();
+      pollInFlight.current.set(task.key, controller);
       try {
-        const remote = await retryUploadRequest(() => request<Remote>(`/uploads/${task.uploadId}`), new AbortController().signal);
+        const remote = await retryUploadRequest(
+          () => request<Remote>(`/uploads/${task.uploadId}`, { signal: controller.signal }), controller.signal);
         const latest = current.current.find(t => t.key === task.key);
-        if (latest && remote && latest.workspace === workspace.current && ["verifying", "processing"].includes(latest.state)) acceptRemote(latest, remote);
+        if (!controller.signal.aborted && latest && remote && ["verifying", "processing"].includes(latest.state)) acceptRemote(latest, remote);
       } catch (e) {
+        if (controller.signal.aborted) return;
         const expired = e instanceof ApiError && e.status === 410;
         if (expired) files.current.delete(task.key);
         const queryFailure = expired ? {
@@ -251,7 +244,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
           isTemporary(e),
           e instanceof ApiError ? e.requestId : undefined,
         );
-        if (workspace.current === task.workspace) patch(task.key, {
+        patch(task.key, {
           error: queryFailure.message,
           failure: queryFailure,
           queryPaused: !expired,
@@ -266,11 +259,11 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const timer = setInterval(() => void poll(), 2500);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.workspace_id]);
+  }, []);
 
   async function run(task: Task) {
     const file = files.current.get(task.key);
-    if (!file || running.current.has(task.key) || workspace.current !== task.workspace) return;
+    if (!file || running.current.has(task.key)) return;
     const controller = new AbortController();
     running.current.set(task.key, controller);
     const signal = controller.signal;
@@ -381,8 +374,8 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   }
   useEffect(() => {
     if (running.current.size) return;
-    if (tasks.filter(t => t.workspace === workspace.current && t.state === "verifying").length >= 10) return;
-    const next = tasks.find(t => t.workspace === workspace.current && t.state === "queued" && files.current.has(t.key));
+    if (tasks.filter(t => t.state === "verifying").length >= 10) return;
+    const next = tasks.find(t => t.state === "queued" && files.current.has(t.key));
     if (next) void run(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
@@ -474,14 +467,14 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   function enqueue() {
     if (!dialog?.destination) return;
     const next = selected.map(({ file, path }) => {
-      const task: Task = { key: crypto.randomUUID(), workspace: session.workspace_id, library: dialog.destination!,
+      const task: Task = { key: crypto.randomUUID(), library: dialog.destination!,
         name: file.name, sourcePath: path, size: file.size, modified: file.lastModified, type: file.type,
         partSize: 8 * 1024 * 1024, hashes: {}, state: "queued", transferred: 0 };
       files.current.set(task.key, file); return task;
     });
     publish([...current.current, ...next]); setSelected([]); setIssues([]);
   }
-  const visible = tasks.filter(task => task.workspace === session.workspace_id);
+  const visible = tasks;
   const open = (destination?: Destination) => { selection.current?.abort(); setPreparing(false); setDialog({ destination }); setSelected([]); setIssues([]); setSelectionError(""); };
   return <Context.Provider value={{ tasks: visible, open }}>
     {children}

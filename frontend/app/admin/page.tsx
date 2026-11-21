@@ -7,7 +7,6 @@ type Overview = {
   users_registered_30d: number;
   users_unverified: number;
   users_suspended: number;
-  workspaces_total: number;
 };
 export default function AdminOverview() {
   const { data, error, loading, reload } = useAdminResource<Overview>(
@@ -27,10 +26,6 @@ export default function AdminOverview() {
               <div>
                 <dt>近 30 天注册</dt>
                 <dd>{number(data.users_registered_30d)}</dd>
-              </div>
-              <div>
-                <dt>工作区总数</dt>
-                <dd>{number(data.workspaces_total)}</dd>
               </div>
             </dl>
             <section className="admin-section">
@@ -57,10 +52,6 @@ export default function AdminOverview() {
               <div className="admin-actions">
                 <Link className="secondary" href="/admin/users">
                   用户管理
-                  <ArrowUpRight size={16} />
-                </Link>
-                <Link className="secondary" href="/admin/workspaces">
-                  工作区
                   <ArrowUpRight size={16} />
                 </Link>
                 <Link className="secondary" href="/admin/audit">

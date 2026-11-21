@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app import cloud_computer, shared_resources, workspace_files
 from app.extensions import ExtensionRuntime
-from app.models import WorkspaceFile, Membership
+from app.models import WorkspaceFile, WorkspaceFileVersion
 from app.workspace_file_links import get_file_link
 from test_auth import register
 from test_resources import resource_store, upload, access_for
@@ -18,7 +18,7 @@ def test_exact_object_link_without_scan_read_cloud_or_transfer(accounts, resourc
     register(client)
     access = access_for(client, db)
     path = "成果/中文 演示.pptx"
-    resource_store[0][shared_resources.object_key(access.workspace_id, path)] = b"created by command"
+    resource_store[0][shared_resources.object_key(access.user_id, path)] = b"created by command"
     def forbidden(*args, **kwargs):
         pytest.fail("获取链接不能扫描、下载或启动环境")
     monkeypatch.setattr(shared_resources, "refresh_index", forbidden)
@@ -30,7 +30,7 @@ def test_exact_object_link_without_scan_read_cloud_or_transfer(accounts, resourc
     assert first["path"] == path and first["size_bytes"] == 18
     assert first["url"] == f"/resources?file={first['id']}"
     second = workspace_files.execute_tool("get_workspace_file_link", {"id": first["id"]},
-        db, access, access.workspace_id)
+        db, access, access.user_id)
     assert second["id"] == first["id"]
     assert len(list(db.scalars(select(WorkspaceFile)))) == 1
     assert not resource_store[1]
@@ -58,7 +58,7 @@ def test_access_deletion_current_metadata_and_storage_failure(accounts, resource
     with pytest.raises(HTTPException) as error:
         get_file_link(db, access_for(other, db), {"id": item["id"]})
     assert error.value.status_code == 404
-    key = shared_resources.object_key(access.workspace_id, item["path"])
+    key = shared_resources.object_key(access.user_id, item["path"])
     resource_store[0][key] = b"new current content"
     assert get_file_link(db, access, {"id": item["id"]})["size_bytes"] == len(b"new current content")
     resource_store[0].pop(key)
@@ -93,7 +93,7 @@ def test_link_reuses_one_head_and_refreshes_fallback_storage(accounts, resource_
     from test_cloud_computer_mount import MemoryMount
     storage = MemoryMount()
     storage.objects = resource_store[0]
-    storage.objects[shared_resources.object_key(access.workspace_id, item["path"])] = b"current bytes"
+    storage.objects[shared_resources.object_key(access.user_id, item["path"])] = b"current bytes"
     calls = []
     head = storage.head
     storage.head = lambda key: calls.append(key) or head(key)
@@ -104,14 +104,12 @@ def test_link_reuses_one_head_and_refreshes_fallback_storage(accounts, resource_
     assert len(calls) == 1
 
 
-def test_link_tool_available_without_execution_and_for_viewer(accounts, resource_store):
-    (client, _, _), db = accounts
+def test_link_tool_available_without_execution_and_private_to_account(accounts, resource_store):
+    (client, other, _), db = accounts
     register(client)
+    register(other, "no-file-access@example.com")
     item = upload(client)
     access = access_for(client, db)
-    member = db.get(Membership, (access.workspace_id, access.user_id))
-    member.role = "viewer"
-    db.commit()
     runtime = ExtensionRuntime(lambda: nullcontext(db), access.revalidate(db))
     assert not runtime.execution_available
     names = {tool["function"]["name"] for tool in runtime.tools}
@@ -120,6 +118,29 @@ def test_link_tool_available_without_execution_and_for_viewer(accounts, resource
     assert result["url"] == f"/resources?file={item['id']}"
     rejected = runtime.execute("get_workspace_file_link", {"id": item["id"], "path": item["path"]})
     assert rejected["error_code"] == "file_arguments"
+    other_runtime = ExtensionRuntime(lambda: nullcontext(db), access_for(other, db))
+    assert other_runtime.execute("get_workspace_file_link", {"id": item["id"]})["error_code"] == "file_missing"
+
+
+def test_download_and_file_link_use_the_recorded_legacy_key(accounts, resource_store):
+    (client, other, _), db = accounts
+    register(client)
+    register(other, "legacy-key-other@example.com")
+    item = upload(client, "merged.txt", b"retained bytes")
+    access = access_for(client, db)
+    version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == UUID(item["id"])))
+    old_key = shared_resources.object_key(uuid4(), "original.txt")
+    resource_store[0][old_key] = resource_store[0].pop(version.object_key)
+    resource_store[0][version.object_key] = b"different bytes"
+    version.object_key = old_key
+    db.commit()
+
+    assert client.get(f"/resources/{item['id']}/download").content == b"retained bytes"
+    assert client.get(f"/files/{item['id']}/text").json()["content"] == "retained bytes"
+    assert get_file_link(db, access, {"id": item["id"]})["path"] == "merged.txt"
+    assert get_file_link(db, access, {"path": "merged.txt"})["id"] == item["id"]
+    assert other.get(f"/resources/{item['id']}/download").status_code == 404
+    assert version.object_key == old_key
 
 
 def test_durable_command_link_delivery_and_replay(accounts, resource_store, monkeypatch):
@@ -134,7 +155,7 @@ def test_durable_command_link_delivery_and_replay(accounts, resource_store, monk
     (http, _, _), db = accounts
     register(http)
     actor = access_for(http, db)
-    configured_model(db, actor.workspace_id, monkeypatch)
+    configured_model(db, actor.user_id, monkeypatch)
     fake, _ = enable_execution(db, actor, monkeypatch)
     fake.outputs = {"成果/中文报告.pptx": b"command-created-pptx"}
 

@@ -30,7 +30,7 @@ export default function CheckoutPage() {
   const quote = query.get("quote") ?? "";
   const amount = query.get("amount");
   const orderId = query.get("order");
-  const scope = `${session.user.id}:${session.workspace_id}`;
+  const scope = session.user.id;
   const [preview, setPreview] = useState<Preview | null>(null);
   const [order, setOrder] = useState<Order | null>(null);
   const [method, setMethod] = useState("");

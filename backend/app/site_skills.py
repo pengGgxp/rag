@@ -256,14 +256,13 @@ def _install_directory(row):
 
 @catalog_router.post("/{identifier}/install", status_code=201)
 def catalog_install(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
-    access.editor()
     from .skill_discovery import discover, package
     from .workspace_mutations import save_files, snapshot
     from .file_operations import workspace_lock
     request_id = request.headers.get("x-request-id")
     if request_id and len(request_id) > 100:
         raise HTTPException(422, "请求标识过长，请重新发起")
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         row = _catalog_skill(db, identifier, detail=True)
         found = [item for item in discover(db, access, refresh=True) if item["name"] == row.name]
         if found:

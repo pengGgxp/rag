@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app import auth, file_preview_access as preview
 from app.models import ChatAttachment, Document, DocumentStatus, KnowledgeBase, UsageEvent
 from app.storage_models import StorageTransfer
-from test_auth import library, register, share, switch
+from test_auth import library, register
 from test_preview_fixtures import resource, store
 
 
@@ -22,28 +22,25 @@ def signed_storage(monkeypatch, store):
 
 
 def test_resource_capability_checks_permissions_revision_and_never_meters(accounts, store, monkeypatch):
-    (owner, stranger, member), db = accounts
-    row, identity = resource(db, owner, store)
+    (owner, stranger, _), db = accounts
+    row, _ = resource(db, owner, store)
     signed = signed_storage(monkeypatch, store)
     register(stranger, "stranger@example.com")
-    register(member, "member@example.com")
     endpoint = f"/resources/{row.id}/preview-access"
     assert stranger.post(endpoint, json={}).status_code == 404
-    share(owner, "member@example.com", "viewer")
-    switch(member, identity["workspace_id"])
     before = list(db.scalars(select(UsageEvent)))
-    response = member.post(endpoint, json={})
+    response = owner.post(endpoint, json={})
     assert response.status_code == 200, response.text
     grant = response.json()
     assert "no-store" in response.headers["cache-control"]
     assert grant["kind"] == "image" and grant["size_bytes"] == row.size_bytes
     assert grant["headers"] == {"If-Match": store.head(signed[-1][0])["ETag"]}
     assert signed[-1][1:] == (300, True)
-    assert member.post(endpoint, json={"revision": grant["revision"]}).json()["revision"] == grant["revision"]
-    assert member.post(endpoint, json={"object_key": "other-user"}).status_code == 422
+    assert owner.post(endpoint, json={"revision": grant["revision"]}).json()["revision"] == grant["revision"]
+    assert owner.post(endpoint, json={"object_key": "other-user"}).status_code == 422
     store.objects[signed[-1][0]] = b"same object updated"
-    assert member.post(endpoint, json={"revision": grant["revision"]}).status_code == 409
-    assert member.post(endpoint, json={}).json()["revision"] != grant["revision"]
+    assert owner.post(endpoint, json={"revision": grant["revision"]}).status_code == 409
+    assert owner.post(endpoint, json={}).json()["revision"] != grant["revision"]
     row.deleted_at = auth.now()
     db.commit()
     assert owner.post(endpoint, json={}).status_code == 404
@@ -55,7 +52,10 @@ def test_attachment_capability_does_not_extract_document_and_rejects_deleted_res
     (owner, _, _), db = accounts
     row, identity = resource(db, owner, store, "中文文档.docx", b"not parsed")
     signed = signed_storage(monkeypatch, store)
-    attachment = ChatAttachment(workspace_id=row.workspace_id, user_id=UUID(identity["user"]["id"]),
+    version = row.versions[0]
+    version.mounted_object_key = version.object_key
+    version.object_key = f"workspaces/legacy/resource-directory/{row.path}"
+    attachment = ChatAttachment(account_id=row.account_id, user_id=UUID(identity["user"]["id"]),
         filename=row.path, content_type=row.content_type, size_bytes=row.size_bytes,
         content_hash=row.content_hash, object_key="attachment-reference", kind="document",
         resource_file_id=row.id)
@@ -64,7 +64,9 @@ def test_attachment_capability_does_not_extract_document_and_rejects_deleted_res
     endpoint = f"/chat/attachments/{attachment.id}/preview-access"
     grant = owner.post(endpoint, json={})
     assert grant.status_code == 200 and grant.json()["kind"] == "docx"
-    assert signed[-1][0].endswith(row.path)
+    assert signed[-1][0] == version.mounted_object_key
+    assert owner.post(f"/resources/{row.id}/preview-access", json={}).status_code == 200
+    assert signed[-1][0] == version.mounted_object_key
     assert attachment.text_content is None
     row.deleted_at = auth.now()
     db.commit()

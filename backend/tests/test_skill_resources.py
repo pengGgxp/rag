@@ -3,6 +3,7 @@ import hashlib
 import io
 import stat
 import subprocess
+import sys
 import zipfile
 from collections.abc import MutableMapping
 from contextlib import nullcontext
@@ -14,8 +15,8 @@ from sqlalchemy import select
 
 from app import cloud_computer, cloud_file_operation, extensions, shared_resources, workspace_files
 from app.extensions import ExtensionRuntime
-from app.models import AgentSkill, Membership, SiteSkill, WorkspaceFile
-from test_auth import register, share, switch
+from app.models import AgentSkill, SiteSkill, WorkspaceFile
+from test_auth import register
 from test_cloud_computer import enable_execution
 from test_extensions import access_for
 from test_resources import resource_store
@@ -98,9 +99,9 @@ def test_skill_file_list_refreshes_external_changes_and_keeps_workspace_scope(ac
     access = access_for(client, db)
     root = result["directory"]
     objects = resource_store[0]
-    objects[shared_resources.object_key(access.workspace_id, f"{root}/references/new.txt")] = b"external"
-    objects.pop(shared_resources.object_key(access.workspace_id, f"{root}/assets/data.csv"))
-    objects[shared_resources.object_key(access.workspace_id, f"{root}/.rag-directory")] = b""
+    objects[shared_resources.object_key(access.user_id, f"{root}/references/new.txt")] = b"external"
+    objects.pop(shared_resources.object_key(access.user_id, f"{root}/assets/data.csv"))
+    objects[shared_resources.object_key(access.user_id, f"{root}/.rag-directory")] = b""
     paths = {file["path"] for file in client.get(f"/agent/skills/{item['id']}/files").json()}
     assert f"{root}/references/new.txt" in paths
     assert f"{root}/assets/data.csv" not in paths
@@ -114,7 +115,7 @@ def test_skill_catalog_indexes_only_manifests_and_reads_only_their_headers(accou
     client, db, _ = setup_site(accounts, monkeypatch)
     access = access_for(client, db)
     store = shared_resources.backend(db)
-    prefix = shared_resources.prefix(access.workspace_id)
+    prefix = shared_resources.prefix(access.user_id)
     manifest = prefix + ".skills/external/SKILL.md"
     unrelated = prefix + "documents/large.md"
     resource_store[0][manifest] = b"---\nname: external\ndescription: found\n---\n" + b"x" * 1_000_000
@@ -150,7 +151,7 @@ def test_skill_manifest_over_five_megabytes_can_be_imported_and_opened(accounts,
     assert detail.json()["markdown"].encode() == markdown
 
 
-def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(accounts, monkeypatch, resource_store):
+def test_skills_can_only_be_loaded_and_deleted_by_owner(accounts, monkeypatch, resource_store):
     client, db, _ = setup_site(accounts, monkeypatch)
     (_, member, anonymous), _ = accounts
     register(member, "skill-reader@example.com")
@@ -159,21 +160,10 @@ def test_shared_members_can_read_edit_and_delete_but_other_workspaces_cannot(acc
     assert member.get(f"/agent/skills/{item['id']}").status_code == 404
     assert member.get("/agent/skills").json() == []
     assert anonymous.get("/agent/skills").status_code == 401
-    access = access_for(client, db)
-    share(client, "skill-reader@example.com", "viewer")
-    switch(member, str(access.workspace_id))
-    assert member.get(item["download_url"]).content == FILES["SKILL.md"]
-    assert len(member.get("/agent/skills").json()) == 1
-    assert member.post("/agent/skills/import", files={"file": ("SKILL.md", b"read")}).status_code == 403
-    assert member.delete(f"/resources/{item['id']}").status_code == 403
-    membership = db.scalar(select(Membership).where(Membership.workspace_id == access.workspace_id,
-        Membership.user_id == access_for(member, db).user_id))
-    membership.role = "editor"
-    db.commit()
-    member_access = access_for(member, db)
-    workspace_files._save_bytes(member_access.workspace_id, member_access, db, item["path"], b"changed", "text/markdown")
-    assert client.get(item["download_url"]).content == b"changed"
-    assert member.delete(f"/resources/{item['id']}").status_code == 204
+    assert member.get(item["download_url"]).status_code == 404
+    assert member.delete(f"/resources/{item['id']}").status_code == 404
+    assert client.get(item["download_url"]).content == FILES["SKILL.md"]
+    assert client.delete(f"/resources/{item['id']}").status_code == 204
     assert client.get(f"/agent/skills/{item['id']}").status_code == 404
     assert client.get("/agent/skills").json() == []
 
@@ -287,7 +277,7 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
     monkeypatch.setattr(shared_resources, "backend", lambda _: storage)
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: objects.__setitem__(key, stream.read()))
     result = importing(client)
-    root = objects.root / shared_resources.prefix(access.workspace_id)
+    root = objects.root / shared_resources.prefix(access.user_id)
     # Execute the production in-sandbox file operations against the one shared root.
     commands = []
     def local_execute(_db, _access, _conversation, _request, arguments, check_active=None):
@@ -296,7 +286,8 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
             return {"status": "completed", "computer_id": arguments["computer_id"],
                     "cloud_computer": {"id": "local"}, "command_id": str(uuid4()),
                     "file_result": {"value": cloud_file_operation.perform(arguments["file_operation"], root)}}
-        completed = subprocess.run(arguments["command"], shell=True, cwd=root, capture_output=True, text=True, timeout=10)
+        completed = subprocess.run([sys.executable, "-c", arguments["command"]],
+                                   cwd=root, capture_output=True, text=True, timeout=10)
         return {"status": "completed", "exit_code": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
     monkeypatch.setattr(cloud_computer, "execute", local_execute)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, request_id=uuid4())
@@ -312,7 +303,15 @@ def test_existing_file_tools_read_run_modify_delete_same_files_in_container(acco
     main = next(item for item in listing["items"] if item["path"].endswith("/SKILL.md"))
     assert run("read_file", {"path": main["path"]})["content"].encode() == FILES["SKILL.md"]
     directory = result["directory"]
-    command = f'for id in {directory}; do python "$id"/scripts/*.py > total.txt; done; cat total.txt'
+    command = (
+        "from contextlib import redirect_stdout\n"
+        "from pathlib import Path\n"
+        "from runpy import run_path\n"
+        "output = Path('total.txt')\n"
+        "with output.open('w') as target, redirect_stdout(target):\n"
+        f"    run_path({f'{directory}/scripts/total.py'!r}, run_name='__main__')\n"
+        "print(output.read_text(), end='')"
+    )
     assert run("run_command", {"command": command})["stdout"].strip() == "21"
     assert run("write_file", {"path": f"{directory}/assets/data.csv", "content": "2 40"}).get("error") is None
     assert run("run_command", {"command": command})["stdout"].strip() == "42"

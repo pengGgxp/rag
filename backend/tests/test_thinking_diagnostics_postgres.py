@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import auth, llm_providers, main, shared_providers
-from app.models import ModelBillingSettings, SiteModelProvider, ThinkingTest, Workspace
+from app.models import ModelBillingSettings, SiteModelProvider, ThinkingTest
 from auth_helpers import configured_model
 from test_auth_postgres import auth_postgres
 from test_thinking import effort
@@ -23,28 +23,26 @@ def test_postgres_concurrent_probe_calls_upstream_and_charges_once(auth_postgres
     with Session(auth_postgres) as db:
         import secrets
         from datetime import timedelta
-        from app.models import CreditAccount, LoginSession, Membership, User
-        workspace = Workspace(name=f"Thinking probe {uuid4()}")
+        from app.models import UserCreditAccount, LoginSession, User
         user = User(email=f"thinking-{uuid4()}@example.com", name="Thinking test", is_site_admin=True,
             email_verified_at=auth.now())
-        db.add_all([workspace, user]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
+        db.add(user); db.flush()
         raw, csrf = secrets.token_urlsafe(40), secrets.token_urlsafe(32)
-        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id, workspace_id=workspace.id,
+        db.add(LoginSession(token_hash=auth.digest(raw), user_id=user.id,
             csrf_token=csrf, expires_at=auth.now()+timedelta(hours=1)))
-        db.add(CreditAccount(workspace_id=workspace.id, balance=1000, lifetime_granted=1000))
+        db.add(UserCreditAccount(user_id=user.id, balance=1000, lifetime_granted=1000))
         settings = db.get(ModelBillingSettings, 1)
         if settings is None:
             settings = ModelBillingSettings(id=1, enabled=metered, shared_pricing_enabled=True, template={})
             db.add(settings)
         else:
             settings.enabled, settings.shared_pricing_enabled = metered, True
-        binding = configured_model(db, workspace.id)
+        binding = configured_model(db, user.id)
         row = db.get(SiteModelProvider, binding.site_provider_id)
         row.thinking_config, row.thinking_version = effort("bailian"), 1
         identifier, version = row.id, row.version
         db.commit()
-        workspace_id = workspace.id
+        account_id = user.id
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _: "test-only")
     monkeypatch.setattr(shared_providers, "assert_available", lambda *args: None)
     @contextmanager
@@ -77,5 +75,5 @@ def test_postgres_concurrent_probe_calls_upstream_and_charges_once(auth_postgres
         saved = db.get(ThinkingTest, UUID(payload["request_id"]))
         assert saved.status == "completed" and "not logged" not in str(saved.result)
         charges = db.scalars(select(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == workspace_id, CreditLedgerEntry.kind == "usage_settlement")).all()
+            CreditLedgerEntry.account_id == account_id, CreditLedgerEntry.kind == "usage_settlement")).all()
         assert len(charges) == 1

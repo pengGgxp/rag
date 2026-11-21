@@ -66,7 +66,7 @@ export function ThinkingDiagnostics({ id, version, connectionId, connectionVersi
     </div>
     {dirty && <p className="billing-muted">保存修改后可测试。</p>}
     {confirm && !dirty && <div className="admin-inline-confirm" role="alert">
-      <span>将发送一次最多输出 1024 Token 的测试，按当前工作区计费。</span>
+      <span>将发送一次最多输出 1024 Token 的测试，费用计入你的账号。</span>
       <button className="secondary" type="button" onClick={() => setConfirm(false)}>取消</button>
       <button className="primary" type="button" onClick={() => void test()}>确认测试</button>
     </div>}

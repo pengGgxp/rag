@@ -6,24 +6,28 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from alembic import command as migrations
-from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app import auth, cloud_computer as cloud
-from app.models import CloudComputerSettings, Conversation, LoginSession, CreditAccount, CreditLedgerEntry
+from app.models import CloudComputerSettings, Conversation, LoginSession, UserCreditAccount
 from test_auth_postgres import auth_postgres
 from test_cloud_computer import FakeCloud
+from test_cloud_ending_postgres import legacy_cloud
+from test_personal_accounts_postgres import account, insert, legacy_database, workspace
+from test_tool_runtime_migrations import migration
 
 
 def seed(engine, monkeypatch):
     with Session(engine) as db:
-        user, workspace = auth.create_user(db, f"explicit-{uuid4().hex}@example.com", "Cloud")
+        user = auth.create_user(db, f"explicit-{uuid4().hex}@example.com", "Cloud")
+        workspace = user.id
         token = uuid4().hex + uuid4().hex
-        db.add(LoginSession(token_hash=token, user_id=user.id, workspace_id=workspace,
+        db.add(LoginSession(token_hash=token, user_id=user.id,
             csrf_token=uuid4().hex, expires_at=auth.now()+timedelta(hours=1)))
-        conversation = Conversation(workspace_id=workspace, owner_id=user.id)
+        conversation = Conversation(account_id=workspace, owner_id=user.id)
         db.add(conversation)
         settings = db.get(CloudComputerSettings, 1)
         if settings is None:
@@ -33,7 +37,7 @@ def seed(engine, monkeypatch):
         settings.config = cloud.Configuration(region="cn-hangzhou", template="fake", specification="fake",
             credits_per_minute=".6", oss_role_arn="acs:ram::123:role/test").model_dump(mode="json")
         db.commit()
-        access = auth.Access(user.id, workspace, "admin", token)
+        access = auth.Access(user.id, token)
         conversation_id = conversation.id
     fake = FakeCloud()
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
@@ -80,7 +84,7 @@ def test_concurrent_create_and_command_replay(auth_postgres, monkeypatch):
     with Session(engine) as db:
         row = db.get(cloud.Computer, UUID(identifier))
         assert row.ended_at and row.held_credits == 0
-        assert db.get(CreditAccount, access.workspace_id).lifetime_spent == row.charged_credits
+        assert db.get(UserCreditAccount, access.user_id).lifetime_spent == row.charged_credits
         assert fake.kills == 1
 
 
@@ -103,7 +107,7 @@ def test_independent_provider_creates_do_not_hold_account_lock(auth_postgres, mo
     with Session(engine) as db:
         held = sum(row.held_credits for row in db.scalars(select(cloud.Computer).where(cloud.Computer.user_id == access.user_id)))
         assert held == Decimal("24")
-        account = db.get(CreditAccount, access.workspace_id)
+        account = db.get(UserCreditAccount, access.user_id)
         assert account.balance == account.lifetime_granted - held
 
 
@@ -127,26 +131,23 @@ def test_same_instance_commands_run_concurrently_and_cancel_independently(auth_p
     assert fake.starts == 2
 
 
-def test_migration_rejects_destructive_downgrade_and_keeps_rows(auth_postgres, monkeypatch):
-    engine = auth_postgres
-    access, conversation, fake = seed(engine, monkeypatch)
-    with Session(engine) as db:
-        identifiers = [UUID(cloud.create_computer(db, access, conversation, uuid4(), {"name": "迁移保留"})["computer_id"])
-            for _ in range(2)]
-        before = list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.workspace_id == access.workspace_id)))
-    monkeypatch.setenv("MIGRATION_DATABASE_URL", engine.url.render_as_string(hide_password=False))
-    config = Config("alembic.ini")
-    with pytest.raises(RuntimeError, match="多台活动云电脑"):
-        migrations.downgrade(config, "0073_cloud_stop_reason")
-    with Session(engine) as db:
-        assert all(db.get(cloud.Computer, identifier) for identifier in identifiers)
-        assert list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.workspace_id == access.workspace_id))) == before
-        # End synthetic records before explicitly testing the old single-instance schema.
-        db.execute(text("UPDATE cloud_computer_sessions SET status='ended', ended_at=now() WHERE ended_at IS NULL"))
-        db.commit()
-    migrations.downgrade(config, "0073_cloud_stop_reason")
-    migrations.upgrade(config, "head")
-    with Session(engine) as db:
-        assert all(db.get(cloud.Computer, identifier) for identifier in identifiers)
-        assert list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.workspace_id == access.workspace_id))) == before
-        assert "concurrency" not in db.get(CloudComputerSettings, 1).config
+def test_migration_rejects_destructive_downgrade_and_keeps_rows(legacy_database):
+    db, _ = legacy_database
+    user_id = account(db, f"legacy-explicit-{uuid4().hex}")
+    account_id = workspace(db, "Legacy explicit computers", user_id)
+    conversation_id = insert(db, "conversations", workspace_id=account_id, owner_id=user_id,
+        title="Legacy", next_sequence=1)
+    identifiers = {legacy_cloud(db, account_id, user_id, conversation_id, status="ready") for _ in range(2)}
+    ledger_id = insert(db, "credit_ledger", workspace_id=account_id, amount=-20, balance_after=980,
+        kind="usage_settlement", idempotency_key=f"legacy-explicit:{user_id}", metadata={})
+    revision = migration("0076_explicit_cloud_computers")
+    with Operations.context(MigrationContext.configure(db.connection())):
+        with pytest.raises(RuntimeError, match="多台活动云电脑"):
+            revision.downgrade()
+        db.execute(text("UPDATE cloud_computer_sessions SET status='ended', ended_at=now() "
+                        "WHERE user_id=:user_id"), {"user_id": user_id})
+        revision.downgrade()
+        revision.upgrade()
+    assert set(db.scalars(text("SELECT id FROM cloud_computer_sessions WHERE user_id=:user_id"),
+        {"user_id": user_id})) == identifiers
+    assert db.scalar(text("SELECT amount FROM credit_ledger WHERE id=:id"), {"id": ledger_id}) == -20

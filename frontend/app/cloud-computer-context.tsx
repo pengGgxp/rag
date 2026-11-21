@@ -7,9 +7,9 @@ import { CloudComputerStore, type CloudScope } from "./cloud-computer-state";
 const CloudContext = createContext<CloudComputerStore | null>(null);
 
 export function CloudComputerProvider({ scope, children }: { scope: CloudScope; children: ReactNode }) {
-  const { userId, workspaceId, conversationId, previewId } = scope;
-  const store = useMemo(() => new CloudComputerStore({ userId, workspaceId, conversationId, previewId }, request),
-    [userId, workspaceId, conversationId, previewId]);
+  const { userId, conversationId, previewId } = scope;
+  const store = useMemo(() => new CloudComputerStore({ userId, conversationId, previewId }, request),
+    [userId, conversationId, previewId]);
   useEffect(() => {
     store.activate();
     const refresh = () => { if (!document.hidden) void store.refresh(); };

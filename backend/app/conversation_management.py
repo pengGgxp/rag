@@ -31,7 +31,6 @@ def decode_cursor(value, size):
 def visible(access):
     return (
         Conversation.deleted_at.is_(None), Conversation.owner_id == access.user_id,
-        Conversation.workspace_id == access.workspace_id,
     )
 
 

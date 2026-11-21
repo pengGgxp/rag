@@ -16,7 +16,7 @@ from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
 from .document_ingestion import admit, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
-from .models import Document, DocumentStatus, DocumentUpload, Membership, User
+from .models import Document, DocumentStatus, DocumentUpload, User
 from .storage_backend import current_storage
 from .upstream_retries import retry_after
 
@@ -50,7 +50,7 @@ def view(row, parts=None):
 
 def owned(db, access, identifier, *, lock=True):
     row = db.get(DocumentUpload, identifier, with_for_update=lock, populate_existing=True)
-    if not row or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+    if not row or row.account_id != access.user_id or row.user_id != access.user_id:
         raise HTTPException(404, "上传任务不存在")
     access.library(db, row.knowledge_base_id, write=True)
     if aware(row.expires_at) <= now() and row.state not in ("completed", "cancelled", "cleaned"):
@@ -72,12 +72,12 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
     request_key = idempotency_key or payload.request_key
     # Lock before opening a storage multipart session so concurrent replays share one.
     lock_key = int.from_bytes(hashlib.sha256(
-        f"{access.workspace_id}:{access.user_id}:{library_id}:{request_key}".encode()
+        f"{access.user_id}:{library_id}:{request_key}".encode()
     ).digest()[:8], "big", signed=True)
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
     prior = db.scalar(select(DocumentUpload).where(
-        DocumentUpload.workspace_id == access.workspace_id, DocumentUpload.user_id == access.user_id,
+        DocumentUpload.account_id == access.user_id, DocumentUpload.user_id == access.user_id,
         DocumentUpload.knowledge_base_id == library_id, DocumentUpload.request_key == request_key,
     ).with_for_update())
     if prior:
@@ -97,7 +97,7 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
             return open_multipart(db, prior)
         return result
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, payload.size_bytes)
+    check_capacity(db, access.user_id, payload.size_bytes)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
         raise rejection(415, "upload", "invalid_format", "不支持此文件格式，或文件名无效")
@@ -111,7 +111,7 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
         raise rejection(429, "upload", "upload_limit", "进行中的上传过多，请先完成或取消部分任务")
     identifier = uuid4()
     key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
-    row = DocumentUpload(id=identifier, user_id=access.user_id, workspace_id=access.workspace_id,
+    row = DocumentUpload(id=identifier, user_id=access.user_id, account_id=access.user_id,
         knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
         size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
         multipart_id="", request_key=request_key, state="creating",
@@ -269,8 +269,8 @@ def finalize_upload(identifier):
                 chunk = content[(number-1)*PART_SIZE:number*PART_SIZE]
                 if hashlib.sha256(chunk).hexdigest() != row.parts.get(str(number)):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
-            lock_workspace(db, row.workspace_id)
-            access = worker_access(db, row, lock_user=True)
+            lock_workspace(db, row.account_id)
+            access = worker_access(db, row)
             document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
                 size, digest, row.object_key, row.version_of)
             row.document_id, row.state = document.id, "completed"
@@ -326,15 +326,11 @@ def finalize_upload(identifier):
     process_document.delay(job_id)
 
 
-def worker_access(db, row, *, lock_user=False):
-    # Workspace locking covers membership/grants during admission. Do not wait
-    # for user writers here: some account flows lock the user before the workspace.
-    user = db.get(User, row.user_id, populate_existing=True,
-                  with_for_update={"read": True, "nowait": True} if lock_user else None)
-    member = db.get(Membership, (row.workspace_id, row.user_id), populate_existing=True)
-    if not user or user.is_suspended or not member:
+def worker_access(db, row):
+    user = db.get(User, row.account_id, populate_existing=True)
+    if not user or user.is_suspended or row.user_id != row.account_id:
         raise HTTPException(403, "上传权限已失效")
-    return Access(row.user_id, row.workspace_id, member.role, "")
+    return Access(row.user_id, "")
 
 
 def classify_verification_error(error, row):

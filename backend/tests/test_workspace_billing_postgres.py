@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import workspace_billing as pricing
-from app.models import BillingSnapshot, ModelBillingSettings, Workspace
+from app.models import BillingSnapshot, ModelBillingSettings, User, UserModelPolicy
 from test_auth_postgres import auth_postgres
 
 
@@ -17,7 +17,7 @@ def test_concurrent_snapshots_are_immutable_and_unique(auth_postgres):
         if settings:
             settings.pricing_paused = False
             settings.shared_pricing_enabled = False
-        workspace = Workspace(name="Snapshot concurrency")
+        workspace = User(email=f"fixture-{uuid4().hex}@example.com", name="Snapshot concurrency")
         db.add(workspace); db.commit()
         identifier, request = workspace.id, uuid4()
     barrier = Barrier(4)
@@ -32,9 +32,8 @@ def test_concurrent_snapshots_are_immutable_and_unique(auth_postgres):
     assert len({result[0] for result in results}) == 1
     with Session(engine) as db:
         assert db.scalar(select(func.count()).select_from(BillingSnapshot).where(
-            BillingSnapshot.workspace_id == identifier)) == 1
-        workspace = db.get(Workspace, identifier)
-        workspace.billing_multiplier_percent = 125
+            BillingSnapshot.account_id == identifier)) == 1
+        db.add(UserModelPolicy(user_id=identifier, billing_multiplier_percent=125))
         db.commit()
         row = pricing.operation_snapshot(db, identifier, request, "model")
         assert row.context == results[0][1] and row.context["multiplier_percent"] == 100

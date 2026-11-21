@@ -2,7 +2,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 from app import model_pricing as prices
-from app.models import ModelBillingSettings, SiteAuditEvent, UsagePolicy, User, Workspace
+from app.models import ModelBillingSettings, SiteAuditEvent, UsagePolicy, User
 from test_auth import accounts, register
 from test_workspace_billing import shared_billing
 
@@ -18,7 +18,7 @@ def administrator(accounts):
     session = register(owner)
     db.get(User, UUID(session["user"]["id"])).is_site_admin = True
     db.commit()
-    return owner, db, UUID(session["workspace_id"])
+    return owner, db, UUID(session["user"]["id"])
 
 
 def test_template_permissions_completeness_zero_and_version(accounts):
@@ -49,26 +49,26 @@ def test_document_template_is_live_and_never_copies_workspace_policies(accounts)
     owner, db, original = administrator(accounts)
     assert owner.put("/site/admin/pricing-template", json=template(rate=7)).status_code == 200
     (_, other, _), _ = accounts
-    workspace = UUID(register(other, "template@example.com")["workspace_id"])
-    copied = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
+    workspace = UUID(register(other, "template@example.com")["user"]["id"])
+    copied = db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all()
     assert copied == []
     owner.put("/site/admin/pricing-template", json=template(version=1, rate=8))
     db.expire_all()
     assert db.get(ModelBillingSettings, 1).template["ocr_pages"]["credits_per_unit"] == 8
-    listing = owner.get(f"/site/admin/workspaces/{original}/usage-policies").json()
-    assert len(listing) == 2 and all(p["credits_per_unit"] is None for p in listing)
-    assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == original)).all() == []
+    assert owner.get(f"/site/admin/workspaces/{original}/usage-policies").status_code == 404
+    assert db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == original)).all() == []
 
 
 def test_template_and_signup_rollback_together(accounts):
     owner, db, _ = administrator(accounts)
     owner.put("/site/admin/pricing-template", json=template())
     from app.auth import create_user
-    user, workspace = create_user(db, "rollback@example.com", "Rollback")
-    assert db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all() == []
+    user = create_user(db, "rollback@example.com", "Rollback")
+    workspace = user.id
+    assert db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all() == []
     db.rollback()
-    assert db.get(Workspace, workspace) is None and db.get(User, user.id) is None
-    assert not db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace)).all()
+    assert db.get(User, workspace) is None
+    assert not db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all()
 
 
 def test_draft_does_not_enable_billing_and_units_are_checked(accounts):

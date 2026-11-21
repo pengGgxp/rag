@@ -15,7 +15,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app import auth, email_auth, main, site_auth
-from app.models import AuthenticationFlow, CreditLedgerEntry, ExternalIdentity, LoginSession, User, Workspace, LEGACY_WORKSPACE_ID
+from app.models import AuthenticationFlow, CreditLedgerEntry, ExternalIdentity, LoginSession, User
 
 
 @pytest.fixture
@@ -26,9 +26,6 @@ def auth_postgres(monkeypatch):
     if not (make_url(url).database or "").startswith("rag_auth_test_"):
         pytest.fail("refusing non-test database")
     engine = create_engine(url, pool_size=10)
-    with Session(engine) as db:
-        if not db.get(Workspace, LEGACY_WORKSPACE_ID):
-            db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="Reserved workspace")); db.commit()
     def database():
         with Session(engine, autoflush=False) as db:
             yield db
@@ -75,7 +72,8 @@ def test_concurrent_verified_registration_consumes_flow_and_grants_once(auth_pos
         assert db.scalar(select(func.count()).select_from(User).where(User.email == email)) == 1
         user = db.scalar(select(User).where(User.email == email))
         session = db.scalar(select(LoginSession).where(LoginSession.user_id == user.id))
-        assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(CreditLedgerEntry.workspace_id == session.workspace_id)) == 1
+        assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(
+            CreditLedgerEntry.account_id == session.user_id)) == 1
         assert db.get(AuthenticationFlow, auth.digest(raw)) is None
 
 
@@ -98,7 +96,7 @@ def test_external_identity_conflict_rolls_back_user_workspace_and_credit(auth_po
 def test_concurrent_email_verification_signs_in_once(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
-        user, _ = auth.create_user(db, f"proof-{uuid4().hex}@example.com", "Proof", "test-password-1234")
+        user = auth.create_user(db, f"proof-{uuid4().hex}@example.com", "Proof", "test-password-1234")
         db.commit(); user_id, email = user.id, user.email
     raw = add_flow(engine, purpose="login", user_id=user_id, email=email, stage="code")
     with Session(engine) as db:

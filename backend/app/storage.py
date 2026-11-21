@@ -75,3 +75,14 @@ def delete_object(object_key: str) -> None:
     except Exception as exc:
         raise HTTPException(503, "对象存储删除失败，请稍后重试") from exc
 
+
+def list_object_keys(prefix: str):
+    backend = storage_backend()
+    if backend:
+        yield from (item["Key"] for item in backend.iter_objects(prefix))
+        return
+    for page in client().get_paginator("list_objects_v2").paginate(
+        Bucket=get_settings().s3_bucket, Prefix=prefix
+    ):
+        yield from (item["Key"] for item in page.get("Contents", []))
+

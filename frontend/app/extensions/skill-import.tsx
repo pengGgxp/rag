@@ -16,7 +16,7 @@ import { uploadSkillPackage, zipSkillFolder, type SkillPackagePreview } from "./
 import { SkillPackagePicker } from "./skill-package-picker";
 
 export function SkillImport({ id }: { id?: string }) {
-  const { session, role } = useAuth();
+  const { session } = useAuth();
   const input = useRef<HTMLInputElement>(null), folder = useRef<HTMLInputElement>(null);
   const [operation, setOperation] = useState<"upload" | "import" | null>(null), [error, setError] = useState("");
   const busy = operation !== null;
@@ -28,7 +28,7 @@ export function SkillImport({ id }: { id?: string }) {
   const [selected, setSelected] = useState<number[]>([]);
   const [activePackage, setActivePackage] = useState(0);
   const resource = useExtensionResource<ResourceFile>(id ? `/agent/skills/${id}` : null);
-  const canWrite = role === "admin" || role === "editor";
+  const canWrite = true;
   async function upload(files: File[], isFolder: boolean) {
     if (!files.length || busy) return;
     const error = skillUploadError(files, isFolder);
@@ -95,8 +95,8 @@ export function SkillImport({ id }: { id?: string }) {
     {resource.data && <button type="button" className="text-button" data-resource-id={resource.data.id} onClick={() => setPreview(resource.data!)}>{resource.data.path}</button>}
     {!!items.length && <><p role="status">已导入 {items.length} 个资源文件</p>
       <ul>{items.map(item => <li key={item.id}><button type="button" className="text-button" data-resource-id={item.id} onClick={() => setPreview(item)}>{item.path}</button></li>)}</ul></>}
-    <Link href={`/resources${directory ? `?path=${encodeURIComponent(directory)}` : ""}`}>在工作区查看</Link>
-    {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)}
+    <Link href={`/resources${directory ? `?path=${encodeURIComponent(directory)}` : ""}`}>在我的资源中查看</Link>
+    {preview && <ResourcePreview item={preview} scope={session.user.id} onClose={() => setPreview(null)}
       restoreFocusSelector={`[data-resource-id="${preview.id}"]`} />}
   </section>;
 }

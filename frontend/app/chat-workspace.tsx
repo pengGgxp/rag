@@ -354,8 +354,8 @@ export function ChatWorkspace({
       .then(value => { if (!controller.signal.aborted) setWebAvailable(value.available); })
       .catch(() => { if (!controller.signal.aborted) { setWebAvailable(false); setWebFailed(true); } });
     return () => controller.abort();
-  }, [webAttempt, session.workspace_id]);
-  useEffect(() => { setWebEnabled(true); }, [session.workspace_id]);
+  }, [webAttempt, session.user.id]);
+  useEffect(() => { setWebEnabled(true); }, [session.user.id]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -396,7 +396,7 @@ export function ChatWorkspace({
   const follow = useRef(true);
   const restoredModelFor = useRef<string | null>(null);
   const cache = useRef(new Map<string, Conversation>());
-  const draftPrefix = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
+  const draftPrefix = `rag-chat-draft:${session.user.id}:`;
   const [heldScope, setHeldScope] = useState("");
   const [held, setHeld] = useState<HeldInput[]>([]);
   const inputScope = `${draftPrefix}${conversation?.id ?? "new"}:pending`;
@@ -529,7 +529,7 @@ export function ChatWorkspace({
   }, []);
   const refreshList = useCallback(async (cursor?: string | null) => {
     const currentEpoch = ++historyEpoch.current;
-    const scope = `rag-chat-draft:${session.user.id}:${session.workspace_id}:`;
+    const scope = `rag-chat-draft:${session.user.id}:`;
     setHistoryError("");
     setHistoryLoading(true);
     try {
@@ -543,7 +543,7 @@ export function ChatWorkspace({
     } finally {
       if (historyEpoch.current === currentEpoch && historyScope.current === scope) setHistoryLoading(false);
     }
-  }, [session.workspace_id, session.user.id]);
+  }, [session.user.id]);
   useEffect(() => {
     if (!conversation) return;
     setConversations(items => items.map(item => item.id === conversation.id ? { ...item,
@@ -570,7 +570,7 @@ export function ChatWorkspace({
       }
     }, 3000);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [backgroundRequests, session.workspace_id]);
+  }, [backgroundRequests, session.user.id]);
   const stopGeneration = useCallback(async () => {
     const active = generation.current;
     if (!active) return;
@@ -1282,7 +1282,7 @@ export function ChatWorkspace({
   }, [running]);
   return (
     <CloudComputerProvider
-      scope={{ userId: session.user.id, workspaceId: session.workspace_id, conversationId: conversation?.id ?? null }}>
+      scope={{ userId: session.user.id, conversationId: conversation?.id ?? null }}>
       <WorkspaceNavigation>
         <button className="secondary new-chat" onClick={newChat}>
           <Plus size={16} />
@@ -1359,7 +1359,7 @@ export function ChatWorkspace({
                     <><MessageAttachments items={message.attachments} />
                       {questionText(message.content, storedMentions(message))}</>
                   ) : (
-                    <MessageFileProvider key={message.id} scope={`${session?.user.id}:${session?.workspace_id}`}>
+                    <MessageFileProvider key={message.id} scope={session?.user.id ?? ""}>
                       {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
                         if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
                         if (block.type === "user") return <div key={block.id} className="turn-steering">
@@ -1374,7 +1374,7 @@ export function ChatWorkspace({
                         const firstWebCall = message.tool_events?.find(item => item.name === "web_search" || item.name === "web_fetch");
                         const sources = message.web_sources?.filter(source => source.call_ids?.length
                           ? source.call_ids.some(id => callIds.has(id)) : !!firstWebCall && callIds.has(firstWebCall.call_id)) ?? [];
-                        return <ConversationActivity key={block.id} items={activities.map(activityItem)} workspaceId={session?.workspace_id}
+                        return <ConversationActivity key={block.id} items={activities.map(activityItem)}
                           detailRoot={message.request_id ? `/conversations/${conversation.id}/requests/${message.request_id}/tools` : undefined}
                           turnFinished={message.status !== "streaming"}
                           finished={message.status !== "streaming" || block.blocks.at(-1)?.id !== message.display_blocks?.at(-1)?.id}
@@ -1515,7 +1515,7 @@ export function ChatWorkspace({
           follow.current = true; setLatest(false);
         }}><ArrowDown size={14} />回到最新</button></div>}
         <div className="composer-area">
-          <ConversationPreview key={`${session.user.id}:${session.workspace_id}:${conversation?.id ?? "new"}`} />
+          <ConversationPreview key={`${session.user.id}:${conversation?.id ?? "new"}`} />
           {running && <div className="turn-status">
             <Loader2 size={15} className="spin" aria-hidden="true" />
             <span role="status">{browserReconnecting ? "正在恢复对话连接…" : phase || "处理中"}</span>
@@ -1567,7 +1567,7 @@ export function ChatWorkspace({
             {tooManyMentions && <p className="chat-attachment-warning" role="alert">每条消息最多可以提及 8 项资料。</p>}
             {attachments.hasImages && !selectedModel?.supports_images &&
               <p className="chat-attachment-warning" role="alert">当前模型不支持图片，请选择支持图片的模型。</p>}
-            <DocumentMentionMenu key={`mentions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
+            <DocumentMentionMenu key={`mentions:${session.user.id}:${conversation?.id ?? "draft"}`} ref={mentionMenu}
               draft={question} caret={caret} disabled={draftReferencesDisabled || extensionBusy}
               supportsTools={selectedModel?.supports_tools !== false}
               selected={documentMentions} input={composerInput} onActive={updateMentionState}
@@ -1582,7 +1582,7 @@ export function ChatWorkspace({
                   { ...item, start, end: start + token.length }]);
                 requestAnimationFrame(() => { composerInput.current?.focus(); composerInput.current?.setSelectionRange(nextCaret, nextCaret); });
               }} />
-            <ExtensionSlashMenu key={`extensions:${session.workspace_id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
+            <ExtensionSlashMenu key={`extensions:${session.user.id}:${conversation?.id ?? "draft"}`} ref={slashMenu}
               compactDisabled={contextLoading || modelLoading || !!contextError || !!modelError || !!conversationError || thinkingStale || !conversation || !selectedModel?.available || !contextInfo.eligible || contextInfo.status === "running"}
               onCompact={() => setCompactRequest(value => value + 1)}
               draft={question} caret={caret} input={composerInput} disabled={running || loading || extensionBusy || mentionState.open}

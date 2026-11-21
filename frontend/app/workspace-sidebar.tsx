@@ -15,7 +15,7 @@ const destinations = [
   { mode: "catalog", href: "/", label: "知识库", icon: BookOpen },
   { mode: "chat", href: "/?chat=1", label: "知识问答", icon: MessageSquare },
   { mode: "extensions", href: "/extensions", label: "扩展", icon: Puzzle },
-  { mode: "files", href: "/resources", label: "工作区", icon: Files },
+  { mode: "files", href: "/resources", label: "我的资源", icon: Files },
 ] as const;
 
 export function WorkspaceSidebar({ screen, children, onNavigate }: {
@@ -36,7 +36,7 @@ export function WorkspaceSidebar({ screen, children, onNavigate }: {
     refresh();
     window.addEventListener("focus", refresh);
     return () => { live = false; window.removeEventListener("focus", refresh); };
-  }, [session.user.id, session.workspace_id]);
+  }, [session.user.id]);
   return <>
     <Link className="brand" href="/" onClick={onNavigate}>
       <span className="brand-mark"><img src="/icon.svg" alt="" /></span><span>知库</span>

@@ -28,7 +28,7 @@ router.include_router(mcp_router)
 
 def defaults(db, access):
     servers = db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
-        MCPServer.workspace_id == access.workspace_id, MCPServer.enabled.is_(True))).all()
+        MCPServer.account_id == access.user_id, MCPServer.enabled.is_(True))).all()
     return [], [str(row.id) for row in servers if row.allowed_tools and row.last_checked_at]
 
 
@@ -63,7 +63,7 @@ class ExtensionRuntime:
             from .skill_discovery import summary
             self.skills = summary(db, access)
             for row in db.scalars(select(MCPServer).where(MCPServer.owner_id == access.user_id,
-                    MCPServer.workspace_id == access.workspace_id,
+                    MCPServer.account_id == access.user_id,
                     MCPServer.id.in_([UUID(str(item)) for item in server_ids]), MCPServer.enabled.is_(True))):
                 if not row.last_checked_at:
                     continue
@@ -78,7 +78,7 @@ class ExtensionRuntime:
         from .cloud_computer import Settings as CloudSettings
         with factory() as db:
             cloud_settings = db.get(CloudSettings, 1)
-            self.execution_available = bool(cloud_settings and cloud_settings.enabled) and access.role in ("admin", "editor")
+            self.execution_available = bool(cloud_settings and cloud_settings.enabled)
             from .cloud_environment import environment_description
             self.environment_description = environment_description(cloud_settings) if self.execution_available else ""
         definitions = tool_definitions()
@@ -102,15 +102,12 @@ class ExtensionRuntime:
         with factory() as db:
             self.tools.extend(image_tools(db, access))
         from .conversation_documents import TOOLS as DOCUMENT_TOOLS
-        from .knowledge_base_tools import TOOLS as KNOWLEDGE_TOOLS, WRITE_NAMES
-        self.tools.extend(item for item in KNOWLEDGE_TOOLS
-            if access.role in ("admin", "editor") or item["function"]["name"] not in WRITE_NAMES)
+        from .knowledge_base_tools import TOOLS as KNOWLEDGE_TOOLS
+        self.tools.extend(KNOWLEDGE_TOOLS)
+        self.tools.extend(DOCUMENT_TOOLS)
         self.versions.append(("knowledge-base-tools", 1))
+        self.versions.append(("conversation-documents", 1))
         self.versions.sort()
-        if access.role in ("admin", "editor"):
-            self.tools.extend(DOCUMENT_TOOLS)
-            self.versions.append(("conversation-documents", 1))
-            self.versions.sort()
         from .question_workbench import Runtime, TOOLS
         self.question_workbench = Runtime(factory, access, question_workbench, request_id, message_id)
         if self.question_workbench.version:
@@ -260,13 +257,11 @@ class ExtensionRuntime:
                     return result
                 with self.factory() as db:
                     access = self.access.revalidate(db)
-                    if name == "run_command":
-                        access.editor()
                     from .models import ChatMessage
                     message = db.get(ChatMessage, self.message_id) if self.message_id else None
                     try:
                         from .cloud_computer import tool_request_id
-                        return execute_tool(name, arguments, db, access, access.workspace_id,
+                        return execute_tool(name, arguments, db, access, access.user_id,
                             conversation_id=message.conversation_id if message else None,
                             request_id=tool_request_id(self.request_id, call_id) if name != "get_workspace_file_link" else None,
                             check_active=check_active, **execution)

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app import auth, document_uploads, main, storage_billing, tasks
 from app.ingestion_recovery import recover_interrupted_ingestion, worker_claim
-from app.models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, KnowledgeBase, LoginSession, Membership, User, Workspace
+from app.models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, KnowledgeBase, LoginSession, User
 from test_auth_postgres import auth_postgres
 from test_cos_uploads import FakeCos
 
@@ -29,19 +29,17 @@ def test_verifying_upload_does_not_lock_account_during_download(auth_postgres, m
     monkeypatch.setattr(tasks.verify_upload, "apply_async", lambda **_: None)
     identifier = uuid4()
     with Session(engine) as db:
-        workspace = Workspace(name="Concurrent upload")
         user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
-        db.add_all([workspace, user])
+        db.add(user)
         db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="editor"))
-        kb = KnowledgeBase(workspace_id=workspace.id, name="Concurrent upload")
+        kb = KnowledgeBase(account_id=user.id, owner_id=user.id, name="Concurrent upload")
         db.add(kb)
         db.flush()
-        access = auth.Access(user.id, workspace.id, "editor", "")
+        access = auth.Access(user.id, "")
         kb_id = kb.id
         key = f"{kb_id}/{identifier}.txt"
         storage.objects[key] = b"sample"
-        db.add(DocumentUpload(id=identifier, user_id=user.id, workspace_id=workspace.id,
+        db.add(DocumentUpload(id=identifier, user_id=user.id, account_id=user.id,
             knowledge_base_id=kb_id, filename="first.txt", content_type="text/plain",
             size_bytes=6, object_key=key, multipart_id="sealed", request_key=uuid4(),
             parts={"1": hashlib.sha256(b"sample").hexdigest()}, state="verifying",
@@ -86,14 +84,14 @@ def test_verifying_upload_does_not_lock_account_during_download(auth_postgres, m
             assert row.document_id and len(processed) == 1
 
 
-def test_workspace_capacity_lock_serializes_writers_without_blocking_foreign_keys(auth_postgres):
+def test_account_capacity_lock_serializes_writers_without_blocking_foreign_keys(auth_postgres):
     with Session(auth_postgres) as capacity, Session(auth_postgres) as other:
-        workspace = Workspace(name="Capacity lock")
-        capacity.add(workspace)
+        user = User(name="Capacity lock", email=f"capacity-{uuid4().hex}@example.com")
+        capacity.add(user)
         capacity.commit()
-        identifier = workspace.id
+        identifier = user.id
         storage_billing.lock_workspace(capacity, identifier)
-        row = select(Workspace.id).where(Workspace.id == identifier)
+        row = select(User.id).where(User.id == identifier)
         assert other.scalar(row.with_for_update(read=True, key_share=True, nowait=True)) == identifier
         with pytest.raises(OperationalError) as conflict:
             other.scalar(row.with_for_update(key_share=True, nowait=True))
@@ -110,13 +108,11 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     processed = []
     monkeypatch.setattr(tasks.process_document, "delay", lambda *a, **kw: processed.append(a))
     with Session(engine) as db:
-        workspace = Workspace(name="COS isolation")
         user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
-        db.add_all([workspace, user]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id, workspace_id=workspace.id,
+        db.add(user); db.flush()
+        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
             expires_at=auth.now()+timedelta(hours=1)))
-        kb = KnowledgeBase(workspace_id=workspace.id, name="Multipart tests")
+        kb = KnowledgeBase(account_id=user.id, owner_id=user.id, name="Multipart tests")
         db.add(kb); db.commit(); kb_id = kb.id
     headers = {"X-RAG-Request": "1", "X-CSRF-Token": csrf}
     with TestClient(main.app, headers=headers) as client:
@@ -155,13 +151,11 @@ def test_parallel_upload_creation_reuses_idempotency_session(auth_postgres, monk
     monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     with Session(engine) as db:
-        workspace = Workspace(name="COS idempotency")
         user = User(name="Uploader", email=f"cos-{uuid4().hex}@example.com", email_verified_at=auth.now())
-        db.add_all([workspace, user]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id, workspace_id=workspace.id,
+        db.add(user); db.flush()
+        db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
             expires_at=auth.now()+timedelta(hours=1)))
-        kb = KnowledgeBase(workspace_id=workspace.id, name="Idempotent uploads")
+        kb = KnowledgeBase(account_id=user.id, owner_id=user.id, name="Idempotent uploads")
         db.add(kb); db.commit(); kb_id = kb.id
 
     headers = {"X-RAG-Request": "1", "X-CSRF-Token": csrf}
@@ -195,10 +189,10 @@ def test_recovery_skips_active_worker_and_does_not_replay_uncertain_paid_batch(a
 
     engine = auth_postgres
     with Session(engine) as db:
-        workspace = Workspace(name="Ingestion recovery isolation")
-        db.add(workspace)
+        user = User(name="Ingestion recovery", email=f"recovery-{uuid4().hex}@example.com")
+        db.add(user)
         db.flush()
-        kb = KnowledgeBase(workspace_id=workspace.id, name="Recovery")
+        kb = KnowledgeBase(account_id=user.id, owner_id=user.id, name="Recovery")
         db.add(kb)
         db.flush()
         safe = add_document(db, kb, "safe resume", status=DocumentStatus.PROCESSING)

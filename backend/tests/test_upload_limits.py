@@ -20,7 +20,7 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
     kb_id = library(owner)
     previous = add_document(db, db.get(KnowledgeBase, kb_id), "previous version") if new_version else None
     session = db.get(LoginSession, auth.digest(owner.cookies.get(auth.COOKIE)))
-    access = auth.get_access(session, db)
+    access = auth.get_access(session)
     stored, queued = [], []
 
     def store(fileobj, **kwargs):

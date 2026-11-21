@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app import auth, conversation_jobs, conversations, llm_providers, main, shared_resources, workspace_files
 from app.db import Base, engine, SessionLocal
 from app.llm import ToolResponse
-from app.models import LEGACY_WORKSPACE_ID, ModelBillingSettings
+from app.models import ModelBillingSettings
 from auth_helpers import authenticate, configured_model
 from test_cloud_computer_mount import MemoryMount
 from test_retrieval import add_document, add_library
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         client = TestClient(main.app)
         user = authenticate(client, db)
         user.email_verified_at = auth.now()
-        configured_model(db, LEGACY_WORKSPACE_ID)
+        configured_model(db, user.id)
         db.add(ModelBillingSettings(id=1, enabled=False, shared_pricing_enabled=False))
         library = add_library(db)
         library.name = "产品资料"
@@ -57,9 +57,9 @@ if __name__ == "__main__":
         document.filename = "项目说明.txt"
         db.commit()
         session = db.get(auth.LoginSession, auth.digest(client.cookies.get(auth.COOKIE)))
-        access = auth.Access(user.id, LEGACY_WORKSPACE_ID, "admin", session.token_hash)
+        access = auth.Access(user.id, session.token_hash)
         for path in ["项目说明.txt", "项目/交付/项目说明.txt", "研发/需求/交付验收与资源文件路径展示长名称检查.txt"]:
-            workspace_files._save_bytes(access.workspace_id, access, db, path, b"LOCAL SYNTHETIC FILE", "text/plain")
+            workspace_files._save_bytes(access.user_id, access, db, path, b"LOCAL SYNTHETIC FILE", "text/plain")
         cookie = client.cookies.get(auth.COOKIE)
 
     @main.app.get("/__fixture/session")

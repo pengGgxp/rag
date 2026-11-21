@@ -16,12 +16,13 @@ from test_auth_postgres import auth_postgres
 def test_parallel_save_has_one_document_receipt_and_dispatch(auth_postgres, monkeypatch):
     factory = sessionmaker(bind=auth_postgres, expire_on_commit=False)
     with factory() as db:
-        user, workspace = auth.create_user(db, f'output-{uuid4().hex}@example.com', 'Output test')
-        login = auth.login_response(db,user,workspace_id=workspace,action='auth.test')
+        user = auth.create_user(db, f'output-{uuid4().hex}@example.com', 'Output test')
+        workspace = user.id
+        login = auth.login_response(db,user,action='auth.test')
         cookie=SimpleCookie(); cookie.load(login.headers['set-cookie'])
-        access=auth.Access(user.id,workspace,'admin',auth.digest(cookie['rag_session'].value))
-        library=KnowledgeBase(workspace_id=workspace,name='Output tests')
-        conversation=Conversation(workspace_id=workspace,owner_id=user.id,title='Synthetic')
+        access=auth.Access(user.id,auth.digest(cookie['rag_session'].value))
+        library=KnowledgeBase(account_id=workspace, owner_id=user.id, name='Output tests')
+        conversation=Conversation(account_id=workspace,owner_id=user.id,title='Synthetic')
         db.add_all([library,conversation]); db.flush()
         rid=uuid4()
         message=ChatMessage(conversation_id=conversation.id,sequence=1,role='assistant',request_id=rid)

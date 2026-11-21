@@ -74,7 +74,7 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
         <label>目标利润<span className="policy-input"><input aria-label="目标利润" inputMode="decimal" placeholder="0.00" value={profit} onChange={e => setProfit(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>其他费用分摊<span className="policy-input"><input aria-label="其他费用分摊" inputMode="decimal" value={overhead} onChange={e => setOverhead(e.target.value)} disabled={busy} /><span>元</span></span></label>
         <label>支付费率<span className="policy-input"><input aria-label="支付费率" inputMode="decimal" value={fee} onChange={e => setFee(e.target.value)} disabled={busy} /><span>%</span></span></label>
-        {policy.unit !== "packages" && <label>工作区倍率试算<span className="policy-input"><input aria-label="工作区倍率试算" inputMode="decimal" value={multiplier} onChange={e => setMultiplier(e.target.value)} disabled={busy} /><span>×</span></span></label>}
+        {policy.unit !== "packages" && <label>用户倍率试算<span className="policy-input"><input aria-label="用户倍率试算" inputMode="decimal" value={multiplier} onChange={e => setMultiplier(e.target.value)} disabled={busy} /><span>×</span></span></label>}
       </div>
       {!valid && cost !== "" && profit !== "" && <p className="calculator-warning" role="alert"><CircleAlert size={16} />金额须非负且最多 8 位小数；费率为 0–99.9999%，用量为正整数，倍率为 0.01–100、最多两位小数。</p>}
       <div className="calculator-reference">
@@ -97,7 +97,7 @@ export function PricingCalculator({ policy, busy, apply, close, restoreFocusSele
               <div><dt>预计支付手续费</dt><dd>{yuan(quote.effective_fee_yuan)}</dd></div>
               <div className="calculator-profit" data-loss={quote.loss}><dt>倍率后预计利润</dt><dd>{yuan(quote.effective_profit_yuan)}</dd></div>
             </dl>
-            {!quote.target_met && <p className="calculator-warning" role="alert"><CircleAlert size={16} />{quote.loss ? "该倍率下预计亏损，请检查基准价或工作区倍率。" : "该倍率下未达到目标利润。"}</p>}
+            {!quote.target_met && <p className="calculator-warning" role="alert"><CircleAlert size={16} />{quote.loss ? "该倍率下预计亏损，请检查基准价或用户倍率。" : "该倍率下未达到目标利润。"}</p>}
             {quote.unit_size !== policy.unit_size && <p className="calculator-warning"><CircleAlert size={16} />应用将同时把计价用量从 {policy.unit_size.toLocaleString()} 改为 {quote.unit_size.toLocaleString()} {unit}。</p>}
           </> : <p className="calculator-empty">填写成本与目标利润后查看结果</p>}
       </div>

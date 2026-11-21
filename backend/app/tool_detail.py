@@ -87,10 +87,10 @@ def receipt_projection(db, access, conversation_id, request_id, execution_id, of
             resource = db.get(WorkspaceFile, UUID(str(file.get("id"))), populate_existing=True)
         except (TypeError, ValueError, AttributeError):
             continue
-        if resource and resource.workspace_id == access.workspace_id and resource.deleted_at is None:
+        if resource and resource.account_id == access.user_id and resource.deleted_at is None:
             version = db.scalar(select(WorkspaceFileVersion).where(WorkspaceFileVersion.file_id == resource.id,
                 WorkspaceFileVersion.version == file.get("version", 1)).execution_options(populate_existing=True))
-            if version and version.workspace_id == access.workspace_id and version.deleted_at is None and version.available is not False:
+            if version and version.account_id == access.user_id and version.deleted_at is None and version.available is not False:
                 add("文件", resource.path)
     if data.get("error") or data.get("isError"):
         add("结果", "操作未完成")

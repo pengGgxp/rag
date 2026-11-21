@@ -46,7 +46,7 @@ async (page) => {
     const send = json => route.fulfill({ json, headers });
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     if (path === "/auth/me") return send({ user: { id: "layout-user", name: "Layout", email: "layout@example.invalid" },
-      workspace_id: "layout-workspace", workspaces: [{ id: "layout-workspace", name: "Layout", role: "editor" }], csrf_token: "fixture" });
+      csrf_token: "fixture" });
     if (path === "/auth/options") return send({ first_run: false });
     if (path === "/conversations") return send({ items: [conversation], next_cursor: null });
     if (path === "/conversations/fixture") return send(conversation);

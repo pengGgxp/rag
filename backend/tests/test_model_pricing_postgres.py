@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app import model_pricing as pricing
 from app.auth import create_user
-from app.models import ModelBillingSettings, UsagePolicy, User, Workspace
+from app.models import ModelBillingSettings, UsagePolicy, User, UserModelPolicy
 from test_auth_postgres import auth_postgres
 
 
@@ -34,14 +34,14 @@ def test_template_concurrent_save_and_registration_without_price_copies(auth_pos
         results = list(pool.map(update, [2,3,4]))
     assert results.count(200) == 1 and results.count(409) == 2
     with Session(engine) as db:
-        _, workspace = create_user(db, f"copy-{uuid4().hex}@example.com", "Copy")
-        copied = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace)).all()
+        workspace = create_user(db, f"copy-{uuid4().hex}@example.com", "Copy").id
+        copied = db.scalars(select(UsagePolicy).where(UsagePolicy.account_id==workspace)).all()
         assert copied == []
-        assert db.get(Workspace, workspace).billing_multiplier_percent == 100
+        assert db.get(UserModelPolicy, workspace) is None
         db.rollback()
     with Session(engine) as db:
-        assert db.get(Workspace, workspace) is None
-        assert not db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id==workspace)).all()
+        assert db.get(User, workspace) is None
+        assert not db.scalars(select(UsagePolicy).where(UsagePolicy.account_id==workspace)).all()
         # Do not leak this test's template into subsequent migrated-database tests.
         settings = db.get(ModelBillingSettings, 1)
         settings.template = {}; settings.version += 1; db.commit()

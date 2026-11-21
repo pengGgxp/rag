@@ -23,9 +23,9 @@ _local = threading.local()
 
 
 @contextmanager
-def workspace_lock(db, workspace_id):
+def workspace_lock(db, account_id):
     """Keep a session advisory lock across journal commits; reentrant per thread."""
-    identity = str(workspace_id)
+    identity = str(account_id)
     held = getattr(_local, "held", set())
     if identity in held:
         yield
@@ -132,7 +132,7 @@ def replay(db, access, request_id, fingerprint):
     if not request_id:
         return None
     operation = db.scalar(select(WorkspaceFileOperation).where(
-        WorkspaceFileOperation.workspace_id == access.workspace_id,
+        WorkspaceFileOperation.account_id == access.user_id,
         WorkspaceFileOperation.request_id == request_id))
     if operation is None:
         return None
@@ -160,7 +160,6 @@ def execute(db, access, changes, update_metadata, *, request_id=None, signature=
     commit together, so interrupted operations either finalize or compensate.
     Caller must hold workspace_lock and check permissions/capacity before here.
     """
-    access.editor()
     store = storage(db)
     signature = signature or fingerprint([{k: v for k, v in item.items() if k != "data"} |
         ({"hash": hashlib.sha256(item["data"]).hexdigest()} if "data" in item else {}) for item in changes])
@@ -169,15 +168,15 @@ def execute(db, access, changes, update_metadata, *, request_id=None, signature=
         return previous
     targets = {item["key"] for item in changes} | {item["source"] for item in changes if item.get("source")}
     pending = db.scalars(select(WorkspaceFileOperation).where(
-        WorkspaceFileOperation.workspace_id == access.workspace_id,
+        WorkspaceFileOperation.account_id == access.user_id,
         WorkspaceFileOperation.state.in_(("pending", "recovery_required")))).all()
     for other in pending:
         if any(step["key"] in targets for step in other.steps):
             # Do not let later compensation undo a new write to the same file.
             raise HTTPException(409, "目标文件有尚未完成的操作，请先核对该文件的操作结果")
     identifier = uuid4()
-    root = f"workspaces/{access.workspace_id}/file-operations/{identifier}/"
-    operation = WorkspaceFileOperation(id=identifier, workspace_id=access.workspace_id, user_id=access.user_id,
+    root = f"accounts/{access.user_id}/file-operations/{identifier}/"
+    operation = WorkspaceFileOperation(id=identifier, account_id=access.user_id, user_id=access.user_id,
         request_id=request_id or str(identifier), fingerprint=signature, state="pending", steps=[], result={})
     # Persist an empty intent before preparing materials, so crashes during
     # staging also have a durable owner and can be cleaned without live changes.
@@ -240,7 +239,7 @@ def recover_pending(db):
         WorkspaceFileOperation.state.in_(("pending", "recovery_required", "completed", "rolled_back")))))
     for identifier in identifiers:
         operation = db.get(WorkspaceFileOperation, identifier)
-        with workspace_lock(db, operation.workspace_id):
+        with workspace_lock(db, operation.account_id):
             db.refresh(operation)
             store = storage(db)
             if operation.state in ("pending", "recovery_required"):

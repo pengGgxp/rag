@@ -92,10 +92,9 @@ function StatusIcon({ status }: { status: ConversationActivityItem["status"] }) 
 }
 
 // Only presentation state lives here. Tool execution and safe summaries belong to the server.
-export function ConversationActivity({ items, finished, workspaceId, detailRoot, turnFinished, steps, thinking, children }: {
+export function ConversationActivity({ items, finished, detailRoot, turnFinished, steps, thinking, children }: {
   items: ConversationActivityItem[];
   finished: boolean;
-  workspaceId?: string;
   detailRoot?: string;
   turnFinished?: boolean;
   steps?: ({ type: "activity"; id: string } | { type: "detail"; id: string; content: ReactNode })[];

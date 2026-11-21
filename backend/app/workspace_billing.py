@@ -7,7 +7,16 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from .models import BillingSnapshot, LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
+from .models import (
+    BillingSnapshot,
+    LLMProviderConfig,
+    ModelBillingSettings,
+    ModelConnection,
+    SiteModelProvider,
+    UsagePolicy,
+    UserModelPolicy,
+    User,
+)
 from .llm import measured_usage
 from .credit_amounts import allocate
 
@@ -20,25 +29,39 @@ def shared_enabled(db):
     return bool(row and row.shared_pricing_enabled)
 
 
-def context_for_workspace(db, workspace_id):
+def context_for_workspace(db, account_id):
     # The read lock lets a maintenance pause wait for admissions to commit.
     settings = db.scalar(select(ModelBillingSettings).where(ModelBillingSettings.id == 1)
                          .with_for_update(read=True).execution_options(populate_existing=True))
     if settings and settings.pricing_paused:
         raise HTTPException(503, "计费维护中，请稍后重试")
-    workspace = db.get(Workspace, workspace_id, populate_existing=True)
-    if workspace is None:
-        raise HTTPException(404, "工作区不存在")
+    if db.get(User, account_id) is None:
+        raise HTTPException(404, "账号不存在")
+    policy = db.get(UserModelPolicy, account_id, populate_existing=True)
     shared = bool(settings and settings.shared_pricing_enabled)
-    return {"source_mode": "shared" if shared else "legacy",
-            "multiplier_percent": workspace.billing_multiplier_percent if shared else 100,
-            "multiplier_version": workspace.billing_version,
-            "workspace_id": str(workspace_id)}
+    return {
+        "source_mode": "shared" if shared else "legacy",
+        "multiplier_percent": (
+            policy.billing_multiplier_percent
+            if policy is not None
+            else 100
+        ),
+        "multiplier_version": policy.version if policy is not None else 0,
+        "user_id": str(account_id),
+        "policy_available_models": list(policy.available_models or []) if policy is not None else None,
+        "policy_default_model": policy.default_model if policy is not None else None,
+    }
 
 
-def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=None, required=True):
+def resolve_prices(db, account_id, capabilities, provider_id=None, *, context=None, required=True):
     from .model_connections import connection_for
-    context = context or context_for_workspace(db, workspace_id)
+    context = context or context_for_workspace(db, account_id)
+    allowed_models = context.get("policy_available_models")
+    if provider_id is not None and allowed_models is not None:
+        binding = db.get(LLMProviderConfig, provider_id)
+        site_provider_id = str(binding.site_provider_id) if binding and binding.site_provider_id else None
+        if site_provider_id not in {str(item) for item in allowed_models}:
+            raise HTTPException(403, "当前账号未开通此模型")
     if (context.get("model_provider_id") == str(provider_id) and context.get("model_prices")
             and all(key in context["model_prices"] for key in capabilities)):
         if required and provider_id is not None:
@@ -48,16 +71,16 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
                                   if price.get("connection_id")), None)
             connection = (db.get(ModelConnection, UUID(connection_id), populate_existing=True) if connection_id
                           else connection_for(db, provider, refresh=True) if provider else None)
-            if (binding is None or binding.workspace_id != workspace_id or provider is None
+            if (binding is None or binding.account_id != account_id or provider is None
                     or not provider.enabled or not connection or not connection.enabled):
                 raise HTTPException(503, "当前模型已停用，请选择其他模型")
         return {key: deepcopy(context["model_prices"][key]) for key in capabilities}
     shared = context["source_mode"] == "shared"
-    source, version, identifier, values = "legacy_workspace", 0, str(workspace_id), {}
+    source, version, identifier, values = "legacy_workspace", 0, str(account_id), {}
     source_enabled = True
     if shared and provider_id is not None:
         binding = db.get(LLMProviderConfig, provider_id)
-        if binding is None or binding.workspace_id != workspace_id or not binding.site_provider_id:
+        if binding is None or binding.account_id != account_id or not binding.site_provider_id:
             raise HTTPException(503, "模型服务暂不可用，请联系站点管理员")
         provider = db.get(SiteModelProvider, binding.site_provider_id, populate_existing=True)
         if provider is None or (not provider.enabled and required):
@@ -74,7 +97,7 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
         source, version, values = "platform_documents", settings.version, settings.template
         identifier = "1"
     else:
-        rows = db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace_id,
+        rows = db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == account_id,
             UsagePolicy.provider_id == provider_id, UsagePolicy.capability.in_(capabilities))
             .execution_options(populate_existing=True)).all()
         values = {p.capability: {"unit": p.unit, "unit_size": p.unit_size,
@@ -108,40 +131,40 @@ def resolve_prices(db, workspace_id, capabilities, provider_id=None, *, context=
     return result
 
 
-def operation_snapshot(db, workspace_id, request_id, event_key, *, capabilities=(), provider_id=None, context=None):
+def operation_snapshot(db, account_id, request_id, event_key, *, capabilities=(), provider_id=None, context=None):
     # All callers serialize through the workspace account/request lock or ingestion job.
-    existing = db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == workspace_id,
+    existing = db.scalar(select(BillingSnapshot).where(BillingSnapshot.account_id == account_id,
         BillingSnapshot.request_id == request_id, BillingSnapshot.event_key == event_key))
     if existing:
         return existing
-    context = deepcopy(context or context_for_workspace(db, workspace_id))
-    prices = resolve_prices(db, workspace_id, capabilities, provider_id, context=context) if capabilities else {}
+    context = deepcopy(context or context_for_workspace(db, account_id))
+    prices = resolve_prices(db, account_id, capabilities, provider_id, context=context) if capabilities else {}
     if event_key == "model" and prices:
         context.update(model_provider_id=str(provider_id), model_prices=deepcopy(prices))
-    row = BillingSnapshot(workspace_id=workspace_id, request_id=request_id, event_key=event_key,
+    row = BillingSnapshot(account_id=account_id, request_id=request_id, event_key=event_key,
                           context={**context, "prices": prices})
     try:
         with db.begin_nested():
             db.add(row)
             db.flush()
     except IntegrityError:
-        row = db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == workspace_id,
+        row = db.scalar(select(BillingSnapshot).where(BillingSnapshot.account_id == account_id,
             BillingSnapshot.request_id == request_id, BillingSnapshot.event_key == event_key))
         if row is None:
             raise
     return row
 
 
-def document_snapshot(db, workspace_id, request_id, capability, event_key):
-    return operation_snapshot(db, workspace_id, request_id, event_key, capabilities=(capability,)).context
+def document_snapshot(db, account_id, request_id, capability, event_key):
+    return operation_snapshot(db, account_id, request_id, event_key, capabilities=(capability,)).context
 
 
 def multiplier(context):
     return Fraction(context.get("multiplier_percent", 100), 100)
 
 
-def finish_operation(db, workspace_id, request_id, key="model"):
-    row = db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == workspace_id,
+def finish_operation(db, account_id, request_id, key="model"):
+    row = db.scalar(select(BillingSnapshot).where(BillingSnapshot.account_id == account_id,
         BillingSnapshot.request_id == request_id, BillingSnapshot.event_key == key))
     if row:
         row.status = "complete"
@@ -149,8 +172,8 @@ def finish_operation(db, workspace_id, request_id, key="model"):
 
 class LegacyPriceMeter:
     """Snapshot legacy calls without enabling cache discounts or v2 settlement."""
-    def __init__(self, factory, workspace_id, request_id):
-        self.factory, self.workspace_id, self.request_id = factory, workspace_id, request_id
+    def __init__(self, factory, account_id, request_id):
+        self.factory, self.account_id, self.request_id = factory, account_id, request_id
         self.round = 0
         self.last_snapshot_id = None
 
@@ -159,7 +182,7 @@ class LegacyPriceMeter:
         status = getattr(provider, "status", SimpleNamespace(provider_id=None, provider_key=None))
         provider_id = UUID(status.provider_id) if status.provider_id else None
         with self.factory() as db:
-            root = db.scalar(select(BillingSnapshot).where(BillingSnapshot.workspace_id == self.workspace_id,
+            root = db.scalar(select(BillingSnapshot).where(BillingSnapshot.account_id == self.account_id,
                 BillingSnapshot.request_id == self.request_id, BillingSnapshot.event_key == "model"))
             if root is None:
                 raise ValueError("Model request has no admission snapshot")
@@ -168,7 +191,7 @@ class LegacyPriceMeter:
                 status = SimpleNamespace(provider_id=str(provider_id), provider_key=None)
             capabilities = MODEL_CAPABILITIES if root.context["source_mode"] == "shared" else (
                 "llm_input_tokens", "llm_output_tokens")
-            snapshot = operation_snapshot(db, self.workspace_id, self.request_id, f"model:{self.round}",
+            snapshot = operation_snapshot(db, self.account_id, self.request_id, f"model:{self.round}",
                 capabilities=capabilities, provider_id=provider_id, context=root.context)
             self.last_snapshot_id = str(snapshot.id)
             snapshot_id = snapshot.id
@@ -204,8 +227,8 @@ class LegacyPriceMeter:
             db.commit()
 
 
-def legacy_call_usage(db, workspace_id, request_id):
+def legacy_call_usage(db, account_id, request_id):
     rows = [row for row in db.scalars(select(BillingSnapshot).where(
-        BillingSnapshot.workspace_id == workspace_id, BillingSnapshot.request_id == request_id))
+        BillingSnapshot.account_id == account_id, BillingSnapshot.request_id == request_id))
         if row.event_key.startswith("model:") and row.context.get("call_usage")]
     return [row.context["call_usage"] for row in sorted(rows, key=lambda row: int(row.event_key.split(":")[1]))]

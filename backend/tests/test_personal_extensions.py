@@ -12,7 +12,7 @@ from app import conversations, mcp_client, workspace_files
 from app.agent import AgentCancelled
 from app.extensions import ExtensionRuntime
 from app.llm import LLMUsage, ToolCall, ToolResponse
-from app.models import AgentSkill, Conversation, MCPServer, RemoteToolExecution, Workspace, Membership, SiteModelProvider
+from app.models import AgentSkill, Conversation, MCPServer, RemoteToolExecution, SiteModelProvider
 from auth_helpers import StreamingTestProvider
 from test_auth import register
 from test_extensions import access_for
@@ -42,16 +42,12 @@ def load_tool(runtime, alias):
     runtime.model_tools([])
 
 
-def test_same_user_other_workspace_cannot_read_select_or_execute(accounts, monkeypatch):
-    from dataclasses import replace
+def test_other_user_cannot_read_select_or_execute(accounts, monkeypatch):
     admin, db, _ = setup_site(accounts, monkeypatch)
     remote = connection(admin)
-    access = access_for(admin, db)
-    workspace = Workspace(name="Second workspace")
-    db.add(workspace); db.flush()
-    db.add(Membership(workspace_id=workspace.id, user_id=access.user_id, role="admin"))
-    db.commit()
-    other = replace(access, workspace_id=workspace.id)
+    (_, other_client, _), _ = accounts
+    register(other_client, "other-extension-account@example.com")
+    other = access_for(other_client, db)
     from app.extensions import validate_selection
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
@@ -228,7 +224,7 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     monkeypatch.setattr(storage_downloads, "download_range_fileobj",
         lambda key, start, end: __import__("io").BytesIO(stored[key][start:end+1]))
     access = access_for(owner, db)
-    saved = workspace_files._save_bytes(access.workspace_id, access, db, "reports/answer.md",
+    saved = workspace_files._save_bytes(access.user_id, access, db, "reports/answer.md",
         b"Downloadable result", "text/markdown")
     db.commit()
     monkeypatch.setattr(ExtensionRuntime, "execute", lambda self, name, arguments, **kwargs:
@@ -256,11 +252,11 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     assert "object_key" not in json.dumps(final["tool_events"])
     restored = owner.get(f"/conversations/{conversation}").json()["messages"][-1]
     assert restored["tool_events"] == final["tool_events"]
-    download = owner.get(f"/workspaces/{session['workspace_id']}/files/{artifact['id']}/download")
+    download = owner.get(f"/files/{artifact['id']}/download")
     assert download.status_code == 200 and download.content == b"Downloadable result"
     (_, other, _), _ = accounts
     register(other, "output-isolation@example.com")
-    assert other.get(f"/workspaces/{session['workspace_id']}/files/{artifact['id']}/download").status_code == 404
+    assert other.get(f"/files/{artifact['id']}/download").status_code == 404
 
 
 def test_mcp_new_invocation_observes_changes_and_replays_only_its_own_receipt(accounts, monkeypatch):

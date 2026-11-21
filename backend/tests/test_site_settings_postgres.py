@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from app import auth, main
-from app.models import CreditAccount, SiteSettings
+from app.models import UserCreditAccount, SiteSettings
 from test_auth_postgres import auth_postgres
 
 
@@ -38,16 +38,17 @@ def test_migration_defaults_and_existing_balances(site_settings_postgres):
 
 def test_concurrent_settings_updates_reject_stale_version(site_settings_postgres):
     with Session(site_settings_postgres) as db:
-        user, workspace_id = auth.create_user(db, f"admin-{uuid4().hex}@example.com", "Admin")
+        user = auth.create_user(db, f"admin-{uuid4().hex}@example.com", "Admin")
+        account_id = user.id
         user.is_site_admin = True
         user.email_verified_at = auth.now()
-        response = auth.login_response(db, user, workspace_id=workspace_id)
+        response = auth.login_response(db, user)
         import json
         session = json.loads(response.body)
         cookie = response.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
         config = db.get(SiteSettings, 1)
         version = config.version
-        balance = db.get(CreditAccount, workspace_id).balance
+        balance = db.get(UserCreditAccount, account_id).balance
     barrier = Barrier(2)
     def save(value):
         with TestClient(main.app, headers={"X-RAG-Request": "1", "X-CSRF-Token": session["csrf_token"]}) as client:
@@ -60,7 +61,7 @@ def test_concurrent_settings_updates_reject_stale_version(site_settings_postgres
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(save, (22, 33))) == [200, 409]
     with Session(site_settings_postgres) as db:
-        assert db.get(CreditAccount, workspace_id).balance == balance
+        assert db.get(UserCreditAccount, account_id).balance == balance
         config = db.get(SiteSettings, 1)
         assert config.signup_credits in (22, 33) and config.version == version + 1
         assert config.announcement_revision == 1
@@ -77,8 +78,8 @@ def test_concurrent_new_users_respect_zero_grant(site_settings_postgres):
     def create(index):
         with Session(site_settings_postgres) as db:
             barrier.wait(timeout=10)
-            _, workspace_id = auth.create_user(db, f"zero-{index}-{uuid4().hex}@example.com", "Zero")
+            account_id = auth.create_user(db, f"zero-{index}-{uuid4().hex}@example.com", "Zero").id
             db.commit()
-            return db.get(CreditAccount, workspace_id).balance
+            return db.get(UserCreditAccount, account_id).balance
     with ThreadPoolExecutor(max_workers=3) as pool:
         assert list(pool.map(create, range(3))) == [0, 0, 0]

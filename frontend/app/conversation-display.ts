@@ -68,8 +68,8 @@ export function processHeadline(items: ConversationActivityItem[], finished: boo
   return items.length ? `处理记录 · ${items.length} 项操作` : "思考记录";
 }
 
-export function activityFiles(items: ConversationActivityItem[], workspace = "") {
-  const key = (file: WorkspaceFileReference) => `${workspace}:${file.id}`;
+export function activityFiles(items: ConversationActivityItem[]) {
+  const key = (file: WorkspaceFileReference) => file.id;
   const deliverables = new Set(items.flatMap(item => [...(item.deliverables ?? item.files ?? []),
     ...(item.image_task?.files ?? [])].map(key)));
   const files = new Map<string, WorkspaceFileReference>();

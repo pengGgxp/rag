@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from . import auth
 from .config import get_settings
 from .db import get_db
-from .models import AuthToken, AuthenticationFlow, ExternalIdentity, LoginSession, Membership, User, Workspace, LEGACY_WORKSPACE_ID
+from .models import AuthToken, AuthenticationFlow, ExternalIdentity, LoginSession, User
 from .site_auth import configuration, email_enabled, send_code_mail
 
 router = APIRouter(prefix="/auth", tags=["email-authentication"])
@@ -295,10 +295,7 @@ def complete_registration(payload: CompleteRegistration, request: Request, db: S
     if (row.purpose == "register" or payload.password) and len(payload.password or "") < 12:
         raise HTTPException(422, "密码至少需要 12 个字符")
     try:
-        db.scalar(select(Workspace).where(Workspace.id == LEGACY_WORKSPACE_ID).with_for_update())
-        claimed = db.scalar(select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID))
-        user, _ = auth.create_user(db, row.email, payload.name, payload.password,
-                                  workspace_id=None if claimed else LEGACY_WORKSPACE_ID)
+        user = auth.create_user(db, row.email, payload.name, payload.password)
         user.email_verified_at = auth.now()
         identity = row.data.get("identity")
         if row.purpose == "wechat":

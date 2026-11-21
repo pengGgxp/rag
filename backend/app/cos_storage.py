@@ -92,12 +92,14 @@ class CosStorage:
         except Exception:
             raise HTTPException(503, "文件读取链接生成失败，请稍后重试") from None
 
-    def iter_objects(self):
+    def iter_objects(self, prefix=None):
         marker = ""
         while True:
-            response = self._call("list_objects", Marker=marker, MaxKeys=1000)
+            parameters = {"Prefix": prefix} if prefix is not None else {}
+            response = self._call("list_objects", Marker=marker, MaxKeys=1000, **parameters)
             rows = response.get("Contents", [])
-            yield from [rows] if isinstance(rows, dict) else rows
+            rows = [rows] if isinstance(rows, dict) else rows
+            yield from rows
             if str(response.get("IsTruncated", "")).lower() != "true":
                 return
             marker = response.get("NextMarker") or rows[-1]["Key"]

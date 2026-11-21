@@ -42,9 +42,9 @@ def begin(db, request_id, capability, key):
     price = {**snapshot["prices"][capability], "version": snapshot["version"],
         "source": "platform_search", "source_id": "1"}
     reservations = sum((accrued(db, other) for other in db.scalars(select(ModelUsageRequest).where(
-        ModelUsageRequest.workspace_id == request.workspace_id, ModelUsageRequest.status == "running"))), Fraction())
+        ModelUsageRequest.account_id == request.account_id, ModelUsageRequest.status == "running"))), Fraction())
     reservations += sum((Fraction(other.credits) for other in db.scalars(select(ModelUsageRequest).where(
-        ModelUsageRequest.workspace_id == request.workspace_id, ModelUsageRequest.status == "pending"))), Fraction())
+        ModelUsageRequest.account_id == request.account_id, ModelUsageRequest.status == "pending"))), Fraction())
     if amount(reservations + exact_charge(1, price) * multiplier(request.billing_context)) > account.balance + request.hold:
         raise CreditError()
     call = SearchToolCall(request_id=request_id, call_key=key, capability=capability, price=price)

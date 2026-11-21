@@ -167,9 +167,9 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
         if len(ranges) > 1 or len(content) > MAX_SUBMISSION_BYTES or metadata.get("parts"):
             return parse_batched_pdf(session, job, document, pages, ranges, settings)
     provider = AliyunDocMind(settings)
-    workspace_id = document.knowledge_base.workspace_id
+    account_id = document.knowledge_base.account_id
     metering_id = job.metering_id or job.id
-    pricing_context = document_snapshot(session, workspace_id, metering_id, "ocr_pages", "ocr")
+    pricing_context = document_snapshot(session, account_id, metering_id, "ocr_pages", "ocr")
     ocr_hold = False
     hold_amount = authorization_hold_amount()
 
@@ -184,7 +184,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     if not metadata.get("task_id"):
         storage = ocr_storage(session)
         source_url = storage.read_url(document.object_key) if storage else None
-    authorization_hold(session, workspace_id, None, job.id, hold_amount)
+    authorization_hold(session, account_id, None, job.id, hold_amount)
     session.commit()
     ocr_hold = True
     if not metadata.get("task_id"):
@@ -201,7 +201,7 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
             if not exc.uncertain:
                 # An explicit rejection is safe to retry after configuration is fixed.
                 document.parsing_metadata = None
-                release_hold(session, workspace_id, None, job.id, hold_amount)
+                release_hold(session, account_id, None, job.id, hold_amount)
                 session.commit()
             raise
         except Exception as exc:
@@ -213,17 +213,17 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
         parsed = provider.collect(metadata["task_id"], page_count, check_active)
     except Exception:
         if ocr_hold:
-            release_hold(session, workspace_id, None, job.id, authorization_hold_amount())
+            release_hold(session, account_id, None, job.id, authorization_hold_amount())
             session.commit()
         raise
     check_active()
     event = settle_usage(
-        session, workspace_id, None, metering_id, "ocr_pages", page_count,
+        session, account_id, None, metering_id, "ocr_pages", page_count,
         event_key="ocr", metadata={"document_id": str(document.id), "provider": PARSER_NAME},
         pricing_context=pricing_context,
     )
     reconcile_hold(
-        session, workspace_id, None, job.id, event.credits, hold_amount,
+        session, account_id, None, job.id, event.credits, hold_amount,
     )
     document.parsed_text = parsed.text
     document.parser_name = parsed.parser_name
@@ -237,9 +237,9 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
     import copy
 
     provider = AliyunDocMind(settings)
-    workspace_id = document.knowledge_base.workspace_id
+    account_id = document.knowledge_base.account_id
     metering_id = job.metering_id or job.id
-    pricing_context = document_snapshot(session, workspace_id, metering_id, "ocr_pages", "ocr")
+    pricing_context = document_snapshot(session, account_id, metering_id, "ocr_pages", "ocr")
     metadata = copy.deepcopy(document.parsing_metadata or {
         "provider": PARSER_NAME, "status": "processing", "page_count": len(pages),
         "parts": [{"start": start, "end": end, "status": "pending"} for start, end in ranges],
@@ -261,7 +261,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
     if any(part["status"] == "submitting" and not part.get("task_id") for part in metadata["parts"]):
         raise DocMindError("付费解析请求结果需要核对，暂不能重复提交", uncertain=True)
     hold_amount = authorization_hold_amount()
-    authorization_hold(session, workspace_id, None, job.id, hold_amount)
+    authorization_hold(session, account_id, None, job.id, hold_amount)
     session.commit()
     combined = []
     try:
@@ -313,11 +313,11 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
         if not parsed.text.strip():
             raise DocMindError("阿里云解析未返回可检索文字，请检查扫描清晰度或文档类型")
         event = settle_usage(
-            session, workspace_id, None, metering_id, "ocr_pages", len(pages), event_key="ocr",
+            session, account_id, None, metering_id, "ocr_pages", len(pages), event_key="ocr",
             metadata={"document_id": str(document.id), "provider": PARSER_NAME},
             pricing_context=pricing_context,
         )
-        reconcile_hold(session, workspace_id, None, job.id, event.credits, hold_amount)
+        reconcile_hold(session, account_id, None, job.id, event.credits, hold_amount)
         document.parsed_text = parsed.text
         document.parser_name = parsed.parser_name
         # Final text/locations replace the temporary per-batch caches.
@@ -329,7 +329,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
         return parsed
     except Exception as exc:
         if not getattr(exc, "uncertain", False):
-            release_hold(session, workspace_id, None, job.id, hold_amount)
+            release_hold(session, account_id, None, job.id, hold_amount)
             session.commit()
         raise
 
@@ -608,7 +608,7 @@ def embed_document(document_id: str, job_id: str) -> None:
 
 def _embed_document(session, document_id, job_id):
     claimed = False
-    workspace_id = None
+    account_id = None
     metering_id = None
     chunks = []
     pending = []
@@ -708,7 +708,7 @@ def _embed_document(session, document_id, job_id):
             job.retry_after = None
             job.submission_pending = False
             document.status, document.error_detail = DocumentStatus.PROCESSING, None
-            workspace_id = document.knowledge_base.workspace_id
+            account_id = document.knowledge_base.account_id
             if job.metering_id is None:
                 job.metering_id = job.id
             metering_id = job.metering_id
@@ -716,8 +716,8 @@ def _embed_document(session, document_id, job_id):
             claimed = True
 
             require_active(lock=True)
-            pricing_context = document_snapshot(session, workspace_id, metering_id, "embedding_tokens", "embedding")
-            authorization_hold(session, workspace_id, None, job_id, authorization_hold_amount())
+            pricing_context = document_snapshot(session, account_id, metering_id, "embedding_tokens", "embedding")
+            authorization_hold(session, account_id, None, job_id, authorization_hold_amount())
             session.commit()
             if pending:
                 with retry_scope(check_active=check_active):
@@ -735,11 +735,11 @@ def _embed_document(session, document_id, job_id):
             if any(chunk.embedding is None or chunk.embedding_status != EmbeddingStatus.READY
                    for chunk in chunks):
                 raise ValueError("Embedding results are incomplete")
-            settle_usage(session, workspace_id, None, metering_id, "embedding_tokens",
+            settle_usage(session, account_id, None, metering_id, "embedding_tokens",
                          sum(max(chunk.token_count, 0) for chunk in chunks),
                          event_key="embedding", metadata={"document_id": str(document_id)},
                          pricing_context=pricing_context)
-            reconcile_hold(session, workspace_id, None, job_id, 0, authorization_hold_amount())
+            reconcile_hold(session, account_id, None, job_id, 0, authorization_hold_amount())
             mark_ready(document, job)
             session.commit()
         except Exception as exc:
@@ -793,7 +793,7 @@ def _embed_document(session, document_id, job_id):
                 message = failure_detail["message"]
                 retryable = False
             if failure_detail["code"] != "needs_reconciliation":
-                release_embedding_hold(session, workspace_id, job_id)
+                release_embedding_hold(session, account_id, job_id)
             for chunk in session.scalars(select(Chunk).where(Chunk.document_id == document_id)):
                 if chunk.embedding_status == EmbeddingStatus.RUNNING:
                     chunk.embedding_status, chunk.embedding_error = EmbeddingStatus.FAILED, message

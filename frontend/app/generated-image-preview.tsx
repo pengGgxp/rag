@@ -7,7 +7,7 @@ import { FilePreview, InlineFileImage } from "./resource-preview";
 export function GeneratedImagePreview({ id, name }: { id: string; name: string }) {
   const { session } = useAuth();
   const [opened, setOpened] = useState(false);
-  const trigger = useId(), scope = `${session.user.id}:${session.workspace_id}`;
+  const trigger = useId(), scope = session.user.id;
   const file = { type: "resource" as const, id, name };
   return <div data-generated-preview={trigger}>
     <InlineFileImage file={file} scope={scope} onOpen={() => setOpened(true)} />

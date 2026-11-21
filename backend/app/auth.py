@@ -1,10 +1,9 @@
-"""Opaque browser sessions and workspace authorization."""
+"""Opaque browser sessions and personal-account authorization."""
 import hashlib
 import secrets
 import smtplib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Literal
 from uuid import UUID
 
 import redis
@@ -13,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from pwdlib import PasswordHash
-from sqlalchemy import delete, exists, func, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,8 +21,8 @@ from .db import get_db
 from .audit_log import record_audit
 from .models import (
     AuthToken, Conversation, ExternalIdentity,
-    KnowledgeBase, KnowledgeBaseStatus, LibraryGrant, LoginSession, Membership,
-    QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
+    KnowledgeBase, KnowledgeBaseStatus, LoginSession,
+    User,
 )
 
 COOKIE = "rag_session"
@@ -103,24 +102,13 @@ def current_session(request: Request, db: Session = Depends(get_db)) -> LoginSes
     return session
 
 
-@dataclass
+@dataclass(frozen=True)
 class Access:
     user_id: UUID
-    workspace_id: UUID
-    role: str
     session_hash: str
 
     def visible_libraries(self):
-        return (
-            (KnowledgeBase.workspace_id == self.workspace_id)
-            & (True if self.role == "admin" else or_(
-                KnowledgeBase.restricted.is_(False),
-                exists(select(LibraryGrant.user_id).where(
-                    LibraryGrant.knowledge_base_id == KnowledgeBase.id,
-                    LibraryGrant.user_id == self.user_id,
-                )),
-            ))
-        )
+        return KnowledgeBase.account_id == self.user_id
 
     def library(self, db: Session, id: UUID, write=False, allow_archived=False):
         library = db.scalar(select(KnowledgeBase).where(KnowledgeBase.id == id, self.visible_libraries()))
@@ -129,38 +117,25 @@ class Access:
         if library.status == KnowledgeBaseStatus.ARCHIVED and not allow_archived:
             if write:
                 raise HTTPException(409, "知识库已归档，请先恢复后再修改")
-        if write:
-            self.editor()
         return library
-
-    def editor(self):
-        if self.role not in ("admin", "editor"):
-            raise HTTPException(403, "只读成员不能修改资料")
-
-    def admin(self):
-        if self.role != "admin":
-            raise HTTPException(403, "需要工作区管理员权限")
 
     def conversation(self, db: Session, row: Conversation):
         # Historical library links do not define access to the owner's conversation.
-        if row.owner_id != self.user_id or row.workspace_id != self.workspace_id:
+        if row.owner_id != self.user_id:
             raise HTTPException(404, "会话不存在或无权访问")
 
     def revalidate(self, db: Session):
         # Fresh sessions are used by streaming generators, so revocation is observed.
         session = db.get(LoginSession, self.session_hash, populate_existing=True)
-        member = db.get(Membership, (self.workspace_id, self.user_id), populate_existing=True)
         user = db.get(User, self.user_id, populate_existing=True)
-        if session is None or aware(session.expires_at) <= now() or member is None or user is None or user.is_suspended:
-            raise HTTPException(403, "登录或工作区权限已失效")
-        return Access(self.user_id, self.workspace_id, member.role, self.session_hash)
+        if (session is None or session.user_id != self.user_id or aware(session.expires_at) <= now()
+                or user is None or user.is_suspended):
+            raise HTTPException(403, "登录或账号权限已失效")
+        return self
 
 
-def get_access(session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
-    member = db.get(Membership, (session.workspace_id, session.user_id), populate_existing=True)
-    if member is None:
-        raise HTTPException(403, "你已不在当前工作区，请切换工作区")
-    return Access(session.user_id, session.workspace_id, member.role, session.token_hash)
+def get_access(session: LoginSession = Depends(current_session)):
+    return Access(session.user_id, session.token_hash)
 
 
 class Credentials(BaseModel):
@@ -182,67 +157,53 @@ def normalize_email(email):
     return str(email).strip().lower()
 
 
-def create_user(db, email, name, password=None, workspace_id=None):
+def create_user(db, email, name, password=None):
     name = name.strip()
     if not name:
         raise HTTPException(422, "请输入姓名")
     user = User(email=normalize_email(email), name=name, password_hash=passwords.hash(password) if password else None)
     db.add(user)
     db.flush()
-    if workspace_id is None:
-        workspace = Workspace(name=f"{name}的工作区"[:100])
-        db.add(workspace)
-        db.flush()
-    else:
-        workspace = db.get(Workspace, workspace_id)
-        if workspace is None:
-            raise HTTPException(500, "默认工作区不存在")
-    db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
     from .credits import ensure_account
-    ensure_account(db, workspace.id)
+    ensure_account(db, user.id)
     db.flush()
-    return user, workspace.id
+    return user
 
 
 def session_info(db, session):
     user = db.get(User, session.user_id)
-    rows = db.execute(select(Workspace, Membership.role).join(
-        Membership, Membership.workspace_id == Workspace.id,
-    ).where(Membership.user_id == user.id).order_by(Workspace.created_at)).all()
-    return {
+    result = {
         "user": {"id": str(user.id), "name": user.name, "email": user.email,
                  "has_password": user.password_hash is not None,
                  "email_verified": user.email_verified_at is not None,
                  "is_site_admin": user.is_site_admin,
                  "wechat_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ExternalIdentity.provider.like("senyu:%")))),
                  "oauth_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ~ExternalIdentity.provider.like("senyu:%"))))},
-        "workspaces": [{"id": str(workspace.id), "name": workspace.name, "role": role} for workspace, role in rows],
-        "workspace_id": str(session.workspace_id), "csrf_token": session.csrf_token,
+        "csrf_token": session.csrf_token,
     }
+    return result
 
 
-def login_response(db, user, previous=None, workspace_id=None, request=None, action="auth.login"):
+def record_account_audit(db, user_id, action, resource_type, *, resource_id=None, request=None):
+    record_audit(db, owner_user_id=user_id, actor_user_id=user_id, action=action,
+                 resource_type=resource_type, resource_id=resource_id, request=request)
+
+
+def login_response(db, user, previous=None, *, request=None, action="auth.login"):
     # Serialize session issuance with suspension and administrative revocation.
     suspended = db.scalar(select(User.is_suspended).where(User.id == user.id).with_for_update())
     if suspended is None or suspended:
         raise HTTPException(403, "账号已停用，请联系站点管理员")
-    if workspace_id is None:
-        workspace_id = db.scalar(select(Membership.workspace_id).where(Membership.user_id == user.id))
-    if workspace_id is None:
-        raise HTTPException(403, "账号没有可用的工作区")
     if previous:
         db.execute(delete(LoginSession).where(LoginSession.token_hash == digest(previous)))
     settings = get_settings()
     raw = secrets.token_urlsafe(48)
     session = LoginSession(
-        token_hash=digest(raw), user_id=user.id, workspace_id=workspace_id,
+        token_hash=digest(raw), user_id=user.id,
         csrf_token=secrets.token_urlsafe(32), expires_at=now() + timedelta(hours=settings.auth_session_hours),
     )
     db.add(session)
-    record_audit(
-        db, workspace_id=workspace_id, actor_user_id=user.id, action=action,
-        resource_type="session", request=request,
-    )
+    record_account_audit(db, user.id, action, "session", request=request)
     from .site_audit import record as record_site_event
     record_site_event(db, user, action, "user", user.id, request=request)
     db.commit()
@@ -260,9 +221,7 @@ def options(db: Session = Depends(get_db)):
     # The setup link is only useful while a server-issued one-time token is
     # active. Do not advertise a dead public entry point when setup has not
     # been prepared from the server console (or when its token expired).
-    workspace_claimed = db.scalar(
-        select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)
-    ) is not None
+    has_users = db.scalar(select(User.id).limit(1)) is not None
     bootstrap_ready = db.scalar(
         select(AuthToken).where(
             AuthToken.purpose == "bootstrap",
@@ -275,8 +234,8 @@ def options(db: Session = Depends(get_db)):
         "email_code": email_enabled(db),
         "wechat": wechat_enabled(db),
         "require_verified_email": verification_required(db),
-        "setup_available": not workspace_claimed and bootstrap_ready,
-        "first_run": not workspace_claimed,
+        "setup_available": not has_users and bootstrap_ready,
+        "first_run": not has_users,
     }
 
 
@@ -293,18 +252,8 @@ def register(payload: Registration, request: Request, db: Session = Depends(get_
     if db.scalar(select(User).where(User.email == normalize_email(payload.email))):
         raise HTTPException(409, "邮箱已被使用，请登录或找回密码")
     try:
-        # An empty deployment has no administrator yet. The first normal
-        # registration claims the reserved workspace so the product never
-        # depends on a hidden operator-only button for its primary onboarding.
-        db.scalar(select(Workspace).where(Workspace.id == LEGACY_WORKSPACE_ID).with_for_update())
-        legacy_claimed = db.scalar(
-            select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)
-        ) is not None
-        workspace_id = None if legacy_claimed else LEGACY_WORKSPACE_ID
-        user, workspace_id = create_user(
-            db, payload.email, payload.name, payload.password, workspace_id=workspace_id,
-        )
-        response = login_response(db, user, request.cookies.get(COOKIE), workspace_id, request, "auth.register")
+        user = create_user(db, payload.email, payload.name, payload.password)
+        response = login_response(db, user, request.cookies.get(COOKIE), request=request, action="auth.register")
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(409, "邮箱已被使用") from exc
@@ -345,10 +294,7 @@ def me(session: LoginSession = Depends(current_session), db: Session = Depends(g
 def logout(request: Request, session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
     from .site_audit import record
     record(db, db.get(User, session.user_id), "auth.logout", "user", session.user_id, request=request)
-    record_audit(
-        db, workspace_id=session.workspace_id, actor_user_id=session.user_id,
-        action="auth.logout", resource_type="session", request=request,
-    )
+    record_account_audit(db, session.user_id, "auth.logout", "session", request=request)
     db.delete(session)
     db.commit()
     response = JSONResponse(None, status_code=204)
@@ -375,10 +321,7 @@ def change_password(payload: PasswordChange, request: Request,
     from .site_audit import record
     record(db, user, "auth.password_changed", "user", user.id, request=request)
     db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.token_hash != session.token_hash))
-    record_audit(
-        db, workspace_id=session.workspace_id, actor_user_id=session.user_id,
-        action="auth.password_changed", resource_type="user", resource_id=user.id, request=request,
-    )
+    record_account_audit(db, user.id, "auth.password_changed", "user", resource_id=user.id, request=request)
     db.commit()
     return {"message": "密码已更新，其他设备已退出登录"}
 
@@ -386,29 +329,14 @@ def change_password(payload: PasswordChange, request: Request,
 @router.post("/bootstrap")
 def bootstrap(payload: Bootstrap, request: Request, db: Session = Depends(get_db)):
     rate_limit(request, "bootstrap", limit=5)
-    # Serializing on the reserved workspace prevents two initial owners.
-    db.scalar(select(Workspace).where(Workspace.id == LEGACY_WORKSPACE_ID).with_for_update())
-    if db.scalar(select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)):
-        raise HTTPException(409, "工作区已经完成初始化")
-    token = db.get(AuthToken, digest(payload.token))
+    if db.scalar(select(User.id).limit(1)) is not None:
+        raise HTTPException(409, "账号已经完成初始化")
+    token = db.get(AuthToken, digest(payload.token), with_for_update=True)
     if token is None or token.purpose != "bootstrap" or aware(token.expires_at) <= now():
         raise HTTPException(400, "初始化口令无效或已过期")
-    user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
-    if user:
-        if not user.password_hash or not passwords.verify(payload.password, user.password_hash):
-            raise HTTPException(401, "邮箱或密码不正确")
-    else:
-        user, _ = create_user(db, payload.email, payload.name, payload.password)
-    db.add(Membership(workspace_id=LEGACY_WORKSPACE_ID, user_id=user.id, role="admin"))
-    db.execute(update(Conversation).where(
-        Conversation.workspace_id == LEGACY_WORKSPACE_ID, Conversation.owner_id.is_(None),
-    ).values(owner_id=user.id))
-    db.execute(update(QueryTrace).where(
-        QueryTrace.owner_id.is_(None),
-        QueryTrace.knowledge_base_id.in_(select(KnowledgeBase.id).where(KnowledgeBase.workspace_id == LEGACY_WORKSPACE_ID)),
-    ).values(owner_id=user.id))
+    user = create_user(db, payload.email, payload.name, payload.password)
     db.execute(delete(AuthToken).where(AuthToken.purpose == "bootstrap"))
-    return login_response(db, user, request.cookies.get(COOKIE), LEGACY_WORKSPACE_ID, request, "auth.bootstrap")
+    return login_response(db, user, request.cookies.get(COOKIE), request=request, action="auth.bootstrap")
 
 
 class EmailRequest(BaseModel):
@@ -467,103 +395,11 @@ def reset(payload: ResetPassword, request: Request, db: Session = Depends(get_db
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
     from .site_audit import record
     record(db, db.get(User, user_id), "auth.password_reset", "user", user_id, request=request)
-    for workspace_id in db.scalars(select(Membership.workspace_id).where(Membership.user_id == user_id)):
-        record_audit(
-            db, workspace_id=workspace_id, actor_user_id=user_id,
-            action="auth.password_reset", resource_type="user", resource_id=user_id, request=request,
-        )
+    record_account_audit(db, user_id, "auth.password_reset", "user", resource_id=user_id, request=request)
     db.commit()
     response = JSONResponse({"message": "密码已更新，请重新登录"})
     response.delete_cookie(COOKIE, path="/")
     return response
-
-
-class SwitchWorkspace(BaseModel):
-    workspace_id: UUID
-
-
-@router.post("/workspace")
-def switch(payload: SwitchWorkspace, request: Request,
-           session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
-    if db.get(Membership, (payload.workspace_id, session.user_id)) is None:
-        raise HTTPException(404, "工作区不存在")
-    previous_workspace_id = session.workspace_id
-    session.workspace_id = payload.workspace_id
-    record_audit(
-        db, workspace_id=payload.workspace_id, actor_user_id=session.user_id,
-        action="auth.workspace_switched", resource_type="workspace",
-        resource_id=payload.workspace_id, metadata={"from_workspace_id": str(previous_workspace_id)}, request=request,
-    )
-    db.commit()
-    return session_info(db, session)
-
-
-@router.get("/members")
-def members(access: Access = Depends(get_access), db: Session = Depends(get_db)):
-    access.admin()
-    return [{"id": str(user.id), "name": user.name, "email": user.email, "role": role}
-            for user, role in db.execute(select(User, Membership.role).join(
-                Membership, Membership.user_id == User.id,
-            ).where(Membership.workspace_id == access.workspace_id)).all()]
-
-
-class MemberUpdate(BaseModel):
-    email: EmailStr
-    role: Literal["admin", "editor", "viewer"]
-
-
-@router.put("/members")
-def set_member(payload: MemberUpdate, request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
-    access.admin()
-    # Lock all membership changes on the same workspace, including last-admin protection.
-    db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
-    user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
-    if user is None:
-        raise HTTPException(404, "该邮箱尚未注册，请对方先创建账号")
-    member = db.get(Membership, (access.workspace_id, user.id))
-    if member and member.role == "admin" and payload.role != "admin":
-        protect_last_admin(db, access.workspace_id)
-    if member:
-        member.role = payload.role
-        action = "workspace.member_role_changed"
-    else:
-        db.add(Membership(workspace_id=access.workspace_id, user_id=user.id, role=payload.role))
-        action = "workspace.member_added"
-    record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action=action, resource_type="membership", resource_id=user.id,
-        metadata={"role": payload.role}, request=request,
-    )
-    db.commit()
-    return {"message": "成员已更新"}
-
-
-def protect_last_admin(db, workspace_id):
-    count = db.scalar(select(func.count()).select_from(Membership).where(
-        Membership.workspace_id == workspace_id, Membership.role == "admin",
-    ))
-    if count <= 1:
-        raise HTTPException(409, "工作区至少需要一位管理员")
-
-
-@router.delete("/members/{user_id}", status_code=204)
-def remove_member(user_id: UUID, request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
-    access.admin()
-    db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
-    member = db.get(Membership, (access.workspace_id, user_id))
-    if member is None:
-        raise HTTPException(404, "成员不存在")
-    if member.role == "admin":
-        protect_last_admin(db, access.workspace_id)
-    db.execute(delete(LibraryGrant).where(LibraryGrant.user_id == user_id,
-        LibraryGrant.knowledge_base_id.in_(select(KnowledgeBase.id).where(KnowledgeBase.workspace_id == access.workspace_id))))
-    db.delete(member)
-    record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action="workspace.member_removed", resource_type="membership", resource_id=user_id,
-        metadata={"role": member.role}, request=request,
-    )
-    db.commit()
 
 
 def oidc_client():
@@ -630,7 +466,7 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
             email = str(EmailRequest(email=info["email"]).email).lower()
             if db.scalar(select(User).where(User.email == email)):
                 return RedirectResponse(f"{settings.frontend_url}/?auth_error=link_required", status_code=303)
-            user, _ = create_user(db, email, (info.get("name") or email.split("@")[0])[:100])
+            user = create_user(db, email, (info.get("name") or email.split("@")[0])[:100])
             user.email_verified_at = now()
             db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=user.id))
         from .site_auth import verification_required
@@ -654,42 +490,3 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(f"{settings.frontend_url}/?auth_error=oauth_failed", status_code=303)
     finally:
         request.session.clear()
-
-
-class LibraryPermissions(BaseModel):
-    restricted: bool
-    user_ids: list[UUID] = Field(default_factory=list, max_length=1000)
-
-
-permissions_router = APIRouter(tags=["permissions"])
-
-
-@permissions_router.get("/knowledge-bases/{id}/permissions")
-def library_permissions(id: UUID, access: Access = Depends(get_access), db: Session = Depends(get_db)):
-    access.admin()
-    library = access.library(db, id)
-    return {"restricted": library.restricted, "user_ids": list(db.scalars(
-        select(LibraryGrant.user_id).where(LibraryGrant.knowledge_base_id == id)).all())}
-
-
-@permissions_router.put("/knowledge-bases/{id}/permissions")
-def update_library_permissions(id: UUID, payload: LibraryPermissions,
-                               request: Request, access: Access = Depends(get_access), db: Session = Depends(get_db)):
-    access.admin()
-    db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
-    library = access.library(db, id)
-    ids = set(payload.user_ids)
-    if ids and len(db.scalars(select(Membership.user_id).where(
-        Membership.workspace_id == access.workspace_id, Membership.user_id.in_(ids),
-    )).all()) != len(ids):
-        raise HTTPException(400, "只能授权给当前工作区成员")
-    library.restricted = payload.restricted
-    db.execute(delete(LibraryGrant).where(LibraryGrant.knowledge_base_id == id))
-    db.add_all([LibraryGrant(knowledge_base_id=id, user_id=user_id) for user_id in ids] if payload.restricted else [])
-    record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
-        action="knowledge_base.permission_changed", resource_type="knowledge_base", resource_id=id,
-        metadata={"restricted": payload.restricted, "member_count": len(ids)}, request=request,
-    )
-    db.commit()
-    return {"message": "访问权限已更新"}

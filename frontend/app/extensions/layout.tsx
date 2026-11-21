@@ -8,7 +8,7 @@ import "./extensions.css";
 
 export default function ExtensionsLayout({ children }: { children: ReactNode }) {
   const { session } = useAuth();
-  return <AdminChangesBoundary guardHistory key={`${session.user.id}:${session.workspace_id}`}>
+  return <AdminChangesBoundary guardHistory key={session.user.id}>
     <WorkspaceShell screen="extensions">{children}</WorkspaceShell>
   </AdminChangesBoundary>;
 }

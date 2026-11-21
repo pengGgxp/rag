@@ -17,14 +17,12 @@ from test_cloud_computer_mount import MemoryMount
 def test_literal_directory_queries_and_rename_replay(auth_postgres, monkeypatch, directory, neighbor):
     from uuid import UUID
     from app import personal_skills, resources
-    from app.models import Membership
     store = MemoryMount()
     monkeypatch.setattr(shared_resources, "backend", lambda db: store)
     with Session(auth_postgres) as db:
-        user, _ = auth.create_user(db, f"review-{uuid4().hex}@example.com", "临时复测", "test-password-123")
+        user = auth.create_user(db, f"review-{uuid4().hex}@example.com", "临时复测", "test-password-123")
         db.commit()
-        workspace = db.scalar(select(Membership.workspace_id).where(Membership.user_id == user.id))
-        actor = auth.Access(user.id, workspace, "admin", "")
+        actor = auth.Access(user.id, "")
         manifests = {}
         for name in (directory, neighbor):
             root = f".skills/{name}"
@@ -52,11 +50,9 @@ def test_concurrent_writes_and_request_id_are_serialized(auth_postgres, monkeypa
     store = MemoryMount()
     monkeypatch.setattr(shared_resources, "backend", lambda db: store)
     with Session(engine) as db:
-        user, _ = auth.create_user(db, f"files-{uuid4().hex}@example.com", "临时并发验收", "test-password-123")
+        user = auth.create_user(db, f"files-{uuid4().hex}@example.com", "临时并发验收", "test-password-123")
         db.commit()
-        from app.models import Membership
-        workspace = db.scalar(select(Membership.workspace_id).where(Membership.user_id == user.id))
-        actor = auth.Access(user.id, workspace, "admin", "")
+        actor = auth.Access(user.id, "")
         initial = mutations.save_files(db, actor, {"note.txt": (b"original", "text/plain")})["items"][0]
     barrier = Barrier(2)
     def save(index):
@@ -82,21 +78,19 @@ def test_concurrent_writes_and_request_id_are_serialized(auth_postgres, monkeypa
     assert values[0] == values[1]
     with Session(engine) as db:
         records = db.scalars(select(WorkspaceFileOperation).where(
-            WorkspaceFileOperation.workspace_id == actor.workspace_id, WorkspaceFileOperation.request_id == request_id)).all()
+            WorkspaceFileOperation.account_id == actor.user_id, WorkspaceFileOperation.request_id == request_id)).all()
         assert len(records) == 1 and records[0].state == "completed"
 
 
 def test_concurrent_file_rename_replays_one_committed_response(auth_postgres, monkeypatch):
     from uuid import UUID
     from app import resources
-    from app.models import Membership
     store = MemoryMount()
     monkeypatch.setattr(shared_resources, "backend", lambda db: store)
     with Session(auth_postgres) as db:
-        user, _ = auth.create_user(db, f"rename-{uuid4().hex}@example.com", "临时改名并发验收", "test-password-123")
+        user = auth.create_user(db, f"rename-{uuid4().hex}@example.com", "临时改名并发验收", "test-password-123")
         db.commit()
-        workspace = db.scalar(select(Membership.workspace_id).where(Membership.user_id == user.id))
-        actor = auth.Access(user.id, workspace, "admin", "")
+        actor = auth.Access(user.id, "")
         item = mutations.save_files(db, actor, {"before.txt": (b"original", "text/plain")})["items"][0]
     request = resources.PathPayload(new_path="after.txt", revision=item["revision"], request_id=str(uuid4()))
     barrier = Barrier(2)
@@ -109,5 +103,5 @@ def test_concurrent_file_rename_replays_one_committed_response(auth_postgres, mo
     assert values[0] == values[1] and values[0]["path"] == "after.txt"
     with Session(auth_postgres) as db:
         records = db.scalars(select(WorkspaceFileOperation).where(
-            WorkspaceFileOperation.workspace_id == actor.workspace_id, WorkspaceFileOperation.request_id == request.request_id)).all()
+            WorkspaceFileOperation.account_id == actor.user_id, WorkspaceFileOperation.request_id == request.request_id)).all()
         assert len(records) == 1 and records[0].state == "completed"

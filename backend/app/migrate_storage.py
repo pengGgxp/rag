@@ -40,7 +40,7 @@ def manifest(db):
     from types import SimpleNamespace
     for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.deleted_at.is_(None),
             WorkspaceFile.live_etag.is_not(None))):
-        add(SimpleNamespace(object_key=prefix(row.workspace_id)+row.path, size_bytes=row.size_bytes,
+        add(SimpleNamespace(object_key=prefix(row.account_id)+row.path, size_bytes=row.size_bytes,
             content_hash=row.content_hash, content_type=row.content_type))
     return dict(sorted(objects.items()))
 

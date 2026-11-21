@@ -75,7 +75,7 @@ async (page) => {
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
     if (path === "/auth/options") return send({ oauth_name: null, first_run: false, setup_available: false, password_reset: false });
     if (path === "/auth/me") return send({ user: { id: "fixture-user", name: "本地验收", email: "fixture@example.invalid" },
-      workspace_id: "fixture-workspace", workspaces: [{ id: "fixture-workspace", name: "验收工作区", role: "editor" }], csrf_token: "fixture" });
+      csrf_token: "fixture" });
     if (path === "/knowledge-bases") return send([]);
     if (path === "/health") return send({ status: "ok", database: "ok", redis: "ok" });
     if (path === "/site/announcement") return send({ announcement: null });

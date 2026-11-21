@@ -37,7 +37,7 @@ def test_plain_and_empty_password_pdf_preserve_pages_citations_and_original(algo
     (b"", "empty_pdf", "为空或没有页面"),
     (make_pdf(page_count=0), "empty_pdf", "为空或没有页面"),
     (make_pdf(password="", page_count=0), "empty_pdf", "为空或没有页面"),
-])
+], ids=["password-required", "broken", "not-pdf", "empty", "no-pages", "encrypted-no-pages"])
 def test_pdf_failures_are_distinct_across_reading_and_parsing(content, code, message):
     for parse in (parsers.pdf_pages, parsers.parse_local_pdf,
                   lambda value: parsers.parse_document("file.pdf", "application/pdf", value)):

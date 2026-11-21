@@ -71,7 +71,7 @@ export function ImageTaskActivity({ initial, onUpdate, showStatus = true, showFi
           catch (cause) { setError(cause instanceof Error ? cause.message : "下载失败，请重试"); }
           finally { setDownloading(null); }
         }}>{downloading === file.id ? <Loader2 size={16} className="spin" /> : <Download size={16} />}<span>{downloading === file.id ? "下载中" : "下载原图"}</span></button>
-        <Link className="image-result-library" href="/resources"><FolderOpen size={16} /><span>工作区</span></Link>
+        <Link className="image-result-library" href="/resources"><FolderOpen size={16} /><span>我的资源</span></Link>
       </div>
     </div>)}
     {error && <span className="activity-file-download-error" role="alert">{error}</span>}

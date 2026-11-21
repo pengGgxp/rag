@@ -19,7 +19,7 @@ type Item = (ResourceFile & { kind: "file"; name: string }) | { kind: "directory
 type DeletePreview = { paths: string[]; files: number; directories: number; confirmation: string };
 type FileConflict = { path: string; kind: string; revision?: string; replaceable?: boolean };
 type ConflictChoice = "keep_both" | "replace";
-const sources: Record<string, string> = { chat_upload: "对话上传", resource_upload: "工作区上传", model_output: "模型生成", platform: "平台 Skill" };
+const sources: Record<string, string> = { chat_upload: "对话上传", resource_upload: "文件上传", model_output: "模型生成", platform: "平台 Skill" };
 function itemType(item: Item) {
   if (item.kind === "directory") return "文件夹";
   const extension = item.name.includes(".") ? item.name.split(".").pop()?.toLowerCase() : "";
@@ -27,7 +27,7 @@ function itemType(item: Item) {
 }
 
 export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => Promise<void> }) {
-  const { session, role } = useAuth();
+  const { session } = useAuth();
   const [items, setItems] = useState<Item[]>([]), [path, setPath] = useState(""), [query, setQuery] = useState(""), [source, setSource] = useState(""), [sort, setSort] = useState<"name" | "type" | "updated_at">("name");
   const [crumbs, setCrumbs] = useState<{ name: string; path: string }[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid"), [selected, setSelected] = useState<Set<string>>(new Set()), [menu, setMenu] = useState<{ x: number; y: number; item: Item } | null>(null);
@@ -83,14 +83,14 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     selectItem(item, event);
   }
   useEffect(() => () => cancelLongPress(), []);
-  const canWrite = role === "admin" || role === "editor", scope = session ? `${session.user.id}:${session.workspace_id}` : "";
+  const canWrite = true, scope = session?.user.id ?? "";
   const linkedFile = useResourceFilePreview(scope);
   const openLinkedFile = linkedFile.open;
   useEffect(() => {
     if (select || !session) return;
     const id = workspaceFileId(window.location.href, window.location.origin);
     if (id) void openLinkedFile(id);
-  }, [select, session?.workspace_id, openLinkedFile]);
+  }, [select, session?.user.id, openLinkedFile]);
   const current = `/resources/browse?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}&sort=${sort}&limit=100`;
   useAdminChanges(Boolean(editor && editor.content !== editor.initialContent), busy);
   useEffect(() => { if (!select) setPath(new URLSearchParams(window.location.search).get("path") || ""); }, [select]);
@@ -102,17 +102,17 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
       const endpoint = (select ? `/resources?q=${encodeURIComponent(query)}&source=${encodeURIComponent(source)}&limit=100` : current) + `&offset=${append ? items.length : 0}`;
       const value = await request<{ items: (Item | ResourceFile)[]; has_more: boolean; total?: number; breadcrumbs?: { name: string; path: string }[] }>(endpoint, { signal });
       if (!signal?.aborted && generation === loadGeneration.current) { const rows = select ? value.items.map(item => ({ ...item, kind: "file" as const, name: item.path.split("/").pop() || item.path } as ResourceFile & { kind: "file"; name: string })) : value.items as Item[]; setItems(previous => append ? [...previous, ...rows] : pendingItem.current ? [pendingItem.current, ...rows] : rows); setHasMore(value.has_more); setTotal(value.total ?? (append ? items.length : 0) + rows.length); setCrumbs(value.breadcrumbs ?? []); if (!append) setSelected(new Set(pendingItem.current ? [pendingItem.current.path] : [])); setError(""); }
-    } catch (cause) { if (!signal?.aborted && generation === loadGeneration.current) setError(cause instanceof Error ? cause.message : "工作区加载失败，请重试"); }
+    } catch (cause) { if (!signal?.aborted && generation === loadGeneration.current) setError(cause instanceof Error ? cause.message : "资源加载失败，请重试"); }
     finally { if (!signal?.aborted && generation === loadGeneration.current) { setLoading(false); setLoadingMore(false); } }
   }
-  useEffect(() => { const controller = new AbortController(); const timer = setTimeout(() => void load(controller.signal), query ? 180 : 0); return () => { clearTimeout(timer); controller.abort(); }; }, [session?.workspace_id, path, query, source, sort, select]);
+  useEffect(() => { const controller = new AbortController(); const timer = setTimeout(() => void load(controller.signal), query ? 180 : 0); return () => { clearTimeout(timer); controller.abort(); }; }, [session?.user.id, path, query, source, sort, select]);
   useEffect(() => { try { setView(localStorage.getItem(`resource-view:${session?.user.id}`) === "list" ? "list" : "grid"); } catch {} }, [session?.user.id]);
-  useEffect(() => { if (select || !session) return; const controller = new AbortController(); void request<StorageAllowances>("/storage/allowances", { signal: controller.signal }).then(value => !controller.signal.aborted && setQuota(value)).catch(() => {}); return () => controller.abort(); }, [session?.workspace_id, select]);
+  useEffect(() => { if (select || !session) return; const controller = new AbortController(); void request<StorageAllowances>("/storage/allowances", { signal: controller.signal }).then(value => !controller.signal.aborted && setQuota(value)).catch(() => {}); return () => controller.abort(); }, [session?.user.id, select]);
   useEffect(() => { if (editingAddress) { addressInput.current?.focus(); if (selectAddress.current) addressInput.current?.select(); } }, [editingAddress]);
 
   function editAddress() {
     selectAddress.current = true;
-    setAddressDraft(path ? `工作区/${path}` : "工作区");
+    setAddressDraft(path ? `我的资源/${path}` : "我的资源");
     setEditingAddress(true);
   }
   function closeAddress() {
@@ -120,9 +120,9 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     requestAnimationFrame(() => addressDisplay.current?.focus());
   }
   function navigateAddress() {
-    const destination = addressDraft.trim().replace(/\\/g, "/").replace(/^工作区(?:\/|$)/, "").replace(/^\/+|\/+$/g, "");
+    const destination = addressDraft.trim().replace(/\\/g, "/").replace(/^我的资源(?:\/|$)/, "").replace(/^\/+|\/+$/g, "");
     if (destination.split("/").some(part => part === ".." || part === ".")) {
-      setError("请输入工作区内的文件夹路径，不要包含 . 或 ..");
+      setError("请输入有效的资源路径，不要包含 . 或 ..");
       return;
     }
     setPath(destination); setQuery(""); closeAddress();
@@ -151,7 +151,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   }
   async function edit(item: ResourceFile) {
     if (item.content_type.startsWith("text/") || /\.(md|txt|csv|json|py|js|ts|tsx|jsx|html|css|sh|yaml|yml)$/i.test(item.path)) {
-      try { const value = await request<{ content: string; revision: string }>(`/workspaces/${session.workspace_id}/files/${item.id}/text`); setEditor({ item, content: value.content, initialContent: value.content, revision: value.revision }); setEditorError(""); setDiscard(false); setDialog("edit"); } catch (cause) { setError(cause instanceof Error ? cause.message : "文件无法打开"); }
+      try { const value = await request<{ content: string; revision: string }>(`/files/${item.id}/text`); setEditor({ item, content: value.content, initialContent: value.content, revision: value.revision }); setEditorError(""); setDiscard(false); setDialog("edit"); } catch (cause) { setError(cause instanceof Error ? cause.message : "文件无法打开"); }
     } else setPreview(item);
   }
   function showConflict(cause: unknown, retry: (choice: ConflictChoice, expected: Record<string, string>, resolutions?: Record<string, ConflictChoice>) => Promise<void>) {
@@ -195,7 +195,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
     setBusy(true); setError("");
     try {
       if (inlineEdit.creating === "directory") await request("/resources/directories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: newPath, request_id: crypto.randomUUID() }) });
-      else if (inlineEdit.creating === "file") await request(`/workspaces/${session.workspace_id}/files`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: newPath, content: "", content_type: "text/plain", request_id: crypto.randomUUID() }) });
+      else if (inlineEdit.creating === "file") await request("/files", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: newPath, content: "", content_type: "text/plain", request_id: crypto.randomUUID() }) });
       else await request(item.kind === "directory" ? "/resources/directories" : `/resources/files/${(item as ResourceFile).id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: item.path, new_path: newPath, revision: item.revision, request_id: crypto.randomUUID() }) });
       pendingItem.current = null; setInlineEdit(null); await load(); setSelected(new Set([newPath])); anchorRef.current = newPath;
     } catch (cause) { setError(cause instanceof Error ? cause.message : "名称无效或已存在，请修改名称后重试"); }
@@ -286,7 +286,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
   }, [menu]);
 
   const grid = !select && view === "grid";
-  const search = <label className="resource-search"><Search size={16} aria-hidden="true" /><input aria-label="搜索工作区" placeholder="搜索工作区" value={query} onChange={event => setQuery(event.target.value)} />{query && <button type="button" className="icon-button" aria-label="清除搜索" onClick={() => setQuery("")}><X size={15} /></button>}</label>;
+  const search = <label className="resource-search"><Search size={16} aria-hidden="true" /><input aria-label="搜索资源" placeholder="搜索资源" value={query} onChange={event => setQuery(event.target.value)} />{query && <button type="button" className="icon-button" aria-label="清除搜索" onClick={() => setQuery("")}><X size={15} /></button>}</label>;
   const sourceFilter = <select aria-label="来源" value={source} onChange={event => setSource(event.target.value)}><option value="">全部来源</option>{Object.entries(sources).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>;
   return <div className={`resource-library ${select ? "resource-picker-v2" : "workspace-explorer"}`} onClick={() => setMenu(null)}>
     {!select && <div className="workspace-address-bar">
@@ -301,7 +301,7 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
           if (event.target !== event.currentTarget) return;
           if (event.key === "Enter" || event.key === "F2") { event.preventDefault(); event.stopPropagation(); editAddress(); }
           else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); event.stopPropagation(); selectAddress.current = false; setAddressDraft(event.key); setEditingAddress(true); }
-        }}>{(crumbs.length ? crumbs : [{ name: "工作区", path: "" }]).map((crumb, index, entries) => <span key={crumb.path}><button type="button" aria-current={crumb.path === path ? "location" : undefined} onClick={event => { if (event.detail > 1 || crumb.path === path) return; setPath(crumb.path); setQuery(""); }}>{crumb.name}</button>{index < entries.length - 1 && <ChevronRight size={14} />}</span>)}</div>}
+        }}>{(crumbs.length ? crumbs : [{ name: "资源库", path: "" }]).map((crumb, index, entries) => <span key={crumb.path}><button type="button" aria-current={crumb.path === path ? "location" : undefined} onClick={event => { if (event.detail > 1 || crumb.path === path) return; setPath(crumb.path); setQuery(""); }}>{crumb.name}</button>{index < entries.length - 1 && <ChevronRight size={14} />}</span>)}</div>}
       </div>
       {search}
     </div>}
@@ -322,18 +322,18 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
         {!select && <>{sourceFilter}<select aria-label="排序" value={sort} onChange={event => setSort(event.target.value as typeof sort)}><option value="name">按名称</option><option value="type">按类型</option><option value="updated_at">按修改时间</option></select>
           <div className="resource-view-switch" role="group" aria-label="浏览方式">{(["grid", "list"] as const).map(mode => <Tooltip content={mode === "grid" ? "卡片" : "列表"} key={mode}><button type="button" aria-label={mode === "grid" ? "卡片" : "列表"} aria-pressed={view === mode} onClick={() => { setView(mode); try { localStorage.setItem(`resource-view:${session.user.id}`, mode); } catch {} }}>{mode === "grid" ? <LayoutGrid size={17} /> : <List size={18} />}</button></Tooltip>)}</div>
         </>}
-        <Tooltip content="刷新"><button type="button" className="icon-button" aria-label="刷新工作区" disabled={loading || busy} onClick={() => void load()}><RefreshCw size={17} className={loading ? "spin" : undefined} /></button></Tooltip>
+        <Tooltip content="刷新"><button type="button" className="icon-button" aria-label="刷新资源" disabled={loading || busy} onClick={() => void load()}><RefreshCw size={17} className={loading ? "spin" : undefined} /></button></Tooltip>
       </div>
     </div>
     {!select && <ResourceNotice />}
-    {(select || query || source) && <div className="resource-browser-summary"><span>{select ? "选择文件" : query ? "搜索结果" : sources[source]}<small>{loading ? "正在加载" : `${total} 项${query ? " · 整个工作区" : ""}`}</small></span>{!select && <button type="button" className="workspace-command" onClick={() => { setQuery(""); setSource(""); }}>清除筛选</button>}</div>}
+    {(select || query || source) && <div className="resource-browser-summary"><span>{select ? "选择文件" : query ? "搜索结果" : sources[source]}<small>{loading ? "正在加载" : `${total} 项${query ? " · 全部资源" : ""}`}</small></span>{!select && <button type="button" className="workspace-command" onClick={() => { setQuery(""); setSource(""); }}>清除筛选</button>}</div>}
     {error && <div className="resource-browser-alert" role="alert"><span>{error}</span><button type="button" className="secondary" disabled={busy || loading} onClick={() => void load()}>重试</button></div>}
-    <section className={`resource-browser-results ${grid ? "resource-masonry" : "resource-rows"}`} aria-label="工作区内容" role="listbox" aria-multiselectable="true" aria-busy={loading} tabIndex={0}>
+    <section className={`resource-browser-results ${grid ? "resource-masonry" : "resource-rows"}`} aria-label="资源内容" role="listbox" aria-multiselectable="true" aria-busy={loading} tabIndex={0}>
       {!grid && !select && <div className="workspace-list-heading" aria-hidden="true"><span>名称</span><span>类型</span><span>完整路径</span><span>大小</span><span>修改时间</span><span /></div>}
       {loading ? Array.from({ length: grid ? 8 : 4 }, (_, index) => <div key={index} className={`resource-skeleton ${grid ? "" : "resource-skeleton-row"}`} aria-hidden="true" />) : !items.length ? <div className="resource-browser-empty"><FolderOpen size={36} strokeWidth={1.3} /><h2>{query || source ? "没有找到内容" : "此文件夹为空"}</h2><p>{query || source ? "试试其他关键词或清除筛选" : canWrite ? "新建文件夹或上传文件开始整理" : "此文件夹还没有内容"}</p></div> : items.map(item => {
         const active = selected.has(item.path), editing = inlineEdit?.path === item.path;
         const updated = item.updated_at ? new Date(item.updated_at).toLocaleDateString("zh-CN", { month: "short", day: "numeric" }) : "—";
-        return <article key={item.path} role="option" aria-selected={active} tabIndex={0} aria-label={item.name} draggable={canWrite && !editing} className={`resource-item ${grid ? "resource-card" : "resource-row"} ${active ? "resource-item-selected" : ""} ${item.kind === "directory" ? "resource-directory" : ""}`} onKeyDown={event => { if (event.key === " " && event.target === event.currentTarget) { event.preventDefault(); selectItem(item, event); } }} onClick={event => itemClick(item, event)} onDoubleClick={() => void open(item)} onContextMenu={event => { event.preventDefault(); if (!active) setSelected(new Set([item.path])); anchorRef.current = item.path; setMenu({ x: event.clientX, y: event.clientY, item }); }} onPointerDown={event => itemPointerDown(item, event)} onPointerMove={itemPointerMove} onPointerUp={cancelLongPress} onPointerCancel={cancelLongPress} onDragStart={event => { event.dataTransfer.setData("application/x-rag-paths", JSON.stringify(active ? [...selected] : [item.path])); event.dataTransfer.effectAllowed = "move"; }} onDragOver={event => item.kind === "directory" && event.preventDefault()} onDrop={event => { if (item.kind === "directory") { event.preventDefault(); try { const paths: string[] = JSON.parse(event.dataTransfer.getData("application/x-rag-paths") || "[]"); if (paths.length) void transfer(paths, item.path, "cut", Object.fromEntries(items.filter(value => paths.includes(value.path) && value.revision).map(value => [value.path, value.revision!]))); } catch { setError("请选择工作区中的文件后拖动"); } } }}>
+        return <article key={item.path} role="option" aria-selected={active} tabIndex={0} aria-label={item.name} draggable={canWrite && !editing} className={`resource-item ${grid ? "resource-card" : "resource-row"} ${active ? "resource-item-selected" : ""} ${item.kind === "directory" ? "resource-directory" : ""}`} onKeyDown={event => { if (event.key === " " && event.target === event.currentTarget) { event.preventDefault(); selectItem(item, event); } }} onClick={event => itemClick(item, event)} onDoubleClick={() => void open(item)} onContextMenu={event => { event.preventDefault(); if (!active) setSelected(new Set([item.path])); anchorRef.current = item.path; setMenu({ x: event.clientX, y: event.clientY, item }); }} onPointerDown={event => itemPointerDown(item, event)} onPointerMove={itemPointerMove} onPointerUp={cancelLongPress} onPointerCancel={cancelLongPress} onDragStart={event => { event.dataTransfer.setData("application/x-rag-paths", JSON.stringify(active ? [...selected] : [item.path])); event.dataTransfer.effectAllowed = "move"; }} onDragOver={event => item.kind === "directory" && event.preventDefault()} onDrop={event => { if (item.kind === "directory") { event.preventDefault(); try { const paths: string[] = JSON.parse(event.dataTransfer.getData("application/x-rag-paths") || "[]"); if (paths.length) void transfer(paths, item.path, "cut", Object.fromEntries(items.filter(value => paths.includes(value.path) && value.revision).map(value => [value.path, value.revision!]))); } catch { setError("请选择资源后拖动"); } } }}>
           {grid && active && <span className="resource-selection-check" aria-label="已选中"><Check size={14} /></span>}
           <div className="resource-item-open"><span className="workspace-file-icon" aria-hidden="true">{item.kind === "directory" ? <Folder size={grid ? 44 : 20} strokeWidth={1.4} /> : <ResourceThumbnail item={item} scope={scope} compact={!grid} />}</span>
             <div className="resource-item-copy"><span className="resource-item-name" title={item.path}>{editing ? <input ref={inlineInput} className="resource-inline-input" aria-label={inlineEdit.creating ? "输入新项目名称" : `重命名 ${item.name}`} autoFocus value={inlineEdit.value} onChange={event => setInlineEdit({ ...inlineEdit, value: event.target.value })} onClick={event => event.stopPropagation()} onKeyDown={event => { event.stopPropagation(); if (event.nativeEvent.isComposing) return; if (event.key === "Enter") { event.preventDefault(); void saveInlineEdit(); } if (event.key === "Escape") { event.preventDefault(); void cancelInlineEdit(); } }} /> : item.name}</span>
@@ -359,11 +359,11 @@ export function ResourceLibrary({ select }: { select?: (item: ResourceFile) => P
       <button role="menuitem" disabled={!canWrite || !!query} onClick={() => { setMenu(null); createNew("directory"); }}><Plus size={15} />新建文件夹</button>
     </div>}
     {conflict && <Modal title="目标位置有同名项目" busy={busy} onClose={() => setConflict(null)}><ul className="workspace-conflict-list">{conflict.items.map(item => <li key={item.path}><span>{item.path}{item.kind === "type_mismatch" && "（文件与文件夹不能互相替换）"}</span>{conflict.items.length > 1 && <select aria-label={`处理 ${item.path}`} value={conflict.choices?.[item.path] || ""} onChange={event => setConflict({ ...conflict, choices: { ...conflict.choices, [item.path]: event.target.value as ConflictChoice } })}><option value="" disabled>选择处理方式</option><option value="keep_both">保留两份</option><option value="replace" disabled={item.replaceable === false}>{item.kind === "directory" ? "合并文件夹" : "替换"}</option></select>}</li>)}</ul><div className="modal-footer"><button autoFocus className="secondary" onClick={() => setConflict(null)}>取消</button><button className="secondary" disabled={busy} onClick={() => { const pending = conflict; setConflict(null); void pending.retry("keep_both"); }}>保留两份</button><button className="danger" disabled={busy || conflict.items.some(item => item.replaceable === false)} onClick={() => { const pending = conflict; setConflict(null); void pending.retry("replace"); }}>{conflict.items.every(item => item.kind === "directory") ? "合并文件夹" : "替换"}</button>{conflict.items.length > 1 && <button className="primary" disabled={busy || conflict.items.some(item => !conflict.choices?.[item.path])} onClick={() => { const pending = conflict; setConflict(null); void pending.retry("replace", pending.choices); }}>应用所选操作</button>}</div></Modal>}
-    {dialog === "delete" && deletePreview && <Modal title="删除确认" busy={busy} onClose={() => setDialog(null)}><p>将删除 {deletePreview.files} 个文件和 {deletePreview.directories} 个文件夹。同一工作区的所有成员及云电脑将无法再访问这些内容。</p>{error && <p role="alert" className="extension-error">{error}</p>}<div className="modal-footer"><button autoFocus className="secondary" onClick={() => setDialog(null)}>取消</button><button className="danger" disabled={busy} onClick={() => void removeSelected()}>确认删除</button></div></Modal>}
+    {dialog === "delete" && deletePreview && <Modal title="删除确认" busy={busy} onClose={() => setDialog(null)}><p>将删除 {deletePreview.files} 个文件和 {deletePreview.directories} 个文件夹，云电脑也将无法再访问这些内容。</p>{error && <p role="alert" className="extension-error">{error}</p>}<div className="modal-footer"><button autoFocus className="secondary" onClick={() => setDialog(null)}>取消</button><button className="danger" disabled={busy} onClick={() => void removeSelected()}>确认删除</button></div></Modal>}
     {dialog === "edit" && editor && <Modal title={`${canWrite ? "编辑" : "预览"} · ${editor.item.path.split("/").pop() || "文件"}`} wide busy={busy} onClose={closeEditor}><div className="workspace-editor"><p className="workspace-editor-path">{editor.item.path}</p><textarea aria-label="文件内容" autoFocus readOnly={!canWrite} disabled={busy} value={editor.content} onChange={event => setEditor({ ...editor, content: event.target.value })} />
       {editorError && <div role="alert" className="resource-browser-alert"><span>{editorError}</span><button className="secondary" onClick={() => setDiscard("reload")}>重新加载</button></div>}
       {discard && <div className="admin-inline-confirm" role="alert"><span>放弃尚未保存的修改？</span><button className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button className="danger" onClick={() => { const reload = discard === "reload"; setDiscard(false); setDialog(null); setEditor(null); if (reload) void open({ ...editor.item, kind: "file", name: editor.item.path.split("/").pop() || "文件" }); }}>放弃修改</button></div>}
-      <div className="modal-footer"><button className="secondary" onClick={closeEditor}>{canWrite ? "取消" : "关闭"}</button>{canWrite && <button className="primary" disabled={busy} onClick={async () => { setBusy(true); setEditorError(""); try { await request(`/workspaces/${session.workspace_id}/files`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: editor.item.path, content: editor.content, revision: editor.revision, request_id: crypto.randomUUID(), content_type: editor.item.content_type }) }); setDialog(null); setEditor(null); await load(); } catch (cause) { setEditorError(cause instanceof Error ? cause.message : "保存失败，内容已保留，请重试"); } finally { setBusy(false); } }}>保存</button>}</div></div></Modal>}
+      <div className="modal-footer"><button className="secondary" onClick={closeEditor}>{canWrite ? "取消" : "关闭"}</button>{canWrite && <button className="primary" disabled={busy} onClick={async () => { setBusy(true); setEditorError(""); try { await request("/files", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: editor.item.path, content: editor.content, revision: editor.revision, request_id: crypto.randomUUID(), content_type: editor.item.content_type }) }); setDialog(null); setEditor(null); await load(); } catch (cause) { setEditorError(cause instanceof Error ? cause.message : "保存失败，内容已保留，请重试"); } finally { setBusy(false); } }}>保存</button>}</div></div></Modal>}
     {linkedFile.error && <p role="alert" className="resource-error">{linkedFile.error}</p>}
     {linkedFile.preview}
     {preview && <ResourcePreview key={`${scope}:${preview.id}`} item={preview} scope={scope} onClose={() => setPreview(null)}

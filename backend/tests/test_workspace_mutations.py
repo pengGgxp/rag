@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app import file_operations as ops, shared_resources as shared, workspace_files
 from app.models import WorkspaceFile, WorkspaceFileOperation, WorkspaceSkillInstall
 from test_resources import resource_store, access_for, upload
-from test_auth import register, share, switch
+from test_auth import register
 from test_shared_providers import setup_site
 from test_issue_100_skill_library import platform_skill
 
@@ -22,7 +22,7 @@ def setup(accounts):
 
 
 def write(client, actor, path, content, revision=None):
-    return client.put(f"/workspaces/{actor.workspace_id}/files", json={"path": path, "content": content, "revision": revision})
+    return client.put("/files", json={"path": path, "content": content, "revision": revision})
 
 
 @pytest.mark.parametrize("directory,neighbor", [("a_b", "axb"), ("a%b", "axxb"), ("a/b", "axb")])
@@ -66,15 +66,16 @@ def test_file_rename_replays_original_response_after_path_changes(accounts, reso
     retry = client.put(endpoint, json=request)
     assert retry.status_code == 200 and retry.json() == first.json()
     assert client.get(f"/resources/{item['id']}").json()["path"] == "later.txt"
-    assert resource_store[0][shared.object_key(actor.workspace_id, "later.txt")] == b"original"
+    assert resource_store[0][shared.object_key(actor.user_id, "later.txt")] == b"original"
     assert len(db.scalars(select(WorkspaceFileOperation).where(WorkspaceFileOperation.request_id == request["request_id"])).all()) == 1
 
 
-def test_file_rename_replay_checks_permissions_workspace_and_file_identity(accounts, resource_store):
-    (client, other, _), db = accounts
-    identity = register(client)
-    register(other, "rename-viewer@example.com")
+def test_file_rename_replay_checks_account_and_file_identity(accounts, resource_store):
+    (client, other, _), _db = accounts
+    register(client)
+    register(other, "rename-other@example.com")
     item = upload(client, "before.txt")
+    other_item = upload(other, "before.txt", b"separate content")
     endpoint = f"/resources/files/{item['id']}"
     request = {"new_path": "after.txt", "revision": item["revision"], "request_id": str(uuid4())}
     first = client.put(endpoint, json=request)
@@ -82,9 +83,11 @@ def test_file_rename_replay_checks_permissions_workspace_and_file_identity(accou
     assert other.put(endpoint, json=request).status_code == 404
     second = upload(client, "second.txt")
     assert client.put(f"/resources/files/{second['id']}", json=request).status_code == 409
-    share(client, "rename-viewer@example.com", "viewer")
-    switch(other, identity["workspace_id"])
-    assert other.put(endpoint, json=request).status_code == 403
+    assert other.get(f"/resources/{other_item['id']}/download").content == b"separate content"
+    own_request = {**request, "revision": other_item["revision"]}
+    own_endpoint = f"/resources/files/{other_item['id']}"
+    assert other.put(own_endpoint, json=own_request).status_code == 200
+    assert other.put(endpoint, json=request).status_code == 404
 
 
 def test_file_rename_failed_commit_recovers_and_retries_same_request(accounts, resource_store, monkeypatch):
@@ -101,8 +104,8 @@ def test_file_rename_failed_commit_recovers_and_retries_same_request(accounts, r
     monkeypatch.setattr(db, "commit", fail_once)
     with pytest.raises(RuntimeError, match="rename commit"):
         client.put(endpoint, json=request)
-    assert resource_store[0][shared.object_key(actor.workspace_id, "before.txt")] == b"original"
-    assert shared.object_key(actor.workspace_id, "after.txt") not in resource_store[0]
+    assert resource_store[0][shared.object_key(actor.user_id, "before.txt")] == b"original"
+    assert shared.object_key(actor.user_id, "after.txt") not in resource_store[0]
     retry = client.put(endpoint, json=request)
     assert retry.status_code == 200, retry.text
     assert retry.json()["path"] == "after.txt"
@@ -134,24 +137,24 @@ def test_attachment_directory_existence_uses_literal_prefix(accounts, resource_s
     assert write(client, actor, f"{directory}/inside.txt", "own").status_code == 200
     create_upload(UploadFile(io.BytesIO(b"new"), filename="new.txt"), db, actor,
         source="chat_upload", directory=directory)
-    assert resource_store[0][shared.object_key(actor.workspace_id, f"{directory}/new.txt")] == b"new"
+    assert resource_store[0][shared.object_key(actor.user_id, f"{directory}/new.txt")] == b"new"
 
 
 def test_revision_detects_external_same_size_change_and_preserves_new_bytes(accounts, resource_store):
     client, db, actor = setup(accounts)
     item = write(client, actor, "note.md", "first").json()
-    read = client.get(f"/workspaces/{actor.workspace_id}/files/{item['id']}/text").json()
-    resource_store[0][shared.object_key(actor.workspace_id, "note.md")] = b"other"
+    read = client.get(f"/files/{item['id']}/text").json()
+    resource_store[0][shared.object_key(actor.user_id, "note.md")] = b"other"
     assert write(client, actor, "note.md", "stale", read["revision"]).status_code == 409
     assert write(client, actor, "note.md", "no revision").status_code == 409
-    current = client.get(f"/workspaces/{actor.workspace_id}/files/{item['id']}/text").json()
+    current = client.get(f"/files/{item['id']}/text").json()
     assert current["content"] == "other" and current["revision"] != read["revision"]
     assert write(client, actor, "note.md", "saved", current["revision"]).status_code == 200
 
 
 def test_browser_refreshes_files_and_empty_nested_directory_markers(accounts, resource_store):
     client, db, actor = setup(accounts)
-    root = shared.prefix(actor.workspace_id)
+    root = shared.prefix(actor.user_id)
     resource_store[0][root + "external/a.py"] = b"print(1)"
     resource_store[0][root + "empty/deep/.rag-directory"] = b""
     assert {item["path"] for item in client.get("/resources/browse").json()["items"]} == {"external", "empty"}
@@ -168,8 +171,8 @@ def test_implicit_rename_and_nested_markers_are_moved_together(accounts, resourc
     assert client.post("/resources/directories", json={"path": "old/empty"}).status_code == 201
     result = client.put("/resources/directories", json={"path": "old", "new_path": "new"})
     assert result.status_code == 200, result.text
-    assert shared.directory_marker_key(actor.workspace_id, "new/empty") in resource_store[0]
-    assert not any(key.startswith(shared.object_key(actor.workspace_id, "old/")) for key in resource_store[0])
+    assert shared.directory_marker_key(actor.user_id, "new/empty") in resource_store[0]
+    assert not any(key.startswith(shared.object_key(actor.user_id, "old/")) for key in resource_store[0])
     assert client.post("/resources/directories", json={"path": "occupied"}).status_code == 201
     assert client.put("/resources/directories", json={"path": "new", "new_path": "occupied"}).status_code == 409
 
@@ -186,7 +189,7 @@ def test_batch_preflight_and_delete_failure_restore_all_bytes(accounts, resource
     original = store.delete
     calls = []
     def fail_second(key):
-        if key.startswith(shared.prefix(actor.workspace_id)):
+        if key.startswith(shared.prefix(actor.user_id)):
             calls.append(key)
             if len(calls) == 2:
                 raise RuntimeError("synthetic storage failure")
@@ -293,11 +296,11 @@ def test_discovery_duplicates_damage_roots_and_context_metadata(accounts, resour
 def test_interrupted_operation_recovers_but_keeps_new_external_content(accounts, resource_store):
     client, db, actor = setup(accounts)
     row = upload(client, "note.txt", b"before")
-    key = shared.object_key(actor.workspace_id, row["path"])
-    backup = f"workspaces/{actor.workspace_id}/file-operations/test/before"
+    key = shared.object_key(actor.user_id, row["path"])
+    backup = f"accounts/{actor.user_id}/file-operations/test/before"
     resource_store[0][backup] = b"before"
     before = ops.revision(shared.backend(db).head(key))
-    operation = WorkspaceFileOperation(workspace_id=actor.workspace_id, user_id=actor.user_id,
+    operation = WorkspaceFileOperation(account_id=actor.user_id, user_id=actor.user_id,
         request_id=str(uuid4()), fingerprint="x"*64, state="pending", result={}, steps=[{
             "key": key, "before": before, "backup": backup, "delete": False,
             "after_hash": hashlib.sha256(b"after").hexdigest()}])
@@ -314,7 +317,7 @@ def test_interrupted_operation_recovers_but_keeps_new_external_content(accounts,
 def test_metadata_commit_failure_compensates_and_original_request_retries(accounts, resource_store, monkeypatch):
     client, db, actor = setup(accounts)
     initial = upload(client, "commit.txt", b"original")
-    key = shared.object_key(actor.workspace_id, "commit.txt")
+    key = shared.object_key(actor.user_id, "commit.txt")
     original = db.commit
     failed = []
     def fail_once():
@@ -344,9 +347,9 @@ def test_directory_merge_requires_each_file_revision_and_preserves_empty_dirs(ac
     request["expected"] = {item["path"]: item["revision"]}
     result = client.post("/resources/operations/move", json=request)
     assert result.status_code == 200, result.text
-    assert shared.directory_marker_key(actor.workspace_id, "target/source/empty") in resource_store[0]
-    assert resource_store[0][shared.object_key(actor.workspace_id, "target/source/common.txt")] == b"source"
-    assert not any(name.startswith(shared.object_key(actor.workspace_id, "source/")) for name in resource_store[0])
+    assert shared.directory_marker_key(actor.user_id, "target/source/empty") in resource_store[0]
+    assert resource_store[0][shared.object_key(actor.user_id, "target/source/common.txt")] == b"source"
+    assert not any(name.startswith(shared.object_key(actor.user_id, "source/")) for name in resource_store[0])
 
 
 def test_admin_import_maintains_source_package_without_installing(accounts, resource_store, monkeypatch):

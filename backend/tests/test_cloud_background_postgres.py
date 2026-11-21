@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app import auth, cloud_computer as cloud, cloud_preview as preview
-from app.models import CloudComputerCommand, CloudPreview, CreditAccount, CreditLedgerEntry, UsageEvent
+from app.models import CloudComputerCommand, CloudPreview, UserCreditAccount, CreditLedgerEntry, UsageEvent
 from test_auth_postgres import auth_postgres
 from test_cloud_computer import FakeCloud
 from test_cloud_ending_postgres import seed
@@ -19,6 +19,8 @@ def test_heartbeat_idle_cutoff_and_usage_are_read_only(auth_postgres, monkeypatc
     clock = auth.now()
     monkeypatch.setattr(cloud, "now", lambda: clock)
     monkeypatch.setattr(preview, "now", lambda: clock)
+    settings = preview.get_settings().model_copy(update={"preview_enabled": True})
+    monkeypatch.setattr(preview, "get_settings", lambda: settings)
     fake = FakeCloud()
     monkeypatch.setattr(fake, "preview_alive", lambda *_: True, raising=False)
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
@@ -34,11 +36,11 @@ def test_heartbeat_idle_cutoff_and_usage_are_read_only(auth_postgres, monkeypatc
         db.add(shown); db.commit()
         preview.heartbeat(shown.id, db, access)
         assert auth.aware(shown.lease_until) == clock + timedelta(seconds=60)
-        before = (row.last_activity_at, db.get(CreditAccount, workspace).balance)
+        before = (row.last_activity_at, db.get(UserCreditAccount, workspace).balance)
         for _ in range(3):
             cloud.computer_list(offset=0, limit=10, active_only=False, db=db, access=access)
             preview.detail(shown.id, db, access)
-        assert (row.last_activity_at, db.get(CreditAccount, workspace).balance) == before
+        assert (row.last_activity_at, db.get(UserCreditAccount, workspace).balance) == before
     monkeypatch.setattr(cloud, "now", lambda: clock + timedelta(seconds=599))
     cloud.maintain_one(identifier, factory)
     with factory() as db:
@@ -50,11 +52,11 @@ def test_heartbeat_idle_cutoff_and_usage_are_read_only(auth_postgres, monkeypatc
         assert row.ended_at and row.stop_reason == "idle_timeout"
         assert row.billed_seconds == 600 and row.charged_credits == Decimal("20")
         assert row.held_credits == 0
-        settled = (db.get(CreditAccount, workspace).balance,
-            list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.workspace_id == workspace))))
-        assert sum(db.scalars(select(UsageEvent.credits).where(UsageEvent.workspace_id == workspace))) == 20
+        settled = (db.get(UserCreditAccount, workspace).balance,
+            list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.account_id == workspace))))
+        assert sum(db.scalars(select(UsageEvent.credits).where(UsageEvent.account_id == workspace))) == 20
     cloud.maintain_one(identifier, factory)
     with factory() as db:
-        assert (db.get(CreditAccount, workspace).balance,
-            list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.workspace_id == workspace)))) == settled
+        assert (db.get(UserCreditAccount, workspace).balance,
+            list(db.scalars(select(CreditLedgerEntry.id).where(CreditLedgerEntry.account_id == workspace)))) == settled
     assert fake.kills == 1

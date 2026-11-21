@@ -79,14 +79,14 @@ def write_feedback(
     }
     db.execute(insert(AnswerFeedback).values(
         id=uuid4(), message_id=message.id, user_id=access.user_id,
-        workspace_id=access.workspace_id, **values,
+        account_id=access.user_id, **values,
     ).on_conflict_do_update(
         index_elements=["message_id", "user_id"],
         set_={**values, "updated_at": func.now()},
     ))
     db.commit()
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="feedback.created_or_updated", resource_type="message",
         resource_id=message.id, metadata={"rating": payload.rating, "category_count": len(payload.categories)},
         request=request,
@@ -110,7 +110,7 @@ def delete_feedback(
         AnswerFeedback.message_id == message_id, AnswerFeedback.user_id == access.user_id,
     ))
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="feedback.deleted", resource_type="message", resource_id=message_id, request=request,
     )
     db.commit()

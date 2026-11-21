@@ -5,7 +5,7 @@ from decimal import Decimal
 import cloud_experience_fixture as fixture
 from app import cloud_computer as cloud
 from app.auth import Access, digest
-from app.models import CloudPreview, CreditAccount
+from app.models import CloudPreview, UserCreditAccount
 
 app = fixture.app
 
@@ -35,9 +35,8 @@ def scenario(case: str):
             db.commit()
     cloud.maintenance()
     with fixture.SessionLocal() as db:
-        access = Access(fixture.UUID(fixture.identity["user"]["id"]), fixture.UUID(fixture.identity["workspace_id"]),
-            "admin", digest(fixture.client.cookies.get(fixture.auth.COOKIE)))
-        db.get(CreditAccount, access.workspace_id).balance = Decimal("100000")
+        access = Access(fixture.UUID(fixture.identity["user"]["id"]), digest(fixture.client.cookies.get(fixture.auth.COOKIE)))
+        db.get(UserCreditAccount, access.user_id).balance = Decimal("100000")
         settings = db.get(fixture.CloudComputerSettings, 1)
         settings.config = {**settings.config, "credits_per_minute": "2"}
         db.commit()
@@ -50,7 +49,7 @@ def scenario(case: str):
         row.started_at = cloud.now() - fixture.timedelta(seconds=601 if case == "delayed" else 61)
         row.last_activity_at = cloud.now()
         if case == "insufficient":
-            db.get(CreditAccount, row.workspace_id).balance = 0
+            db.get(UserCreditAccount, row.account_id).balance = 0
         preview = db.get(CloudPreview, fixture.UUID(fixture.receipt["preview_id"]))
         preview.session_id, preview.command_id = row.id, command.id
         preview.status, preview.ended_at, preview.error = "ready", None, None

@@ -14,16 +14,12 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowRight,
-  Check,
-  ChevronDown,
   Eye,
   EyeOff,
-  Layers3,
   Loader2,
   LogOut,
   RefreshCw,
   ShieldCheck,
-  Settings2,
   UserRound,
 } from "lucide-react";
 import { request, setCsrfToken } from "./api";
@@ -35,7 +31,6 @@ import { useSettingsNavigation } from "./settings/settings-navigation";
 import { DocumentUploadProvider } from "./document-uploads";
 import { clearPreviewCache } from "./resource-preview-cache";
 
-export type Role = "admin" | "editor" | "viewer";
 export type AuthOptions = {
   oauth_name: string | null;
   password_reset: boolean;
@@ -45,7 +40,6 @@ export type AuthOptions = {
   wechat?: boolean;
   require_verified_email?: boolean;
 };
-type Member = { id: string; name: string; email: string; role: Role };
 export type Session = {
   user: {
     id: string;
@@ -57,13 +51,10 @@ export type Session = {
     wechat_linked?: boolean;
     is_site_admin?: boolean;
   };
-  workspaces: { id: string; name: string; role: Role }[];
-  workspace_id: string;
   csrf_token: string;
 };
 type Auth = {
   session: Session;
-  role?: Role;
   options: AuthOptions;
   refreshSession: () => Promise<Session>;
   logout: () => void;
@@ -71,7 +62,7 @@ type Auth = {
 const AuthContext = createContext<Auth | null>(null);
 export function useAuth() {
   const auth = useContext(AuthContext);
-  if (!auth) throw new Error("Missing authenticated workspace");
+  if (!auth) throw new Error("Missing authenticated account");
   return auth;
 }
 const json = (body: unknown, method = "POST") => ({
@@ -86,25 +77,17 @@ export function AccountButton() {
   const { session, refreshSession, logout } = useAuth();
   const settingsNavigation = useSettingsNavigation();
   const router = useRouter();
-  const workspace = session.workspaces.find(
-    (item) => item.id === session.workspace_id,
-  );
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [switching, setSwitching] = useState(false);
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const returnTo = pathname?.startsWith("/settings")
     ? "/"
     : `${pathname || "/"}${searchParams.size ? `?${searchParams.toString()}` : ""}`;
   const personalSettingsHref = `/settings?returnTo=${encodeURIComponent(returnTo)}`;
-  const workspaceSettingsHref = `/settings/workspace?returnTo=${encodeURIComponent(returnTo)}`;
   const menuItems = useRef<Array<HTMLAnchorElement | HTMLButtonElement>>([]);
-  const prefetchSettings = () => {
-    router.prefetch(personalSettingsHref);
-    router.prefetch(workspaceSettingsHref);
-  };
+  const prefetchSettings = () => router.prefetch(personalSettingsHref);
   const openSettings = (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
     event.preventDefault();
@@ -144,24 +127,6 @@ export function AccountButton() {
     items[(index + direction + items.length) % items.length]?.focus();
   }
 
-  async function switchWorkspace(workspaceId: string) {
-    if (workspaceId === session.workspace_id) {
-      setOpen(false);
-      return;
-    }
-    setSwitching(true);
-    try {
-      await request(
-        "/auth/workspace",
-        json({ workspace_id: workspaceId }),
-      );
-      await refreshSession();
-      setOpen(false);
-    } finally {
-      setSwitching(false);
-    }
-  }
-
   return (
     <div className="account-menu" ref={rootRef}>
       <button
@@ -170,7 +135,7 @@ export function AccountButton() {
         aria-haspopup="menu"
         data-account-trigger="true"
         aria-expanded={open}
-        title="账号与工作区"
+        title="账号"
         onPointerEnter={prefetchSettings}
         onFocus={prefetchSettings}
         onClick={() => setOpen((value) => !value)}
@@ -187,16 +152,15 @@ export function AccountButton() {
         </span>
         <span>
           <strong>{session.user.name}</strong>
-          <small>{workspace?.name ?? "选择工作区"}</small>
+          <small>{session.user.email}</small>
         </span>
-        <ChevronDown className="account-menu-chevron" size={15} aria-hidden="true" />
       </button>
       {open && (
         <div
           className="account-menu-panel"
           ref={menuRef}
           role="menu"
-          aria-label="账号与工作区"
+          aria-label="账号"
           onKeyDown={(event) => {
             if (event.key === "ArrowDown") {
               event.preventDefault();
@@ -219,49 +183,11 @@ export function AccountButton() {
             <UserRound size={16} />
             我的账号
           </Link>
-          <Link
-            ref={(element) => {
-              if (element) menuItems.current[1] = element;
-            }}
-            className="account-menu-item"
-            href={workspaceSettingsHref}
-            role="menuitem"
-            onClick={event => openSettings(event, workspaceSettingsHref)}
-          >
-            <Settings2 size={16} />
-            工作区设置
-          </Link>
-          {session.user.is_site_admin && <Link className="account-menu-item" href="/admin" role="menuitem" ref={(element) => { if (element) menuItems.current[session.workspaces.length + 2] = element; }} onClick={() => setOpen(false)}><ShieldCheck size={16} />站点管理</Link>}
-          {session.workspaces.length > 1 && (
-            <>
-              <div className="account-menu-label">切换工作区</div>
-              {session.workspaces.map((item, index) => (
-                <button
-                  key={item.id}
-                  ref={(element) => {
-                    if (element) menuItems.current[index + 2] = element;
-                  }}
-                  className="account-menu-item"
-                  type="button"
-                  role="menuitem"
-                  disabled={switching}
-                  onClick={() => void switchWorkspace(item.id)}
-                >
-                  <span className="account-menu-item-icon">
-                    <Layers3 size={16} />
-                  </span>
-                  {item.name}
-                  {item.id === session.workspace_id && (
-                    <Check className="account-menu-check" size={15} />
-                  )}
-                </button>
-              ))}
-            </>
-          )}
+          {session.user.is_site_admin && <Link className="account-menu-item" href="/admin" role="menuitem" ref={(element) => { if (element) menuItems.current[1] = element; }} onClick={() => setOpen(false)}><ShieldCheck size={16} />站点管理</Link>}
           <div className="account-menu-divider" />
           <button
             ref={(element) => {
-              menuItems.current[session.workspaces.length + (session.user.is_site_admin ? 3 : 2)] = element!;
+              menuItems.current[session.user.is_site_admin ? 2 : 1] = element!;
             }}
             className="account-menu-item danger"
             type="button"
@@ -279,11 +205,10 @@ export function AccountButton() {
     </div>
   );
 }
-
 export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {
   if (!error) {
     return (
-      <main className="auth-bootstrap-shell" aria-busy="true" aria-label="知库工作区">
+      <main className="auth-bootstrap-shell" aria-busy="true" aria-label="知库">
         <aside className="auth-bootstrap-sidebar" aria-hidden="true">
           <div className="auth-bootstrap-brand">
             <span className="brand-mark">
@@ -333,7 +258,7 @@ export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetr
         </div>
         {error ? (
           <>
-            <h1>工作区暂时无法连接</h1>
+            <h1>服务暂时无法连接</h1>
             <p>{error}</p>
             <button className="primary auth-bootstrap-action" onClick={onRetry}>
               <RefreshCw size={16} />
@@ -345,7 +270,6 @@ export function AuthBootstrapScreen({ error, onRetry }: { error?: string; onRetr
     </main>
   );
 }
-
 export function AuthBoundary({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -363,7 +287,7 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
   const accept = useCallback((value: Session | null) => {
     const previous = previewScope.current;
     if (!value) void clearPreviewCache();
-    else if (previous && (previous.user.id !== value.user.id || previous.workspace_id !== value.workspace_id))
+    else if (previous && previous.user.id !== value.user.id)
       void clearPreviewCache(previous.user.id);
     previewScope.current = value;
     setSession(value);
@@ -417,9 +341,6 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
       window.removeEventListener("rag-session-expired", expired);
     };
   }, [accept, reload]);
-  const workspace = session?.workspaces.find(
-    (item) => item.id === session.workspace_id,
-  );
   const refreshSession = useCallback(async () => {
     const next = await request<Session>("/auth/me");
     accept(next);
@@ -457,28 +378,19 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         session,
-        role: workspace?.role,
         options,
         refreshSession,
         logout,
       }}
     >
-      <DocumentUploadProvider key={session.user.id}><div key={`${session.user.id}:${session.workspace_id}`} className="authenticated-app">
+      <DocumentUploadProvider key={session.user.id}><div key={session.user.id} className="authenticated-app">
         <div className="app-view">
           {children}
         </div>
       </div></DocumentUploadProvider>
-      {!workspace && (
-        <Modal title="工作区访问已变更" onClose={() => undefined}>
-          <button className="primary" onClick={() => window.location.assign("/settings")}>
-            选择工作区
-          </button>
-        </Modal>
-      )}
     </AuthContext.Provider>
   );
 }
-
 function LoginForm({
   options,
   mode,
@@ -511,7 +423,7 @@ function LoginForm({
   const titles = {
     login: "登录知库",
     register: "创建账号",
-    setup: "设置工作区",
+    setup: "创建管理员账号",
     forgot: "找回密码",
     reset: "设置新密码",
   };
@@ -602,19 +514,19 @@ function LoginForm({
         <div className="auth-heading">
           <h2>{titles[mode]}</h2>
           <p>
-            {mode === "login" && "登录你的知识工作空间"}
+            {mode === "login" && "登录后继续使用知库"}
             {mode === "register" &&
               (options.first_run
-                ? "创建第一个账号，这个账号将成为工作区所有者"
+                ? "创建第一个管理员账号"
                 : "创建账号并开始使用知库")}
-            {mode === "setup" && "完成首次部署，创建工作区所有者账号"}
+            {mode === "setup" && "完成首次设置，创建管理员账号"}
             {mode === "forgot" && "我们会向你的邮箱发送重置链接"}
             {mode === "reset" && "设置一个新的登录密码"}
           </p>
         </div>
         {mode === "login" && options.first_run && (
           <div className="auth-first-run-note" role="status">
-            这是知库的首次使用。还没有管理员，创建账号即可完成工作区设置。
+            这是知库的首次使用。创建账号即可完成初始设置。
           </div>
         )}
         <form className="auth-form" onSubmit={submit} key={mode}>
@@ -750,121 +662,5 @@ function LoginForm({
           </p>
         )}
     </AuthFrame>
-  );
-}
-
-export function LibraryAccess({
-  id,
-  onChange,
-}: {
-  id: string;
-  onChange: () => void;
-}) {
-  const [members, setMembers] = useState<Member[]>([]);
-  const [restricted, setRestricted] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [saved, setSaved] = useState(false);
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const [users, permissions] = await Promise.all([
-        request<Member[]>("/auth/members"),
-        request<{ restricted: boolean; user_ids: string[] }>(
-          `/knowledge-bases/${id}/permissions`,
-        ),
-      ]);
-      setMembers(users);
-      setRestricted(permissions.restricted);
-      setSelected(permissions.user_ids);
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
-  useEffect(() => {
-    void load();
-  }, [load]);
-  if (loading) return <p>正在加载访问权限…</p>;
-  return (
-    <form
-      className="library-permissions"
-      onSubmit={(e) => {
-        e.preventDefault();
-        setBusy(true);
-        setError("");
-        setSaved(false);
-        request(
-          `/knowledge-bases/${id}/permissions`,
-          json({ restricted, user_ids: selected }, "PUT"),
-        )
-          .then(() => {
-            setSaved(true);
-            onChange();
-          })
-          .catch((e) => setError(errorMessage(e)))
-          .finally(() => setBusy(false));
-      }}
-    >
-      <h2>访问权限</h2>
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
-      <label className="account-field">
-        可见范围
-        <select
-          value={restricted ? "restricted" : "workspace"}
-          onChange={(e) => {
-            setRestricted(e.target.value === "restricted");
-            setSaved(false);
-          }}
-        >
-          <option value="workspace">工作区所有成员</option>
-          <option value="restricted">仅管理员和指定成员</option>
-        </select>
-      </label>
-      {restricted && (
-        <fieldset className="permission-members">
-          <legend>指定成员</legend>
-          {members
-            .filter((item) => item.role !== "admin")
-            .map((item) => (
-              <label key={item.id}>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(item.id)}
-                  onChange={(e) => {
-                    setSelected(
-                      e.target.checked
-                        ? [...selected, item.id]
-                        : selected.filter((value) => value !== item.id),
-                    );
-                    setSaved(false);
-                  }}
-                />
-                <span>
-                  {item.name}
-                  <small>{item.email}</small>
-                </span>
-              </label>
-            ))}
-        </fieldset>
-      )}
-      <button className="secondary" disabled={busy}>
-        <Check size={15} />
-        保存权限
-      </button>
-      {saved && (
-        <span className="auth-success" role="status">
-          已保存
-        </span>
-      )}
-    </form>
   );
 }

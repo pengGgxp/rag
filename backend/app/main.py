@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import SessionLocal, engine, get_db, init_db
-from .auth import Access, BrowserRequestGuard, aware, get_access, now, permissions_router, router as auth_router
+from .auth import Access, BrowserRequestGuard, get_access, router as auth_router
 from .email_auth import router as email_auth_router
 from .wechat_auth import router as wechat_auth_router
 from .site_auth import router as site_auth_router
@@ -83,8 +83,6 @@ from .credits import (
 from .extensions import router as extensions_router
 from .payments import build_router as build_payment_router
 from .payment_settings import router as payment_settings_router
-from .llm_providers import router as llm_providers_router, site_router as site_llm_providers_router
-from .credits import site_router as site_usage_policies_router
 from .llm_providers import request_provider_config
 from .model_pricing import router as model_pricing_router
 from .pricing_calculator import router as pricing_calculator_router
@@ -320,17 +318,17 @@ def ingestion_options(access: Access = Depends(get_access)):
 @app.post("/knowledge-bases", response_model=KnowledgeBaseRead, status_code=status.HTTP_201_CREATED)
 def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
                           db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
     knowledge_base = KnowledgeBase(
         name=payload.name,
         description=payload.description,
         tags=payload.tags,
-        workspace_id=access.workspace_id,
+        account_id=access.user_id,
+        owner_id=access.user_id,
     )
     db.add(knowledge_base)
     db.flush()
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="knowledge_base.created", resource_type="knowledge_base",
         resource_id=knowledge_base.id,
         metadata={"name": payload.name[:100], "tags": payload.tags},
@@ -357,7 +355,7 @@ def update_knowledge_base(
     if payload.tags is not None:
         knowledge_base.tags = payload.tags
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="knowledge_base.updated", resource_type="knowledge_base",
         resource_id=knowledge_base.id,
         metadata={
@@ -386,7 +384,7 @@ def archive_knowledge_base(
         return KnowledgeBaseRead.model_validate(knowledge_base)
     knowledge_base.status = KnowledgeBaseStatus.ARCHIVED
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="knowledge_base.archived", resource_type="knowledge_base",
         resource_id=knowledge_base.id, request=request,
     )
@@ -415,7 +413,7 @@ def restore_knowledge_base(
         else KnowledgeBaseStatus.DRAFT
     )
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="knowledge_base.restored", resource_type="knowledge_base",
         resource_id=knowledge_base.id, request=request,
     )
@@ -561,7 +559,7 @@ def activate_document_version(
     )
     document.is_active = True
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.version_activated", resource_type="document", resource_id=document.id,
         metadata={"version_number": document.version_number, "filename": document.filename[:255]},
         request=request,
@@ -612,7 +610,7 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
         KnowledgeBaseStatus.READY if remaining_ready else KnowledgeBaseStatus.DRAFT
     )
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.deleted", resource_type="document", resource_id=document.id,
         metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
         request=request,
@@ -663,7 +661,7 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
         job.state = JobState.SUCCEEDED
     db.add(job)
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.restored", resource_type="document", resource_id=document.id,
         metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
         request=request,
@@ -706,7 +704,7 @@ def reset_abandoned_indexing(db: Session, document, job: IngestionJob):
         if chunk.embedding_status == EmbeddingStatus.RUNNING:
             chunk.embedding_status = EmbeddingStatus.FAILED
             chunk.embedding_error = "上一次索引任务未完成，请重试"
-    release_embedding_hold(db, document.knowledge_base.workspace_id, job.id)
+    release_embedding_hold(db, document.knowledge_base.account_id, job.id)
 
 
 def lock_ingestion_job(db, job_id, access):
@@ -728,7 +726,7 @@ def stop_ingestion_job(db, document, job, reason):
         running_chunks = [chunk for chunk in document.chunks
                           if chunk.embedding_status == EmbeddingStatus.RUNNING]
         if running_chunks:
-            release_embedding_hold(db, document.knowledge_base.workspace_id, job.id)
+            release_embedding_hold(db, document.knowledge_base.account_id, job.id)
             for chunk in running_chunks:
                 chunk.embedding_status, chunk.embedding_error = EmbeddingStatus.FAILED, reason
     job.state, job.error_detail, job.retry_progress = JobState.CANCELLED, reason, None
@@ -750,7 +748,7 @@ def cancel_job(
         document.error_detail = "任务已取消"
         document.knowledge_base.status = KnowledgeBaseStatus.ERROR
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="job.cancelled", resource_type="ingestion_job", resource_id=job.id,
         metadata={"document_id": str(job.document_id)}, request=request,
     )
@@ -799,7 +797,7 @@ def retry_job(
     db.add(new_job)
     db.flush()
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="job.retried", resource_type="ingestion_job", resource_id=new_job.id,
         metadata={"document_id": str(document.id), "previous_job_id": str(old_job.id)}, request=request,
     )
@@ -863,7 +861,7 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     job = IngestionJob(document_id=document.id, phase="indexing", submission_pending=True)
     db.add(job)
     record_audit(
-        db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.reindexed", resource_type="document", resource_id=document.id,
         metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
         request=request,
@@ -1173,30 +1171,30 @@ def answer_knowledge_base(
             "content": f"Question:\n{payload.query}\n\nSources:\n{context}",
         },
     ]
-    provider_config = request_provider_config(db, access.workspace_id, payload.provider_id,
+    provider_config = request_provider_config(db, access.user_id, payload.provider_id,
         payload.thinking_option_id, payload.thinking_config_version)
     provider = OpenAICompatibleChatProvider(config=provider_config)
     reservation_id = uuid4()
     metered = model_billing.enabled(db)
     hold = authorization_hold_amount()
     if metered:
-        model_billing.start_request(db, access.workspace_id, access.user_id, reservation_id,
+        model_billing.start_request(db, access.user_id, access.user_id, reservation_id,
             UUID(provider_config.provider_id), hold)
     else:
         from .workspace_billing import operation_snapshot
-        model_billing.settle_pending(db, access.workspace_id, hold)
-        operation_snapshot(db, access.workspace_id, reservation_id, "model",
+        model_billing.settle_pending(db, access.user_id, hold)
+        operation_snapshot(db, access.user_id, reservation_id, "model",
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
-        authorization_hold(db, access.workspace_id, access.user_id, reservation_id, hold)
+        authorization_hold(db, access.user_id, access.user_id, reservation_id, hold)
     db.commit()
     def finalize_model(outcome):
         if metered:
             model_billing.finalize_request(db, reservation_id, outcome)
         else:
             from .workspace_billing import finish_operation, legacy_call_usage
-            settle_model_usage(db, access.workspace_id, access.user_id, reservation_id,
-                legacy_call_usage(db, access.workspace_id, reservation_id), hold)
-            finish_operation(db, access.workspace_id, reservation_id)
+            settle_model_usage(db, access.user_id, access.user_id, reservation_id,
+                legacy_call_usage(db, access.user_id, reservation_id), hold)
+            finish_operation(db, access.user_id, reservation_id)
         db.commit()
     try:
         if metered:
@@ -1206,7 +1204,7 @@ def answer_knowledge_base(
         else:
             from .workspace_billing import LegacyPriceMeter
             from sqlalchemy.orm import sessionmaker
-            legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.workspace_id, reservation_id)
+            legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.user_id, reservation_id)
             answer = legacy_meter.invoke(provider, lambda: provider.complete(messages), messages)
     except LLMConfigurationError as exc:
         finalize_model("failed")
@@ -1239,9 +1237,9 @@ def answer_knowledge_base(
     else:
         if legacy_meter:
             usage_event["billing_snapshot_id"] = legacy_meter.last_snapshot_id
-        settle_model_usage(db, access.workspace_id, access.user_id, reservation_id, [usage_event], hold)
+        settle_model_usage(db, access.user_id, access.user_id, reservation_id, [usage_event], hold)
         from .workspace_billing import finish_operation
-        finish_operation(db, access.workspace_id, reservation_id)
+        finish_operation(db, access.user_id, reservation_id)
         db.commit()
 
     db.expire_all()
@@ -1273,11 +1271,9 @@ app.include_router(document_uploads_router)
 app.include_router(skill_uploads_router)
 from .chat_attachments import router as chat_attachments_router
 app.include_router(chat_attachments_router)
-app.include_router(permissions_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
 app.include_router(build_usage_router(get_db))
-app.include_router(site_usage_policies_router)
 app.include_router(model_pricing_router)
 app.include_router(pricing_calculator_router)
 app.include_router(site_settings_router)
@@ -1296,8 +1292,6 @@ from .site_skills import router as site_skills_router
 app.include_router(site_skills_router)
 from .suggestions import router as suggestions_router
 app.include_router(suggestions_router)
-app.include_router(llm_providers_router)
-app.include_router(site_llm_providers_router)
 from .shared_providers import router as shared_providers_router, selection_router
 app.include_router(shared_providers_router)
 from .model_connections import router as model_connections_router
@@ -1312,7 +1306,5 @@ app.include_router(cloud_preview_router)
 from .thinking_admin import router as thinking_admin_router
 app.include_router(thinking_admin_router)
 app.include_router(selection_router)
-from .billing_admin import router as workspace_billing_router
-app.include_router(workspace_billing_router)
 app.include_router(deployment_router)
 

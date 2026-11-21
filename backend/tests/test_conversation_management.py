@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import conversation_jobs, conversations
 from app.models import (ChatMessage, Conversation, ConversationEvent, ConversationExecution,
-    ConversationTitleTask, CreditAccount)
+    ConversationTitleTask, UserCreditAccount)
 from test_conversations import client, create, turn
 from test_retrieval import add_library
 from auth_helpers import model_id
@@ -151,7 +151,7 @@ def test_platform_title_usage_and_manual_rename_race(client, monkeypatch):
     item = create(http, [add_library(db)])
     _, body = turn(http, item["id"], "请帮我整理季度项目计划")
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    before = db.scalar(select(func.sum(CreditAccount.balance)))
+    before = db.scalar(select(func.sum(UserCreditAccount.balance)))
     from app import llm
     from app.llm import LLMUsage
     class TitleProvider:
@@ -168,9 +168,9 @@ def test_platform_title_usage_and_manual_rename_race(client, monkeypatch):
     assert title.status == "completed" and title.usage["prompt_tokens"] == 20
     assert title.cost_reference["payer"] == "platform"
     assert db.get(Conversation, UUID(item["id"])).title == "季度项目计划整理"
-    assert db.scalar(select(func.sum(CreditAccount.balance))) == before
+    assert db.scalar(select(func.sum(UserCreditAccount.balance))) == before
     conversation_jobs.title_run(item["id"], factory)
-    assert db.scalar(select(func.sum(CreditAccount.balance))) == before
+    assert db.scalar(select(func.sum(UserCreditAccount.balance))) == before
 
 
 def test_title_failure_is_not_retried_and_manual_edit_wins(client, monkeypatch):
@@ -207,18 +207,18 @@ def test_title_failure_is_not_retried_and_manual_edit_wins(client, monkeypatch):
             calls.append(prompt)
             raise RuntimeError("mock unavailable")
     monkeypatch.setattr(llm, "OpenAICompatibleChatProvider", FailingProvider)
-    before = db.scalar(select(func.sum(CreditAccount.balance)))
+    before = db.scalar(select(func.sum(UserCreditAccount.balance)))
     conversation_jobs.title_run(failed["id"], factory)
     conversation_jobs.title_run(failed["id"], factory)
     db.expire_all()
     assert len(calls) == 2
     assert db.get(ConversationTitleTask, UUID(failed["id"])).status == "failed"
     assert db.get(Conversation, UUID(failed["id"])).title_source == "temporary"
-    assert db.scalar(select(func.sum(CreditAccount.balance))) == before
+    assert db.scalar(select(func.sum(UserCreditAccount.balance))) == before
 
     invalid = create(http, [add_library(db)])
     turn(http, invalid["id"])
-    before = db.scalar(select(func.sum(CreditAccount.balance)))
+    before = db.scalar(select(func.sum(UserCreditAccount.balance)))
     class InvalidProvider:
         def __init__(self, config):
             raise RuntimeError("configuration unavailable")
@@ -226,31 +226,31 @@ def test_title_failure_is_not_retried_and_manual_edit_wins(client, monkeypatch):
     conversation_jobs.title_run(invalid["id"], factory)
     db.expire_all()
     assert db.get(ConversationTitleTask, UUID(invalid["id"])).status == "failed"
-    assert db.scalar(select(func.sum(CreditAccount.balance))) == before
+    assert db.scalar(select(func.sum(UserCreditAccount.balance))) == before
 
 
-def test_search_and_request_access_remain_owner_and_workspace_scoped(client):
+def test_search_and_request_access_are_user_scoped_not_workspace_scoped(client):
     http, db, _ = client
-    from app.models import User, Workspace
+    from app.models import User
     item = create(http, [])
     identifier = uuid4()
     http.post(f"/conversations/{item['id']}/messages", json={"request_id": str(identifier),
         "provider_id": model_id(http), "query": "隔离关键词"})
     other = User(email="other-chat@example.com", name="Other")
-    workspace = Workspace(name="Other workspace")
-    db.add_all([other, workspace]); db.flush()
+    db.add(other); db.flush()
     conversation = db.get(Conversation, UUID(item["id"]))
     original_owner = conversation.owner_id
     conversation.owner_id = other.id
     db.commit()
-    for different_workspace in (False, True):
-        if different_workspace:
-            conversation.owner_id, conversation.workspace_id = original_owner, workspace.id
-            db.commit()
-        assert http.get("/conversations/search", params={"q": "隔离关键词"}).json()["items"] == []
-        assert not http.get("/conversations").json()["items"]
-        assert http.get(f"/conversations/{item['id']}/requests/{identifier}").status_code == 404
-        assert http.get(f"/conversations/{item['id']}/requests/{identifier}/events").status_code == 404
+    assert http.get("/conversations/search", params={"q": "隔离关键词"}).json()["items"] == []
+    assert not http.get("/conversations").json()["items"]
+    assert http.get(f"/conversations/{item['id']}/requests/{identifier}").status_code == 404
+    assert http.get(f"/conversations/{item['id']}/requests/{identifier}/events").status_code == 404
+    conversation.owner_id, conversation.account_id = original_owner, other.id
+    db.commit()
+    assert len(http.get("/conversations/search", params={"q": "隔离关键词"}).json()["items"]) == 1
+    assert len(http.get("/conversations").json()["items"]) == 1
+    assert http.get(f"/conversations/{item['id']}/requests/{identifier}").status_code == 200
 
 
 def test_deleted_queued_answer_never_calls_model_and_settles(client):
@@ -306,7 +306,7 @@ def test_original_request_stays_idempotent_after_retry_creates_a_new_turn(client
         ConversationExecution.conversation_id == UUID(item["id"]))) == 2
 
 
-def test_search_cursor_filters_and_revoked_library(client):
+def test_search_cursor_filters_and_legacy_role_does_not_revoke_owner(client):
     http, db, _ = client
     library = add_library(db)
     now = datetime.now(timezone.utc)
@@ -327,12 +327,11 @@ def test_search_cursor_filters_and_revoked_library(client):
     filtered = http.get("/conversations/search", params={"q": "检索测试", "knowledge_base_id": str(library.id),
         "since": (now-timedelta(days=2, hours=1)).isoformat(), "until": (now-timedelta(hours=1)).isoformat()}).json()
     assert {row["id"] for row in filtered["items"]} == set(identifiers[1:3])
-    from app.models import Membership
     owner = db.get(Conversation, UUID(identifiers[0])).owner_id
-    db.get(Membership, (library.workspace_id, owner)).role = "viewer"
-    library.restricted = True
+    library.owner_id = library.account_id = owner
     db.commit()
-    assert http.get("/conversations/search", params={
+    response = http.get("/conversations/search", params={
         "q": "检索测试", "knowledge_base_id": str(library.id),
-    }).status_code == 404
+    })
+    assert response.status_code == 200 and len(response.json()["items"]) == 4
     assert http.get(f"/conversations/{identifiers[0]}").status_code == 200

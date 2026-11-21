@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .model_billing import CAPABILITIES
 from .models import (ContextOperation, Conversation, LLMProviderConfig, ModelBillingSettings,
-                     ModelConnection, ModelUsageRequest, SiteModelProvider, UsagePolicy, User, Workspace)
+                     ModelConnection, ModelUsageRequest, SiteModelProvider, UsagePolicy, User)
 from .site_auth import site_admin
 from .site_audit import record
 from .credit_amounts import CreditRate
@@ -140,10 +140,10 @@ def switch_billing(db, operation):
         else:
             if not complete({k: v for k, v in row.template.items() if k in CAPABILITIES}):
                 raise ValueError("Configure the complete model pricing template first.")
-            for workspace in db.scalars(select(Workspace)):
-                active = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == workspace.id,
+            for user in db.scalars(select(User).where(User.is_suspended.is_(False))):
+                active = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.account_id == user.id,
                     LLMProviderConfig.active.is_(True), LLMProviderConfig.enabled.is_(True)))
-                price_snapshot(db, workspace.id, active.id if active else None)
+                price_snapshot(db, user.id, active.id if active else None)
     elif operation == "disable":
         if db.scalar(select(ModelUsageRequest.request_id).where(ModelUsageRequest.status == "pending").limit(1)):
             raise ValueError("Settle pending charges before disabling model billing.")

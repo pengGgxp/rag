@@ -24,7 +24,6 @@ export function KnowledgeNavigation({
   librarySearch,
   libraryLoading,
   canEdit,
-  canManagePermissions,
   onCatalog,
   onViewChange,
   onLibrarySearchChange,
@@ -40,7 +39,6 @@ export function KnowledgeNavigation({
   librarySearch: string;
   libraryLoading: boolean;
   canEdit: boolean;
-  canManagePermissions: boolean;
   onCatalog: () => void;
   onViewChange: (view: KnowledgeView) => void;
   onLibrarySearchChange: (value: string) => void;
@@ -76,16 +74,6 @@ export function KnowledgeNavigation({
             <Search size={16} />
             检索测试
           </button>
-          {canManagePermissions && (
-            <button
-              className={view === "permissions" ? "selected" : ""}
-              onClick={() => onViewChange("permissions")}
-              aria-current={view === "permissions" ? "page" : undefined}
-            >
-              <Settings2 size={16} />
-              访问权限
-            </button>
-          )}
           <button
             className={view === "settings" ? "selected" : ""}
             onClick={() => onViewChange("settings")}

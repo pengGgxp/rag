@@ -4,7 +4,7 @@ import { ChatWorkspace } from "./chat-workspace";
 import { Modal } from "./modal";
 import { FilePreview } from "./resource-preview";
 import { request } from "./api";
-import { LibraryAccess, useAuth } from "./auth";
+import { useAuth } from "./auth";
 import { RetrievalPanel } from "./retrieval-panel";
 import { useUiStore } from "./ui-store";
 import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
@@ -80,9 +80,9 @@ export default function KnowledgeWorkspace() {
   // Intercepted settings routes keep the workspace mounted beneath the dialog.
   if (pathname === "/") workspaceParams.current = searchParams;
   const params = workspaceParams.current;
-  const { role, session } = useAuth();
+  const { session } = useAuth();
   const uploads = useDocumentUploads();
-  const canEdit = role === "admin" || role === "editor";
+  const canEdit = true;
   const [libraries, setLibraries] = useState<KnowledgeBase[]>([]);
   const selectedId = params.get("library") || "";
   const [documents, setDocuments] = useState<SourceDocument[]>([]);
@@ -94,11 +94,11 @@ export default function KnowledgeWorkspace() {
     if (pathname === "/" && params.has("extensions")) router.replace("/extensions", { scroll: false });
   }, [pathname, params, router]);
   const requestedView = params.get("view");
-  const view: KnowledgeView = requestedView === "retrieval" || requestedView === "permissions" || requestedView === "settings"
+  const view: KnowledgeView = requestedView === "retrieval" || requestedView === "settings"
     ? requestedView : "documents";
   useEffect(() => {
     if (pathname !== "/" || screen !== "knowledge" || !requestedView ||
-        ["documents", "retrieval", "permissions", "settings"].includes(requestedView)) return;
+        ["documents", "retrieval", "settings"].includes(requestedView)) return;
     const corrected = new URLSearchParams(params.toString());
     corrected.set("view", "documents");
     router.replace(`/?${corrected.toString()}`, { scroll: false });
@@ -492,7 +492,6 @@ export default function KnowledgeWorkspace() {
           librarySearch={librarySearch}
           libraryLoading={libraryLoading}
           canEdit={canEdit}
-          canManagePermissions={role === "admin"}
           onCatalog={() => {
             router.push("/", { scroll: false });
             setSidebarOpen(false);
@@ -513,7 +512,7 @@ export default function KnowledgeWorkspace() {
         />
       </WorkspaceNavigation>
         <WorkspaceHeader title={screen === "catalog" ? "知识库" : selected?.name || "知识库"}
-          context={screen === "knowledge" ? ({ documents: "文档", retrieval: "检索测试", permissions: "访问权限", settings: "配置" }[view]) : undefined}
+          context={screen === "knowledge" ? ({ documents: "文档", retrieval: "检索测试", settings: "配置" }[view]) : undefined}
           actions={screen === "catalog" ? <button className="primary" disabled={!canEdit} onClick={() => openModal("create")}>
             <Plus size={16} />新建知识库
           </button> : selected && (
@@ -634,25 +633,7 @@ export default function KnowledgeWorkspace() {
                 </p>
               </div>
             </Motion.div>
-            {screen === "knowledge" && view === "permissions" ? (
-              <section className="configuration" aria-label="知识库访问权限">
-                <div className="configuration-intro">
-                  <h2>访问权限</h2>
-                  <p>控制工作区成员是否可以发现并使用这个知识库。</p>
-                </div>
-                {role === "admin" ? (
-                  <LibraryAccess
-                    key={selectedId}
-                    id={selectedId}
-                    onChange={() => void loadLibraries().catch(notifyError)}
-                  />
-                ) : (
-                  <p className="configuration-muted">
-                    只有工作区管理员可以修改访问权限。
-                  </p>
-                )}
-              </section>
-            ) : screen === "knowledge" && view === "settings" ? (
+            {screen === "knowledge" && view === "settings" ? (
               <section className="configuration" aria-label="知识库配置">
                 <h2>基本信息</h2>
                 <dl className="configuration-fields">
@@ -1213,9 +1194,9 @@ export default function KnowledgeWorkspace() {
           </div>
         </Modal>
       )}
-      {sourcePreview && <FilePreview key={`${session.workspace_id}:${sourcePreview.id}`} file={{ type: "document", id: sourcePreview.id, name: sourcePreview.filename }}
+      {sourcePreview && <FilePreview key={`${session.user.id}:${sourcePreview.id}`} file={{ type: "document", id: sourcePreview.id, name: sourcePreview.filename }}
         restoreFocusSelector={`[data-document-preview="${sourcePreview.id}"]`}
-        scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setSourcePreview(null)}
+        scope={session.user.id} onClose={() => setSourcePreview(null)}
         alternate={<div className="file-viewer-info"><button type="button" className="secondary" onClick={() => { const doc = sourcePreview; setSourcePreview(null); void showParsedDocument(doc); }}>查看解析文本</button></div>} />}
       {preview && (
         <Modal title="原文详情" onClose={() => setPreview(null)} wide>

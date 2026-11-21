@@ -93,8 +93,7 @@ def scope_digest(db, conversation, access):
     checked.conversation(db, conversation)
     # History records past observations. Current resources and tool grants
     # are checked by the tools, not used as a lease on the entire memory.
-    return digest({"conversation": str(conversation.id),
-        "workspace": str(access.workspace_id), "user": str(access.user_id)})
+    return digest({"conversation": str(conversation.id), "user": str(access.user_id)})
 
 
 def build_messages(db, conversation, rows, config, extensions, query=None, *, history=()):

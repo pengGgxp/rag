@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models import ProductSuggestion, SiteAuditEvent
-from test_auth import register, share, switch
+from test_auth import register
 from test_shared_providers import setup_site
 
 
@@ -19,8 +19,6 @@ def test_suggestion_retry_quota_permissions_and_processing(accounts, monkeypatch
     assert first.status_code == 201
     assert user.post("/suggestions", json=body).json() == first.json()
     assert user.post("/suggestions", json={**body, "content": "different"}).status_code == 409
-    share(admin, member["user"]["email"], "viewer")
-    switch(user, identity["workspace_id"])
     for _ in range(2):
         assert user.post("/suggestions", json={**body, "request_id": str(uuid4())}).status_code == 201
     assert user.post("/suggestions", json={**body, "request_id": str(uuid4())}).status_code == 429
@@ -28,7 +26,7 @@ def test_suggestion_retry_quota_permissions_and_processing(accounts, monkeypatch
     rows = db.scalars(select(ProductSuggestion).order_by(ProductSuggestion.created_at, ProductSuggestion.id)).all()
     assert len(rows) == 3
     original = db.get(ProductSuggestion, UUID(first.json()["id"]))
-    assert str(original.workspace_id) == member["workspace_id"]
+    assert str(original.account_id) == member["user"]["id"]
     assert user.get("/site/admin/suggestions").status_code == 403
     assert user.get(f"/site/admin/suggestions/{original.id}").status_code == 403
     assert user.get("/suggestions").status_code == 405

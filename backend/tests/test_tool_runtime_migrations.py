@@ -11,15 +11,9 @@ import sqlalchemy as sa
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
-
-from app.models import (
-    ChatMessage, CloudComputerSession, Conversation, CreditAccount, CreditLedgerEntry,
-    RemoteToolExecution, User, Workspace,
-)
+from legacy_migration_helpers import legacy_tables, seed_workspace
 
 from test_auth_postgres import auth_postgres
-from test_knowledge_mentions_migration import migration_scripts
 
 
 def migration(name):
@@ -119,37 +113,37 @@ def test_combined_head_preserves_each_published_branch(starting_revision):
         upgrade(starting_revision)
         tables = []
         if starting_revision != "base":
-            with Session(engine) as db:
-                workspace = Workspace(name="Synthetic combined migration")
-                user = User(email=f"tool-merge-{uuid4().hex}@example.com", name="Migration test")
-                db.add_all([workspace, user])
-                db.flush()
-                conversation = Conversation(workspace_id=workspace.id, owner_id=user.id)
-                db.add(conversation)
-                db.flush()
-                message = ChatMessage(conversation_id=conversation.id, sequence=0,
-                    role="assistant", content="Preserved answer", status="completed")
-                db.add(message)
-                db.add(CreditAccount(workspace_id=workspace.id, balance="18.2345"))
-                db.add(CreditLedgerEntry(workspace_id=workspace.id, actor_user_id=user.id,
-                    amount="18.2345", balance_after="18.2345", kind="grant",
-                    idempotency_key=f"merge-{uuid4()}"))
-                db.flush()
-                cloud = dict(workspace_id=workspace.id, user_id=user.id,
-                    conversation_id=conversation.id, session_hash=uuid4().hex,
+            with engine.begin() as db:
+                user_id, workspace_id = seed_workspace(db)
+                tables = legacy_tables(db, "conversations", "chat_messages", "credit_accounts",
+                    "credit_ledger", "cloud_computer_sessions", "remote_tool_executions")
+                conversation_id, message_id = uuid4(), uuid4()
+                db.execute(tables["conversations"].insert().values(
+                    id=conversation_id, workspace_id=workspace_id, owner_id=user_id,
+                    title="Migration test", next_sequence=1))
+                db.execute(tables["chat_messages"].insert().values(id=message_id, conversation_id=conversation_id,
+                    sequence=0, role="assistant", content="Preserved answer", status="completed",
+                    citations=[], traces=[], document_mentions=[], tool_events=[], refused=False))
+                db.execute(tables["credit_accounts"].insert().values(workspace_id=workspace_id,
+                    balance="18.2345", lifetime_granted="18.2345", lifetime_spent=0))
+                db.execute(tables["credit_ledger"].insert().values(id=uuid4(), workspace_id=workspace_id,
+                    actor_user_id=user_id, amount="18.2345", balance_after="18.2345", kind="grant",
+                    idempotency_key=f"merge-{uuid4()}", metadata={}))
+                cloud = dict(id=uuid4(), workspace_id=workspace_id, user_id=user_id,
+                    conversation_id=conversation_id, session_hash=uuid4().hex,
                     status="ended", snapshot={"credits_per_minute": "0.1234"},
-                    encrypted_api_key="synthetic", held_credits=0, charged_credits="0.1234")
-                receipt = dict(message_id=message.id, workspace_id=workspace.id,
-                    owner_id=user.id, request_id=uuid4(), tool_name="mcp_read",
+                    encrypted_api_key="synthetic", manifest={}, held_credits=0, charged_credits="0.1234",
+                    billed_seconds=0, billing_sequence=0)
+                receipt = dict(id=uuid4(), message_id=message_id, workspace_id=workspace_id,
+                    owner_id=user_id, request_id=uuid4(), tool_name="mcp_read",
                     authorization_version=1, arguments_digest="same", status="completed",
                     encrypted_result="preserved-encrypted-result")
                 if starting_revision == "0073_cloud_stop_reason":
                     cloud["stop_reason"] = "user_requested"
                 else:
                     receipt["invocation_id"] = uuid4()
-                db.execute(CloudComputerSession.__table__.insert().values(**cloud))
-                db.execute(RemoteToolExecution.__table__.insert().values(**receipt))
-                db.commit()
+                db.execute(tables["cloud_computer_sessions"].insert().values(**cloud))
+                db.execute(tables["remote_tool_executions"].insert().values(**receipt))
             with engine.begin() as connection:
                 settings = sa.Table("site_search_settings", sa.MetaData(), autoload_with=connection)
                 values = dict(id=1, version=7, enabled=True, timeout_seconds=20,
@@ -162,12 +156,13 @@ def test_combined_head_preserves_each_published_branch(starting_revision):
                 for table in ("credit_accounts", "credit_ledger", "conversations", "chat_messages",
                     "cloud_computer_sessions", "remote_tool_executions", "site_search_settings")]
         before = snapshot(tables)
-        upgrade("head")
-        upgrade("head")
+        legacy_head = "0078_merge_retry_uploads"
+        upgrade(legacy_head)
+        upgrade(legacy_head)
         assert snapshot(tables) == before
         with engine.connect() as connection:
             assert list(connection.scalars(sa.text("SELECT version_num FROM alembic_version"))) == [
-                migration_scripts().get_current_head()]
+                legacy_head]
             inspector = sa.inspect(connection)
             cloud_columns = {column["name"]: column for column in inspector.get_columns(
                 "cloud_computer_sessions")}

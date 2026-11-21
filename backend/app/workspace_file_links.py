@@ -23,30 +23,32 @@ def file_reference(value):
 
 def get_file_link(db, access, arguments):
     from . import shared_resources
-    from .workspace_files import owned, read_file
+    from .workspace_files import _current_file_version, owned, read_file
     from .file_operations import workspace_lock
     if (set(arguments) not in ({"id"}, {"path"})
             or not isinstance(next(iter(arguments.values()), None), str)):
         raise HTTPException(422, "请只提供一个文件 ID 或路径")
     access = access.revalidate(db)
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         if "id" in arguments:
             try:
                 identifier = UUID(arguments["id"])
             except (ValueError, TypeError):
                 raise HTTPException(422, "资源 ID 无效") from None
-            row = owned(db, access, access.workspace_id, identifier)
+            row = owned(db, access, access.user_id, identifier)
             path = row.path
         else:
             path = workspace_path(arguments["path"])
             row = db.scalar(select(WorkspaceFile).where(
-                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path))
+                WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.path == path))
+        key = (_current_file_version(db, row).storage_key if row and not row.deleted_at
+               else shared_resources.object_key(access.user_id, path))
         try:
             storage = shared_resources.backend(db)
             if storage is None:
                 from .storage_backend import current_storage
                 storage = current_storage(db)
-            metadata = storage.head(shared_resources.object_key(access.workspace_id, path))
+            metadata = storage.head(key)
         except Exception:
             raise HTTPException(503, "文件暂时无法核验，请稍后重试") from None
         if metadata is None:
@@ -61,7 +63,7 @@ def get_file_link(db, access, arguments):
         if row is None or row.deleted_at:
             shared_resources.index_file(db, access, path, size=size)
             row = db.scalar(select(WorkspaceFile).where(
-                WorkspaceFile.workspace_id == access.workspace_id, WorkspaceFile.path == path,
+                WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.path == path,
                 WorkspaceFile.deleted_at.is_(None)))
             row.live_etag = metadata.get("ETag")
         else:

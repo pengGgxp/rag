@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
-from app.models import CreditAccount, CreditLedgerEntry, ModelUsageRequest, SiteAuditEvent, UsageEvent
+from app.models import UserCreditAccount, CreditLedgerEntry, ModelUsageRequest, SiteAuditEvent, UsageEvent
 from test_site_admin import setup
 
 
@@ -14,13 +14,13 @@ def payload(**changes):
 
 
 def endpoint(workspace):
-    return f"/site/admin/workspaces/{workspace}/credits"
+    return f"/site/admin/users/{workspace}/credits"
 
 
 def test_admin_adjustments_share_balance_and_preserve_paid_orders_and_pending(accounts):
     admin, member, _, db, a, b = setup(accounts)
-    wid = b["workspace_id"]
-    db.add(ModelUsageRequest(request_id=uuid4(), workspace_id=UUID(wid), status="pending",
+    wid = b["user"]["id"]
+    db.add(ModelUsageRequest(request_id=uuid4(), account_id=UUID(wid), status="pending",
         credits=20, hold=0, outcome="confirmed_usage")); db.commit()
     result = admin.post(endpoint(wid) + "/adjustments", json=payload())
     assert result.status_code == 200, result.text
@@ -35,10 +35,10 @@ def test_admin_adjustments_share_balance_and_preserve_paid_orders_and_pending(ac
     public = member.get("/usage").json()
     assert all(row["metadata"] == {} for row in public["entries"] if row["kind"].startswith("manual_"))
     assert "客服补发" not in member.get("/usage").text
-    assert admin.get("/auth/me").json()["workspace_id"] == a["workspace_id"]
+    assert admin.get("/auth/me").json()["user"]["id"] == a["user"]["id"]
     assert admin.get("/usage").json()["balance"] == 1000
     assert db.scalar(select(func.count()).select_from(UsageEvent)) == 0
-    audit = admin.get("/site/admin/audit?action=workspace.credits_adjusted").json()
+    audit = admin.get("/site/admin/audit?action=user.credits_adjusted").json()
     assert audit["total"] == 2 and all(row["target_id"] == wid for row in audit["items"])
     assert "客服补发" not in str(audit)
     assert sorted(Decimal(row["details"]["amount"]) for row in audit["items"]) == [-1200, 200]
@@ -46,7 +46,7 @@ def test_admin_adjustments_share_balance_and_preserve_paid_orders_and_pending(ac
 
 def test_permissions_csrf_and_role_revocation(accounts):
     admin, member, anon, db, a, b = setup(accounts)
-    path = endpoint(b["workspace_id"])
+    path = endpoint(b["user"]["id"])
     for client, code in ((member, 403), (anon, 401)):
         assert client.get(path).status_code == code
         assert client.post(path + "/adjustments", json=payload()).status_code == code
@@ -64,14 +64,14 @@ def test_permissions_csrf_and_role_revocation(accounts):
 ])
 def test_invalid_input_does_not_change_balance(accounts, changes):
     admin, member, _, db, _, b = setup(accounts)
-    assert admin.post(endpoint(b["workspace_id"]) + "/adjustments", json=payload(**changes)).status_code == 422
+    assert admin.post(endpoint(b["user"]["id"]) + "/adjustments", json=payload(**changes)).status_code == 422
     assert member.get("/usage").json()["balance"] == 1000
-    assert not db.scalars(select(SiteAuditEvent).where(SiteAuditEvent.action == "workspace.credits_adjusted")).all()
+    assert not db.scalars(select(SiteAuditEvent).where(SiteAuditEvent.action == "user.credits_adjusted")).all()
 
 
 def test_idempotent_retry_and_conflicting_reuse(accounts):
     admin, member, _, db, _, b = setup(accounts)
-    path = endpoint(b["workspace_id"]) + "/adjustments"
+    path = endpoint(b["user"]["id"]) + "/adjustments"
     data = payload()
     first = admin.post(path, json=data)
     second = admin.post(path, json=data)
@@ -81,22 +81,22 @@ def test_idempotent_retry_and_conflicting_reuse(accounts):
         assert admin.post(path, json={**data, **changes}).status_code == 409
     assert member.get("/usage").json()["balance"] == 1200
     assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(CreditLedgerEntry.kind == "manual_credit")) == 1
-    assert db.scalar(select(func.count()).select_from(SiteAuditEvent).where(SiteAuditEvent.action == "workspace.credits_adjusted")) == 1
+    assert db.scalar(select(func.count()).select_from(SiteAuditEvent).where(SiteAuditEvent.action == "user.credits_adjusted")) == 1
 
 
 def test_balance_conflict_overdraw_overflow_missing_and_read_without_grant(accounts):
     admin, member, _, db, _, b = setup(accounts)
-    path = endpoint(b["workspace_id"])
+    path = endpoint(b["user"]["id"])
     for changes, code in (({"expected_balance": 900}, 409),
             ({"direction": "deduct", "amount": 1001}, 422), ({"amount": 2147483647}, 422)):
         assert admin.post(path + "/adjustments", json=payload(**changes)).status_code == code
     assert member.get("/usage").json()["balance"] == 1000
     assert admin.get(endpoint(uuid4())).status_code == 404
     assert admin.post(endpoint(uuid4()) + "/adjustments", json=payload()).status_code == 404
-    from app.models import Workspace
-    workspace = Workspace(name="No credit account")
+    from app.models import User
+    workspace = User(name="No credit account", email="no-credits@example.com")
     db.add(workspace); db.commit()
     assert admin.get(endpoint(workspace.id)).json()["credits"]["balance"] == 0
-    assert db.get(CreditAccount, workspace.id) is None
+    assert db.get(UserCreditAccount, workspace.id) is None
     assert admin.post(endpoint(workspace.id) + "/adjustments", json=payload(expected_balance=0)).json()["credits"]["balance"] == 200
-    assert len(db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.workspace_id == workspace.id)).all()) == 1
+    assert len(db.scalars(select(CreditLedgerEntry).where(CreditLedgerEntry.account_id == workspace.id)).all()) == 1

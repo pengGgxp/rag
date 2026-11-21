@@ -16,7 +16,7 @@ from app.extensions import ExtensionRuntime
 from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider
 from app.llm_providers import request_provider_config
 from app.models import (BillingSnapshot, ChatMessage, CreditLedgerEntry, ModelBillingSettings,
-    CreditAccount, ModelCallUsage, ModelConnection, SiteModelProvider, UsageEvent)
+    UserCreditAccount, ModelCallUsage, ModelConnection, SiteModelProvider, UsageEvent)
 from app.thinking import encrypt_continuation
 from auth_helpers import model_id
 from test_chat_attachments import PNG
@@ -118,7 +118,7 @@ def test_image_completion_restore_compact_and_settlement(client, monkeypatch, pr
         if protocol == "gemini":
             assert "private-image-signature" in json.dumps(audit)
         access = access_for(http, db)
-        config = request_provider_config(db, access.workspace_id, provider_id)
+        config = request_provider_config(db, access.user_id, provider_id)
         store = WindowStore(access, conversation_id, config)
         with factory() as restored:
             state, items = store.load(restored)
@@ -179,7 +179,7 @@ def settlement_snapshot(db):
         for row in db.scalars(select(model).order_by(model.id))]
         for model in (CreditLedgerEntry, BillingSnapshot, ModelCallUsage, UsageEvent)}
     snapshot["accounts"] = [(row.balance, row.lifetime_spent)
-        for row in db.scalars(select(CreditAccount).order_by(CreditAccount.workspace_id))]
+        for row in db.scalars(select(UserCreditAccount).order_by(UserCreditAccount.user_id))]
     return snapshot
 
 

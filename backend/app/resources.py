@@ -50,9 +50,9 @@ def _path(path: str, *, allow_root=True) -> str:
 def _children(db, access, current: str, query: str, sort: str, direction: str, source: str):
     global_search = bool(query.strip())
     prefix = f"{current}/" if current and not global_search else ""
-    rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+    rows = list(db.scalars(select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
         WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(prefix, autoescape=True))).all())
-    directories = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.workspace_id == access.workspace_id,
+    directories = list(db.scalars(select(WorkspaceDirectory).where(WorkspaceDirectory.owner_user_id == access.user_id,
         WorkspaceDirectory.path.startswith(prefix, autoescape=True))).all())
     dirs: dict[str, dict] = {}
     for row in directories:
@@ -109,13 +109,13 @@ def _children(db, access, current: str, query: str, sort: str, direction: str, s
 
 def _breadcrumbs(path: str):
     parts = path.split("/") if path else []
-    return [{"name": "工作区", "path": ""}] + [
+    return [{"name": "我的资源", "path": ""}] + [
         {"name": part, "path": "/".join(parts[:index + 1])} for index, part in enumerate(parts)
     ]
 
 
 def _workspace_row(db, access, path: str):
-    return db.scalar(select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+    return db.scalar(select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
         WorkspaceFile.path == path, WorkspaceFile.deleted_at.is_(None)))
 
 
@@ -126,7 +126,7 @@ def browse(path: str = "", q: str = "", sort: str = Query("name", pattern="^(nam
     current = _path(path)
     from .workspace_mutations import snapshot
     from .file_operations import workspace_lock
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         _, directories, _ = snapshot(db, access)
         if current and current not in directories:
             raise HTTPException(404, "文件夹不存在或已移动，请返回上级后重新选择")
@@ -160,15 +160,18 @@ def delete_directory(payload: PathPayload, db=Depends(get_db), access: Access = 
 def rename_file(identifier: UUID, payload: PathPayload, db=Depends(get_db), access: Access = Depends(get_access)):
     from .workspace_mutations import transfer
     from .file_operations import workspace_lock, fingerprint, replay
-    access.editor()
     target = _path(payload.new_path or "", allow_root=False)
     # File identity and request fields survive a successful rename; row.path does not.
     signature = fingerprint(["rename_file", identifier, payload.model_dump(exclude={"request_id"})])
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
+        row = db.get(WorkspaceFile, identifier, populate_existing=True)
+        if row is None or row.account_id != access.user_id:
+            raise HTTPException(404, "文件不存在")
         previous = replay(db, access, payload.request_id, signature)
         if previous is not None:
             return previous["file"]
-        row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
+        if row.deleted_at:
+            raise HTTPException(404, "文件不存在")
         result = transfer(db, access, [row.path], move=True, rename=target,
             expected={row.path: payload.revision} if payload.revision else {}, request_id=payload.request_id,
             signature=signature)
@@ -194,7 +197,6 @@ def _transfer(payload, db, access, move):
 @router.post("/operations/delete-preview")
 def preview_delete(payload: BatchPayload, db=Depends(get_db), access: Access = Depends(get_access)):
     from .workspace_mutations import delete_preview
-    access.editor()
     return delete_preview(db, access, payload.paths)
 
 
@@ -212,19 +214,19 @@ def verify_pending_objects(db, head):
         WorkspaceFileVersion.deleted_at.is_(None)).order_by(WorkspaceFileVersion.id).limit(500)).all()
     for version in versions:
         try:
-            metadata = head(version.object_key)
+            metadata = head(version.storage_key)
         except Exception:
             continue
         version.available = metadata is not None
         if metadata is None:
-            for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.object_key)):
+            for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.storage_key)):
                 attachment.object_deleted_at = now()
         if metadata:
             size = metadata.get("Content-Length", metadata.get("ContentLength"))
             if size is not None:
                 version.available = int(size) == version.size_bytes
             if version.available is False:
-                for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.object_key)):
+                for attachment in db.scalars(select(ChatAttachment).where(ChatAttachment.object_key == version.storage_key)):
                     attachment.object_deleted_at = now()
     db.commit()
 
@@ -234,7 +236,7 @@ def listing(q: str = "", source: str = "", offset: int = Query(0, ge=0),
         limit: int = Query(100, ge=1, le=500), db=Depends(get_db), access: Access=Depends(get_access)):
     from .shared_resources import refresh_index
     discovered, has_more = refresh_index(db, access, q, offset, limit, source)
-    query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+    query = select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
         WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.ilike(f"%{q}%"))
     if source:
         query = query.where(WorkspaceFile.source == source)
@@ -251,7 +253,6 @@ def upload(file: UploadFile, directory: str = Form(""), conflict: Literal["error
         revision: str | None = Form(None), request_id: str | None = Form(None), db=Depends(get_db), access: Access=Depends(get_access)):
     from .workspace_mutations import save_files, snapshot, unique_name
     from .file_operations import workspace_lock, fingerprint, replay
-    access.editor()
     parent = _path(directory)
     name = workspace_files.valid_path(file.filename or "")
     if "/" in name:
@@ -260,7 +261,7 @@ def upload(file: UploadFile, directory: str = Form(""), conflict: Literal["error
     if len(data) > workspace_files.MAX_BYTES:
         raise HTTPException(413, "文件不能超过 200 MiB")
     signature = fingerprint(["upload", parent, name, conflict, revision, hashlib.sha256(data).hexdigest()])
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         previous = replay(db, access, request_id, signature)
         if previous is not None:
             return previous["items"][0]
@@ -279,7 +280,7 @@ def upload(file: UploadFile, directory: str = Form(""), conflict: Literal["error
 @router.get("/{identifier}")
 def detail(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
     from .shared_resources import refresh_current_metadata
-    return workspace_files.read_file(refresh_current_metadata(db, access, workspace_files.owned(db, access, access.workspace_id, identifier)))
+    return workspace_files.read_file(refresh_current_metadata(db, access, workspace_files.owned(db, access, access.user_id, identifier)))
 
 
 @router.api_route("/{identifier}/download", methods=["GET", "HEAD"])
@@ -290,15 +291,14 @@ def download(identifier: UUID, request: Request, version: int | None = Query(Non
     # Active HTML/SVG/JavaScript are always attachments, never same-origin executable previews.
     inline = preview and (selected.content_type in {"image/png", "image/jpeg", "image/webp", "application/pdf"}
         or selected.content_type.startswith("text/plain"))
-    from .shared_resources import object_key
-    return download_response(db, access, request, object_key=object_key(access.workspace_id, row.path),
-        size=row.size_bytes, filename=PurePosixPath(row.path).name, content_type=row.content_type,
+    return download_response(db, access, request, object_key=selected.storage_key,
+        size=selected.size_bytes, filename=PurePosixPath(row.path).name, content_type=selected.content_type,
         resource=f"user_download:{row.id}", inline=inline)
 
 
 @router.delete("/{identifier}", status_code=204)
 def remove(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_access)):
-    row = workspace_files.owned(db, access, access.workspace_id, identifier, write=True)
+    row = workspace_files.owned(db, access, access.user_id, identifier, write=True)
     from .workspace_mutations import delete
     delete(db, access, [row.path])
 
@@ -323,8 +323,8 @@ def attach(identifier: UUID, db=Depends(get_db), access: Access=Depends(get_acce
     width, height = chat_attachments.image_size(data, suffix) if image else (None, None)
     if width and width * height > 40_000_000:
         raise HTTPException(413, "图片尺寸过大，请缩小后重试")
-    row = ChatAttachment(id=uuid4(), user_id=access.user_id, workspace_id=access.workspace_id,
-        filename=PurePosixPath(resource.path).name, object_key=selected.object_key,
+    row = ChatAttachment(id=uuid4(), user_id=access.user_id, account_id=access.user_id,
+        filename=PurePosixPath(resource.path).name, object_key=selected.storage_key,
         content_type=selected.content_type, content_hash=selected.content_hash, size_bytes=selected.size_bytes,
         kind="image" if image else "document", source=resource.source, resource_path=resource.path,
         resource_file_id=resource.id, resource_version=1, width=width, height=height,
