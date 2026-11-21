@@ -734,6 +734,7 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
 def test_verification_database_failure_is_not_reported_as_storage_failure(direct, monkeypatch, caplog):
     from psycopg.errors import DeadlockDetected
     from sqlalchemy.exc import OperationalError
+    from app.document_failures import log
 
     owner, _, db, _, kb, storage, _, processed = direct
     content = b"sealed content"
@@ -745,7 +746,13 @@ def test_verification_database_failure_is_not_reported_as_storage_failure(direct
         raise OperationalError("test SQL", {"private": "test parameter"}, DeadlockDetected("test DB error"))
 
     monkeypatch.setattr(uploads, "admit", fail_admission)
-    uploads.finalize_upload(str(row.id))
+    # Capture this logger directly, independent of other tests' logging setup.
+    with monkeypatch.context() as logging_patch:
+        logging_patch.setattr(log, "disabled", False)
+        logging_patch.setattr(log, "handlers", [caplog.handler])
+        logging_patch.setattr(log, "propagate", False)
+        with caplog.at_level("WARNING", logger=log.name):
+            uploads.finalize_upload(str(row.id))
     status = owner.get(f"/uploads/{row.id}").json()
     assert status["state"] == "verifying" and status["verify_after"]
     assert status["failure"]["code"] == "database_unavailable" and status["failure"]["retryable"]
