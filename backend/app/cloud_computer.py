@@ -689,6 +689,12 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
                 time.sleep(1)
             command.finished_at = now()
             db.commit()
+            from .tasks import sync_personal_libraries
+            try:
+                sync_personal_libraries.delay(str(row.account_id))
+            except Exception:
+                # Periodic reconciliation covers a missed wake-up.
+                pass
         except Exception:
             db.rollback()
             db.refresh(command)

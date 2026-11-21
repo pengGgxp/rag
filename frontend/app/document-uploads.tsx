@@ -318,7 +318,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     try {
       let remote = task.uploadId ? await request<Remote>(`/uploads/${task.uploadId}`, { signal })
         : await retryUploadRequest(() => request<Remote>(`/knowledge-bases/${task.library.id}/uploads`, json({
-          filename: file.name, size_bytes: file.size, content_type: file.type || "application/octet-stream",
+          filename: file.name, relative_path: task.sourcePath || null, size_bytes: file.size, content_type: file.type || "application/octet-stream",
           version_of: task.library.versionOf || null,
         }, { "Idempotency-Key": task.key })), signal);
       task = { ...task, uploadId: remote.id, partSize: remote.part_size };
@@ -601,7 +601,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   );
   return <Context.Provider value={{ tasks: visible, dialogOpen, open }}>
     {children}
-    {dialog && <Dialog title={dialog.destination?.versionOf ? `上传 ${dialog.destination.filename} 的新版本` : dialog.destination ? "上传文档" : "上传任务"}
+    {dialog && <Dialog title={dialog.destination?.versionOf ? `替换 ${dialog.destination.filename} 的原件` : dialog.destination ? "上传文档" : "上传任务"}
       onClose={closeDialog} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
       <div className="upload-window">
         {dialog.destination && <>

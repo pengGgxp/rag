@@ -50,6 +50,11 @@ def stage_upload(db, access, library_id, filename, content_type, stream, version
     from .storage import upload_fileobj, delete_object
     size, digest = inspect_file(stream)
     check_format(stream, filename)
+    library = access.library(db, library_id, write=True)
+    if library.directory_path:
+        from .personal_library_files import publish_upload
+        return publish_upload(db, access, library, filename, content_type or "application/octet-stream",
+                              stream.read(), digest, request, replace_id=version_of)
     key = f"{library_id}/{uuid4()}{Path(filename).suffix.lower()}"
     document, job = admit(db, access, library_id, filename, content_type, size, digest, key, version_of, request)
     try:
@@ -72,7 +77,8 @@ def commit_upload(db, document):
     except Exception:
         db.rollback()
         try:
-            delete_object(key)
+            if not document.personal_file_id:
+                delete_object(key)
         except Exception:
             logging.getLogger(__name__).warning("Upload object cleanup deferred")
         raise
@@ -93,7 +99,7 @@ def check_format(stream, filename):
         raise HTTPException(415, "文件内容与文档格式不符")
 
 
-def admit(db, access, knowledge_base_id, filename, content_type, size, digest, key, version_of=None, request=None):
+def admit(db, access, knowledge_base_id, filename, content_type, size, digest, key, version_of=None, request=None, *, personal_file_id=None):
     from .storage_billing import check_capacity
     check_capacity(db, access.user_id, size, exclude_key=key)
     library = access.library(db, knowledge_base_id, write=True)
@@ -102,12 +108,12 @@ def admit(db, access, knowledge_base_id, filename, content_type, size, digest, k
     previous = db.get(Document, version_of) if version_of else None
     if version_of and (not previous or previous.knowledge_base_id != library.id or previous.status == DocumentStatus.DELETED):
         raise HTTPException(404, "原文档版本不存在")
-    if db.scalar(select(Document.id).where(Document.knowledge_base_id == library.id,
+    if personal_file_id is None and db.scalar(select(Document.id).where(Document.knowledge_base_id == library.id,
             Document.content_hash == digest, Document.status != DocumentStatus.DELETED)):
         raise HTTPException(409, "此文档已存在")
     number = (db.scalar(select(func.max(Document.version_number)).where(
         Document.version_group_id == previous.version_group_id)) + 1) if previous else 1
-    document = Document(knowledge_base_id=library.id, filename=filename, content_type=content_type,
+    document = Document(personal_file_id=personal_file_id, knowledge_base_id=library.id, filename=filename, content_type=content_type,
         size_bytes=size, content_hash=digest, object_key=key,
         version_group_id=previous.version_group_id if previous else uuid4(), version_number=number,
         supersedes_id=previous.id if previous else None, is_active=not bool(previous))

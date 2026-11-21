@@ -43,6 +43,7 @@ class KnowledgeBaseRead(BaseModel):
 
     id: UUID
     name: str
+    directory_path: str | None = None
     description: str | None
     tags: list[str]
     status: KnowledgeBaseStatus
@@ -82,6 +83,8 @@ class DocumentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    personal_file_id: UUID | None = None
+    relative_path: str | None = None
     knowledge_base_id: UUID
     version_group_id: UUID
     version_number: int
@@ -128,6 +131,8 @@ class SourceLocation(BaseModel):
 
 
 class ChunkRead(BaseModel):
+    relative_path: str | None = None
+    document_hash: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -203,6 +208,9 @@ class AnswerRequest(BaseModel):
 
 
 class CitationRead(BaseModel):
+    document_id: UUID | None = None
+    relative_path: str | None = None
+    document_hash: str | None = None
     chunk_id: UUID
     filename: str
     content_origin: str = "uploaded"

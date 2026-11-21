@@ -33,7 +33,6 @@ import {
   CircleAlert,
   FileText,
   FolderClosed,
-  History,
   Layers3,
   Loader2,
   MessageSquare,
@@ -118,11 +117,8 @@ export default function KnowledgeWorkspace() {
   const [documentError, setDocumentError] = useState("");
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
   const [modal, setModal] = useState<
-    "create" | "edit" | "versions" | null
+    "create" | "edit" | null
   >(null);
-  const [versionTarget, setVersionTarget] = useState<SourceDocument | null>(null);
-  const [versions, setVersions] = useState<SourceDocument[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [tagsInput, setTagsInput] = useState("");
@@ -249,7 +245,6 @@ export default function KnowledgeWorkspace() {
       return;
     }
     setModalError("");
-    setVersionTarget(null);
     setTagsInput("");
     setModal(next);
   }
@@ -303,32 +298,6 @@ export default function KnowledgeWorkspace() {
   function openVersionUpload(doc: SourceDocument) {
     setModal(null);
     if (selected) uploads.open({ id: selected.id, name: selected.name, versionOf: doc.id, filename: doc.filename });
-  }
-  async function openVersions(doc: SourceDocument) {
-    setVersionsLoading(true);
-    setModalError("");
-    try {
-      setVersions(await request<SourceDocument[]>(`/documents/${doc.id}/versions`));
-      setVersionTarget(doc);
-      setModal("versions");
-    } catch (error) {
-      notifyError(error);
-    } finally {
-      setVersionsLoading(false);
-    }
-  }
-  async function activateVersion(doc: SourceDocument) {
-    setBusy(true);
-    try {
-      await request(`/documents/${doc.id}/activate`, { method: "POST" });
-      setNotice({ text: `已切换到 v${doc.version_number}` });
-      setModal(null);
-      await refresh(selectedId);
-    } catch (error) {
-      notifyError(error);
-    } finally {
-      setBusy(false);
-    }
   }
   async function refresh(id: string) {
     await Promise.all([
@@ -844,7 +813,7 @@ export default function KnowledgeWorkspace() {
                                   <span className="filename">
                                     <strong>{doc.filename}</strong>
                                     <small>
-                                      {extension(doc.filename)} 文档 · v{doc.version_number}
+                                      {extension(doc.filename)} 文档
                                       {doc.is_active ? " · 当前生效" : ""}
                                     </small>
                                   </span>
@@ -940,22 +909,15 @@ export default function KnowledgeWorkspace() {
                                         )}
                                       <button
                                         className="icon-button"
-                                        title="上传新版本"
-                                        aria-label={`为 ${doc.filename} 上传新版本`}
+                                        title="替换原件"
+                                        aria-label={`为 ${doc.filename} 替换原件`}
                                         disabled={busy}
                                         onClick={() => openVersionUpload(doc)}
                                       >
                                         <Upload size={16} />
                                       </button>
-                                      <button
-                                        className="icon-button"
-                                        title="查看版本"
-                                        aria-label={`查看 ${doc.filename} 的版本`}
-                                        disabled={busy}
-                                        onClick={() => void openVersions(doc)}
-                                      >
-                                        <History size={16} />
-                                      </button>
+                                      {doc.personal_file_id && <a className="icon-button" href={`/resources?file=${doc.personal_file_id}`} title="在个人文件中查看" aria-label={`在个人文件中查看 ${doc.filename}`}><FolderClosed size={16} /></a>}
+
                                     </>
                                   )}
                                 </div>
@@ -1154,44 +1116,6 @@ export default function KnowledgeWorkspace() {
               </button>
             </div>
           </form>
-        </Modal>
-      )}
-      {modal === "versions" && versionTarget && (
-        <Modal
-          title={`${versionTarget.filename} 的版本`}
-          onClose={() => setModal(null)}
-          busy={busy}
-          wide
-        >
-          <div className="version-list">
-            {versionsLoading ? (
-              <p>正在加载版本…</p>
-            ) : (
-              versions.map((version) => (
-                <div className="version-row" key={version.id}>
-                  <div>
-                    <strong>v{version.version_number}</strong>
-                    <small>
-                      {STATUS[version.status] || version.status} ·{" "}
-                      {new Date(version.created_at).toLocaleString("zh-CN")}
-                    </small>
-                  </div>
-                  <span className={version.is_active ? "version-current" : ""}>
-                    {version.is_active ? "当前生效" : ""}
-                  </span>
-                  {!version.is_active && version.status === "ready" && canEdit && (
-                    <button
-                      className="secondary"
-                      disabled={busy}
-                      onClick={() => void activateVersion(version)}
-                    >
-                      切换生效
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
         </Modal>
       )}
       {sourcePreview && <FilePreview key={`${session.user.id}:${sourcePreview.id}`} file={{ type: "document", id: sourcePreview.id, name: sourcePreview.filename }}
