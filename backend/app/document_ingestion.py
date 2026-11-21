@@ -16,12 +16,20 @@ SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".csv", ".xlsx"}
 
 def latest_document_job(db, document):
     ready = document.status == DocumentStatus.READY
+    ordering = [case(
+        (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
+        (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
+        else_=2 if ready else 1,
+    )]
+    if ready:
+        ordering.append(case(
+            (IngestionJob.phase == "indexing", 0),
+            else_=1,
+        ))
+    ordering.extend((IngestionJob.created_at.desc(), IngestionJob.updated_at.desc(),
+                    IngestionJob.id.desc()))
     return db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id)
-                     .order_by(IngestionJob.created_at.desc(), case(
-                         (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
-                         (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
-                         else_=2 if ready else 1,
-                     ), IngestionJob.updated_at.desc(), IngestionJob.id.desc()).limit(1))
+                     .order_by(*ordering).limit(1))
 
 
 def inspect_file(stream):
@@ -87,7 +95,7 @@ def check_format(stream, filename):
 
 def admit(db, access, knowledge_base_id, filename, content_type, size, digest, key, version_of=None, request=None):
     from .storage_billing import check_capacity
-    check_capacity(db, access.workspace_id, size, exclude_key=key)
+    check_capacity(db, access.user_id, size, exclude_key=key)
     library = access.library(db, knowledge_base_id, write=True)
     # Serialize hash admission and version allocation for the same library.
     db.get(KnowledgeBase, library.id, with_for_update=True, populate_existing=True)
@@ -108,7 +116,7 @@ def admit(db, access, knowledge_base_id, filename, content_type, size, digest, k
     job = IngestionJob(document_id=document.id, submission_pending=True)
     db.add(job)
     library.status = KnowledgeBaseStatus.PROCESSING
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action="document.version_uploaded" if previous else "document.uploaded", resource_type="document",
         resource_id=document.id, request=request,
         metadata={"knowledge_base_id": str(library.id), "filename": filename, "size_bytes": size, "version_number": number})

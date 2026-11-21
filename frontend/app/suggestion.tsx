@@ -28,12 +28,12 @@ export function SuggestionProvider({ children }: { children: ReactNode }) {
       .then(value => { if (active) setContact(value.administrator_contact); })
       .catch(() => { if (active) setContactError(true); });
     return () => { active = false; };
-  }, [open, session.user.id, session.workspace_id, contactReload]);
+  }, [open, session.user.id, contactReload]);
   const pending = useRef<{ key: string; content: string; category: string } | null>(null);
   const submitting = useRef(false);
   const scope = useRef(0);
   const close = () => { if (content.trim()) setDiscard(true); else setOpen(false); };
-  useEffect(() => { scope.current += 1; setOpen(false); setContent(""); setCategory("feature"); setError(""); setNotice(false); setBusy(false); setDiscard(false); submitting.current = false; pending.current = null; }, [session.user.id, session.workspace_id]);
+  useEffect(() => { scope.current += 1; setOpen(false); setContent(""); setCategory("feature"); setError(""); setNotice(false); setBusy(false); setDiscard(false); submitting.current = false; pending.current = null; }, [session.user.id]);
   return <Context.Provider value={{ open() { setOpen(true); setNotice(false); setDiscard(false); } }}>
     {children}
     {notice && <div className="suggestion-notice" role="status"><Check size={16} />已收到，谢谢你的反馈<button className="icon-button" aria-label="关闭反馈提示" onClick={() => setNotice(false)}><X size={16} /></button></div>}

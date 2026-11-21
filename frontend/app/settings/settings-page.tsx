@@ -6,16 +6,13 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Plus,
   RefreshCw,
   ShieldCheck,
-  Trash2,
   UserRound,
 } from "lucide-react";
 import { request } from "../api";
 import {
   AuthOptions,
-  Role,
   Session,
   useAuth,
 } from "../auth";
@@ -23,7 +20,6 @@ import { BillingPanel } from "../billing-panel";
 import { StoragePanel } from "../storage-panel";
 import { sectionFromPath } from "./settings-routes";
 import { useSettingsForm } from "./standalone-settings";
-type Member = { id: string; name: string; email: string; role: Role };
 type AuditLog = {
   id: string;
   action: string;
@@ -41,11 +37,6 @@ type AuditLogPage = {
   page_size: number;
 };
 
-const ROLE_LABELS: Record<Role, string> = {
-  admin: "管理员",
-  editor: "编辑者",
-  viewer: "只读成员",
-};
 const json = (body: unknown, method = "POST") => ({
   method,
   headers: { "Content-Type": "application/json" },
@@ -76,11 +67,7 @@ function AccountPage({
   const router = useRouter();
   const pathname = usePathname();
   const { setDirty, setBusy: setFrameBusy } = useSettingsForm();
-  const role = session.workspaces.find(
-    (item) => item.id === session.workspace_id,
-  )?.role;
   const tab = sectionFromPath(pathname)?.key;
-  const [members, setMembers] = useState<Member[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogPage>({
     items: [],
     total: 0,
@@ -91,40 +78,21 @@ function AccountPage({
   const [auditAction, setAuditAction] = useState("");
   const [auditResourceType, setAuditResourceType] = useState("");
   const [auditLoading, setAuditLoading] = useState(false);
-  const [email, setEmail] = useState("");
-  const [memberRole, setMemberRole] = useState<Role>("viewer");
   const [password, setPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [membersLoading, setMembersLoading] = useState(false);
-  const [retry, setRetry] = useState(0);
-  useLayoutEffect(() => { setDirty(Boolean(password || currentPassword || email)); }, [password, currentPassword, email, setDirty]);
+  useLayoutEffect(() => { setDirty(Boolean(password || currentPassword)); }, [password, currentPassword, setDirty]);
   useEffect(() => { setFrameBusy(busy); }, [busy, setFrameBusy]);
   useEffect(() => () => { setDirty(false); setFrameBusy(false); }, [setDirty, setFrameBusy]);
   useEffect(() => {
-    setError(""); setNotice(""); setPassword(""); setCurrentPassword(""); setEmail("");
+    setError(""); setNotice(""); setPassword(""); setCurrentPassword("");
   }, [pathname]);
   useEffect(() => {
     if (pathname === "/settings/policies" && session.user.is_site_admin)
-      router.replace(`/admin/pricing?workspace=${session.workspace_id}`);
-  }, [pathname, session.user.is_site_admin, session.workspace_id, router]);
-
-  const load = useCallback(
-    async () => setMembers(await request<Member[]>("/auth/members")),
-    [],
-  );
-
-  useEffect(() => {
-    if (tab !== "members" || role !== "admin") return;
-    let active = true;
-    setMembersLoading(true);
-    setError("");
-    load().catch(e => { if (active) setError(errorMessage(e)); })
-      .finally(() => { if (active) setMembersLoading(false); });
-    return () => { active = false; };
-  }, [tab, role, load, retry]);
+      router.replace("/admin/pricing");
+  }, [pathname, session.user.is_site_admin, router]);
 
   const loadAuditLogs = useCallback(async () => {
     setAuditLoading(true);
@@ -156,8 +124,8 @@ function AccountPage({
   }, [auditAction, auditPage, auditResourceType]);
 
   useEffect(() => {
-    if (tab === "audit" && role === "admin") void loadAuditLogs();
-  }, [tab, role, loadAuditLogs]);
+    if (tab === "audit") void loadAuditLogs();
+  }, [tab, loadAuditLogs]);
 
   async function action(run: () => Promise<void>) {
     setBusy(true);
@@ -172,19 +140,11 @@ function AccountPage({
     }
   }
 
-  async function member(email: string, memberRole: Role) {
-    await request("/auth/members", json({ email, role: memberRole }, "PUT"));
-    await load();
-    onSession(await request<Session>("/auth/me"));
-  }
-
   if (!tab) return <div className="settings-empty" role="status">
     {pathname === "/settings/policies"
       ? session.user.is_site_admin ? "正在打开站点管理…" : "计费规则由站点管理员管理，你无权访问。"
       : "找不到此设置页面，请从导航中选择。"}
   </div>;
-  if ((tab === "members" || tab === "audit") && role !== "admin")
-    return <p className="form-error" role="alert">此页面仅对工作区管理员开放。</p>;
   return (
           <section className="settings-content" key={tab}>
             {error && (
@@ -294,119 +254,13 @@ function AccountPage({
                   </button>
                 </form>
               </>
-            ) : tab === "workspace" ? (
-              <dl className="settings-details">
-                <div><dt>工作区名称</dt><dd>{session.workspaces.find(item => item.id === session.workspace_id)?.name}</dd></div>
-                <div><dt>我的角色</dt><dd>{role ? ROLE_LABELS[role] : "—"}</dd></div>
-              </dl>
             ) : tab === "storage" ? (
               <StoragePanel onBusyChange={setBusy} />
             ) : tab === "billing" ? (
               <BillingPanel
-                key={`${session.user.id}:${session.workspace_id}`}
-                workspaceName={
-                  session.workspaces.find(
-                    (item) => item.id === session.workspace_id,
-                  )?.name ?? ""
-                }
+                key={session.user.id}
                 onBusyChange={setBusy}
               />
-            ) : tab === "members" ? (
-              <>
-                <form
-                  className="member-add"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void action(async () => {
-                      await member(email, memberRole);
-                      setEmail("");
-                    });
-                  }}
-                >
-                  <label>
-                    成员邮箱
-                    <input
-                      type="email"
-                      required
-                      placeholder="已注册的邮箱"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    角色
-                    <select
-                      value={memberRole}
-                      onChange={(event) =>
-                        setMemberRole(event.target.value as Role)
-                      }
-                    >
-                      {Object.entries(ROLE_LABELS).map(([key, label]) => (
-                        <option key={key} value={key}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    className="primary"
-                    disabled={busy}
-                    title="添加成员"
-                    aria-label="添加成员"
-                  >
-                    <Plus size={17} />
-                  </button>
-                </form>
-                {membersLoading ? <SettingsSkeleton /> : error ? <button className="secondary" onClick={() => setRetry(value => value + 1)}>重试加载成员</button> : <div className="member-list">
-                  {members.map((item) => (
-                    <div className="member-row" key={item.id}>
-                      <div>
-                        <strong>
-                          {item.name}
-                          {item.id === session.user.id ? "（你）" : ""}
-                        </strong>
-                        <small>{item.email}</small>
-                      </div>
-                      <select
-                        aria-label={`${item.name}的角色`}
-                        value={item.role}
-                        disabled={busy}
-                        onChange={(event) =>
-                          void action(() =>
-                            member(item.email, event.target.value as Role),
-                          )
-                        }
-                      >
-                        {Object.entries(ROLE_LABELS).map(([key, label]) => (
-                          <option key={key} value={key}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        className="icon-button danger"
-                        aria-label={`移除 ${item.name}`}
-                        title="移除成员"
-                        disabled={busy}
-                        onClick={() => {
-                          if (
-                            window.confirm(`移除 ${item.name} 的工作区访问权限？`)
-                          )
-                            void action(async () => {
-                              await request(`/auth/members/${item.id}`, {
-                                method: "DELETE",
-                              });
-                              await load();
-                              onSession(await request<Session>("/auth/me"));
-                            });
-                        }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </div>}
-              </>
             ) : (
               <AuditLogPanel
                 logs={auditLogs}

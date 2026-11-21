@@ -9,23 +9,21 @@ from sqlalchemy.orm import Session
 from app import auth
 from app.chat_attachments import select_attachments
 from app.llm import ChatProviderConfig
-from app.models import ChatAttachment, ChatMessage, Conversation, Membership, User, Workspace
+from app.models import ChatAttachment, ChatMessage, Conversation, User
 from test_auth_postgres import auth_postgres
 
 
 def test_concurrent_binding_is_once_and_preserves_original(auth_postgres):
     with Session(auth_postgres) as db:
-        workspace = Workspace(name="Attachment isolation")
         user = User(email=f"attachment-{uuid4()}@example.com", name="Attachment test")
-        db.add_all([workspace, user]); db.flush()
-        db.add(Membership(workspace_id=workspace.id, user_id=user.id, role="admin"))
-        conversations = [Conversation(owner_id=user.id, workspace_id=workspace.id) for _ in range(2)]
+        db.add(user); db.flush()
+        conversations = [Conversation(owner_id=user.id, account_id=user.id) for _ in range(2)]
         db.add_all(conversations); db.flush()
-        row = ChatAttachment(workspace_id=workspace.id, user_id=user.id, filename="facts.txt",
-            content_type="text/plain", size_bytes=5, content_hash="a" * 64, object_key=f"_chat/{workspace.id}/{uuid4()}.txt",
+        row = ChatAttachment(account_id=user.id, user_id=user.id, filename="facts.txt",
+            content_type="text/plain", size_bytes=5, content_hash="a" * 64, object_key=f"_chat/{user.id}/{uuid4()}.txt",
             kind="document", text_content="facts")
         db.add(row); db.commit()
-        identifier, owner, wid, ids = row.id, user.id, workspace.id, [item.id for item in conversations]
+        identifier, owner, ids = row.id, user.id, [item.id for item in conversations]
         from alembic.config import Config
         from alembic.script import ScriptDirectory
         assert db.scalar(text("SELECT version_num FROM alembic_version")) == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
@@ -34,7 +32,7 @@ def test_concurrent_binding_is_once_and_preserves_original(auth_postgres):
         with Session(auth_postgres) as db:
             barrier.wait(timeout=10)
             try:
-                access = auth.Access(user_id=owner, workspace_id=wid, role="admin", session_hash="test-only")
+                access = auth.Access(user_id=owner, session_hash="test-only")
                 selected = select_attachments(db, access, [identifier], ChatProviderConfig("", "", "text"))
                 db.add(ChatMessage(conversation_id=cid, role="user", sequence=0, attachments=selected))
                 db.commit()

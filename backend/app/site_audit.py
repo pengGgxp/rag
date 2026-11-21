@@ -9,8 +9,8 @@ RETENTION_DAYS = 365
 SAFE_FIELDS = {
     "method", "source", "accepted", "fields", "count",
     "sessions_revoked", "previous_suspended", "suspended", "reason_code",
-    "workspace_id", "resource_id",
-    "previous_percent", "multiplier_percent", "version", "fingerprint",
+    "account_id", "resource_id",
+    "previous_percent", "multiplier_percent", "billing_multiplier_percent", "version", "fingerprint",
     "previous_signup_credits", "signup_credits",
     "request_id", "option_id", "received_thinking", "reasoning_tokens",
     "amount", "balance_before", "balance_after",

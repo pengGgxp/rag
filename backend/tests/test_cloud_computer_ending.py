@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import select
 
 from app import cloud_computer as cloud
-from app.models import CloudComputerSession as Computer, CreditAccount, CreditLedgerEntry, UsageEvent
+from app.credits import ensure_account
+from app.models import CloudComputerSession as Computer, CreditLedgerEntry, UsageEvent
 from test_cloud_computer import setup, submit
 
 
@@ -27,12 +28,12 @@ def running(accounts, monkeypatch, seconds=61):
 
 def test_normal_renewal_keeps_running(accounts, monkeypatch):
     _, db, _, access, fake, factory, row, clock = running(accounts, monkeypatch)
-    before = db.get(CreditAccount, access.workspace_id).balance + row.held_credits
+    before = ensure_account(db, access.user_id).balance + row.held_credits
     assert cloud.reconcile(db, row, clock) is cloud.ReconcileResult.CONTINUE
     db.commit()
     assert row.stop_reason is None and row.billing_stopped_at is None
     assert row.charged_credits == Decimal("2.0333") and row.held_credits == 20
-    assert db.get(CreditAccount, access.workspace_id).balance + row.held_credits == before - row.charged_credits
+    assert ensure_account(db, access.user_id).balance + row.held_credits == before - row.charged_credits
     cloud.maintenance(factory)
     assert fake.kills == 0
 
@@ -40,7 +41,7 @@ def test_normal_renewal_keeps_running(accounts, monkeypatch):
 @pytest.mark.parametrize("delay", [601, 1800])
 def test_delayed_reconciliation_is_not_insufficient_balance(accounts, monkeypatch, delay):
     client, db, conversation, access, fake, factory, row, _ = running(accounts, monkeypatch, delay)
-    account = db.get(CreditAccount, access.workspace_id)
+    account = ensure_account(db, access.user_id)
     account.balance = Decimal("95000")
     db.commit()
     fake.kill_uncertain = True
@@ -54,7 +55,7 @@ def test_delayed_reconciliation_is_not_insufficient_balance(accounts, monkeypatc
     assert payload["summary"] == "正在结束云电脑"
     assert payload["stop_reason_text"] == "运行状态核对中断"
     assert payload["renewal_required_credits"] is None and not payload["terminal"]
-    assert db.get(CreditAccount, access.workspace_id).balance == 95000
+    assert ensure_account(db, access.user_id).balance == 95000
     # Repeated end and maintenance cannot replace the cause, charge again or create a VM.
     assert client.post(f"/cloud-computers/{row.id}/end", json={}).status_code == 200
     cloud.maintenance(factory)
@@ -67,25 +68,25 @@ def test_delayed_reconciliation_is_not_insufficient_balance(accounts, monkeypatc
     payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "云电脑已结束" and payload["terminal"]
     assert payload["stop_reason_text"] == "运行状态核对中断，云电脑已结束"
-    before = (db.get(CreditAccount, access.workspace_id).balance,
+    before = (ensure_account(db, access.user_id).balance,
         len(db.scalars(select(CreditLedgerEntry)).all()), len(db.scalars(select(UsageEvent)).all()))
     cloud.maintenance(factory)
     db.expire_all()
-    assert (db.get(CreditAccount, access.workspace_id).balance,
+    assert (ensure_account(db, access.user_id).balance,
         len(db.scalars(select(CreditLedgerEntry)).all()), len(db.scalars(select(UsageEvent)).all())) == before
     assert fake.creates == 1 and not fake.instances
 
 
 def test_positive_balance_can_fail_full_window_reservation(accounts, monkeypatch):
     client, db, conversation, access, fake, factory, row, clock = running(accounts, monkeypatch)
-    account = db.get(CreditAccount, access.workspace_id)
+    account = ensure_account(db, access.user_id)
     account.balance = 0  # The existing 20-credit hold is separate from available balance.
     db.commit()
     fake.kill_uncertain = True
     assert cloud.reconcile(db, row, clock) is cloud.ReconcileResult.INSUFFICIENT_BALANCE
     row.status = "stopping"
     db.commit()
-    assert db.get(CreditAccount, access.workspace_id).balance == Decimal("17.9667")
+    assert ensure_account(db, access.user_id).balance == Decimal("17.9667")
     cloud.maintenance(factory)
     payload = client.get(f"/cloud-computers/{row.id}").json()["computer"]
     assert payload["summary"] == "正在结束云电脑" and not payload["terminal"]

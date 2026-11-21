@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canResumeTransfer, isRestorableUploadTask, restoreUploadState, requiresFreshUpload, uploadIssue } from "../app/upload-recovery.ts";
+import { canPollUploadTask, canResumeTransfer, isRestorableUploadTask, isUploadTaskPending, restoreUploadState, requiresFreshUpload, uploadIssue } from "../app/upload-recovery.ts";
 import { documentIssue, documentRetryLabel } from "../app/workspace-types.ts";
 
 test("keeps recoverable verification failures actionable after reload", () => {
@@ -43,6 +43,21 @@ test("automatic verification recovery does not display a failure, but terminal a
   assert.equal(uploadIssue("verifying", "temporary outage", "retrying"), undefined);
   assert.equal(uploadIssue("verifying", "query paused", "retrying", true), "query paused");
   assert.equal(uploadIssue("failed", "retry verification"), "retry verification");
+});
+
+test("unfinished count keeps failed processing tasks visible but excludes dismissed tasks", () => {
+  assert.equal(isUploadTaskPending("failed"), true);
+  assert.equal(isUploadTaskPending("processing_failed"), true);
+  assert.equal(isUploadTaskPending("ready"), false);
+  assert.equal(isUploadTaskPending("cancelled"), false);
+  assert.equal(isUploadTaskPending("deleted"), false);
+});
+
+test("restored processing failures without a job ID can recover their retry target", () => {
+  assert.equal(canPollUploadTask("processing_failed"), true);
+  assert.equal(canPollUploadTask("processing_failed", "job-1"), false);
+  assert.equal(canPollUploadTask("processing"), true);
+  assert.equal(canPollUploadTask("ready"), false);
 });
 
 test("document alerts distinguish scheduled retries from terminal failures", () => {

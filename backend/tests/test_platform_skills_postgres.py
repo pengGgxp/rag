@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth, main
-from app.models import AgentSkill, AgentSkillFile, LoginSession, Membership, ProductSuggestion, SiteSkill, SiteSkillFile, User, Workspace
+from app.models import AgentSkill, AgentSkillFile, LoginSession, ProductSuggestion, SiteSkill, SiteSkillFile, User
 from test_auth_postgres import auth_postgres
 
 
@@ -19,12 +19,10 @@ def actor(engine):
     with Session(engine) as db:
         user = User(name="Skill admin", email=f"skill-{uuid4().hex}@example.com", is_site_admin=True,
                     email_verified_at=auth.now())
-        workspace = Workspace(name="Skill test workspace")
-        db.add_all([user, workspace]); db.flush()
-        db.add(Membership(user_id=user.id, workspace_id=workspace.id, role="admin"))
+        db.add(user); db.flush()
         db.add(LoginSession(token_hash=auth.digest(raw), csrf_token=csrf, user_id=user.id,
-            workspace_id=workspace.id, expires_at=auth.now()+timedelta(hours=1)))
-        db.add(AgentSkill(workspace_id=workspace.id, owner_id=user.id, name="Private", description="Private",
+            expires_at=auth.now()+timedelta(hours=1)))
+        db.add(AgentSkill(account_id=user.id, owner_id=user.id, name="Private", description="Private",
             markdown="Never publish", files=[AgentSkillFile(path="private.txt", content=b"private")]))
         db.commit()
         return raw, csrf, user.id

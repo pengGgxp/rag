@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth, question_workbench as qw
 from app.extensions import ExtensionRuntime
-from app.models import AuthenticationFlow, LoginSession, Membership, QuestionWorkbenchGrant, User, Workspace
+from app.models import AuthenticationFlow, LoginSession, QuestionWorkbenchGrant, User
 from test_auth import register as register_account
 from remote_receipt_helpers import answer_identity
 
@@ -79,7 +79,7 @@ def test_explicit_grant_selection_version_and_runtime_revoke(bridge):
     conversation = owner.post("/conversations", json={"question_workbench": True})
     assert conversation.status_code == 201, conversation.text
     assert conversation.json()["question_workbench"] is True
-    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(session["user"]["id"]), auth.digest(owner.cookies.get(auth.COOKIE)))
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     without = ExtensionRuntime(factory, access)
     assert "save_questions" not in [t["function"]["name"] for t in without.tools]
@@ -94,7 +94,7 @@ def test_tools_scope_no_owner_parameters_and_safe_timeout(bridge, monkeypatch):
     (owner, _, _), db = bridge
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
-    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(session["user"]["id"]), auth.digest(owner.cookies.get(auth.COOKIE)))
     message, request = answer_identity(owner, db)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message, request_id=request, question_workbench=True)
@@ -123,7 +123,7 @@ def test_lost_creation_response_is_reconciled_without_another_write(bridge, monk
     (owner, _, _), db = bridge
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
-    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin", auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(session["user"]["id"]), auth.digest(owner.cookies.get(auth.COOKIE)))
     message, request = answer_identity(owner, db)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message, request_id=request, question_workbench=True)
@@ -154,8 +154,7 @@ def test_fresh_reads_observe_updates_and_receipts_survive_runtime_restart(bridge
     (owner, _, _), db = bridge
     session = register(owner, db)
     owner.put("/question-workbench/grant", json={"enabled": True, "version": 0, "acknowledge": True})
-    access = auth.Access(UUID(session["user"]["id"]), UUID(session["workspace_id"]), "admin",
-        auth.digest(owner.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(session["user"]["id"]), auth.digest(owner.cookies.get(auth.COOKIE)))
     message, request = answer_identity(owner, db)
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     def runtime():
@@ -214,7 +213,7 @@ def test_admin_entitlement_gates_login_tools_and_existing_sessions(bridge):
     code = parse_qs(urlsplit(result.json()["redirect"]).query)["code"][0]
     headers = {"Authorization": "Bearer " + qw.get_settings().question_workbench_secret.get_secret_value()}
     identity = anonymous.post("/question-workbench/exchange", json={"code": code}, headers=headers).json()
-    access = auth.Access(UUID(target["user"]["id"]), UUID(target["workspace_id"]), "admin", auth.digest(member.cookies.get(auth.COOKIE)))
+    access = auth.Access(UUID(target["user"]["id"]), auth.digest(member.cookies.get(auth.COOKIE)))
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     runtime = ExtensionRuntime(factory, access, question_workbench=True)
     assert any(t["function"]["name"] == "save_questions" for t in runtime.tools)

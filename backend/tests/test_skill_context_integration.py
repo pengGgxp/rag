@@ -14,7 +14,7 @@ from test_resources import resource_store
 def scope_case(client):
     db, store, request = setup_store(client)
     conversation = db.get(Conversation, store.conversation_id)
-    server = MCPServer(workspace_id=store.access.workspace_id, owner_id=store.access.user_id,
+    server = MCPServer(account_id=store.access.user_id, owner_id=store.access.user_id,
         name="Local fixture", url="https://example.test/mcp", enabled=True,
         version=1, authorization_version=1)
     db.add(server); db.commit()
@@ -36,8 +36,7 @@ def test_public_manager_is_main_replacement_manager():
 
 def test_scope_tracks_conversation_identity_instead_of_external_catalog(scope_case):
     db, store, _, conversation, server = scope_case
-    expected = digest({"conversation": str(conversation.id), "workspace": str(store.access.workspace_id),
-        "user": str(store.access.user_id)})
+    expected = digest({"conversation": str(conversation.id), "user": str(store.access.user_id)})
     assert scope_digest(db, conversation, store.access) == expected
 
 
@@ -68,7 +67,7 @@ def test_retired_skill_records_do_not_invalidate_resource_based_context(scope_ca
         db.add(SiteSkill(name="Historical", description="Unused", markdown="Old body", enabled=True,
             version=7, created_by=store.access.user_id, updated_by=store.access.user_id))
     elif kind == "personal":
-        db.add(AgentSkill(workspace_id=store.access.workspace_id, owner_id=store.access.user_id,
+        db.add(AgentSkill(account_id=store.access.user_id, owner_id=store.access.user_id,
             name="Historical", description="Unused", markdown="Old body", enabled=True, version=7))
     else:
         conversation.skill_ids = ["retired-selection"]
@@ -91,10 +90,10 @@ def test_each_message_and_compact_recovery_uses_current_skill_metadata(client, r
     from app.llm import LLMUsage, ToolResponse
     from test_conversations import turn
     from test_conversation_streaming import context_fixture, compact
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=32000)
     from test_extensions import access_for
     access = access_for(http, db)
-    key = shared_resources.object_key(access.workspace_id, ".skills/report/SKILL.md")
+    key = shared_resources.object_key(access.user_id, ".skills/report/SKILL.md")
     captured = []
     def no_cloud(*args, **kwargs):
         pytest.fail("skill discovery or ordinary conversation started cloud")

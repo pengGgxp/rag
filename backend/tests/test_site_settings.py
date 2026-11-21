@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from app import auth, email_auth
 from app.models import (
-    AuthenticationFlow, CreditAccount, CreditLedgerEntry, SiteAuditEvent, SiteSettings, User,
+    AuthenticationFlow, UserCreditAccount, CreditLedgerEntry, SiteAuditEvent, SiteSettings, User,
 )
 from test_auth import PASSWORD, register, share, switch
 
@@ -72,7 +72,7 @@ def test_default_and_configured_registration_only_affects_new_accounts(accounts)
     assert second.get("/usage").json()["balance"] == 432
     assert owner.get("/usage").json()["balance"] == 1000
     ledger = db.scalars(select(CreditLedgerEntry).where(
-        CreditLedgerEntry.workspace_id == UUID(result["workspace_id"]))).all()
+        CreditLedgerEntry.account_id == UUID(result["user"]["id"]))).all()
     assert len(ledger) == 1 and ledger[0].amount == 432
     assert ledger[0].metadata_json["site_settings_version"] == 1
     assert second.post("/auth/register", json={
@@ -82,10 +82,7 @@ def test_default_and_configured_registration_only_affects_new_accounts(accounts)
     assert login.status_code == 200
     second.headers["X-CSRF-Token"] = login.json()["csrf_token"]
     assert second.get("/usage").json()["balance"] == 432
-    share(owner, "second@example.com")
-    switch(second, first["workspace_id"])
-    assert second.get("/usage").json()["balance"] == 1000
-    switch(second, result["workspace_id"])
+    assert owner.get("/usage").json()["balance"] == 1000
     assert second.get("/usage").json()["balance"] == 432
 
 
@@ -94,12 +91,12 @@ def test_zero_grant_remains_zero_after_usage_and_login(accounts):
     assert save(owner, signup_credits=0).status_code == 200
     (_, second, _), _ = accounts
     result = register(second, "zero@example.com")
-    workspace_id = UUID(result["workspace_id"])
+    account_id = UUID(result["user"]["id"])
     assert second.get("/usage").json()["balance"] == 0
     assert second.get("/usage").json()["balance"] == 0
-    assert db.get(CreditAccount, workspace_id).lifetime_granted == 0
+    assert db.get(UserCreditAccount, account_id).lifetime_granted == 0
     assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(
-        CreditLedgerEntry.workspace_id == workspace_id)) == 0
+        CreditLedgerEntry.account_id == account_id)) == 0
 
 
 @pytest.mark.parametrize("amount", [-1, 1000001, 1.5, True, "1000", None])
@@ -172,7 +169,7 @@ def test_verified_and_wechat_registration_use_same_grant(accounts):
         client.cookies.set(email_auth.FLOW_COOKIE, raw)
         result = client.post("/auth/complete-registration", json={"name": purpose, "password": PASSWORD})
         assert result.status_code == 201, result.text
-        account = db.get(CreditAccount, UUID(result.json()["workspace_id"]))
+        account = db.get(UserCreditAccount, UUID(result.json()["user"]["id"]))
         assert account.balance == account.lifetime_granted == 17
         assert client.post("/auth/complete-registration", json={"name": purpose, "password": PASSWORD}).status_code in (400, 409)
 
@@ -180,9 +177,10 @@ def test_verified_and_wechat_registration_use_same_grant(accounts):
 def test_account_creation_rollback_does_not_leave_grant(accounts):
     owner, db, _ = admin(accounts)
     assert save(owner, signup_credits=29).status_code == 200
-    user, workspace_id = auth.create_user(db, "rollback@example.com", "Rollback")
+    user = auth.create_user(db, "rollback@example.com", "Rollback")
+    account_id = user.id
     db.flush()
-    assert db.get(CreditAccount, workspace_id).balance == 29
+    assert db.get(UserCreditAccount, account_id).balance == 29
     db.rollback()
-    assert db.get(CreditAccount, workspace_id) is None
+    assert db.get(UserCreditAccount, account_id) is None
     assert db.scalar(select(User).where(User.email == "rollback@example.com")) is None

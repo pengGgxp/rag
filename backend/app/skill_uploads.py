@@ -35,7 +35,7 @@ def view(row, parts=None):
         "parts": parts or []}
 
 
-def start(payload, db, user_id, workspace_id, scope):
+def start(payload, db, user_id, account_id, scope):
     suffix = Path(payload.filename).suffix.lower()
     if suffix not in (".zip", ".md"):
         raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
@@ -43,7 +43,7 @@ def start(payload, db, user_id, workspace_id, scope):
     key = f"_skill_uploads/{identifier}{suffix}"
     storage = current_storage(db)
     multipart_id = storage.begin(key, "application/zip" if suffix == ".zip" else "text/markdown")
-    row = SkillUpload(id=identifier, user_id=user_id, workspace_id=workspace_id, scope=scope,
+    row = SkillUpload(id=identifier, user_id=user_id, account_id=account_id, scope=scope,
         filename=payload.filename, size_bytes=payload.size_bytes, object_key=key,
         multipart_id=multipart_id, state="uploading", expires_at=now() + timedelta(hours=24))
     db.add(row)
@@ -55,9 +55,9 @@ def start(payload, db, user_id, workspace_id, scope):
     return view(row)
 
 
-def owned(db, identifier, user_id, workspace_id, scope):
+def owned(db, identifier, user_id, account_id, scope):
     row = db.get(SkillUpload, identifier, with_for_update=True, populate_existing=True)
-    if not row or row.user_id != user_id or row.scope != scope or row.workspace_id != workspace_id:
+    if not row or row.user_id != user_id or row.scope != scope or row.account_id != account_id:
         raise HTTPException(404, "上传任务不存在")
     if aware(row.expires_at) <= now() and row.state in ("uploading", "completing", "completed"):
         raise HTTPException(410, "上传已过期，请重新选择文件")
@@ -73,8 +73,7 @@ def parts(storage, row):
 
 @router.post("/agent/skills/uploads", status_code=201)
 def create_personal(payload: UploadInput, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
-    return start(payload, db, access.user_id, access.workspace_id, "workspace")
+    return start(payload, db, access.user_id, access.user_id, "workspace")
 
 
 @router.post("/site/admin/skills/uploads", status_code=201)
@@ -84,8 +83,7 @@ def create_site(payload: UploadInput, db=Depends(get_db), actor=Depends(site_adm
 
 @router.post("/agent/skills/uploads/{identifier}/parts/{number}")
 def sign_personal(identifier: UUID, number: int, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
-    return sign(db, identifier, number, access.user_id, access.workspace_id, "workspace")
+    return sign(db, identifier, number, access.user_id, access.user_id, "workspace")
 
 
 @router.post("/site/admin/skills/uploads/{identifier}/parts/{number}")
@@ -93,8 +91,8 @@ def sign_site(identifier: UUID, number: int, db=Depends(get_db), actor=Depends(s
     return sign(db, identifier, number, actor.id, None, "site")
 
 
-def sign(db, identifier, number, user_id, workspace_id, scope):
-    row = owned(db, identifier, user_id, workspace_id, scope)
+def sign(db, identifier, number, user_id, account_id, scope):
+    row = owned(db, identifier, user_id, account_id, scope)
     if row.state != "uploading" or number < 1 or number > math.ceil(row.size_bytes / PART_SIZE):
         raise HTTPException(409, "此上传任务不能继续传输")
     size = min(PART_SIZE, row.size_bytes - (number - 1) * PART_SIZE)
@@ -104,8 +102,7 @@ def sign(db, identifier, number, user_id, workspace_id, scope):
 
 @router.post("/agent/skills/uploads/{identifier}/complete")
 def complete_personal(identifier: UUID, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
-    return complete(db, identifier, access.user_id, access.workspace_id, "workspace")
+    return complete(db, identifier, access.user_id, access.user_id, "workspace")
 
 
 @router.post("/site/admin/skills/uploads/{identifier}/complete")
@@ -113,8 +110,8 @@ def complete_site(identifier: UUID, db=Depends(get_db), actor=Depends(site_admin
     return complete(db, identifier, actor.id, None, "site")
 
 
-def complete(db, identifier, user_id, workspace_id, scope):
-    row = owned(db, identifier, user_id, workspace_id, scope)
+def complete(db, identifier, user_id, account_id, scope):
+    row = owned(db, identifier, user_id, account_id, scope)
     if row.state == "completed":
         return view(row)
     if row.state not in ("uploading", "completing"):
@@ -149,8 +146,7 @@ def complete(db, identifier, user_id, workspace_id, scope):
 
 @router.get("/agent/skills/uploads/{identifier}/preview")
 def preview_personal(identifier: UUID, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
-    return preview(db, identifier, access.user_id, access.workspace_id, "workspace")
+    return preview(db, identifier, access.user_id, access.user_id, "workspace")
 
 
 @router.get("/site/admin/skills/uploads/{identifier}/preview")
@@ -158,8 +154,8 @@ def preview_site(identifier: UUID, db=Depends(get_db), actor=Depends(site_admin)
     return preview(db, identifier, actor.id, None, "site")
 
 
-def preview(db, identifier, user_id, workspace_id, scope):
-    row = owned(db, identifier, user_id, workspace_id, scope)
+def preview(db, identifier, user_id, account_id, scope):
+    row = owned(db, identifier, user_id, account_id, scope)
     if row.state != "completed":
         raise HTTPException(409, "请先完成上传")
     from .skill_files import text_content
@@ -184,8 +180,7 @@ def preview(db, identifier, user_id, workspace_id, scope):
 @router.post("/agent/skills/uploads/{identifier}/import", status_code=201)
 def import_personal(identifier: UUID, payload: ImportSelection, db=Depends(get_db),
                     access: Access = Depends(get_access)):
-    access.editor()
-    row = owned(db, identifier, access.user_id, access.workspace_id, "workspace")
+    row = owned(db, identifier, access.user_id, access.user_id, "workspace")
     packages = load_packages(db, row)
     selected = select_packages(packages, payload.items)
     from .personal_skills import save_packages
@@ -260,8 +255,7 @@ def remove_upload(db, row, *, commit=True):
 
 @router.delete("/agent/skills/uploads/{identifier}", status_code=204)
 def cancel_personal(identifier: UUID, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.editor()
-    cancel(db, identifier, access.user_id, access.workspace_id, "workspace")
+    cancel(db, identifier, access.user_id, access.user_id, "workspace")
 
 
 @router.delete("/site/admin/skills/uploads/{identifier}", status_code=204)
@@ -269,8 +263,8 @@ def cancel_site(identifier: UUID, db=Depends(get_db), actor=Depends(site_admin))
     cancel(db, identifier, actor.id, None, "site")
 
 
-def cancel(db, identifier, user_id, workspace_id, scope):
-    row = owned(db, identifier, user_id, workspace_id, scope)
+def cancel(db, identifier, user_id, account_id, scope):
+    row = owned(db, identifier, user_id, account_id, scope)
     storage = current_storage(db)
     if row.state in ("uploading", "completing"):
         storage.abort(row.object_key, row.multipart_id)

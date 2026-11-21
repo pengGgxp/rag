@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app import image_tasks
 from app.image_adapters import validate_image, ImageUncertain
-from app.models import CreditAccount, CreditLedgerEntry, ImageTask, SiteModelProvider
+from app.models import UserCreditAccount, CreditLedgerEntry, ImageTask, SiteModelProvider
 from test_shared_providers import setup_site
 from test_model_connections import connection, model
 
@@ -37,8 +37,8 @@ def png():
 
 def test_idempotency_frozen_prices_and_cancel_refunds(accounts, monkeypatch):
     client, db, identity = configure(accounts, monkeypatch)
-    workspace = UUID(identity["workspace_id"])
-    before = db.get(CreditAccount, workspace).balance
+    workspace = UUID(identity["user"]["id"])
+    before = db.get(UserCreditAccount, workspace).balance
     payload = {"prompt": "draw a tree", "idempotency_key": str(uuid4())}
     first = client.post("/image-tasks", json=payload)
     assert first.status_code == 202, first.text
@@ -49,11 +49,11 @@ def test_idempotency_frozen_prices_and_cancel_refunds(accounts, monkeypatch):
     db.expire_all()
     row = db.get(ImageTask, UUID(identifier))
     assert Decimal(row.snapshot["rate"]) == Decimal("3.25")
-    assert db.get(CreditAccount, workspace).balance == before - Decimal("3.25")
+    assert db.get(UserCreditAccount, workspace).balance == before - Decimal("3.25")
     client.post(f"/image-tasks/{identifier}/cancel")
     client.post(f"/image-tasks/{identifier}/cancel")
     db.expire_all()
-    assert db.get(CreditAccount, workspace).balance == before
+    assert db.get(UserCreditAccount, workspace).balance == before
     assert len(db.scalars(select(ImageTask)).all()) == 1
     assert "encrypted_credentials" not in first.text
     assert "secret" not in first.text
@@ -69,7 +69,7 @@ def test_spec_validation_and_read_only(accounts, monkeypatch):
 
 def test_insufficient_balance_and_disabled_default_do_not_submit(accounts, monkeypatch):
     client, db, identity = configure(accounts, monkeypatch)
-    account = db.get(CreditAccount, UUID(identity["workspace_id"]))
+    account = db.get(UserCreditAccount, UUID(identity["user"]["id"]))
     account.balance = Decimal("2")
     db.commit()
     assert client.post("/image-tasks", json={"prompt": "x", "idempotency_key": str(uuid4())}).status_code == 402
@@ -158,42 +158,33 @@ def test_successful_generation_can_retry_storage_without_regeneration(accounts, 
     assert len(saved) == 1
 
 
-def test_task_is_private_and_viewer_cannot_generate(accounts, monkeypatch):
-    from app.models import Membership
-    from test_auth import register, share, switch
-    client, db, identity = configure(accounts, monkeypatch)
+def test_task_is_private_to_its_account(accounts, monkeypatch):
+    from test_auth import register
+    client, db, _ = configure(accounts, monkeypatch)
     (_, other, _), _ = accounts
-    other_identity = register(other, "image-viewer@example.com")
+    register(other, "image-other@example.com")
     identifier = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).json()["task_id"]
     assert other.get(f"/image-tasks/{identifier}").status_code == 404
     key = db.get(ImageTask, UUID(identifier)).idempotency_key
     assert other.get(f"/image-tasks/by-request/{key}").status_code == 404
     assert other.post(f"/image-tasks/{identifier}/cancel").status_code == 404
-    share(client, "image-viewer@example.com", "viewer")
-    switch(other, identity["workspace_id"])
-    assert other.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).status_code == 403
-    assert other.get(f"/image-tasks/{identifier}").status_code == 404
-    membership = db.get(Membership, (UUID(identity["workspace_id"]), UUID(other_identity["user"]["id"])))
-    membership.role = "editor"
-    db.commit()
-    assert other.get(f"/image-tasks/{identifier}").status_code == 404
     assert other.get("/site/admin/image-models/tasks").status_code == 403
 
 
-@pytest.mark.parametrize("revocation", ["session", "membership"])
+@pytest.mark.parametrize("revocation", ["session", "suspension"])
 def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypatch, revocation):
     from sqlalchemy.orm import sessionmaker
     from app import image_adapters
-    from app.models import Membership, LoginSession
+    from app.models import LoginSession, User
     client, db, identity = configure(accounts, monkeypatch)
-    wid, uid = UUID(identity["workspace_id"]), UUID(identity["user"]["id"])
-    before = db.get(CreditAccount, wid).balance
+    wid, uid = UUID(identity["user"]["id"]), UUID(identity["user"]["id"])
+    before = db.get(UserCreditAccount, wid).balance
     identifier = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).json()["task_id"]
     row = db.get(ImageTask, UUID(identifier))
     if revocation == "session":
         db.delete(db.get(LoginSession, row.session_hash))
     else:
-        db.get(Membership, (wid, uid)).role = "viewer"
+        db.get(User, uid).is_suspended = True
     db.commit()
     calls = []
     monkeypatch.setattr(image_adapters, "generate", lambda *_: calls.append(1))
@@ -202,8 +193,8 @@ def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypa
     row = db.get(ImageTask, UUID(identifier))
     assert row.status == "failed" and row.settled
     assert row.charged_credits == 0
-    assert row.error == ("登录或工作区权限已失效" if revocation == "session" else "只读成员不能修改资料")
-    assert db.get(CreditAccount, wid).balance == before
+    assert row.error == "登录或账号权限已失效"
+    assert db.get(UserCreditAccount, wid).balance == before
     assert calls == []
 
 
@@ -211,7 +202,7 @@ def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, mo
     from sqlalchemy.orm import sessionmaker
     from app import llm_providers, image_adapters
     client, db, identity = configure(accounts, monkeypatch)
-    before = db.get(CreditAccount, UUID(identity["workspace_id"])).balance
+    before = db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance
     identifier = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).json()["task_id"]
     def decrypt(_):
         raise ValueError("private-key-material")
@@ -224,7 +215,7 @@ def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, mo
     assert result["status"] == "failed"
     assert result["summary"] == "图片服务凭据无法读取，请联系管理员检查服务加密配置"
     assert "private-key-material" not in str(result)
-    assert db.get(CreditAccount, UUID(identity["workspace_id"])).balance == before
+    assert db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance == before
     assert calls == []
 
 
@@ -236,7 +227,7 @@ def test_partial_results_charge_actual_count_even_after_cancel(accounts, monkeyp
     settings = db.scalar(select(SiteModelProvider).where(SiteModelProvider.supports_chat.is_(False)))
     settings.image_config = {**settings.image_config, "max_count": 3}
     db.commit()
-    before = db.get(CreditAccount, UUID(identity["workspace_id"])).balance
+    before = db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance
     identifier = client.post("/image-tasks", json={"prompt": "draw", "count": 3, "idempotency_key": str(uuid4())}).json()["task_id"]
     calls = []
     def generate(*_):
@@ -254,5 +245,5 @@ def test_partial_results_charge_actual_count_even_after_cancel(accounts, monkeyp
     row = db.get(ImageTask, UUID(identifier))
     assert row.status == ("cancelled" if cancel_running else "partial")
     assert row.charged_credits == Decimal("3.25") and len(row.outputs) == 1
-    assert db.get(CreditAccount, row.workspace_id).balance == before - Decimal("3.25")
+    assert db.get(UserCreditAccount, row.account_id).balance == before - Decimal("3.25")
     assert calls == [1]

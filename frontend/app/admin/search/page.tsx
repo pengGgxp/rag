@@ -78,7 +78,7 @@ export default function SearchSettingsPage() {
             <section className="model-form-section"><h2>工具基准价</h2>
               <PolicyTable name="联网工具" policies={form.policies} busy={busy} requirePrices={form.enabled}
                 update={(policy, patch) => setForm({ ...form, policies: form.policies.map(item => item.capability === policy.capability ? { ...item, ...patch } : item) })} />
-              <p className="site-setting-note">仅有效搜索和读取正文计费，按工作区倍率计算。保存后的价格用于新请求。</p>
+              <p className="site-setting-note">仅有效搜索和读取正文计费，按用户倍率计算。保存后的价格用于新请求。</p>
             </section>
             <div className="pricing-footer"><span>{dirty ? "有未保存的修改" : ""}</span>
               <button type="button" className="secondary" disabled={busy || dirty || !form.enabled || conflict} onClick={() => setConfirmTest(true)}><Globe size={16} />测试搜索</button>
@@ -89,6 +89,6 @@ export default function SearchSettingsPage() {
       </>}
     </AdminLoad>
     {confirmClear && <Dialog title="清除搜索密钥" onClose={() => setConfirmClear(false)}><p>保存后将清除密钥并停用联网搜索。</p><div className="modal-actions"><button className="secondary" onClick={() => setConfirmClear(false)}>取消</button><button className="primary" onClick={() => { setClear(true); setKey(""); if (form) setForm({ ...form, enabled: false }); setConfirmClear(false); }}>确认清除</button></div></Dialog>}
-    {confirmTest && <Dialog title="测试联网搜索" busy={busy} onClose={() => setConfirmTest(false)}><p>使用已保存配置搜索一次，不自动读取网页。成功后按你当前工作区的价格和倍率扣除积分。</p><div className="modal-actions"><button className="secondary" disabled={busy} onClick={() => setConfirmTest(false)}>取消</button><button className="primary" disabled={busy} onClick={() => void test()}>{busy && <Loader2 size={16} className="spin" />}确认测试</button></div></Dialog>}
+    {confirmTest && <Dialog title="测试联网搜索" busy={busy} onClose={() => setConfirmTest(false)}><p>使用已保存配置搜索一次，不自动读取网页。成功后按你的账号价格和倍率扣除积分。</p><div className="modal-actions"><button className="secondary" disabled={busy} onClick={() => setConfirmTest(false)}>取消</button><button className="primary" disabled={busy} onClick={() => void test()}>{busy && <Loader2 size={16} className="spin" />}确认测试</button></div></Dialog>}
   </>;
 }

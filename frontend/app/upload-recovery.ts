@@ -34,3 +34,11 @@ export function uploadIssue(state: string, message?: string, retryLabel?: string
   if (!queryPaused && (state === "verifying" || retryLabel)) return;
   return message;
 }
+
+export function isUploadTaskPending(state: string) {
+  return !["ready", "cancelled", "deleted"].includes(state);
+}
+
+export function canPollUploadTask(state: string, jobId?: string) {
+  return ["verifying", "processing"].includes(state) || state === "processing_failed" && !jobId;
+}

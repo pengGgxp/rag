@@ -204,12 +204,12 @@ export function ConnectionDetail({ id }: { id: string }) {
 function ConnectionModels({ models }: { models: ModelProvider[] }) {
   return <div className="model-catalog" role="table" aria-label="模型列表">
     <div className="model-catalog-heading" role="row"><span role="columnheader">名称 / 模型</span><span role="columnheader">可用性</span>
-      <span role="columnheader">使用工作区</span><span role="columnheader">操作</span></div>
+      <span role="columnheader">使用账号</span><span role="columnheader">操作</span></div>
     {models.map(m => <div className="model-catalog-row" role="row" key={m.id}>
       <div role="cell" className="model-catalog-name"><Link href={`/admin/models/${m.id}`}>{m.name}</Link><small>{m.model}</small>
         {m.is_default && <span className="model-default"><Star size={12} />问答默认</span>}</div>
       <div role="cell" className="model-catalog-state"><span className="model-price-label">可用性</span><span className="model-availability" data-warning={!m.available}>{availabilityLabel(m.unavailable_reason)}</span></div>
-      <div role="cell" className="model-catalog-state"><span className="model-price-label">使用工作区</span>{m.workspace_count} 个</div>
+      <div role="cell" className="model-catalog-state"><span className="model-price-label">使用账号</span>{m.user_count} 个</div>
       <div role="cell" className="model-catalog-action"><Link className="secondary" href={`/admin/models/${m.id}`}>配置<ArrowRight size={15} /></Link></div>
     </div>)}
     {!models.length && <p className="admin-empty">尚未添加模型</p>}

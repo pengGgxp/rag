@@ -78,8 +78,4 @@ export type Preview = {
 };
 
 export type WorkspaceScreen = "catalog" | "knowledge" | "chat" | "extensions" | "files" | "billing";
-export type KnowledgeView =
-  | "documents"
-  | "retrieval"
-  | "permissions"
-  | "settings";
+export type KnowledgeView = "documents" | "retrieval" | "settings";

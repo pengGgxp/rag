@@ -1,11 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Calculator, Check, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { ApiError, request } from "../../api";
 import { PricingCalculator } from "../../pricing-calculator";
-import { GiB, MiB, bytes, type StorageQuota } from "../../storage-types";
+import { GiB, MiB, type StorageQuota } from "../../storage-types";
 import { AdminLoad, json, useAdminResource } from "../admin-ui";
 import { useAdminChanges } from "../admin-changes";
 import "../../storage-packages.css";
@@ -19,8 +18,6 @@ export function QuotaSettings({ onState }: { onState: (state: { dirty: boolean; 
   const [notice, setNotice] = useState("");
   const [conflict, setConflict] = useState(false);
   const [calculator, setCalculator] = useState<number | null>(null);
-  const [page, setPage] = useState(1);
-  const workspaces = useAdminResource<{ items: { id: string; name: string; used_bytes: number; limit_bytes: number; over_quota_since: string | null; cleanup_due_at: string | null }[]; has_more: boolean }>(`/site/admin/storage/workspaces?page=${page}`);
   const dirty = Boolean(form && JSON.stringify(form) !== original);
   useAdminChanges(dirty, busy);
   useEffect(() => { onState({ dirty, busy }); }, [dirty, busy, onState]);
@@ -71,9 +68,5 @@ export function QuotaSettings({ onState }: { onState: (state: { dirty: boolean; 
       policy={{ capability:"storage_package", unit:"packages", unit_size:1, credits_per_unit:form.packages[calculator].price_credits, enabled:true, version:0 }}
       initialCost={String(Number(form.costs.storage_yuan_gib_month ?? 0)*form.packages[calculator].storage_bytes/GiB*form.packages[calculator].days/30 + (Number(form.costs.egress_yuan_gib ?? 0)+Number(form.costs.transfer_yuan_gib ?? 0))*form.packages[calculator].download_bytes/GiB)}
       apply={patch => patchPackage(calculator,{price_credits:patch.credits_per_unit ?? null})} />}
-    <section className="admin-section"><h2>工作区用量</h2><AdminLoad loading={workspaces.loading} error={workspaces.error} retry={workspaces.reload}>
-      <div className="admin-table-wrap"><table className="admin-table storage-workspace-table"><thead><tr><th>工作区</th><th>已用 / 额度</th><th>状态</th></tr></thead><tbody>{workspaces.data?.items.map(w => <tr key={w.id}><td><Link href={`/admin/workspaces/${w.id}`}>{w.name}</Link></td><td>{bytes(w.used_bytes)} / {bytes(w.limit_bytes)}</td><td>{w.over_quota_since ? w.cleanup_due_at && new Date(w.cleanup_due_at) < new Date() ? "超额待处理" : "需增加额度" : "正常"}</td></tr>)}</tbody></table></div>
-      <div className="storage-dialog-actions"><button className="secondary" disabled={page === 1 || workspaces.loading} onClick={() => setPage(p=>p-1)}>上一页</button><span>{page}</span><button className="secondary" disabled={!workspaces.data?.has_more || workspaces.loading} onClick={() => setPage(p=>p+1)}>下一页</button></div>
-    </AdminLoad></section>
   </>}</AdminLoad>;
 }

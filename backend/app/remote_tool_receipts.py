@@ -43,7 +43,7 @@ def claim(factory, access, message_id, request_id, identifier, name, signature, 
         previous = db.scalar(select(RemoteToolExecution).where(
             RemoteToolExecution.invocation_id == identifier))
         if previous:
-            if (previous.workspace_id != access.workspace_id or previous.owner_id != access.user_id
+            if (previous.account_id != access.user_id or previous.owner_id != access.user_id
                     or previous.message_id != message_id or previous.request_id != request_id
                     or previous.tool_name != name or previous.arguments_digest != fingerprint):
                 raise ReceiptError("同一工具调用的身份或参数发生冲突，本次操作未执行")
@@ -55,7 +55,7 @@ def claim(factory, access, message_id, request_id, identifier, name, signature, 
         if not readonly:
             pending = db.scalar(select(RemoteToolExecution.id).where(
                 RemoteToolExecution.message_id == message_id, RemoteToolExecution.owner_id == access.user_id,
-                RemoteToolExecution.workspace_id == access.workspace_id,
+                RemoteToolExecution.account_id == access.user_id,
                 RemoteToolExecution.tool_name == name, RemoteToolExecution.arguments_digest == fingerprint,
                 RemoteToolExecution.status.in_(("running", "uncertain")),
                 RemoteToolExecution.encrypted_result.is_(None)).limit(1))
@@ -63,7 +63,7 @@ def claim(factory, access, message_id, request_id, identifier, name, signature, 
                 raise ReceiptError("相同操作的结果尚未确认；未自动重试，请先核对原操作", uncertain=True)
         mcp_client.encrypt_headers({"tool_result": "{}"})
         row = RemoteToolExecution(invocation_id=identifier, message_id=message_id,
-            workspace_id=access.workspace_id, owner_id=access.user_id, request_id=request_id,
+            account_id=access.user_id, owner_id=access.user_id, request_id=request_id,
             tool_name=name, authorization_version=version, arguments_digest=fingerprint, status="running")
         db.add(row)
         try:

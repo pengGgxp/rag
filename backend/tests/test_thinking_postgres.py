@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models import ChatMessage, Conversation, SiteModelProvider, Workspace, LLMProviderConfig, ContextCheckpoint
+from app.models import ChatMessage, Conversation, SiteModelProvider, User, LLMProviderConfig, ContextCheckpoint
 from app.shared_providers import lock_provider
 from app.thinking import select_thinking
 from test_auth_postgres import auth_postgres
@@ -19,10 +19,10 @@ def test_migration_defaults_and_message_snapshot_roundtrip(auth_postgres):
     with Session(auth_postgres) as db:
         row = SiteModelProvider(key=f"thinking-{uuid4()}", name="Test", model="model",
             connection_id=connection_id(db))
-        workspace = Workspace(name="Thinking migration")
+        workspace = User(email=f"fixture-{uuid4().hex}@example.com", name="Thinking migration")
         db.add_all([row, workspace])
         db.flush()
-        conversation = Conversation(title="Test", workspace_id=workspace.id)
+        conversation = Conversation(title="Test", account_id=workspace.id)
         # Owner is nullable in the legacy conversation schema.
         db.add(conversation)
         db.flush()
@@ -75,13 +75,13 @@ def test_concurrent_admin_edits_reject_stale_version(auth_postgres):
 def test_ordered_blocks_and_multiple_checkpoints_keep_request_provenance(auth_postgres):
     request_id = uuid4()
     with Session(auth_postgres) as db:
-        workspace = Workspace(name="Streaming checkpoint")
+        workspace = User(email=f"fixture-{uuid4().hex}@example.com", name="Streaming checkpoint")
         provider = SiteModelProvider(key=f"stream-{uuid4()}", name="Test", model="test",
             connection_id=connection_id(db))
         db.add_all([workspace, provider]); db.flush()
-        binding = LLMProviderConfig(workspace_id=workspace.id, site_provider_id=provider.id,
+        binding = LLMProviderConfig(account_id=workspace.id, site_provider_id=provider.id,
             key="test", name="test", model="test", base_url="", encrypted_api_key="")
-        conversation = Conversation(workspace_id=workspace.id, title="Ordered")
+        conversation = Conversation(account_id=workspace.id, title="Ordered")
         db.add_all([binding, conversation]); db.flush()
         blocks = [{"id": "text-1", "type": "text", "text": "first"},
             {"id": "activity-one", "type": "activity", "call_id": "one"},

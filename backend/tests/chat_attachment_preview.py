@@ -64,7 +64,7 @@ if __name__ == "__main__":
         user = authenticate(http, db)
         user.is_site_admin = True
         user.email_verified_at = auth.now()
-        selected = configured_model(db, auth.LEGACY_WORKSPACE_ID, FixturePatch())
+        selected = configured_model(db, user.id, FixturePatch())
         for model in db.query(SiteModelProvider).all():
             model.supports_images = True
             model.name = "视觉模型"

@@ -48,7 +48,7 @@ export type ModelProvider = {
   is_default: boolean;
   configured: boolean;
   prices: Policy[];
-  workspace_count: number;
+  user_count: number;
   available: boolean;
   unavailable_reason: string | null;
   thinking?: ThinkingConfig;

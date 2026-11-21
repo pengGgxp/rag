@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import model_billing, search_billing
-from app.models import CreditAccount, CreditLedgerEntry, SearchToolCall, SiteSearchSettings, UsageEvent
+from app.models import UserCreditAccount, CreditLedgerEntry, SearchToolCall, SiteSearchSettings, UsageEvent
 from app.web_search import SearchConfig
 from test_auth_postgres import auth_postgres
 from test_model_billing_postgres import setup
@@ -53,7 +53,7 @@ def test_concurrent_tool_claim_and_settlement_are_unique(auth_postgres):
     with ThreadPoolExecutor(max_workers=4) as pool:
         assert list(pool.map(settle, range(4))) == [Decimal("0.005")] * 4
     with Session(engine) as db:
-        assert db.get(CreditAccount, workspace).balance == Decimal("999.995")
+        assert db.get(UserCreditAccount, workspace).balance == Decimal("999.995")
         assert db.scalar(select(func.count()).select_from(UsageEvent).where(UsageEvent.request_id == request)) == 1
         assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == workspace, CreditLedgerEntry.kind == "usage_settlement")) == 1
+            CreditLedgerEntry.account_id == workspace, CreditLedgerEntry.kind == "usage_settlement")) == 1

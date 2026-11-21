@@ -70,9 +70,17 @@ jobs:
         run: alembic upgrade head
       - name: Verify Alembic head matches release manifest helper
         run: |
-          expected=$(python ../deploy/alembic_head.py ..)
-          actual=$(alembic heads | awk '{print $1}' | head -n 1)
+          expected=$(python ../deploy/alembic_head.py .)
+          actual=$(alembic heads | awk '{print $1}')
           test "$actual" = "$expected"
+      - name: Test personal account migration from the legacy schema
+        env:
+          PGPASSWORD: rag
+          PERSONAL_ACCOUNTS_TEST_DATABASE_URL: postgresql+psycopg://rag:rag@127.0.0.1:5432/rag_auth_test_personal_accounts
+        run: |
+          createdb -h 127.0.0.1 -U rag rag_auth_test_personal_accounts
+          MIGRATION_DATABASE_URL="$PERSONAL_ACCOUNTS_TEST_DATABASE_URL" alembic upgrade 0078_tool_detail
+          pytest -q --tb=short tests/test_personal_accounts_postgres.py
       - name: Run backend tests
         run: pytest -q --tb=short
 

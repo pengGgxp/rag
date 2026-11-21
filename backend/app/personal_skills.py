@@ -26,7 +26,7 @@ class SkillContentUpdate(BaseModel):
 # These helpers also serve personal MCP connections; their ownership is unchanged.
 def owned(db, model, identifier, access, lock=False):
     query = select(model).where(model.id == identifier, model.owner_id == access.user_id,
-        model.workspace_id == access.workspace_id).execution_options(populate_existing=True)
+        model.account_id == access.user_id).execution_options(populate_existing=True)
     row = db.scalar(query.with_for_update() if lock else query)
     if row is None:
         raise HTTPException(404, "扩展不存在或无权访问")
@@ -34,7 +34,7 @@ def owned(db, model, identifier, access, lock=False):
 
 
 def audit(db, access, request, action, row):
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
         action=action, resource_type="mcp_server", resource_id=row.id,
         metadata={"version": row.version}, request=request)
 
@@ -44,11 +44,10 @@ def save_package(files, db, access):
     from .workspace_mutations import save_files, snapshot, unique_name
     from .file_operations import workspace_lock
     import mimetypes
-    access.editor()
     skill_files.validate_files(files)
     metadata = parse(files["SKILL.md"].decode("utf-8"), "SKILL.md")
     directory = ".skills/" + directory_name(metadata.get("name") or "skill")
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         current, dirs, _ = snapshot(db, access)
         if directory in current or directory in dirs:
             directory = unique_name(directory, set(current) | dirs)
@@ -64,8 +63,7 @@ def save_packages(packages, db, access):
     from .file_operations import workspace_lock
     import mimetypes
 
-    access.editor()
-    with workspace_lock(db, access.workspace_id):
+    with workspace_lock(db, access.user_id):
         state = snapshot(db, access)
         current, directories, _ = state
         occupied = set(current) | directories
@@ -99,7 +97,6 @@ def listing(db=Depends(get_db), access=Depends(get_access)):
 
 @router.post("/import", status_code=201)
 def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(get_access)):
-    access.editor()
     name = (file.filename or "").lower()
     if not name.endswith((".md", ".zip")):
         raise HTTPException(422, "请选择 SKILL.md 或 ZIP 格式的 Skill 包")
@@ -112,7 +109,6 @@ def importing(file: UploadFile = File(...), db=Depends(get_db), access=Depends(g
 
 @router.post("/import-folder", status_code=201)
 async def importing_folder(request: Request, db=Depends(get_db), access=Depends(get_access)):
-    access.editor()
     async with request.form(max_files=float("inf"), max_fields=float("inf")) as form:
         files, paths = form.getlist("files"), form.getlist("paths")
         if not files or not all(hasattr(file, "file") and hasattr(file, "filename") for file in files) or not all(isinstance(path, str) for path in paths):
@@ -121,7 +117,6 @@ async def importing_folder(request: Request, db=Depends(get_db), access=Depends(
 
 
 def save_folder(files, paths, db, access):
-    access.editor()
     if len(files) != len(paths):
         raise HTTPException(422, "请选择包含 SKILL.md 的单个文件夹")
     entries, total = [], 0
@@ -138,7 +133,7 @@ def save_folder(files, paths, db, access):
 
 @router.get("/{identifier}")
 def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = resource_owned(db, access, access.workspace_id, identifier)
+    row = resource_owned(db, access, access.user_id, identifier)
     from .shared_resources import refresh_current_metadata
     row = refresh_current_metadata(db, access, row)
     if not row.path.lower().endswith("/skill.md") and row.path.lower() != "skill.md":
@@ -151,7 +146,7 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
         if version is None:
             raise HTTPException(404, "Skill 文件已删除")
         from .shared_resources import backend
-        with backend(db).download(version.object_key) as handle:
+        with backend(db).download(version.storage_key) as handle:
             raw = handle.read(skill_files.MAX_FILE_BYTES + 1)
         if len(raw) > skill_files.MAX_FILE_BYTES:
             raise HTTPException(413, f"Skill 文件不能超过 {skill_files.MAX_SIZE_MIB} MiB")
@@ -167,7 +162,7 @@ def detail(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 @router.put("/{identifier}")
 def update(identifier: UUID, payload: SkillContentUpdate, request: Request,
            db=Depends(get_db), access=Depends(get_access)):
-    row = resource_owned(db, access, access.workspace_id, identifier, write=True)
+    row = resource_owned(db, access, access.user_id, identifier, write=True)
     if not row.path.lower().endswith("/skill.md") and row.path.lower() != "skill.md":
         raise HTTPException(422, "请使用 Skill 入口修改 SKILL.md")
     from .workspace_mutations import save_files
@@ -178,11 +173,11 @@ def update(identifier: UUID, payload: SkillContentUpdate, request: Request,
 
 @router.get("/{identifier}/files")
 def files(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = resource_owned(db, access, access.workspace_id, identifier)
+    row = resource_owned(db, access, access.user_id, identifier)
     from .workspace_mutations import snapshot
     snapshot(db, access)
     directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
-    query = select(WorkspaceFile).where(WorkspaceFile.workspace_id == access.workspace_id,
+    query = select(WorkspaceFile).where(WorkspaceFile.owner_user_id == access.user_id,
         WorkspaceFile.deleted_at.is_(None), WorkspaceFile.path.startswith(directory + "/", autoescape=True))
     return [read_file(item) for item in db.scalars(query.order_by(WorkspaceFile.path))]
 
@@ -190,7 +185,7 @@ def files(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 @router.delete("/{identifier}", status_code=204)
 def remove(identifier: UUID, request: Request, confirmation: str | None = None,
            request_id: str | None = None, db=Depends(get_db), access=Depends(get_access)):
-    row = resource_owned(db, access, access.workspace_id, identifier, write=True)
+    row = resource_owned(db, access, access.user_id, identifier, write=True)
     from .workspace_mutations import delete
     directory = row.path.rsplit("/", 1)[0] if "/" in row.path else ""
     delete(db, access, [directory or row.path], confirmation=confirmation, request_id=request_id)

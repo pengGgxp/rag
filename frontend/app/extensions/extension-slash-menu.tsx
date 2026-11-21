@@ -104,7 +104,7 @@ export const ExtensionSlashMenu = forwardRef<SlashMenuHandle, {
           onMouseDown={event => event.preventDefault()} onMouseEnter={() => setIndex(i)} onClick={() => void choose(item)}>
           {item.kind === "command" ? <Minimize2 size={17} /> : item.kind === "mcp" ? <Plug size={17} /> : <FileText size={17} />}
           <span className="extension-slash-copy"><strong>{item.name}</strong><small>{item.description}</small></span>
-          <span className="extension-slash-source">{item.kind === "command" ? "命令" : item.kind === "application" ? "应用" : item.kind === "platform" ? "平台 Skill" : item.kind === "skill" ? "工作区 Skill" : "MCP"}</span>
+          <span className="extension-slash-source">{item.kind === "command" ? "命令" : item.kind === "application" ? "应用" : item.kind === "platform" ? "平台 Skill" : item.kind === "skill" ? "我的 Skill" : "MCP"}</span>
           {item.kind === "mcp" && effective.mcp_server_ids.includes(item.id) && <Check size={15} aria-label="已选择" />}
         </button>)}
         {!options.length && <p role="status">{query ? "没有匹配项" : "暂无可用命令或扩展"}</p>}

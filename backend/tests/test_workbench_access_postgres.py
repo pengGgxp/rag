@@ -13,11 +13,12 @@ from test_auth_postgres import auth_postgres
 
 def test_concurrent_entitlement_changes_keep_one_version(auth_postgres):
     with Session(auth_postgres) as db:
-        actor, workspace = auth.create_user(db, f"qw-access-{uuid4().hex}@example.com", "Teacher")
+        actor = auth.create_user(db, f"qw-access-{uuid4().hex}@example.com", "Teacher")
+        workspace = actor.id
         db.commit()
         actor_id = actor.id
         assert actor.question_workbench_enabled is False
-        db.add(QuestionWorkbenchGrant(user_id=actor_id, workspace_id=workspace, enabled=True, version=4))
+        db.add(QuestionWorkbenchGrant(user_id=actor_id, account_id=workspace, enabled=True, version=4))
         db.commit()
     barrier = Barrier(2)
 

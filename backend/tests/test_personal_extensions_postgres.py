@@ -36,7 +36,7 @@ def test_remote_invocation_concurrent_claim_replay_and_uncertain_write(auth_post
     request, identifier = uuid4(), uuid4()
     with factory() as db:
         session = db.get(LoginSession, auth.digest(raw))
-        access = auth.Access(user_id, session.workspace_id, "admin", session.token_hash)
+        access = auth.get_access(session)
         message = ChatMessage(conversation_id=UUID(conversation["id"]), request_id=request,
             sequence=1, role="assistant", content="")
         db.add(message); db.commit()

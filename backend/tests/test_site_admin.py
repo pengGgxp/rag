@@ -1,14 +1,18 @@
 from datetime import timedelta
 from uuid import UUID
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
 from app import auth, site_admin
-from app.models import AuthToken, ExternalIdentity, LLMProviderConfig, LoginSession, SiteAuditEvent, SiteAuthSettings, SiteModelProvider, User
+from app.models import (
+    AuthToken, ExternalIdentity, LoginSession, SiteAuditEvent, SiteAuthSettings,
+    SiteModelProvider, User, UserCreditAccount, UserModelPolicy,
+)
 from app.site_audit import prune, record
-from test_auth import PASSWORD, register, share
+from test_auth import PASSWORD, register
 from auth_helpers import connection_id
 
 
@@ -24,10 +28,10 @@ def setup(accounts):
 
 def test_all_management_routes_require_fresh_site_role(accounts):
     admin, member, anonymous, db, a, b = setup(accounts)
-    user, workspace = b["user"]["id"], b["workspace_id"]
+    user = b["user"]["id"]
     for method, path, body in [
         ("GET", "/overview", None), ("GET", "/users", None), ("GET", f"/users/{user}", None),
-        ("GET", "/workspaces", None), ("GET", f"/workspaces/{workspace}", None), ("GET", "/audit", None),
+        ("GET", "/audit", None),
         ("PUT", f"/users/{user}/status", {"suspended": True}),
         ("PUT", f"/users/{user}/question-workbench", {"enabled": True, "version": 0}),
         ("POST", f"/users/{user}/revoke-sessions", None), ("POST", f"/users/{user}/resend-verification", None),
@@ -35,6 +39,8 @@ def test_all_management_routes_require_fresh_site_role(accounts):
         # Member is an administrator of their own workspace, not of the site.
         assert member.request(method, "/site/admin"+path, json=body).status_code == 403
         assert anonymous.request(method, "/site/admin"+path, json=body).status_code == 401
+    for path in ("/workspaces", f"/workspaces/{uuid4()}"):
+        assert admin.get("/site/admin" + path).status_code == 404
     db.get(User, UUID(a["user"]["id"])).is_site_admin = False; db.commit()
     assert admin.get("/site/admin/overview").status_code == 403
 
@@ -48,10 +54,13 @@ def test_lists_filters_paging_and_read_only_redaction(accounts):
         connection_id=connection_id(db, url="https://secret-host", secret="never-return-this"), enabled=True)
     db.add(provider)
     db.flush()
-    db.add(LLMProviderConfig(workspace_id=UUID(b["workspace_id"]), site_provider_id=provider.id, key="test", name="Old name",
-        model="private-model", base_url="https://secret-host", encrypted_api_key="never-return-this"))
+    account = db.get(UserCreditAccount, target.id)
+    account.balance = 1000
+    account.lifetime_granted = 1000
+    account.lifetime_spent = 0
+    db.add(UserModelPolicy(user_id=target.id, available_models=[str(provider.id)],
+        default_model=str(provider.id), billing_multiplier_percent=125, version=2))
     db.commit()
-    share(admin, target.email)
     users = admin.get("/site/admin/users?q=Member&verified=yes&status=active&page_size=1").json()
     assert users["total"] == 1 and users["items"][0]["id"] == str(target.id)
     assert admin.get("/site/admin/users?q=%25").json()["total"] == 0
@@ -60,23 +69,26 @@ def test_lists_filters_paging_and_read_only_redaction(accounts):
     assert admin.get("/site/admin/users?page_size=101").status_code == 422
     detail = admin.get(f"/site/admin/users/{target.id}")
     assert detail.json()["login_methods"]["wechat"] is True
-    assert len(detail.json()["workspaces"]) == 2
-    workspace = admin.get(f"/site/admin/workspaces/{b['workspace_id']}")
-    assert workspace.json()["credits"]["balance"] == 1000
-    assert workspace.json()["configuration"]["provider_names"] == ["Provider"]
-    provider.enabled = False
-    db.commit()
-    assert admin.get(f"/site/admin/workspaces/{b['workspace_id']}").json()["configuration"]["provider_names"] == []
-    for secret in ("password_hash", "private-social-id", "never-return-this", "private-model", "secret-host", "csrf_token"):
-        assert secret not in detail.text + workspace.text
-    assert admin.put(f"/site/admin/workspaces/{b['workspace_id']}", json={"balance": 999}).status_code == 405
+    assert detail.json()["credits"]["balance"] == 1000
+    assert detail.json()["model_policy"] == {
+        "available_models": [str(provider.id)],
+        "default_model": str(provider.id),
+        "billing_multiplier_percent": 125,
+        "version": 2,
+    }
+    assert "workspaces" not in detail.json()
+    for secret in ("password_hash", "private-social-id", "never-return-this", "secret-host", "csrf_token"):
+        assert secret not in detail.text
+    workspace_path = f"/site/admin/workspaces/{uuid4()}"
+    assert admin.get(workspace_path).status_code == 404
+    assert admin.put(workspace_path, json={"balance": 999}).status_code == 404
     assert admin.get("/site/admin/overview").json()["users_total"] == 2
 
 
 def test_suspend_reactivate_revocation_and_self_protection(accounts):
     admin, member, _, db, a, b = setup(accounts)
     target = b["user"]["id"]
-    access = auth.get_access(db.get(LoginSession, auth.digest(member.cookies.get(auth.COOKIE))), db)
+    access = auth.get_access(db.get(LoginSession, auth.digest(member.cookies.get(auth.COOKIE))))
     assert admin.put(f"/site/admin/users/{a['user']['id']}/status", json={"suspended": True}).status_code == 409
     assert admin.put(f"/site/admin/users/{target}/status", json={"suspended": True, "reason_code": "security"}).status_code == 200
     assert member.get("/auth/me").status_code == 401

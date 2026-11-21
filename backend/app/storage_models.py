@@ -24,15 +24,15 @@ class StorageQuotaSettings(Base):
 
 class WorkspaceStorageState(Base):
     __tablename__ = "workspace_storage_states"
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), primary_key=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     over_quota_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class StorageEntitlement(Base):
     __tablename__ = "storage_entitlements"
-    __table_args__ = (UniqueConstraint("workspace_id", "request_key", name="uq_storage_entitlement_request"),)
+    __table_args__ = (UniqueConstraint("account_id", "request_key", name="uq_storage_entitlement_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     actor_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     request_key: Mapped[str] = mapped_column(String(100))
     kind: Mapped[str] = mapped_column(String(24))
@@ -50,7 +50,7 @@ class StorageEntitlement(Base):
 class StorageTransfer(Base):
     __tablename__ = "storage_transfers"
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     resource: Mapped[str] = mapped_column(String(200))
     requested_bytes: Mapped[int] = mapped_column(BigInteger)

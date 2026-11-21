@@ -1,80 +1,102 @@
 from uuid import UUID, uuid4
-from sqlalchemy import select
-from app import shared_providers, llm_providers, model_connections
-from app.models import SiteAuditEvent, UsageEvent, LLMProviderConfig, ModelBillingSettings
-from app.credits import authorization_hold, settle_model_usage
-from test_auth import register, share, switch
+
+from app.models import SiteModelProvider
+from test_auth import register
 from test_site_admin import setup
-from test_shared_providers import provider
+from test_user_model_policy import setup_policy_accounts
 
 
-def test_management_requires_site_role_on_every_new_and_legacy_route(accounts):
-    admin, owner, anonymous, db, a, b = setup(accounts)
-    identifier = uuid4()
-    for prefix in (f"/site/admin/workspaces/{b['workspace_id']}/llm-providers", "/settings/llm-providers", "/site/admin/llm-providers"):
-        for method, suffix in (("GET", ""), ("POST", ""), ("PUT", f"/{identifier}"), ("DELETE", f"/{identifier}")):
-            assert owner.request(method, prefix + suffix, json={}).status_code == 403
-            assert anonymous.request(method, prefix + suffix, json={}).status_code == 401
-    for prefix in (f"/site/admin/workspaces/{b['workspace_id']}/usage-policies", "/usage/policies"):
-        assert owner.get(prefix).status_code == 403
+def test_workspace_management_and_legacy_usage_routes_are_removed(accounts):
+    admin, owner, anonymous, db, _a, b = setup(accounts)
+    workspace = b["user"]["id"]
+    for method, suffix in (
+        ("GET", ""),
+        ("POST", ""),
+        ("PUT", f"/{uuid4()}"),
+        ("DELETE", f"/{uuid4()}"),
+    ):
+        path = f"/site/admin/workspaces/{workspace}/llm-providers" + suffix
+        assert owner.request(method, path, json={}).status_code == 404
+        assert anonymous.request(method, path, json={}).status_code == 404
+    assert admin.get(f"/site/admin/workspaces/{workspace}").status_code == 404
+    assert owner.get("/usage/policies").status_code == 404
+    assert owner.put("/usage/policies/embedding_tokens", json={}).status_code == 404
 
 
-def test_admin_can_manage_unjoined_workspace_without_changing_session(accounts, monkeypatch):
-    admin, owner, _, db, a, b = setup(accounts)
-    monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: "enc:" + value)
-    p = provider(admin)
-    db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
+def test_shared_provider_management_remains_site_admin_only(accounts):
+    admin, owner, anonymous, db, _a, _b = setup(accounts)
+    provider_id = uuid4()
+    for method, suffix in (
+        ("GET", ""),
+        ("POST", ""),
+        ("PUT", f"/{provider_id}"),
+        ("DELETE", f"/{provider_id}"),
+    ):
+        path = "/site/admin/llm-providers" + suffix
+        assert owner.request(method, path, json={}).status_code == 403
+        assert anonymous.request(method, path, json={}).status_code == 401
+    assert admin.get("/site/admin/llm-providers").status_code == 200
+
+
+def test_user_detail_owns_balance_and_model_policy(accounts):
+    admin, member, _anonymous, db, _a, _b = setup(accounts)
+    target = register(member, "policy-target@example.com", "Policy target")
+    target_id = UUID(target["user"]["id"])
+    response = admin.put(
+        f"/site/admin/users/{target_id}/model-policy",
+        json={
+            "available_models": [],
+            "default_model": None,
+            "billing_multiplier_percent": 125,
+            "version": 0,
+        },
+    )
+    assert response.status_code == 200, response.text
+    detail = admin.get(f"/site/admin/users/{target_id}")
+    assert detail.status_code == 200
+    assert "workspaces" not in detail.json()
+    assert detail.json()["model_policy"]["billing_multiplier_percent"] == 125
+    assert member.put(
+        f"/site/admin/users/{target_id}/model-policy",
+        json={
+            "available_models": [],
+            "default_model": None,
+            "billing_multiplier_percent": 150,
+            "version": 1,
+        },
+    ).status_code == 403
+
+
+def test_user_policy_rejects_disabled_site_models(accounts):
+    admin, owner, _anonymous, db, _a, _b = setup(accounts)
+    target = register(owner, "disabled-policy-target@example.com", "Disabled target")
+    from app.models import ModelConnection
+
+    connection = ModelConnection(
+        name="disabled-policy-connection",
+        base_url="https://provider.example/v1",
+        encrypted_api_key="encrypted",
+        enabled=True,
+    )
+    db.add(connection)
+    db.flush()
+    provider = SiteModelProvider(
+        connection_id=connection.id,
+        key="disabled-policy-model",
+        name="Disabled policy model",
+        model="disabled-model",
+        enabled=False,
+        supports_chat=True,
+    )
+    db.add(provider)
     db.commit()
-    base = f"/site/admin/workspaces/{b['workspace_id']}"
-    result = admin.put(base + "/model", json={"provider_id": p["id"], "version": 0})
-    assert result.status_code == 410, result.text
-    shared_providers.request_binding(db, UUID(b["workspace_id"]), UUID(p["id"]))
-    db.commit()
-    assert admin.get("/auth/me").json()["workspace_id"] == a["workspace_id"]
-    binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(b["workspace_id"])))
-    own = f"/site/admin/workspaces/{a['workspace_id']}"
-    assert admin.get(own + f"/llm-providers/{binding.id}/pricing").status_code == 404
-    assert admin.post(base + "/llm-providers", json={}).status_code == 410
-    assert owner.put(base + "/model", json={"provider_id": p["id"], "version": 1}).status_code == 403
-    assert admin.get(f"/site/admin/workspaces/{uuid4()}/model").status_code == 404
-
-
-def test_updates_preserve_credentials_and_historical_usage(accounts, monkeypatch):
-    admin, owner, _, db, a, b = setup(accounts)
-    monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: "enc:" + value)
-    monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
-    p = provider(admin)
-    db.get(ModelBillingSettings, 1).shared_pricing_enabled = True
-    db.commit()
-    base = f"/site/admin/workspaces/{b['workspace_id']}"
-    shared_providers.request_binding(db, UUID(b["workspace_id"]), UUID(p["id"]))
-    db.commit()
-    binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.workspace_id == UUID(b["workspace_id"])))
-    request_id = uuid4()
-    authorization_hold(db, binding.workspace_id, UUID(b["user"]["id"]), request_id)
-    settle_model_usage(db, binding.workspace_id, UUID(b["user"]["id"]), request_id, [{
-        "prompt_tokens": 1000, "completion_tokens": 0, "provider_id": str(binding.id), "provider_key": binding.key}])
-    db.commit()
-    old = db.scalar(select(UsageEvent).where(UsageEvent.request_id == request_id, UsageEvent.capability == "llm_input_tokens"))
-    snapshot = dict(old.policy_snapshot)
-    path = base + f"/llm-providers/{binding.id}/pricing/llm_input_tokens"
-    payload = {"capability": "llm_input_tokens", "unit": "tokens", "unit_size": 1000, "credits_per_unit": 9, "enabled": True, "version": 1}
-    assert admin.put(path, json=payload).status_code == 410
-    assert admin.put(path, json=payload).status_code == 410
-    db.refresh(old)
-    assert old.credits == 4 and old.policy_snapshot == snapshot
-    assert llm_providers.request_provider_config(db, binding.workspace_id, UUID(p["id"])).api_key == "secret"
-    assert "enc:secret" not in admin.get(base + "/llm-providers").text
-    failures = db.scalars(select(SiteAuditEvent).where(SiteAuditEvent.result == "failure")).all()
-    assert failures and "secret" not in str([e.details for e in failures])
-
-
-def test_ordinary_member_cannot_use_management_apis(accounts):
-    admin, owner, member, db, _, b = setup(accounts)
-    user = register(member, "ordinary-viewer@example.com")
-    share(owner, user["user"]["email"], "viewer")
-    switch(member, b["workspace_id"])
-    for path in ("/usage/policies", "/settings/llm-providers", "/site/admin/llm-providers"):
-        assert member.get(path).status_code == 403
-    assert member.get("/models/available").status_code == 200
-    assert member.put("/settings/models", json={"provider_id": str(uuid4()), "version": 0}).status_code == 403
+    response = admin.put(
+        f"/site/admin/users/{target['user']['id']}/model-policy",
+        json={
+            "available_models": [str(provider.id)],
+            "default_model": str(provider.id),
+            "billing_multiplier_percent": 100,
+            "version": 0,
+        },
+    )
+    assert response.status_code == 422

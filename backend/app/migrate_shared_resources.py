@@ -17,7 +17,7 @@ def plan(db):
         current = next((v for v in versions if v.version == resource.current_version and not v.deleted_at), None)
         attachments = list(db.scalars(select(ChatAttachment).where(
             ChatAttachment.resource_file_id == resource.id, ChatAttachment.deleted_at.is_(None))))
-        target = object_key(resource.workspace_id, resource.path)
+        target = object_key(resource.account_id, resource.path)
         if target in targets:
             raise ValueError(f"资源路径重复: {resource.id}")
         targets.add(target)
@@ -80,7 +80,7 @@ def migrate(db, *, execute=False, offline=False):
                     db.delete(version)
             db.flush()
             if current is None:
-                current = WorkspaceFileVersion(file_id=resource.id, workspace_id=resource.workspace_id,
+                current = WorkspaceFileVersion(file_id=resource.id, account_id=resource.account_id,
                     version=1, object_key=item["target"], content_type=resource.content_type,
                     size_bytes=item["size"], content_hash=item["digest"], created_by=resource.created_by)
                 db.add(current)

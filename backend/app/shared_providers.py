@@ -9,10 +9,17 @@ from .auth import Access, get_access
 from .db import get_db
 from .llm_providers import _encrypt_api_key, _decrypt_api_key, validate_base_url
 from .model_connections import connection_for, lock_connection, router as connection_router
-from .management_access import ManagementAccess, management_access
 from .model_billing import CAPABILITIES
 from .model_pricing import ModelPrice, complete, settings_locked
-from .models import LLMProviderConfig, ModelBillingSettings, ModelConnection, SiteModelProvider, UsagePolicy, Workspace
+from .models import (
+    LLMProviderConfig,
+    ModelBillingSettings,
+    ModelConnection,
+    SiteModelProvider,
+    UsagePolicy,
+    UserModelPolicy,
+    User,
+)
 from .site_auth import site_admin
 from .site_audit import record
 from .thinking import ThinkingConfig, public_capability
@@ -70,12 +77,6 @@ class VersionInput(BaseModel):
     version: int = Field(ge=1)
 
 
-class SelectionInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    provider_id: UUID
-    version: int = Field(ge=0)
-
-
 class BatchModels(BaseModel):
     model_config = ConfigDict(extra="forbid")
     connection_version: int = Field(ge=1, strict=True)
@@ -110,7 +111,7 @@ def read_provider(db, row):
         "is_default": bool(settings and settings.default_provider_id == row.id),
         "configured": complete(row.prices), "prices": list(row.prices.values()),
         "available": reason is None, "unavailable_reason": reason,
-        "workspace_count": db.scalar(select(func.count()).select_from(LLMProviderConfig).where(
+        "user_count": db.scalar(select(func.count()).select_from(LLMProviderConfig).where(
             LLMProviderConfig.site_provider_id == row.id)),
         "updated_at": row.updated_at.isoformat()}
 
@@ -274,15 +275,14 @@ def unavailable_reason(db, provider, binding, shared):
     return None if complete(prices) else "pricing_unconfigured"
 
 
-def visible_providers(db, workspace_id):
-    # Site providers are centrally managed and selectable by every workspace.
-    # Management previews retain disabled entries; the user endpoint filters them.
+def visible_providers(db, account_id):
+    # Management previews retain disabled entries. User selection applies account policy.
     return db.scalars(select(SiteModelProvider).order_by(SiteModelProvider.created_at)).all()
 
 
-def choices(db, workspace_id):
+def choices(db, account_id):
     providers = []
-    for row in visible_providers(db, workspace_id):
+    for row in visible_providers(db, account_id):
         reason = unavailable_reason(db, row, None, True)
         providers.append({"id": str(row.id), "name": row.name, "model": row.model,
             "supports_images": row.supports_images,
@@ -295,22 +295,32 @@ def choices(db, workspace_id):
 
 @selection_router.get("/models/available")
 def available_models(db=Depends(get_db), access: Access = Depends(get_access)):
-    providers = [item for item in choices(db, access.workspace_id)
+    policy = db.get(UserModelPolicy, access.user_id, populate_existing=True)
+    allowed = {str(item) for item in policy.available_models} if policy is not None else None
+    providers = [item for item in choices(db, access.user_id)
+                 if allowed is None or item["id"] in allowed
                  if item["unavailable_reason"] not in ("model_disabled", "connection_disabled", "not_chat_model")]
     settings = db.get(ModelBillingSettings, 1)
-    default = str(settings.default_provider_id) if settings and settings.default_provider_id else None
+    default = (
+        policy.default_model
+        if policy is not None
+        else str(settings.default_provider_id) if settings and settings.default_provider_id else None
+    )
     if not any(item["id"] == default and item["available"] for item in providers):
         default = None
     return {"default_provider_id": default, "providers": providers}
 
 
-def request_binding(db, workspace_id, identifier):
-    # Match administrator writes: settings before workspace/provider locks.
+def request_binding(db, account_id, identifier):
+    # Match administrator writes: settings before account/provider locks.
     db.scalar(select(ModelBillingSettings).where(ModelBillingSettings.id == 1).with_for_update(read=True))
-    db.get(Workspace, workspace_id, with_for_update=True, populate_existing=True)
+    db.get(User, account_id, with_for_update=True, populate_existing=True)
     row = lock_provider(db, identifier)
+    policy = db.get(UserModelPolicy, account_id, populate_existing=True)
+    if policy is not None and str(row.id) not in {str(item) for item in policy.available_models or []}:
+        raise HTTPException(403, "当前账号未开通此模型")
     binding = db.scalar(select(LLMProviderConfig).where(
-        LLMProviderConfig.workspace_id == workspace_id,
+        LLMProviderConfig.account_id == account_id,
         LLMProviderConfig.site_provider_id == identifier))
     reason = unavailable_reason(db, row, binding, True)
     if reason:
@@ -321,33 +331,12 @@ def request_binding(db, workspace_id, identifier):
             "service_not_ready": "模型服务尚未就绪，请联系站点管理员"}
         raise HTTPException(409, messages[reason])
     if binding is None:
-        binding = LLMProviderConfig(workspace_id=workspace_id, site_provider_id=row.id,
+        binding = LLMProviderConfig(account_id=account_id, site_provider_id=row.id,
             key=f"shared-{row.id}", name=row.name, base_url="", model=row.model,
             encrypted_api_key="", enabled=True, active=False)
         db.add(binding)
         db.flush()
     return binding, row
-
-
-@selection_router.get("/settings/models")
-def workspace_models(db=Depends(get_db), access: Access = Depends(get_access)):
-    raise HTTPException(410, "请在问答输入区为每次请求选择模型")
-
-
-@selection_router.put("/settings/models")
-def select_workspace_model(payload: SelectionInput, db=Depends(get_db), access: Access = Depends(get_access)):
-    access.admin()
-    raise HTTPException(410, "工作区不再设置当前模型，请在问答输入区选择")
-
-
-@selection_router.get("/site/admin/workspaces/{workspace_id}/model")
-def admin_workspace_model(db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    raise HTTPException(410, "工作区不再设置当前模型")
-
-
-@selection_router.put("/site/admin/workspaces/{workspace_id}/model")
-def admin_select_model(payload: SelectionInput, db=Depends(get_db), access: ManagementAccess = Depends(management_access)):
-    raise HTTPException(410, "工作区不再设置当前模型")
 
 
 def assert_available(identifier, connection_id=None):
@@ -371,7 +360,8 @@ def migrate_connections(db, settings):
     if migration.connections_migrated:
         return 0
     count = 0
-    for binding in db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.site_provider_id.is_(None))):
+    for binding in db.scalars(select(LLMProviderConfig).where(
+            LLMProviderConfig.site_provider_id.is_(None), LLMProviderConfig.encrypted_api_key != "")):
         _decrypt_api_key(binding.encrypted_api_key)
         prices = {p.capability: {key: getattr(p, key) for key in ("capability", "unit", "unit_size", "credits_per_unit", "enabled")}
             for p in db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == binding.id, UsagePolicy.capability.in_(CAPABILITIES)))}
@@ -387,8 +377,8 @@ def migrate_connections(db, settings):
         db.flush()
         binding.site_provider_id, binding.encrypted_api_key, binding.base_url = row.id, "", ""
         count += 1
-    targets = [w for w in db.scalars(select(Workspace)) if not db.scalar(select(LLMProviderConfig.id).where(
-        LLMProviderConfig.workspace_id == w.id, LLMProviderConfig.active.is_(True)))]
+    targets = [w for w in db.scalars(select(User).where(User.is_suspended.is_(False))) if not db.scalar(select(LLMProviderConfig.id).where(
+        LLMProviderConfig.account_id == w.id, LLMProviderConfig.active.is_(True)))]
     if targets:
         if not settings.llm_configured:
             raise ValueError("Legacy environment model is incomplete; migration aborted.")
@@ -404,11 +394,11 @@ def migrate_connections(db, settings):
             db.add(row)
             db.flush()
         for workspace in targets:
-            binding = LLMProviderConfig(workspace_id=workspace.id, site_provider_id=row.id, key="legacy-environment",
+            binding = LLMProviderConfig(account_id=workspace.id, site_provider_id=row.id, key="legacy-environment",
                 name=row.name, model=row.model, base_url="", encrypted_api_key="", active=True, enabled=True)
             db.add(binding)
             db.flush()
-            for policy in db.scalars(select(UsagePolicy).where(UsagePolicy.workspace_id == workspace.id,
+            for policy in db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace.id,
                 UsagePolicy.provider_id.is_(None), UsagePolicy.capability.in_(CAPABILITIES))):
                 policy.provider_id = binding.id
             count += 1

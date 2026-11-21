@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 
 from app import conversations, main
 from app.llm import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
-from app.models import (BillingSnapshot, ChatMessage, CreditAccount, CreditLedgerEntry,
+from app.models import (BillingSnapshot, ChatMessage, UserCreditAccount, CreditLedgerEntry,
                         LLMProviderConfig, ModelCallUsage, ModelBillingSettings, SiteModelProvider,
-                        UsageEvent, UsagePolicy, Workspace)
-from test_auth import register, share, switch
+                        UsageEvent, UsagePolicy)
+from test_auth import register
 from test_shared_providers import setup_site, provider
 from test_retrieval import add_document
 from auth_helpers import StreamingTestProvider, generation_response
@@ -30,7 +30,7 @@ def test_each_request_selects_actual_model_and_pins_prices(accounts, monkeypatch
     settings = db.get(ModelBillingSettings, 1)
     settings.enabled = settlement
     db.commit()
-    workspace = UUID(identity["workspace_id"])
+    workspace = UUID(identity["user"]["id"])
     observed = []
 
     class Model(StreamingTestProvider):
@@ -62,33 +62,37 @@ def test_each_request_selects_actual_model_and_pins_prices(accounts, monkeypatch
         assert client.post(f"/conversations/{conversation}/messages", json={**body, "provider_id": str(uuid4())}).status_code == 200
     assert len(observed) == 2
     assert db.scalar(select(func.count()).select_from(UsagePolicy)) == 0
-    assert db.get(Workspace, workspace).model_version == 0
-    assert db.get(CreditAccount, workspace).balance == 982
+    assert db.get(UserCreditAccount, workspace).balance == 982
     detail = client.get(f"/conversations/{conversation}").json()
     assert [item["provider_name"] for item in detail["messages"] if item["role"] == "assistant"] == ["first", "second"]
     assert [item["site_provider_id"] for item in detail["messages"] if item["role"] == "assistant"] == [first["id"], second["id"]]
     assert "provider_id" not in detail  # No conversation-level selected model.
 
 
-def test_member_can_choose_any_configured_model(accounts, monkeypatch):
+def test_user_can_choose_a_model_allowed_by_site_policy(accounts, monkeypatch):
     owner, db, identity = setup_site(accounts, monkeypatch)
     public, private = provider(owner, "public"), provider(owner, "legacy")
     db.get(SiteModelProvider, UUID(private["id"])).published = False
     db.commit()
     (_, member, anonymous), _ = accounts
     registered = register(member, "member@example.com")
-    share(owner, registered["user"]["email"], "viewer")
-    switch(member, identity["workspace_id"])
     assert anonymous.get("/models/available").status_code == 401
     data = member.get("/models/available")
     assert public["id"] in data.text and private["id"] in data.text
     assert all(key not in data.text for key in ("secret", "base_url", "prices", "api_key"))
     from app import shared_providers
-    binding, _ = shared_providers.request_binding(db, UUID(identity["workspace_id"]), UUID(private["id"]))
+    binding, _ = shared_providers.request_binding(db, UUID(identity["user"]["id"]), UUID(private["id"]))
     assert binding.site_provider_id == UUID(private["id"])
     db.commit()
-    switch(member, registered["workspace_id"])
-    assert private["id"] in member.get("/models/available").text
+    saved = owner.put(f"/site/admin/users/{registered['user']['id']}/model-policy",
+        json={"available_models": [public["id"]], "default_model": public["id"],
+              "billing_multiplier_percent": 100, "version": 0})
+    assert saved.status_code == 200
+    assert [row["id"] for row in member.get("/models/available").json()["providers"]] == [public["id"]]
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        shared_providers.request_binding(db, UUID(registered["user"]["id"]), UUID(private["id"]))
+    assert exc.value.status_code == 403
 
 
 def test_missing_id_invalid_model_and_disabled_never_charge(accounts, monkeypatch):

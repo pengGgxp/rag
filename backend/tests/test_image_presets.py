@@ -101,7 +101,7 @@ def test_gemini_wire_resolution(monkeypatch, identifier, quality, omit):
 
 def test_save_conflict_task_defaults_and_price_snapshot(accounts, monkeypatch):
     from test_image_tasks import configure
-    from app.models import SiteModelProvider, ImageTask, CreditAccount
+    from app.models import SiteModelProvider, ImageTask, UserCreditAccount
     from sqlalchemy import select
     from app import image_tasks, llm_providers
     client, db, identity = configure(accounts, monkeypatch)
@@ -116,7 +116,7 @@ def test_save_conflict_task_defaults_and_price_snapshot(accounts, monkeypatch):
     assert saved.status_code == 200, saved.text
     assert saved.json()["image_config"]["preset_id"] == "gemini-2.5-flash-image"
     assert client.put(path, json=payload).status_code == 409
-    balance = db.get(CreditAccount, UUID(identity["workspace_id"])).balance
+    balance = db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance
     result = client.post("/image-tasks", json={"prompt": "synthetic", "idempotency_key": str(uuid4())})
     assert result.status_code == 202, result.text
     task = db.get(ImageTask, UUID(result.json()["task_id"]))
@@ -130,4 +130,4 @@ def test_save_conflict_task_defaults_and_price_snapshot(accounts, monkeypatch):
     assert Decimal(task.snapshot["rate"]) == 6
     assert client.post("/image-tasks", json={"prompt": "invalid", "size": "1024x1024", "idempotency_key": str(uuid4())}).status_code == 422
     db.expire_all()
-    assert db.get(CreditAccount, UUID(identity["workspace_id"])).balance == balance - 6
+    assert db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance == balance - 6

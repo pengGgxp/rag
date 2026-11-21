@@ -16,10 +16,11 @@ from test_auth_postgres import auth_postgres
 def test_one_active_preview_and_release(auth_postgres):
     engine = auth_postgres
     with Session(engine) as db:
-        user, workspace_id = auth.create_user(db, f"preview-{uuid4().hex}@example.com", "Preview test")
-        conversation = Conversation(workspace_id=workspace_id, owner_id=user.id)
+        user = auth.create_user(db, f"preview-{uuid4().hex}@example.com", "Preview test")
+        account_id = user.id
+        conversation = Conversation(account_id=account_id, owner_id=user.id)
         db.add(conversation); db.flush()
-        computer = CloudComputerSession(workspace_id=workspace_id, user_id=user.id, conversation_id=conversation.id,
+        computer = CloudComputerSession(account_id=account_id, user_id=user.id, conversation_id=conversation.id,
             session_hash="synthetic", snapshot={}, encrypted_api_key="unused", status="ready")
         db.add(computer); db.flush()
         commands = [CloudComputerCommand(session_id=computer.id, request_id=uuid4(), digest=uuid4().hex, payload={}) for _ in range(2)]

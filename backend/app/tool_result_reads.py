@@ -40,7 +40,7 @@ def authorize(db, access, row, message, data):
         except (ValueError, IndexError, TypeError):
             raise HTTPException(403, "历史结果缺少可核对的授权信息")
         server = db.get(MCPServer, server_id, populate_existing=True)
-        if (not server or server.owner_id != access.user_id or server.workspace_id != access.workspace_id
+        if (not server or server.owner_id != access.user_id or server.account_id != access.user_id
                 or not server.enabled or extension.get("version") != server.authorization_version):
             raise HTTPException(403, "连接或授权已变化，不能读取此结果")
         from .mcp_client import tool_digest
@@ -52,7 +52,7 @@ def authorize(db, access, row, message, data):
         from .question_workbench import require_access
         from .models import QuestionWorkbenchGrant
         require_access(db, access)
-        grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.workspace_id), populate_existing=True)
+        grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.user_id), populate_existing=True)
         if not grant or not grant.enabled or grant.version != extension.get("version"):
             raise HTTPException(403, "题目工作台授权已变化，不能读取此结果")
     # Reading serialized JSON is also reading its embedded document text.

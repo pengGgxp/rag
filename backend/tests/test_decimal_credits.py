@@ -8,8 +8,8 @@ from sqlalchemy import select
 from app import model_billing, workspace_billing
 from app.credit_amounts import allocate, amount
 from app.credits import authorization_hold, recharge, settle_model_usage, settle_usage
-from app.models import CreditAccount, ModelBillingSettings, ModelUsageRequest, SiteModelProvider, UsageEvent, Workspace
-from test_workspace_billing import shared_billing, binding, model
+from app.models import UserCreditAccount, ModelBillingSettings, ModelUsageRequest, SiteModelProvider, UsageEvent, UserModelPolicy
+from test_workspace_billing import shared_billing, binding, model, set_user_multiplier
 
 
 @pytest.mark.parametrize("exact,expected", [
@@ -47,8 +47,8 @@ def test_live_reported_example_and_replay_keep_four_decimal_balance(shared_billi
     assert settle_model_usage(db, workspace, user, request, usage) == Decimal("1.4210")
     db.commit()
     assert settle_model_usage(db, workspace, user, request, usage) == Decimal("1.4210")
-    assert db.get(CreditAccount, workspace).balance == Decimal("998.5790")
-    assert db.get(CreditAccount, workspace).lifetime_spent == Decimal("1.4210")
+    assert db.get(UserCreditAccount, workspace).balance == Decimal("998.5790")
+    assert db.get(UserCreditAccount, workspace).lifetime_spent == Decimal("1.4210")
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request)).all()
     assert [e.credits for e in sorted(events, key=lambda e: e.capability)] == [Decimal("1.2422"), Decimal("0.1788")]
     read = client.get("/usage").json()
@@ -56,7 +56,7 @@ def test_live_reported_example_and_replay_keep_four_decimal_balance(shared_billi
     assert not db.get(ModelBillingSettings, 1).enabled
     recharge(db, workspace, user, 10, uuid4(), 100)
     db.commit()
-    assert db.get(CreditAccount, workspace).balance == Decimal("1008.5790")
+    assert db.get(UserCreditAccount, workspace).balance == Decimal("1008.5790")
 
 
 @pytest.mark.parametrize("capability,units,expected", [
@@ -79,7 +79,7 @@ def test_document_actual_units_and_price_snapshot(shared_billing, capability, un
 
 def test_fractional_pending_is_not_truncated_and_is_paid_once(shared_billing):
     client, db, workspace, user, _ = shared_billing
-    account = db.get(CreditAccount, workspace)
+    account = db.get(UserCreditAccount, workspace)
     account.balance = 1
     db.commit()
     request = uuid4()
@@ -112,12 +112,12 @@ def test_fractional_price_form_and_multiplier(shared_billing):
     policies[0]["credits_per_unit"] = 0.12345
     assert client.put(f"/site/admin/llm-providers/{identifier}/pricing",
         json={"version": result.json()["version"], "policies": policies}).status_code == 422
-    assert db.get(Workspace, workspace).billing_multiplier_percent == 100
+    assert workspace_billing.context_for_workspace(db, workspace)["multiplier_percent"] == 100
 
 
 def test_document_can_spend_exact_balance_after_hold_refund(shared_billing):
     _, db, workspace, user, _ = shared_billing
-    account = db.get(CreditAccount, workspace)
+    account = db.get(UserCreditAccount, workspace)
     account.balance = Decimal("2.5000")
     request = uuid4()
     authorization_hold(db, workspace, user, request, 1)
@@ -138,7 +138,7 @@ def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(share
     provider.prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000000,
         "credits_per_unit": rate, "enabled": True} for key, rate in (
         ("llm_input_tokens", 1402), ("llm_cached_input_tokens", 51), ("llm_output_tokens", 3804))}
-    db.get(Workspace, workspace).billing_multiplier_percent = 125
+    set_user_multiplier(db, workspace, 125, binding(db, workspace).id)
     db.commit()
     request = uuid4()
     model_billing.start_request(db, workspace, user, request, binding(db, workspace).id, 1)
@@ -150,7 +150,7 @@ def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(share
             "completion_tokens_details": {"reasoning_tokens": 10}}).measured()
         model_billing.finish_call(db, request, call, usage, "completed")
         provider.prices = {key: {**price, "credits_per_unit": 99999} for key, price in provider.prices.items()}
-        db.get(Workspace, workspace).billing_multiplier_percent = 10000
+        db.get(UserModelPolicy, workspace).billing_multiplier_percent = 10000
         db.commit()
     exact = Fraction(2 * ((1000-cached)*1402 + cached*51 + 17*3804), 1000000) * Fraction(125, 100)
     assert model_billing.finalize_request(db, request, "cancelled") == amount(exact)
@@ -160,7 +160,7 @@ def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(share
     assert len(events) == 6 and sum(row.credits for row in events) == amount(exact)
     assert sum(row.units for row in events if row.capability == "llm_input_tokens") == 2*(1000-cached)
     assert sum(row.units for row in events if row.capability == "llm_cached_input_tokens") == 2*cached
-    assert db.get(CreditAccount, workspace).balance == 1000-amount(exact)
+    assert db.get(UserCreditAccount, workspace).balance == 1000-amount(exact)
     assert len(db.scalars(select(CreditLedgerEntry).where(
-        CreditLedgerEntry.workspace_id == workspace, CreditLedgerEntry.kind == "usage_settlement")).all()) == 1
+        CreditLedgerEntry.account_id == workspace, CreditLedgerEntry.kind == "usage_settlement")).all()) == 1
     assert len(db.scalars(select(ModelCallUsage).where(ModelCallUsage.request_id == request)).all()) == 2

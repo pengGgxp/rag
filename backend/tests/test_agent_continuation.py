@@ -207,7 +207,7 @@ def test_catalog_changes_keep_existing_tool_results_images_and_checkpoint(client
     original_window = state.window_id
     # A digest left by v0.1.18 must not invalidate a healthy encrypted window.
     state.scope_digest = "old-catalog-digest"
-    library = KnowledgeBase(workspace_id=manager.access.workspace_id, name="普通新增")
+    library = KnowledgeBase(account_id=manager.access.user_id, owner_id=manager.access.user_id, name="普通新增")
     db.add(library); db.flush()
     document = Document(knowledge_base_id=library.id, filename="new.txt", content_type="text/plain",
         size_bytes=1, object_key="fixture-only", content_hash="a" * 64, status=DocumentStatus.PROCESSING)
@@ -231,9 +231,9 @@ def test_unrelated_pending_file_operation_does_not_gate_observation_or_new_file(
     from app.models import WorkspaceFileOperation
     from fastapi import HTTPException
     db, manager = fresh_manager(client)
-    key = shared.object_key(manager.access.workspace_id, "conflicted.txt")
+    key = shared.object_key(manager.access.user_id, "conflicted.txt")
     resource_store[0][key] = b"newer external bytes"
-    db.add(WorkspaceFileOperation(workspace_id=manager.access.workspace_id, user_id=manager.access.user_id,
+    db.add(WorkspaceFileOperation(account_id=manager.access.user_id, user_id=manager.access.user_id,
         request_id="old-op", fingerprint="a" * 64, state="recovery_required", steps=[{"key": key}], result={}))
     db.commit()
     monkeypatch.setattr(ops, "restore", lambda *_: pytest.fail("observation invoked recovery"))

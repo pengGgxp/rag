@@ -16,6 +16,17 @@ from .storage import download_range_fileobj
 logger = logging.getLogger(__name__)
 
 
+def purge_account_cache(user_ids):
+    root = Path(get_settings().resource_cache_dir)
+    if not root.is_dir():
+        return
+    with FileLock(str(root / "eviction.lock"), timeout=120):
+        # Legacy cache names are content-derived hashes with no ownership index.
+        for pattern in ("*.bin", "*.sha256", "*.part"):
+            for item in root.glob(pattern):
+                item.unlink(missing_ok=True)
+
+
 def prune_cache(extra=0):
     config = get_settings()
     root = Path(config.resource_cache_dir)
@@ -55,14 +66,14 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
     from .workspace_files import owned
     if access.session_hash:
         access = access.revalidate(db)
-    owned(db, access, access.workspace_id, resource.id)
+    owned(db, access, access.user_id, resource.id)
     config = get_settings()
     root = Path(config.resource_cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     length = min(version.size_bytes - offset, limit if limit is not None else version.size_bytes)
     if offset < 0 or length < 0:
         raise HTTPException(422, "读取范围无效")
-    identity = f"{access.workspace_id}:{resource.id}:{resource.live_etag or version.content_hash}"
+    identity = f"{access.user_id}:{resource.id}:{resource.live_etag or version.content_hash}"
     key = hashlib.sha256(f"{identity}:{offset}:{length}".encode()).hexdigest()
     full_key = hashlib.sha256(f"{identity}:0:{version.size_bytes}".encode()).hexdigest()
     # A bounded lock stripe serializes all ranges of a resource version across API processes.
@@ -70,7 +81,7 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
     with FileLock(str(root / f"{stripe}.lock"), timeout=120):
         if access.session_hash: access = access.revalidate(db)
         db.refresh(resource)
-        owned(db, access, access.workspace_id, resource.id)
+        owned(db, access, access.user_id, resource.id)
         db.refresh(version)
         if version.file_id != resource.id or version.deleted_at or version.available is False:
             raise HTTPException(404, "资源版本已删除或不可用")
@@ -86,7 +97,7 @@ def read_bytes(db, access, resource, version, *, offset=0, limit=None):
         data = bytearray()
         try:
             if length:
-                with download_range_fileobj(version.object_key, offset, offset + length - 1) as source:
+                with download_range_fileobj(version.storage_key, offset, offset + length - 1) as source:
                     while len(data) < length:
                         block = source.read(min(1024 * 1024, length - len(data)))
                         if not block:

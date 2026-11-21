@@ -52,7 +52,7 @@ def test_file_tool_dispatch_never_downloads_body(accounts, resource_store, monke
     monkeypatch.setattr(cloud, "execute", execute)
     result = workspace_files.execute_tool("read_file", {"id": item["id"],
         "computer_id": "00000000-0000-4000-a000-000000000112"}, db, access,
-        access.workspace_id, uuid4(), uuid4())
+        access.user_id, uuid4(), uuid4())
     assert result["content"] == "resource facts"
     assert result["file_path"] == "/home/user/workspace/" + item["path"]
     assert result["files"][0]["id"] == item["id"]
@@ -91,12 +91,12 @@ def test_file_delete_invalidates_resource(accounts, resource_store, monkeypatch)
     access = access_for(client, db)
     def execute(db, actor, conversation, request, args, check):
         from app.shared_resources import object_key
-        resource_store[0].pop(object_key(actor.workspace_id, item["path"]))
+        resource_store[0].pop(object_key(actor.user_id, item["path"]))
         return {"status": "completed", "file_result": {"value": {"deleted": True}},
             "computer_id": "computer", "cloud_computer": {"id": "computer"}, "command_id": "command"}
     monkeypatch.setattr(cloud, "execute", execute)
     result = workspace_files.execute_tool("delete_file", {"path": item["path"]}, db, access,
-        access.workspace_id, uuid4(), uuid4())
+        access.user_id, uuid4(), uuid4())
     assert result["deleted"] is True
     assert result["files"][0]["id"] == item["id"]
     assert result["files"][0]["path"] == item["path"]

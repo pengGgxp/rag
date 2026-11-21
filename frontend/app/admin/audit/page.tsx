@@ -50,6 +50,9 @@ const actions: Record<string, string> = {
   "storage.tested": "测试文件存储",
   "storage.migrated": "迁移原始文件",
   "site.settings_updated": "更新站点设置",
+  "user.credits_adjusted": "调整账号积分",
+  "user.model_policy_changed": "更新账号模型策略",
+  "storage.granted": "增加存储额度",
   "workspace.credits_adjusted": "调整工作区积分",
 };
 export default function SiteAuditPage() {

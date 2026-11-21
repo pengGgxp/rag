@@ -51,9 +51,9 @@ def check_grant(identifier, token, kind, exchange=False):
         if not computer:
             raise HTTPException(404, "预览不存在")
         login = db.get(LoginSession, grant.session_hash)
-        if not login or login.user_id != computer.user_id or login.workspace_id != computer.workspace_id:
-            raise HTTPException(403, "工作区已切换，请从对应会话重新打开预览")
-        access = Access(computer.user_id, computer.workspace_id, "editor", grant.session_hash).revalidate(db)
+        if not login or login.user_id != computer.user_id:
+            raise HTTPException(403, "预览访问已失效，请重新打开预览")
+        access = Access(computer.user_id, grant.session_hash).revalidate(db)
         row, computer = owned(db, access, identifier, live=True)
         if not row.upstream_host or not row.encrypted_traffic_token:
             raise HTTPException(503, "预览尚未就绪，请稍后刷新")

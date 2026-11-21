@@ -9,11 +9,11 @@ from uuid import UUID, uuid4
 
 import pytest
 import httpx
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from httpx_sse import EventSource
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 from joserfc import jwt
 from joserfc.jwk import RSAKey
 from pydantic import SecretStr
@@ -22,8 +22,8 @@ from app import auth, conversations as chat, main
 from app.db import Base
 from app.llm import ToolResponse
 from app.models import (
-    AuthToken, ChatMessage, Conversation, ConversationLibrary, ExternalIdentity, IngestionJob,
-    KnowledgeBase, LoginSession, Membership, QueryTrace, User, Workspace, LEGACY_WORKSPACE_ID,
+    AuthToken, Conversation, ExternalIdentity, IngestionJob,
+    KnowledgeBase, LoginSession, User, UserCreditAccount,
 )
 from test_retrieval import add_document
 
@@ -35,8 +35,6 @@ def accounts(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'accounts.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     db = Session(engine)
-    db.add(Workspace(id=LEGACY_WORKSPACE_ID, name="Existing workspace"))
-    db.commit()
     main.app.dependency_overrides[main.get_db] = lambda: db
     monkeypatch.setattr(auth, "rate_limit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
@@ -104,6 +102,21 @@ def test_registration_sessions_csrf_logout_and_expiry(accounts):
     assert owner.get("/auth/me").status_code == 401
 
 
+def test_cannot_revalidate_a_session_for_a_different_user(accounts):
+    (owner, other, _), db = accounts
+    first = register(owner)
+    register(other, "other-admin@example.com")
+    private_id = library(owner)
+    assert other.get("/knowledge-bases").json() == []
+    assert other.get(f"/knowledge-bases/{private_id}/documents").status_code == 404
+
+    other_session = db.get(LoginSession, auth.digest(other.cookies.get(auth.COOKIE)))
+    assert "workspace_id" not in LoginSession.__table__.columns
+    with pytest.raises(HTTPException) as exc:
+        auth.Access(UUID(first["user"]["id"]), other_session.token_hash).revalidate(db)
+    assert exc.value.status_code == 403
+
+
 def test_cross_workspace_id_guesses_do_not_expose_any_resource(accounts):
     (owner, outsider, _), db = accounts
     register(owner)
@@ -133,64 +146,19 @@ def test_cross_workspace_id_guesses_do_not_expose_any_resource(accounts):
     assert outsider.get("/conversations").json()["items"] == []
 
 
-def test_roles_library_grants_and_history_revalidate_after_revocation(accounts):
-    (owner, viewer, _), db = accounts
-    a = register(owner)
-    b = register(viewer, "viewer@example.com", "Viewer")
+def test_workspace_collaboration_routes_are_removed(accounts):
+    (owner, other, _), _db = accounts
+    register(owner)
+    other_identity = register(other, "other@example.com", "Other")
     id = library(owner)
-    doc = add_document(db, db.get(KnowledgeBase, id), "needle")
-    job = IngestionJob(document_id=doc.id)
-    db.add(job)
-    db.commit()
-    share(owner, "viewer@example.com")
-    switch(viewer, a["workspace_id"])
-    assert viewer.get("/knowledge-bases").json()[0]["id"] == str(id)
-    assert viewer.post("/knowledge-bases", json={"name": "Denied"}).status_code == 403
-    for suffix in ("", "/restore", "/reindex"):
-        response = viewer.delete(f"/documents/{doc.id}") if not suffix else viewer.post(f"/documents/{doc.id}{suffix}")
-        assert response.status_code == 403
-    assert viewer.get("/auth/members").status_code == 403
-    conversation = viewer.post("/conversations", json={}).json()
-    conv = conversation["id"]
-    db.add(ConversationLibrary(conversation_id=UUID(conv), knowledge_base_id=id))
-    db.add(ChatMessage(conversation_id=UUID(conv), sequence=0, role="assistant", status="completed",
-        content="旧结论 [old-chunk]", citations=[{
-            "chunk_id": "old-chunk", "filename": doc.filename, "text": "历史引用原文",
-            "char_start": 0, "char_end": 6,
-            "knowledge_base_name": "retrieval test",
-        }]))
-    db.commit()
-    assert owner.get(f"/conversations/{conv}").status_code == 404  # admin cannot read private chats
-    trace = viewer.post(f"/knowledge-bases/{id}/retrieval", json={"query": "needle"}).json()["trace"]
-    assert owner.get(f"/traces/{trace['id']}").status_code == 404
-    assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 200
-    assert viewer.get("/knowledge-bases").json() == []
-    old_history = viewer.get(f"/conversations/{conv}")
-    assert old_history.status_code == 200
-    assert old_history.json()["messages"][0]["citations"][0]["text"] == "历史引用原文"
-    assert "历史引用原文" in viewer.get(f"/conversations/{conv}/export").text
-    assert viewer.get(f"/traces/{trace['id']}").status_code == 404
-    assert viewer.get(f"/jobs/{job.id}").status_code == 404
-    assert any(item["id"] == conv for item in viewer.get("/conversations").json()["items"])
-    assert viewer.get("/conversations/knowledge-catalog").json() == {
-        "knowledge_bases": [], "documents": [], "resources": [],
-    }
-    denied_mention = viewer.post(f"/conversations/{conv}/messages", json={
-        "provider_id": str(uuid4()), "request_id": str(uuid4()), "query": "总结",
-        "document_ids": [str(doc.id)],
-    })
-    assert denied_mention.status_code == 409
-    assert owner.put(f"/knowledge-bases/{id}/permissions", json={
-        "restricted": True, "user_ids": [b["user"]["id"]],
-    }).status_code == 200
-    assert viewer.get(f"/conversations/{conv}").status_code == 200
-    assert owner.delete(f"/auth/members/{b['user']['id']}").status_code == 204
-    assert viewer.get(f"/conversations/{conv}/export").status_code == 403
-    assert viewer.get("/knowledge-bases").status_code == 403
-    switch(viewer, b["workspace_id"])
-    assert viewer.get("/knowledge-bases").json() == []
-    assert owner.delete(f"/auth/members/{a['user']['id']}").status_code == 409
-    assert owner.put("/auth/members", json={"email": "owner@example.com", "role": "viewer"}).status_code == 409
+    assert other.post("/auth/workspace", json={"workspace_id": str(uuid4())}).status_code == 404
+    assert owner.get("/auth/members").status_code == 404
+    for role in ("admin", "editor", "viewer"):
+        assert owner.put("/auth/members", json={"email": "other@example.com", "role": role}).status_code == 404
+    assert owner.delete(f"/auth/members/{other_identity['user']['id']}").status_code == 404
+    assert owner.get(f"/knowledge-bases/{id}/permissions").status_code == 404
+    assert owner.put(f"/knowledge-bases/{id}/permissions", json={"restricted": True}).status_code == 404
+    assert other.get("/knowledge-bases").json() == []
 
 
 def test_reset_is_single_use_and_revokes_all_sessions(accounts, monkeypatch):
@@ -215,15 +183,9 @@ def test_reset_is_single_use_and_revokes_all_sessions(accounts, monkeypatch):
     assert db.scalars(select(LoginSession)).all() == []
 
 
-def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(accounts):
+def test_bootstrap_creates_first_account_from_a_single_use_token(accounts):
     (owner, outsider, _), db = accounts
     assert owner.get("/auth/options").json()["setup_available"] is False
-    kb = KnowledgeBase(name="Legacy private data")
-    db.add(kb)
-    db.flush()
-    conversation = Conversation(title="Legacy chat")
-    db.add(conversation)
-    db.commit()
     raw = "bootstrap-test-secret-" + str(uuid4())
     db.add(AuthToken(token_hash=auth.digest(raw), purpose="bootstrap", expires_at=auth.now()+timedelta(hours=1)))
     db.commit()
@@ -233,19 +195,23 @@ def test_bootstrap_preserves_legacy_data_and_cannot_be_claimed_by_signup(account
     })
     assert response.status_code == 200, response.text
     owner.headers["X-CSRF-Token"] = response.json()["csrf_token"]
-    assert owner.get("/knowledge-bases").json()[0]["name"] == "Legacy private data"
-    assert owner.get("/conversations").json()["items"][0]["title"] == "Legacy chat"
+    assert db.get(UserCreditAccount, UUID(response.json()["user"]["id"])).balance > 0
+    assert owner.get("/knowledge-bases").json() == []
+    assert owner.get("/conversations").json()["items"] == []
     assert owner.get("/auth/options").json()["setup_available"] is False
     assert db.get(AuthToken, auth.digest(raw)) is None
     register(outsider, "other@example.com", "Other")
     assert outsider.get("/knowledge-bases").json() == []
 
 
-def test_first_registration_claims_legacy_workspace(accounts):
+def test_first_registration_creates_personal_account(accounts):
     (owner, _, _), db = accounts
     result = register(owner)
-    assert result["workspaces"][0]["id"] == str(LEGACY_WORKSPACE_ID)
-    assert result["workspaces"][0]["role"] == "admin"
+    assert "workspaces" not in result
+    assert "workspace_id" not in result
+    assert "workspace_id" not in owner.get("/auth/me").json()
+    assert db.get(UserCreditAccount, UUID(result["user"]["id"])).balance > 0
+    assert not result["user"]["is_site_admin"]
     assert owner.get("/auth/options").json()["first_run"] is False
 
 
@@ -263,30 +229,28 @@ def test_oauth_error_state_cannot_create_session_or_link_identity(accounts, monk
 
 
 def test_revocation_stops_stream_before_late_delta(accounts, monkeypatch):
-    (owner, viewer, _), db = accounts
+    (owner, _, _), db = accounts
     a = register(owner)
     from auth_helpers import configured_model
-    configured_model(db, UUID(a["workspace_id"]), monkeypatch)
-    b = register(viewer, "viewer@example.com", "Viewer")
+    configured_model(db, UUID(a["user"]["id"]), monkeypatch)
     id = library(owner)
     add_document(db, db.get(KnowledgeBase, id), "needle")
-    share(owner, "viewer@example.com")
-    switch(viewer, a["workspace_id"])
-    conv = viewer.post("/conversations", json={}).json()["id"]
+    conv = owner.post("/conversations", json={}).json()["id"]
+    session_hash = auth.digest(owner.cookies.get(auth.COOKIE))
     class RevokingProvider:
         def complete_with_tools(self, _messages, _tools, *, tool_choice):
             with Session(db.get_bind()) as session:
-                session.delete(session.get(Membership, (UUID(a["workspace_id"]), UUID(b["user"]["id"]))))
+                session.delete(session.get(LoginSession, session_hash))
                 session.commit()
             return ToolResponse(content="SECRET AFTER REVOKE", tool_calls=[])
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: RevokingProvider())
     from auth_helpers import model_id
-    response = viewer.post(f"/conversations/{conv}/messages", json={"provider_id": model_id(viewer), "query": "needle", "request_id": str(uuid4())})
+    response = owner.post(f"/conversations/{conv}/messages", json={"provider_id": model_id(owner), "query": "needle", "request_id": str(uuid4())})
     assert response.status_code == 200
     assert "SECRET AFTER REVOKE" not in response.text
     from auth_helpers import generation_response
     revoked = generation_response(response)
-    assert revoked.status_code == 403
+    assert revoked.status_code in (401, 403)
     assert "SECRET AFTER REVOKE" not in revoked.text
     db.expire_all()
     assert db.get(Conversation, UUID(conv)).active_request_id is None

@@ -179,13 +179,16 @@ def test_failed_stream_keeps_encrypted_thinking_and_confirmed_usage(accounts, mo
     monkeypatch.setattr(mcp_client, "get_settings", lambda: SimpleNamespace(mcp_credential_key=SecretStr(key)))
     db.get(ModelBillingSettings, 1).enabled = metered
     db.commit()
-    @contextmanager
-    def streaming(*_args, **_kwargs):
-        yield httpx.Response(200, headers={"content-type": "text/event-stream"}, content=(
+
+    def streaming(_request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=(
             'data: {"choices":[{"delta":{"reasoning_content":"partially returned thinking"}}]}\n\n'
             'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
             'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20,"completion_tokens_details":{"reasoning_tokens":15}}}\n\n'))
-    monkeypatch.setattr(httpx, "stream", streaming)
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs:
+        async_client(transport=httpx.MockTransport(streaming), **kwargs))
     conversation = client.post("/conversations", json={}).json()["id"]
     events, _ = send(client, conversation, item["id"])
     final = events[-1].json()

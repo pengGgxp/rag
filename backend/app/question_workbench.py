@@ -18,7 +18,7 @@ from .auth import Access, aware, digest, get_access, now
 from .audit_log import record_audit
 from .config import get_settings
 from .db import get_db
-from .models import AuthenticationFlow, Chunk, Document, DocumentStatus, LoginSession, Membership, QuestionWorkbenchGrant, User, Workspace
+from .models import AuthenticationFlow, Chunk, Document, DocumentStatus, QuestionWorkbenchGrant, User
 
 router = APIRouter(prefix="/question-workbench", tags=["question-workbench"])
 
@@ -42,25 +42,29 @@ def require_access(db, access):
     return user
 
 
+def workbench_namespace(user):
+    # The separate workbench service stores historical rows under this namespace.
+    return user.legacy_resource_prefix.split("/")[1] if user.legacy_resource_prefix else str(user.id)
+
+
 def identity_for(db, access):
     user = require_access(db, access)
-    return {"user_id": str(access.user_id), "workspace_id": str(access.workspace_id), "session_hash": access.session_hash,
+    return {"user_id": str(access.user_id), "workspace_id": workbench_namespace(user), "session_hash": access.session_hash,
             "access_version": user.question_workbench_version,
-            "name": db.get(User, access.user_id).name, "workspace_name": db.get(Workspace, access.workspace_id).name}
+            "name": user.name}
 
 
 def validate_identity(db, value, tools=False):
     try:
-        user_id, workspace_id = UUID(value["user_id"]), UUID(value["workspace_id"])
-        access = Access(user_id, workspace_id, "", value["session_hash"]).revalidate(db)
+        user_id = UUID(value["user_id"])
+        access = Access(user_id, value["session_hash"]).revalidate(db)
         user = require_access(db, access)
         if user.question_workbench_version != value.get("access_version"):
             raise ValueError()
-        session = db.get(LoginSession, value["session_hash"], populate_existing=True)
-        if session.user_id != user_id:
+        if workbench_namespace(user) != value["workspace_id"]:
             raise ValueError()
         if tools:
-            grant = db.get(QuestionWorkbenchGrant, (user_id, workspace_id), populate_existing=True)
+            grant = db.get(QuestionWorkbenchGrant, (user_id, user_id), populate_existing=True)
             if not grant or not grant.enabled or grant.version != value.get("grant_version"):
                 raise ValueError()
         return access
@@ -95,7 +99,7 @@ class GrantWrite(Strict):
 def status(db=Depends(get_db), access=Depends(get_access)):
     user = db.get(User, access.user_id, populate_existing=True)
     available = configured() and user.question_workbench_enabled
-    grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.workspace_id))
+    grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.user_id))
     return {"available": available, "enabled": bool(available and grant and grant.enabled), "version": grant.version if grant else 0,
             "url": get_settings().question_workbench_url if available else None}
 
@@ -107,18 +111,17 @@ def authorize_tools(payload: GrantWrite, request: Request, db=Depends(get_db), a
     require_access(db, access)
     if not configured():
         raise HTTPException(409, "题目工作台暂不可用")
-    db.scalar(select(Workspace).where(Workspace.id == access.workspace_id).with_for_update())
     row = db.scalar(select(QuestionWorkbenchGrant).where(QuestionWorkbenchGrant.user_id == access.user_id,
-        QuestionWorkbenchGrant.workspace_id == access.workspace_id).with_for_update())
+        QuestionWorkbenchGrant.account_id == access.user_id).with_for_update())
     if (row.version if row else 0) != payload.version:
         raise HTTPException(409, "授权已更新，请重新打开后重试")
     if payload.enabled and not payload.acknowledge:
         raise HTTPException(422, "请确认允许读取、新建和修改本人的题目与试卷")
     if row is None:
-        row = QuestionWorkbenchGrant(user_id=access.user_id, workspace_id=access.workspace_id, enabled=False, version=0)
+        row = QuestionWorkbenchGrant(user_id=access.user_id, account_id=access.user_id, enabled=False, version=0)
         db.add(row)
     row.enabled, row.version = payload.enabled, row.version + 1
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id, action="question_workbench.grant_changed",
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id, action="question_workbench.grant_changed",
         resource_type="question_workbench", resource_id=access.user_id, metadata={"enabled": row.enabled, "version": row.version}, request=request)
     db.commit()
     return status(db, access)
@@ -217,13 +220,13 @@ class Runtime:
         if selected and configured():
             with factory() as db:
                 user = db.get(User, access.user_id, populate_existing=True)
-                row = db.get(QuestionWorkbenchGrant, (access.user_id, access.workspace_id))
+                row = db.get(QuestionWorkbenchGrant, (access.user_id, access.user_id))
                 if user and user.question_workbench_enabled and row and row.enabled:
                     self.version = row.version
 
     def check(self, db):
         require_access(db, self.access)
-        row = db.get(QuestionWorkbenchGrant, (self.access.user_id, self.access.workspace_id), populate_existing=True)
+        row = db.get(QuestionWorkbenchGrant, (self.access.user_id, self.access.user_id), populate_existing=True)
         if not self.version or not row or not row.enabled or row.version != self.version:
             raise HTTPException(403, "题目工作台授权已变更，请重新选择后继续")
 

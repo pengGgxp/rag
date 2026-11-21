@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   ArrowLeft,
-  Building2,
   Coins,
   CreditCard,
   Cpu,
@@ -27,12 +26,11 @@ import { AdminChangesBoundary } from "./admin-changes";
 const navigation = [
   { href: "/admin", label: "概览", icon: LayoutDashboard },
   { href: "/admin/users", label: "用户", icon: UsersRound },
-  { href: "/admin/workspaces", label: "工作区", icon: Building2 },
   { href: "/admin/models", label: "模型管理", icon: Cpu },
   { href: "/admin/search", label: "联网搜索", icon: Globe },
   { href: "/admin/skills", label: "Skill 管理", icon: FileText },
   { href: "/admin/feedback", label: "意见反馈", icon: MessageSquare },
-  { href: "/admin/pricing", label: "计费管理", icon: Coins },
+  { href: "/admin/pricing/template", label: "平台价格", icon: Coins },
   { href: "/admin/payments", label: "支付设置", icon: CreditCard },
   { href: "/admin/storage", label: "文件存储", icon: HardDrive },
   { href: "/admin/cloud-computer", label: "云电脑", icon: Monitor },
@@ -44,7 +42,6 @@ const navigation = [
 export function AdminShell({ children }: { children: ReactNode }) {
   const { session } = useAuth();
   const pathname = usePathname();
-  const workspaceId = useSearchParams().get("workspace");
   const navigationRef = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navigationRef.current;
@@ -92,7 +89,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               <Link
                 key={href}
                 className="navigation-item"
-                href={workspaceId && href === "/admin/pricing" ? `${href}?workspace=${encodeURIComponent(workspaceId)}` : href}
+                href={href}
                 aria-current={active ? "page" : undefined}
               >
                 <Icon size={18} />

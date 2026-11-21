@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from app import auth, document_uploads as uploads, site_auth, storage_settings, tasks
 from app.cos_storage import CosStorage
 from app.models import (
-    Chunk, CreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
-    IngestionJob, JobState, Membership, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
+    Chunk, UserCreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
+    IngestionJob, JobState, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
 )
 from test_auth import library, register, share, switch
 
@@ -131,7 +131,9 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     assert len(processed) == 1 and processed[0][0] == (str(db.scalar(
         select(IngestionJob.id).where(IngestionJob.document_id == document.id)
     )),)
-    assert owner.get(f"/uploads/{row.id}").json()["document_status"] == "queued"
+    status = owner.get(f"/uploads/{row.id}").json()
+    assert status["document_status"] == "queued"
+    assert status["job_id"] == processed[0][0][0]
     assert db.scalar(select(func.count()).select_from(IngestionJob)) == 1
     assert owner.post(f"/uploads/{row.id}/complete").json()["document_id"] == str(document.id)
 
@@ -142,7 +144,7 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
     from app import main
 
     owner, outsider, db, identity, kb, storage, _, _ = direct
-    db.add(UsagePolicy(workspace_id=UUID(identity["workspace_id"]), capability="embedding_tokens",
+    db.add(UsagePolicy(account_id=UUID(identity["user"]["id"]), capability="embedding_tokens",
                        unit="tokens", unit_size=1000, credits_per_unit=1))
     db.commit()
     word = WordDocument()
@@ -181,7 +183,9 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
     monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider",
                         lambda: SimpleNamespace(status=SimpleNamespace(configured=False, provider=None, model=None)))
     tasks.embed_document.run(*vectors[0])
-    assert owner.get(f"/uploads/{identifier}").json()["document_status"] == "ready"
+    status = owner.get(f"/uploads/{identifier}").json()
+    assert status["document_status"] == "ready"
+    assert status["job_id"] == vectors[0][1]
 
     response = owner.post(f"/knowledge-bases/{kb}/retrieval", json={"query": "orchid"})
     assert response.status_code == 200, response.text
@@ -203,7 +207,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     from app.upstream_retries import RetryBudget
 
     owner, outsider, db, identity, kb, storage, _, _ = direct
-    workspace_id = UUID(identity["workspace_id"])
+    account_id = UUID(identity["user"]["id"])
     payload = b"retry document"
     row = send(owner, db, storage, create(owner, kb, payload), payload)
     upload_id = str(row.id)
@@ -221,11 +225,11 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         ordinal=i, text=str(i), token_count=10, char_start=i, char_end=i + 1,
         content_hash=str(i),
     ) for i in range(21))
-    db.add(UsagePolicy(workspace_id=workspace_id, capability="embedding_tokens",
+    db.add(UsagePolicy(account_id=account_id, capability="embedding_tokens",
                        unit="tokens", unit_size=1000, credits_per_unit=1))
     db.commit()
     job_id = job.id
-    balance = db.get(CreditAccount, workspace_id).balance
+    balance = db.get(UserCreditAccount, account_id).balance
 
     settings = Settings(embedding_base_url="https://embedding.invalid", embedding_api_key="test",
                         embedding_model="test-model")
@@ -293,11 +297,12 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     assert not upload.get("retry_progress")
     if outcome == "exhaust":
         assert upload["failure"]["message"] == "处理服务暂时繁忙，请稍后重试"
+        assert upload["job_id"] == str(job_id)
         listed = owner.get(f"/knowledge-bases/{kb}/documents").json()[0]
         assert listed["job"]["state"] == "failed"
         assert listed["job"]["id"] == str(job_id)
     assert db.get(IngestionJob, job_id).retry_progress is None
-    assert db.get(CreditAccount, workspace_id).balance == balance - (
+    assert db.get(UserCreditAccount, account_id).balance == balance - (
         Decimal("0.2100") if outcome == "recover" else 0)
     keys = list(db.scalars(select(CreditLedgerEntry.idempotency_key).where(
         CreditLedgerEntry.idempotency_key.like(f"usage:{job_id}:%"))))
@@ -317,12 +322,13 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert manual.status_code == 202
         assert dispatched == [(str(doc_id), manual.json()["id"])]
         assert not manual.json()["retry_progress"]
+        assert owner.get(f"/uploads/{upload_id}").json()["job_id"] == manual.json()["id"]
         manual_retry = True
         tasks.embed_document.run(*dispatched[0])
         assert calls[-1:] == ["20"]
         assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
         db.expire_all()
-        assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
+        assert db.get(UserCreditAccount, account_id).balance == balance - Decimal("0.2100")
     elif outcome == "delete":
         assert owner.post(f"/jobs/{job_id}/retry").status_code == 409
     elif outcome == "settlement_error":
@@ -332,7 +338,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert calls == ["0", "20"]
         assert owner.get(f"/uploads/{upload_id}").json()["document_status"] == "ready"
         db.expire_all()
-        assert db.get(CreditAccount, workspace_id).balance == balance - Decimal("0.2100")
+        assert db.get(UserCreditAccount, account_id).balance == balance - Decimal("0.2100")
         assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.request_id == job_id)))) == 1
 
 
@@ -398,7 +404,7 @@ def test_scope_size_parts_fingerprint_and_expiry(direct):
     assert db.get(DocumentUpload, row.id).state == "cleaned"
 
 
-@pytest.mark.parametrize("failure", ["hash", "format", "suspended", "permission", "size"])
+@pytest.mark.parametrize("failure", ["hash", "format", "suspended", "size"])
 def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct, failure):
     owner, _, db, identity, kb, storage, _, processed = direct
     content = b"not a pdf" if failure == "format" else b"original"
@@ -411,8 +417,6 @@ def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct
         storage.objects[row.object_key] = content + b"more"
     elif failure == "suspended":
         db.get(User, UUID(identity["user"]["id"])).is_suspended = True
-    elif failure == "permission":
-        db.get(Membership, (UUID(identity["workspace_id"]), UUID(identity["user"]["id"]))).role = "viewer"
     db.commit()
     uploads.finalize_upload(str(row.id))
     db.expire_all()
@@ -453,9 +457,7 @@ def test_duplicate_versions_cancel_and_reader_permissions(direct):
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
     assert owner.post(f"/uploads/{cancelled['id']}/complete").status_code == 409
-    share(owner, "outsider@example.com", "viewer")
-    switch(other, identity["workspace_id"])
-    assert other.post(f"/knowledge-bases/{kb}/uploads", json={"filename": "x.txt", "size_bytes": 1}).status_code == 403
+    assert other.post(f"/knowledge-bases/{kb}/uploads", json={"filename": "x.txt", "size_bytes": 1}).status_code == 404
 
 
 def test_storage_admin_encryption_version_test_and_secret_redaction(accounts, monkeypatch):
@@ -738,6 +740,7 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
 def test_verification_database_failure_is_not_reported_as_storage_failure(direct, monkeypatch, caplog):
     from psycopg.errors import DeadlockDetected
     from sqlalchemy.exc import OperationalError
+    from app.document_failures import log
 
     owner, _, db, _, kb, storage, _, processed = direct
     content = b"sealed content"
@@ -749,7 +752,13 @@ def test_verification_database_failure_is_not_reported_as_storage_failure(direct
         raise OperationalError("test SQL", {"private": "test parameter"}, DeadlockDetected("test DB error"))
 
     monkeypatch.setattr(uploads, "admit", fail_admission)
-    uploads.finalize_upload(str(row.id))
+    # Capture this logger directly, independent of other tests' logging setup.
+    with monkeypatch.context() as logging_patch:
+        logging_patch.setattr(log, "disabled", False)
+        logging_patch.setattr(log, "handlers", [caplog.handler])
+        logging_patch.setattr(log, "propagate", False)
+        with caplog.at_level("WARNING", logger=log.name):
+            uploads.finalize_upload(str(row.id))
     status = owner.get(f"/uploads/{row.id}").json()
     assert status["state"] == "verifying" and status["verify_after"]
     assert status["failure"]["code"] == "database_unavailable" and status["failure"]["retryable"]

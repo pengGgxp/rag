@@ -10,7 +10,7 @@ export type Preview = {
   id: string; computer_id: string; name: string; status: string; summary: string; terminal: boolean; url: string | null;
 };
 export type PreviewDetail = { preview: Preview; computer: Computer; conversation_id: string };
-export type CloudScope = { userId: string; workspaceId: string; conversationId: string | null; previewId?: string };
+export type CloudScope = { userId: string; conversationId: string | null; previewId?: string };
 export type CloudSnapshot = {
   computers: Record<string, Computer>; details: Record<string, PreviewDetail>;
   previewErrors: Record<string, string>; error: string; actionErrors: Record<string, string>;
@@ -60,7 +60,7 @@ export class CloudComputerStore {
   }
   revoke = () => {
     this.epoch++; this.controller?.abort(); this.poll = null; this.pending.clear();
-    this.set({ ...empty(), revoked: true, error: "预览暂不可访问，请重新登录或切换工作区" });
+    this.set({ ...empty(), revoked: true, error: "预览暂不可访问，请重新登录后重试" });
   };
   watchPreview(id: string) {
     this.references.set(id, (this.references.get(id) ?? 0) + 1);

@@ -99,7 +99,7 @@ def notify(row, callback):
 
 def owned(db, access, identifier, lock=False):
     row = db.get(ImageTask, identifier, with_for_update=lock, populate_existing=True)
-    if not row or row.workspace_id != access.workspace_id or row.actor_user_id != access.user_id:
+    if not row or row.actor_user_id != access.user_id:
         raise HTTPException(404, "图片任务不存在")
     return row
 
@@ -151,13 +151,12 @@ def recover(factory=None, *, agent_only=False):
 
 def create(db, access, payload, key, *, agent_tool_execution_id=None):
     access = access.revalidate(db)
-    access.editor()
     from .agent_tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access)
     # Serialize admission and idempotency through the existing workspace account.
-    ensure_account(db, access.workspace_id)
+    ensure_account(db, access.user_id)
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
-    existing = db.scalar(select(ImageTask).where(ImageTask.workspace_id == access.workspace_id,
+    existing = db.scalar(select(ImageTask).where(ImageTask.account_id == access.user_id,
         ImageTask.actor_user_id == access.user_id, ImageTask.idempotency_key == key))
     if existing:
         if existing.content_hash != digest or existing.agent_tool_execution_id != agent_tool_execution_id:
@@ -176,17 +175,17 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
         raise HTTPException(422, "当前图片规格不可用，请选择已配置的尺寸与质量")
     from .storage_billing import check_capacity
     from .workspace_files import resolve_input
-    check_capacity(db, access.workspace_id, 1)
+    check_capacity(db, access.user_id, 1)
     for reference in payload.references:
         resource, version = resolve_input(db, access, reference.model_dump(mode="json"))
         if version.content_type not in ("image/png", "image/jpeg", "image/webp"):
             raise HTTPException(422, "参考资源必须为 PNG、JPEG 或 WebP 图片")
     from .workspace_billing import context_for_workspace
-    context = context_for_workspace(db, access.workspace_id)
+    context = context_for_workspace(db, access.user_id)
     rate = spec.credits_per_image * Decimal(context["multiplier_percent"]) / 100
     held = amount(rate * payload.count)
     identifier = uuid4()
-    authorization_hold(db, access.workspace_id, access.user_id, identifier, held)
+    authorization_hold(db, access.user_id, access.user_id, identifier, held)
     snapshot = {"model": model.model, "model_version": model.version, "connection_id": str(connection.id),
         "connection_version": connection.version, "base_url": connection.base_url, "timeout": connection.timeout_seconds,
         "protocol": config.protocol, "image_model": config.image_model, "rate": str(rate), "cost_per_image": str(spec.cost_per_image) if spec.cost_per_image is not None else None,
@@ -196,7 +195,7 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
     snapshot["omit_resolution"] = bool(preset and preset["omit_resolution"])
     snapshot["preset_id"] = config.preset_id
     snapshot["preset_revision"] = config.preset_revision
-    row = ImageTask(id=identifier, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    row = ImageTask(id=identifier, account_id=access.user_id, actor_user_id=access.user_id,
         agent_tool_execution_id=agent_tool_execution_id,
         model_id=model.id, session_hash=access.session_hash, idempotency_key=key, content_hash=digest,
         status="queued", payload={**payload.model_dump(mode="json"), "size": size, "quality": quality},
@@ -204,7 +203,7 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
         charged_credits=0, settled=False, cancel_requested=False, usage={}, outputs=[])
     db.add(row)
     from .audit_log import record_audit
-    record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,
+    record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
                  action="image.created", resource_type="image_task", resource_id=identifier)
     db.commit()
     if agent_tool_execution_id is None:
@@ -215,13 +214,13 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
 def settle(db, row, count):
     if row.settled:
         return
-    account = ensure_account(db, row.workspace_id)
+    account = ensure_account(db, row.account_id)
     credits = amount(Decimal(row.snapshot["rate"]) * count)
-    release_hold(db, row.workspace_id, row.actor_user_id, row.id, row.held_credits)
+    release_hold(db, row.account_id, row.actor_user_id, row.id, row.held_credits)
     if credits:
         _entry(db, account, actor_user_id=row.actor_user_id, amount=-credits, kind="usage_settlement",
             idempotency_key=f"image:{row.id}:charge", metadata={"capability": "image_generation", "task_id": str(row.id), "images": count})
-    db.add(UsageEvent(workspace_id=row.workspace_id, actor_user_id=row.actor_user_id, request_id=row.id,
+    db.add(UsageEvent(account_id=row.account_id, actor_user_id=row.actor_user_id, request_id=row.id,
         capability="image_generation" if row.payload["operation"] == "generate" else "image_edit", units=count,
         credits=credits, policy_version=row.snapshot["model_version"], policy_snapshot=row.snapshot,
         idempotency_key=f"image:{row.id}:usage", metadata_json={"task_id": str(row.id), "model_id": str(row.model_id)}))
@@ -229,7 +228,7 @@ def settle(db, row, count):
 
 
 def task_access(db, row):
-    return Access(row.actor_user_id, row.workspace_id, "editor", row.session_hash).revalidate(db)
+    return Access(row.actor_user_id, row.session_hash).revalidate(db)
 
 
 def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
@@ -262,7 +261,6 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
                 except Exception:
                     row.cancel_requested = True
             access = task_access(db, row)
-            access.editor()
             model = db.get(SiteModelProvider, row.model_id, populate_existing=True)
             connection = db.get(ModelConnection, UUID(row.snapshot["connection_id"]), populate_existing=True)
             if not model or not model.enabled or not connection or not connection.enabled:
@@ -292,7 +290,6 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
             secret = _decrypt_api_key(row.encrypted_credentials)
             preparation_stage = "authorization"
             access = task_access(db, row)
-            access.editor()
             if row.agent_tool_execution_id and not owner_active(db, row.agent_tool_execution_id):
                 row.cancel_requested = True
             if check_active:
@@ -366,7 +363,7 @@ def save_outputs(identifier, factory=None):
         row = db.get(ImageTask, identifier)
         if row is None:
             return
-        with workspace_lock(db, row.workspace_id):
+        with workspace_lock(db, row.account_id):
             return _save_outputs(identifier, factory)
 
 
@@ -383,7 +380,6 @@ def _save_outputs(identifier, factory):
         uploaded = []
         try:
             access = task_access(db, row)
-            access.editor()
             outputs = []
             for index, output in enumerate(row.outputs):
                 if output.get("resource"):
@@ -391,7 +387,7 @@ def _save_outputs(identifier, factory):
                     continue
                 data = base64.b64decode(_decrypt_api_key(output["encrypted_data"]), validate=True)
                 suffix = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[output["mime"]]
-                resource = _stage_bytes(row.workspace_id, access, db, f"images/{row.id}/{index+1}.{suffix}", data, output["mime"], None, uploaded=uploaded)
+                resource = _stage_bytes(row.account_id, access, db, f"images/{row.id}/{index+1}.{suffix}", data, output["mime"], None, uploaded=uploaded)
                 outputs.append({"mime": output["mime"], "size": output["size"], "resource": read_file(resource)})
             row.outputs = outputs
             row.status = "cancelled" if row.cancel_requested else "failed" if not outputs else "completed" if len(outputs) == row.payload["count"] else "partial"
@@ -419,7 +415,7 @@ def submit(payload: CreateInput, db=Depends(get_db), access=Depends(get_access))
 
 @router.get("/by-request/{key}")
 def by_request(key: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = db.scalar(select(ImageTask).where(ImageTask.workspace_id == access.workspace_id,
+    row = db.scalar(select(ImageTask).where(ImageTask.account_id == access.user_id,
         ImageTask.actor_user_id == access.user_id, ImageTask.idempotency_key == str(key)))
     if row is None:
         raise HTTPException(404, "图片请求尚未提交")
@@ -459,7 +455,6 @@ def cancel(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 @router.post("/{identifier}/retry-save")
 def retry_save(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier, True)
-    access.editor()
     if row.status != "save_failed":
         raise HTTPException(409, "此任务无需重试保存")
     row.status, row.error = "saving", None
@@ -517,7 +512,7 @@ class Resolution(BaseModel):
 def admin_tasks(db=Depends(get_db), actor=Depends(site_admin)):
     rows = db.scalars(select(ImageTask).where(ImageTask.status.in_(("uncertain", "save_failed")))
                       .order_by(ImageTask.created_at.desc()).limit(100))
-    return [{**read(row), "workspace_id": str(row.workspace_id), "actor_user_id": str(row.actor_user_id),
+    return [{**read(row), "account_id": str(row.account_id), "actor_user_id": str(row.actor_user_id),
              "upstream_request_id": row.upstream_request_id, "held_credits": str(row.held_credits),
              "requested_images": row.payload["count"]} for row in rows]
 

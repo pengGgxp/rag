@@ -46,7 +46,7 @@ TOOLS = [
 
 
 def saved_view(db, access, row):
-    if row is None or row.user_id != access.user_id or row.workspace_id != access.workspace_id:
+    if row is None or row.user_id != access.user_id or row.account_id != access.user_id:
         raise HTTPException(404, "保存记录不存在")
     access.library(db, row.knowledge_base_id)
     document = db.get(Document, row.document_id, populate_existing=True)
@@ -126,7 +126,6 @@ def execute(runtime, name, arguments):
         if name == "get_saved_document_status":
             payload = StatusInput.model_validate(arguments)
             return saved_view(db, access, db.get(ConversationDocumentSave, payload.save_id))
-        access.editor()
         if name == "list_writable_knowledge_bases":
             if arguments:
                 raise HTTPException(422, "此工具不接受参数")
@@ -141,11 +140,11 @@ def execute(runtime, name, arguments):
             raise HTTPException(409, "请在当前对话中保存资料")
         message = db.get(ChatMessage, runtime.message_id)
         conversation = db.get(Conversation, message.conversation_id) if message else None
-        if not conversation or conversation.deleted_at is not None or conversation.owner_id != access.user_id or conversation.workspace_id != access.workspace_id or message.role != "assistant" or message.request_id != UUID(str(runtime.request_id)):
+        if not conversation or conversation.deleted_at is not None or conversation.owner_id != access.user_id or conversation.account_id != access.user_id or message.role != "assistant" or message.request_id != UUID(str(runtime.request_id)):
             raise HTTPException(404, "对话不存在或无权访问")
         access.library(db, payload.knowledge_base_id, write=True)
         from .storage_billing import lock_workspace
-        lock_workspace(db, access.workspace_id)
+        lock_workspace(db, access.user_id)
         # Same-library admission and content deduplication share the normal upload lock.
         db.get(KnowledgeBase, payload.knowledge_base_id, with_for_update=True, populate_existing=True)
         content = payload.markdown.encode("utf-8")
@@ -168,7 +167,7 @@ def execute(runtime, name, arguments):
             job = db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id).order_by(IngestionJob.created_at).limit(1))
             if job is None:
                 raise HTTPException(409, "已有同内容文档，请在知识库中查看")
-        row = ConversationDocumentSave(workspace_id=access.workspace_id, user_id=access.user_id,
+        row = ConversationDocumentSave(account_id=access.user_id, user_id=access.user_id,
             conversation_id=conversation.id, message_id=message.id, request_id=UUID(str(runtime.request_id)),
             knowledge_base_id=payload.knowledge_base_id, document_id=document.id, job_id=job.id,
             content_hash=digest, dispatch_pending=new_upload,

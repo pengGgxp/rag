@@ -6,6 +6,7 @@ from uuid import uuid4
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import text
+from test_auth_postgres import auth_postgres
 
 
 def test_preview_migration_preserves_resources_and_ledger(auth_postgres):

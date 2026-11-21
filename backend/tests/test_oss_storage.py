@@ -121,17 +121,17 @@ def stores(accounts):
         SiteStorageSettings(id=2, provider="oss", active=False, version=2, tested_version=2,
             bucket="destination", region="cn-hangzhou"),
     ])
-    user_id, workspace_id = UUID(identity["user"]["id"]), UUID(identity["workspace_id"])
-    file = WorkspaceFile(workspace_id=workspace_id, path="file.txt", content_type="text/plain",
+    user_id, account_id = UUID(identity["user"]["id"]), UUID(identity["user"]["id"])
+    file = WorkspaceFile(account_id=account_id, path="file.txt", content_type="text/plain",
         size_bytes=4, content_hash=hashlib.sha256(b"next").hexdigest(), current_version=2,
         created_by=user_id, updated_by=user_id)
     db.add(file)
     db.flush()
     for number, body in ((1, b"prev"), (2, b"next")):
-        db.add(WorkspaceFileVersion(file_id=file.id, workspace_id=workspace_id, version=number,
+        db.add(WorkspaceFileVersion(file_id=file.id, account_id=account_id, version=number,
             object_key=f"_resources/{file.id}/{number}", content_type="text/plain", size_bytes=len(body),
             content_hash=hashlib.sha256(body).hexdigest(), created_by=user_id))
-    db.add(ChatAttachment(workspace_id=workspace_id, user_id=user_id, filename="original.txt",
+    db.add(ChatAttachment(account_id=account_id, user_id=user_id, filename="original.txt",
         content_type="text/plain", size_bytes=len(content), content_hash=doc.content_hash,
         object_key=doc.object_key, kind="text", deleted_at=datetime.now(timezone.utc)))
     db.commit()

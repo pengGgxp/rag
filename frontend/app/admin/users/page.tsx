@@ -8,7 +8,6 @@ import {
   date,
   Pagination,
   type Page,
-  type Credits,
   useAdminResource,
 } from "../admin-ui";
 export type AdminUser = {
@@ -24,7 +23,13 @@ export type AdminUser = {
   created_at: string;
   active_sessions: number;
   login_methods: { password: boolean; wechat: boolean; other_oauth: boolean };
-  workspaces: { id: string; name: string; role: string; credits: Credits }[];
+  credits: { balance: number; lifetime_granted: number; lifetime_spent: number };
+  model_policy: {
+    available_models: string[];
+    default_model: string | null;
+    billing_multiplier_percent: number;
+    version: number;
+  };
 };
 export default function UsersPage() {
   const params = useSearchParams();
@@ -97,7 +102,7 @@ export default function UsersPage() {
                     <th>用户</th>
                     <th>邮箱</th>
                     <th>账号状态</th>
-                    <th>工作区</th>
+                    <th>余额</th>
                     <th>注册时间</th>
                   </tr>
                 </thead>
@@ -125,7 +130,7 @@ export default function UsersPage() {
                           {user.is_suspended ? "已停用" : "正常"}
                         </span>
                       </td>
-                      <td>{user.workspaces.length}</td>
+                      <td>{user.credits.balance}</td>
                       <td>
                         <time>{date(user.created_at)}</time>
                       </td>

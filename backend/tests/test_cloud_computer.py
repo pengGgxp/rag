@@ -12,8 +12,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth, cloud_computer as cloud
 from app.config import get_settings
-from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, CreditAccount, CreditLedgerEntry, Conversation, User, UsageEvent
-from test_auth import register, share, switch
+from app.credits import ensure_account
+from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, UserCreditAccount, CreditLedgerEntry, Conversation, User, UsageEvent
+from test_auth import register
 from test_resources import resource_store, upload, access_for
 
 
@@ -102,20 +103,21 @@ def setup(accounts, monkeypatch, rate="0.6"):
             "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}
     response = client.put("/site/admin/cloud-computer", json=body)
     assert response.status_code == 200, response.text
-    conversation = Conversation(workspace_id=UUID(identity["workspace_id"]), owner_id=user.id)
+    access = access_for(client, db)
+    conversation = Conversation(account_id=access.user_id, owner_id=user.id)
     db.add(conversation)
     db.commit()
     fake = FakeCloud()
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda *_: None)
-    return client, db, conversation, access_for(client, db), fake, sessionmaker(bind=db.get_bind())
+    return client, db, conversation, access, fake, sessionmaker(bind=db.get_bind())
 
 
 def submit(db, access, conversation, command="echo test", request=None, inputs=None):
     # Test callers explicitly choose an existing instance; production never does.
     previous = db.scalar(select(Command).where(Command.request_id == request)) if request else None
     row = db.get(Computer, previous.session_id) if previous else db.scalar(select(Computer).where(
-        Computer.user_id == access.user_id, Computer.workspace_id == access.workspace_id, Computer.ended_at.is_(None)))
+        Computer.user_id == access.user_id, Computer.account_id == access.user_id, Computer.ended_at.is_(None)))
     if row is None:
         created = cloud.create_computer(db, access, conversation.id, uuid4(), {"name": "测试云电脑"})
         row = db.get(Computer, UUID(created["computer_id"]))
@@ -130,7 +132,7 @@ def enable_execution(db, access, monkeypatch):
             config=cloud.Configuration(region="cn-hangzhou", template="test", specification="test", credits_per_minute=0,
                 oss_role_arn="acs:ram::123:role/test").model_dump(mode="json"),
             encrypted_api_key="test-only"))
-    conversation = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
+    conversation = Conversation(account_id=access.user_id, owner_id=access.user_id)
     db.add(conversation); db.commit()
     fake = FakeCloud()
     fake.outputs = {}
@@ -141,7 +143,7 @@ def enable_execution(db, access, monkeypatch):
     original_start = fake.start
     def mounted_start(sandbox, identifier, command):
         for path, data in fake.outputs.items():
-            fake.storage.objects[prefix(access.workspace_id) + path] = data
+            fake.storage.objects[prefix(access.user_id) + path] = data
         return original_start(sandbox, identifier, command)
     monkeypatch.setattr(fake, "start", mounted_start)
     factory = sessionmaker(bind=db.get_bind())
@@ -149,7 +151,7 @@ def enable_execution(db, access, monkeypatch):
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
     def execute(arguments):
         row = db.scalar(select(Computer).where(Computer.user_id == access.user_id,
-            Computer.workspace_id == access.workspace_id, Computer.ended_at.is_(None)))
+            Computer.account_id == access.user_id, Computer.ended_at.is_(None)))
         identifier = str(row.id) if row else cloud.create_computer(db, access, conversation.id, uuid4(),
             {"name": "测试文件任务"})["computer_id"]
         return cloud.execute(db, access, conversation.id, uuid4(), {**arguments, "computer_id": identifier}, None)
@@ -223,7 +225,7 @@ def test_initial_price_is_one_credit_and_remains_disabled():
 
 def test_balance_reservation_and_cumulative_rounding(accounts, monkeypatch):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch, rate="0.0001")
-    before = db.get(CreditAccount, access.workspace_id).balance
+    before = ensure_account(db, access.user_id).balance
     command = submit(db, access, conversation)
     row = db.get(Computer, command.session_id)
     start = cloud.now()
@@ -236,14 +238,14 @@ def test_balance_reservation_and_cumulative_rounding(accounts, monkeypatch):
     cloud.reconcile(db, row, start+timedelta(seconds=120), final=True)
     db.commit()
     assert row.charged_credits == Decimal("0.0002")
-    assert db.get(CreditAccount, access.workspace_id).balance == before - Decimal("0.0002")
-    assert db.get(CreditAccount, access.workspace_id).lifetime_spent == Decimal("0.0002")
+    assert ensure_account(db, access.user_id).balance == before - Decimal("0.0002")
+    assert ensure_account(db, access.user_id).lifetime_spent == Decimal("0.0002")
     assert sum(event.credits for event in db.scalars(select(UsageEvent))) == Decimal("0.0002")
 
 
 def test_insufficient_balance_does_not_create_or_dispatch(accounts, monkeypatch):
     _, db, conversation, access, fake, _ = setup(accounts, monkeypatch)
-    account = db.get(CreditAccount, access.workspace_id)
+    account = ensure_account(db, access.user_id)
     account.balance = 1
     db.commit()
     with pytest.raises(HTTPException) as error:
@@ -253,7 +255,7 @@ def test_insufficient_balance_does_not_create_or_dispatch(accounts, monkeypatch)
     assert db.scalar(select(Computer)) is None and fake.creates == 0
 
 
-def test_owner_workspace_role_and_cross_conversation_reuse(accounts, monkeypatch):
+def test_user_ownership_and_cross_conversation_reuse(accounts, monkeypatch):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch)
     member = accounts[0][1]
     identity = register(member, "member@example.com")
@@ -262,20 +264,18 @@ def test_owner_workspace_role_and_cross_conversation_reuse(accounts, monkeypatch
     computer_id = str(command.session_id)
     assert member.get(f"/cloud-computers/{computer_id}").status_code == 404
     assert member.post(f"/cloud-computers/{computer_id}/end", json={}).status_code == 404
-    other = Conversation(workspace_id=access.workspace_id, owner_id=access.user_id)
+    other = Conversation(account_id=access.user_id, owner_id=access.user_id)
     db.add(other); db.commit()
     assert submit(db, access, other).session_id == command.session_id
-    share(client, "member@example.com", "viewer"); switch(member, str(access.workspace_id))
-    own = Conversation(workspace_id=access.workspace_id, owner_id=UUID(identity["user"]["id"]))
-    db.add(own); db.commit()
+    assert client.put("/auth/members", json={"email": "member@example.com", "role": "viewer"}).status_code == 404
     with pytest.raises(HTTPException) as error:
-        submit(db, access_for(member, db), own)
-    assert error.value.status_code == 403
+        cloud.owner(db, access_for(member, db), conversation.id)
+    assert error.value.status_code == 404
 
 
 def test_idle_destroy_and_failed_destroy_not_billed(accounts, monkeypatch, resource_store):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch)
-    before = db.get(CreditAccount, access.workspace_id).balance
+    before = ensure_account(db, access.user_id).balance
     command = submit(db, access, conversation)
     cloud.run(command.id, factory)
     db.expire_all()
@@ -293,9 +293,9 @@ def test_idle_destroy_and_failed_destroy_not_billed(accounts, monkeypatch, resou
     cloud.maintenance(factory)
     db.expire_all()
     assert db.get(Computer, row.id).status == "ended"
-    assert db.get(CreditAccount, access.workspace_id).balance == before-Decimal("6")
+    assert ensure_account(db, access.user_id).balance == before-Decimal("6")
     cloud.maintenance(factory)
-    assert db.get(CreditAccount, access.workspace_id).balance == before-Decimal("6")
+    assert ensure_account(db, access.user_id).balance == before-Decimal("6")
 
 
 def test_unknown_create_reconciles_without_second_create(accounts, monkeypatch, resource_store):

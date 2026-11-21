@@ -13,7 +13,7 @@ async (page) => {
     return response.json();
   };
   const put = async (data) => {
-    const response = await page.request.put(`http://localhost:8000/workspaces/${session.workspace_id}/files`, { headers, data });
+    const response = await page.request.put('http://localhost:8000/files', { headers, data });
     assert(response.ok(), `临时文件写入失败 ${response.status()}`);
     return response.json();
   };
@@ -22,11 +22,11 @@ async (page) => {
   const address = page.getByRole('group', { name: '当前路径，双击或按 Enter 编辑' });
   async function navigate(path) {
     await address.focus(); await page.keyboard.press('Enter');
-    await page.getByRole('textbox', { name: '地址栏', exact: true }).fill(`工作区/${path}`);
+    await page.getByRole('textbox', { name: '地址栏', exact: true }).fill(path);
     const response = page.waitForResponse(r => r.url().includes('/resources/browse?') && r.status() === 200);
     await page.keyboard.press('Enter'); await response;
-    await page.getByRole('listbox', { name: '工作区内容' }).getAttribute('aria-busy').then(async value => {
-      if (value === 'true') await page.waitForFunction(() => document.querySelector('[aria-label="工作区内容"]')?.getAttribute('aria-busy') === 'false');
+    await page.getByRole('listbox', { name: '资源内容' }).getAttribute('aria-busy').then(async value => {
+      if (value === 'true') await page.waitForFunction(() => document.querySelector('[aria-label="资源内容"]')?.getAttribute('aria-busy') === 'false');
     });
   }
   async function create(kind, name, cancel = false) {
@@ -63,7 +63,7 @@ async (page) => {
   await option('renamed.txt').click(); await page.keyboard.press('Control+c'); await page.keyboard.press('Control+v');
   await page.getByRole('dialog', { name: '目标位置有同名项目' }).waitFor();
   await button('保留两份').click(); await option('renamed (2).txt').waitFor();
-  await page.getByRole('textbox', { name: '搜索工作区', exact: true }).fill('renamed (2)');
+  await page.getByRole('textbox', { name: '搜索资源', exact: true }).fill('renamed (2)');
   const result = option('renamed (2).txt').filter({ hasText: root });
   await result.waitFor(); await result.click(); await page.keyboard.press('F2');
   await page.getByRole('textbox', { name: '重命名 renamed (2).txt', exact: true }).fill('search-renamed.txt');
@@ -79,7 +79,7 @@ async (page) => {
   await option('renamed.txt').dragTo(option('移动目标'));
   await option('renamed.txt').waitFor({ state: 'hidden' });
   await option('移动目标').dblclick(); await option('search-renamed.txt').waitFor();
-  await page.getByRole('listbox', { name: '工作区内容' }).focus(); await page.keyboard.press('Alt+ArrowUp');
+  await page.getByRole('listbox', { name: '资源内容' }).focus(); await page.keyboard.press('Alt+ArrowUp');
   await option('移动目标').waitFor(); await option('移动目标').click(); await page.keyboard.press('Delete');
   const deletion = page.getByRole('dialog', { name: '删除确认' });
   await deletion.getByText('将删除 2 个文件和 1 个文件夹。', { exact: false }).waitFor();
@@ -92,7 +92,7 @@ async (page) => {
   await navigate('分页验收');
   await page.getByRole('button', { name: '继续加载（已显示 100 项）', exact: true }).click();
   await page.getByRole('button', { name: '继续加载（已显示 200 项）', exact: true }).waitFor();
-  await page.getByRole('listbox', { name: '工作区内容' }).focus(); await page.keyboard.press('Control+a');
+  await page.getByRole('listbox', { name: '资源内容' }).focus(); await page.keyboard.press('Control+a');
   await page.getByText('已选中 505 项', { exact: true }).waitFor();
   await page.keyboard.press('Delete');
   await deletion.getByText('将删除 505 个文件和 0 个文件夹。', { exact: false }).waitFor();

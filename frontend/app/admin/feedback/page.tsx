@@ -9,7 +9,7 @@ import "../platform-content.css";
 
 const categories: Record<string, string> = { feature: "功能建议", problem: "使用问题", other: "其他" };
 const statuses: Record<string, string> = { pending: "待处理", processing: "处理中", resolved: "已处理" };
-type Suggestion = { id: string; category: string; summary: string; content: string; status: string; version: number; user_name: string; workspace_name: string; created_at: string; handled_at: string | null; handled_by: string | null };
+type Suggestion = { id: string; category: string; summary: string; content: string; status: string; version: number; user_name: string; created_at: string; handled_at: string | null; handled_by: string | null };
 
 export default function FeedbackPage() {
   const params = useSearchParams();
@@ -30,7 +30,7 @@ export default function FeedbackPage() {
     </form>
     <AdminLoad {...resource} retry={resource.reload}>
       <div className="managed-list" aria-label="意见反馈列表">{resource.data?.items.map(item => <button type="button" className="managed-row suggestion-row" key={item.id} data-feedback-id={item.id} onClick={() => setSelected(item.id)}>
-        <div className="managed-main"><strong>{categories[item.category]}</strong><p>{item.summary}</p><small>{item.user_name} · {item.workspace_name}</small></div>
+        <div className="managed-main"><strong>{categories[item.category]}</strong><p>{item.summary}</p><small>{item.user_name}</small></div>
         <span className="admin-status">{statuses[item.status]}</span><time>{date(item.created_at)}</time>
       </button>)}</div>
       {resource.data && !resource.data.items.length && <p className="admin-empty">暂无符合条件的反馈</p>}
@@ -55,7 +55,7 @@ function FeedbackDetail({ id, onClose, onSaved }: { id: string; onClose: () => v
   return <Dialog title="反馈详情" busy={busy} onClose={() => dirty ? setDiscard(true) : onClose()} restoreFocusSelector={`[data-feedback-id="${id}"]`}>
     <div className="managed-dialog-body"><AdminLoad {...resource} retry={resource.reload}>
       {value && <>
-        <div className="suggestion-meta"><span>{categories[value.category]}</span><span>{value.user_name} · {value.workspace_name}</span><time>{date(value.created_at)}</time></div>
+        <div className="suggestion-meta"><span>{categories[value.category]}</span><span>{value.user_name}</span><time>{date(value.created_at)}</time></div>
         <div className="suggestion-body">{value.content}</div>
         <form className="suggestion-form" onSubmit={async event => {
           event.preventDefault(); setBusy(true); setError("");

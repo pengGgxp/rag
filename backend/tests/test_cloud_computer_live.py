@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app import cloud_computer as cloud
 from app.cloud_computer_adapter import AlibabaSandbox
-from app.models import CloudComputerSettings, CreditAccount, UsageEvent
+from app.models import CloudComputerSettings, UserCreditAccount, UsageEvent
 from app.site_auth import protect, reveal
 from test_chat_attachments import PNG
 from test_cloud_computer import setup, submit
@@ -31,7 +31,7 @@ def test_real_cloud_resource_versions_and_lifetime_billing(accounts, monkeypatch
     real_provider = AlibabaSandbox(settings.config, reveal(settings.encrypted_api_key))
     monkeypatch.setattr(cloud, "adapter", lambda config, encrypted: real_provider)
     photo = upload(client, "photo.png", PNG)
-    balance = db.get(CreditAccount, access.workspace_id).balance
+    balance = db.get(UserCreditAccount, access.user_id).balance
     report = {"model_called": False, "object_store": "isolated in-memory fixture", "commands": []}
     computer_id = None
     try:
@@ -79,7 +79,7 @@ open('summary.html','w').write('<html><body>Synthetic cloud task</body></html>')
         db.expire_all()
         row = db.get(cloud.Computer, computer_id)
         assert row.ended_at and row.held_credits == 0
-        assert db.get(CreditAccount, access.workspace_id).balance == balance-row.charged_credits
+        assert db.get(UserCreditAccount, access.user_id).balance == balance-row.charged_credits
         billed = sum(event.credits for event in db.scalars(select(UsageEvent).where(UsageEvent.capability == "cloud_computer")))
         assert billed == row.charged_credits > Decimal(0)
         report.update({"started_at": row.started_at.isoformat(), "ended_at": row.ended_at.isoformat(),

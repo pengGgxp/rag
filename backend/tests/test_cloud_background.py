@@ -6,8 +6,9 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 
 from app import cloud_computer as cloud, cloud_preview as preview
-from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, CreditAccount, CreditLedgerEntry
-from test_auth import register, share, switch
+from app.credits import ensure_account
+from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, CreditLedgerEntry
+from test_auth import register
 from test_cloud_computer import setup, submit
 from test_cloud_preview import prepare
 
@@ -55,7 +56,7 @@ def test_usage_pagination_ownership_and_reads_do_not_extend_activity(accounts, m
                for i in range(12)]
     rows = list(db.scalars(select(Computer)))
     before = {row.id: row.last_activity_at for row in rows}
-    account = db.get(CreditAccount, access.workspace_id)
+    account = ensure_account(db, access.user_id)
     balance = account.balance
     ledger = list(db.scalars(select(CreditLedgerEntry.id)))
     first = client.get("/cloud-computers?offset=0&limit=10").json()
@@ -68,12 +69,10 @@ def test_usage_pagination_ownership_and_reads_do_not_extend_activity(accounts, m
     client.get("/usage")
     db.expire_all()
     assert {row.id: row.last_activity_at for row in db.scalars(select(Computer))} == before
-    assert db.get(CreditAccount, access.workspace_id).balance == balance
+    assert ensure_account(db, access.user_id).balance == balance
     assert list(db.scalars(select(CreditLedgerEntry.id))) == ledger
     other = accounts[0][1]
-    identity = register(other, "usage-member@example.com")
-    share(client, identity["user"]["email"], "editor")
-    switch(other, str(access.workspace_id))
+    register(other, "usage-other@example.com")
     assert other.get("/cloud-computers").json()["items"] == []
     assert other.get(f"/cloud-computers/{rows[0].id}").status_code == 404
 

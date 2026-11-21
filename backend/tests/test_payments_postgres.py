@@ -17,7 +17,7 @@ from app import auth, main, payments
 from app.auth import Access, now
 from app.config import Settings
 from app.models import (
-    AuditLog, CreditAccount, CreditLedgerEntry, LoginSession, Membership, RechargeOrder, User, Workspace,
+    AuditLog, UserCreditAccount, CreditLedgerEntry, LoginSession, RechargeOrder, User,
 )
 
 
@@ -29,7 +29,7 @@ def postgres():
     if not (make_url(url).database or "").startswith("rag_recharge_test_"):
         pytest.fail("refusing to run against a non-test database")
     engine = create_engine(url, pool_size=12, max_overflow=0)
-    workspace_id, user_id = uuid4(), uuid4()
+    workspace_id = user_id = uuid4()
     token = uuid4().hex
     settings = Settings(_env_file=None).model_copy(update={
         "zhifux_enabled": True, "zhifux_merchant_num": "888888",
@@ -41,11 +41,9 @@ def postgres():
     })
     with Session(engine) as db:
         db.add(User(id=user_id, email=f"pg-{user_id}@example.com", name="Payment test"))
-        db.add(Workspace(id=workspace_id, name="Payment locking test"))
         db.flush()
-        db.add(Membership(workspace_id=workspace_id, user_id=user_id, role="admin"))
-        db.add(CreditAccount(workspace_id=workspace_id, balance=1000, lifetime_granted=1000, lifetime_spent=0))
-        db.add(LoginSession(token_hash=token, user_id=user_id, workspace_id=workspace_id,
+        db.add(UserCreditAccount(user_id=workspace_id, balance=1000, lifetime_granted=1000, lifetime_spent=0))
+        db.add(LoginSession(token_hash=token, user_id=user_id,
                             csrf_token="test", expires_at=now() + timedelta(hours=1)))
         db.commit()
     try:
@@ -58,7 +56,7 @@ def add_order(engine, workspace_id, user_id):
     id = uuid4()
     with Session(engine) as db:
         db.add(RechargeOrder(
-            id=id, workspace_id=workspace_id, user_id=user_id, idempotency_key=id.hex,
+            id=id, account_id=workspace_id, user_id=user_id, idempotency_key=id.hex,
             package_id="test", package_name="test", amount_fen=1234, credits=567,
             merchant_num="888888", pay_type="aloop", platform_order_no="P" + id.hex, status="pending",
         ))
@@ -88,13 +86,13 @@ def test_duplicate_callbacks_concurrently_credit_once(postgres):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(pay, range(8)))
     with Session(engine) as db:
-        account = db.get(CreditAccount, workspace_id)
+        account = db.get(UserCreditAccount, workspace_id)
         assert account.balance == account.lifetime_granted == 1567
         assert db.scalar(select(func.count()).select_from(CreditLedgerEntry).where(
-            CreditLedgerEntry.workspace_id == workspace_id,
+            CreditLedgerEntry.account_id == workspace_id,
         )) == 1
         assert db.scalar(select(func.count()).select_from(AuditLog).where(
-            AuditLog.workspace_id == workspace_id, AuditLog.action == "recharge.paid",
+            AuditLog.owner_user_id == workspace_id, AuditLog.action == "recharge.paid",
         )) == 1
 
 
@@ -106,7 +104,7 @@ def test_different_orders_concurrently_do_not_lose_balance_updates(postgres):
     def pay(order_id):
         with Session(engine) as db:
             # Simulate an earlier account read in the same request/session.
-            account = db.get(CreditAccount, workspace_id)
+            account = db.get(UserCreditAccount, workspace_id)
             assert account.balance == 1000
             barrier.wait(timeout=15)
             payments.accept_payment(db, params(order_id, settings), settings)
@@ -114,10 +112,10 @@ def test_different_orders_concurrently_do_not_lose_balance_updates(postgres):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(pay, ids))
     with Session(engine) as db:
-        account = db.get(CreditAccount, workspace_id)
+        account = db.get(UserCreditAccount, workspace_id)
         assert account.balance == account.lifetime_granted == 1000 + 8 * 567
         balances = db.scalars(select(CreditLedgerEntry.balance_after).where(
-            CreditLedgerEntry.workspace_id == workspace_id,
+            CreditLedgerEntry.account_id == workspace_id,
         )).all()
         assert sorted(balances) == [1000 + n * 567 for n in range(1, 9)]
 
@@ -142,7 +140,7 @@ def test_concurrent_identical_creations_call_gateway_once(postgres, monkeypatch,
     monkeypatch.setattr(auth, "rate_limit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(payments, "start_checkout", start)
     main.app.dependency_overrides[main.get_db] = database
-    main.app.dependency_overrides[auth.get_access] = lambda: Access(user_id, workspace_id, "admin", token)
+    main.app.dependency_overrides[auth.get_access] = lambda: Access(user_id, token)
     key = uuid4().hex
     quote = payments.package_quote(payments.configured_packages(settings)[0])
     payload = {"package_id": "custom_amount" if custom else "test", "idempotency_key": key, "quote": quote,

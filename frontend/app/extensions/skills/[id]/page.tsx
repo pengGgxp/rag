@@ -23,8 +23,8 @@ type SkillDetail = { id: string; name: string | null; description: string; markd
 export default function SkillPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { role, session } = useAuth();
-  const canWrite = role === "admin" || role === "editor";
+  const { session } = useAuth();
+  const canWrite = true;
   const paramsSearch = useSearchParams();
   const platform = paramsSearch.has("platform");
   const requestedReturn = paramsSearch.get("returnTo");
@@ -84,7 +84,7 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
       const value = await request<{ directory: string; already_installed: boolean }>(`${base}/${id}/install`, { method: "POST", headers: { "X-Request-ID": crypto.randomUUID() } });
       // 安装响应已包含真实路径，无须再次读取详情后才能结束写入状态。
       setInstalledPaths([value.directory]);
-      setNotice(value.already_installed ? `工作区已有：${value.directory}` : `已安装到 ${value.directory}`);
+      setNotice(value.already_installed ? `已安装：${value.directory}` : `已安装到 ${value.directory}`);
     }
     catch (cause) { setError(cause instanceof Error ? cause.message : "安装失败，请重试"); }
     finally { setBusy(false); }
@@ -125,13 +125,13 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
             {(!platform || directories.length > 0) && <p className="skill-detail-location"><FolderOpen size={15} /><span>{!platform ? resource.data.directory : directories.length === 1 ? directories[0] : `${directories.length} 个同名目录，查看时选择位置`}</span></p>}
             <div className="extension-actions">
               {!platform && canWrite && <button className={editing ? "secondary" : "primary"} disabled={busy || (editing && dirty)} onClick={() => setEditing(value => !value)}><Pencil size={16} />{editing ? "查看说明" : "编辑 Skill"}</button>}
-              {platform && !directories.length && <button className="primary" disabled={busy || !canWrite} onClick={() => void install()}>{busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />}安装到当前工作区</button>}
+              {platform && !directories.length && <button className="primary" disabled={busy || !canWrite} onClick={() => void install()}>{busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />}安装到我的资源</button>}
               {(!platform || directories.length > 0) && (platform && directories.length > 1
-                ? <button id="skill-choose-directory" className="primary" aria-haspopup="dialog" onClick={() => setChoosingDirectory(true)}><FolderOpen size={16} />在工作区查看</button>
-                : <Link className={platform ? "primary" : "secondary"} href={workspaceUrl(platform ? directories[0] : resource.data.directory || "")}><FolderOpen size={16} />在工作区查看</Link>)}
+                ? <button id="skill-choose-directory" className="primary" aria-haspopup="dialog" onClick={() => setChoosingDirectory(true)}><FolderOpen size={16} />在我的资源中查看</button>
+                : <Link className={platform ? "primary" : "secondary"} href={workspaceUrl(platform ? directories[0] : resource.data.directory || "")}><FolderOpen size={16} />在我的资源中查看</Link>)}
               {platform && <button className="secondary" disabled={downloading} onClick={() => void download()}>{downloading ? <Loader2 size={16} className="spin" /> : <Download size={16} />}{downloading ? "正在下载" : "下载包"}</button>}
             </div>
-            {platform && !directories.length && !canWrite && <p className="skill-detail-muted">需要工作区编辑权限才能安装，可先查看说明或下载包。</p>}
+            {platform && !directories.length && !canWrite && <p className="skill-detail-muted">当前账号无权安装，可先查看说明或下载包。</p>}
             {platform && feedback}
             {!platform && !editing && feedback}
           </section>
@@ -167,12 +167,12 @@ export default function SkillPage({ params }: { params: Promise<{ id: string }> 
               {!(platform ? packageFiles : workspaceFiles).length && <li className="skill-detail-muted skill-detail-no-files">没有附属文件</li>}
             </ul>}
           </section>
-          {!platform && canWrite && <section className="skill-detail-danger" aria-label="卸载 Skill"><div><h2>卸载 Skill</h2><p>移除此安装目录及其中的文件，影响当前工作区的所有成员。</p></div><button id="skill-delete" className="danger" disabled={busy} onClick={() => void beginDelete()}><Trash2 size={16} />卸载</button></section>}
-          {deleting && <Modal title="卸载 Skill" restoreFocusSelector="#skill-delete" busy={busy} onClose={() => setDeleting(false)}><div className="skill-detail-confirm"><p>{resource.data.directory}</p><p>将删除 {deletePreview?.files} 个文件和 {deletePreview?.directories} 个文件夹，影响当前工作区的所有成员。{dirty && "未保存的修改也会被放弃。"}</p>{error && <p className="extension-error" role="alert">{error}</p>}<div className="extension-actions"><button className="secondary" disabled={busy} onClick={() => setDeleting(false)}>取消</button><button className="danger" disabled={busy} onClick={() => void remove()}>确认卸载</button></div></div></Modal>}
+          {!platform && canWrite && <section className="skill-detail-danger" aria-label="卸载 Skill"><div><h2>卸载 Skill</h2><p>移除此安装目录及其中的文件。</p></div><button id="skill-delete" className="danger" disabled={busy} onClick={() => void beginDelete()}><Trash2 size={16} />卸载</button></section>}
+          {deleting && <Modal title="卸载 Skill" restoreFocusSelector="#skill-delete" busy={busy} onClose={() => setDeleting(false)}><div className="skill-detail-confirm"><p>{resource.data.directory}</p><p>将删除 {deletePreview?.files} 个文件和 {deletePreview?.directories} 个文件夹。{dirty && "未保存的修改也会被放弃。"}</p>{error && <p className="extension-error" role="alert">{error}</p>}<div className="extension-actions"><button className="secondary" disabled={busy} onClick={() => setDeleting(false)}>取消</button><button className="danger" disabled={busy} onClick={() => void remove()}>确认卸载</button></div></div></Modal>}
           {discard && <Modal title="重新加载文件" restoreFocusSelector="#skill-reload, #skill-content" onClose={() => setDiscard(false)}><div className="skill-detail-confirm"><p>放弃尚未保存的修改并重新加载？</p><div className="extension-actions"><button className="secondary" onClick={() => setDiscard(false)}>继续编辑</button><button className="danger" onClick={() => { setDiscard(false); setError(""); setNotice(""); void resource.reload(); }}>放弃修改</button></div></div></Modal>}
-          {choosingDirectory && <Modal title="选择工作区目录" restoreFocusSelector="#skill-choose-directory" onClose={() => setChoosingDirectory(false)}><div className="skill-detail-confirm"><p>当前工作区有 {directories.length} 个同名 Skill，请选择要查看的位置。</p><ul className="skill-detail-directory-list">{directories.map(directory => <li key={directory}><Link href={workspaceUrl(directory)}><FolderOpen size={18} /><span>{directory}</span><ChevronRight size={16} /></Link></li>)}</ul></div></Modal>}
+          {choosingDirectory && <Modal title="选择资源目录" restoreFocusSelector="#skill-choose-directory" onClose={() => setChoosingDirectory(false)}><div className="skill-detail-confirm"><p>你的资源中有 {directories.length} 个同名 Skill，请选择要查看的位置。</p><ul className="skill-detail-directory-list">{directories.map(directory => <li key={directory}><Link href={workspaceUrl(directory)}><FolderOpen size={18} /><span>{directory}</span><ChevronRight size={16} /></Link></li>)}</ul></div></Modal>}
           {packagePath && <Modal title="包内文件" wide restoreFocusSelector={packageOrigin} onClose={() => setPackagePath(null)}><div className="skill-detail-package-preview"><SkillResources files={packageFiles} review={resource.data.review} path={packagePath} onSelect={setPackagePath} personal /></div></Modal>}
-          {preview && <ResourcePreview item={preview} scope={`${session.user.id}:${session.workspace_id}`} onClose={() => setPreview(null)}
+          {preview && <ResourcePreview item={preview} scope={session.user.id} onClose={() => setPreview(null)}
             restoreFocusSelector={`[data-resource-id="${preview.id}"], [data-skill-reference="${encodeURIComponent(preview.path.slice((resource.data.directory?.length || 0) + 1))}"]`} />}
         </>}
       </div>

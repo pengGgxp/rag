@@ -10,10 +10,30 @@ from sqlalchemy import delete, select
 from .auth import digest, now
 from .config import get_settings
 from .db import SessionLocal
-from .models import AuthToken, Membership, User, SiteAuthAudit, LEGACY_WORKSPACE_ID
+from .models import AuthToken, User, SiteAuthAudit
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "personal-accounts":
+        from .personal_accounts import cleanup_external_resources, cleanup_suspended_accounts
+        if sys.argv[2:] == ["cleanup-suspended"]:
+            from .storage import list_object_keys
+            with SessionLocal() as db:
+                while True:
+                    result = cleanup_suspended_accounts(db, list_objects=list_object_keys,
+                                                        cleanup_external=cleanup_external_resources)
+                    print(json.dumps(result, ensure_ascii=True, indent=2, default=str))
+                    if result["accounts_deleted"] == 0 and (
+                        not result["objects_deleted"] or not result["remaining_objects"]
+                    ):
+                        break
+                if result["remaining_objects"]:
+                    raise SystemExit(1)
+            return
+        raise SystemExit(
+            "Usage: python -m app.manage personal-accounts "
+            "cleanup-suspended"
+        )
     if len(sys.argv) >= 3 and sys.argv[1] == "pricing":
         from .billing_admin import migration_command
         from fastapi import HTTPException
@@ -66,17 +86,22 @@ def main():
             print(f"Site administration {sys.argv[2]} completed.")
         return
     if sys.argv[1:] != ["bootstrap"]:
-        raise SystemExit("Usage: python -m app.manage bootstrap | site-admin grant|revoke --email <email> | model-billing status|enable|disable")
+        raise SystemExit(
+            "Usage: python -m app.manage bootstrap | "
+            "personal-accounts cleanup-suspended | "
+            "site-admin grant|revoke --email <email> | "
+            "model-billing status|enable|disable"
+        )
     with SessionLocal() as db:
-        if db.scalar(select(Membership).where(Membership.workspace_id == LEGACY_WORKSPACE_ID)):
-            raise SystemExit("The existing workspace has already been claimed.")
+        if db.scalar(select(User.id).limit(1)) is not None:
+            raise SystemExit("Initial account setup is already complete.")
         token = secrets.token_urlsafe(48)
         db.execute(delete(AuthToken).where(AuthToken.purpose == "bootstrap"))
         db.add(AuthToken(token_hash=digest(token), purpose="bootstrap", expires_at=now()+timedelta(hours=1)))
         db.commit()
-        print("One-time workspace setup token (valid for 1 hour):")
+        print("One-time setup token (valid for 1 hour):")
         print(token)
-        print("One-time workspace setup link:")
+        print("One-time setup link:")
         print(f"{get_settings().frontend_url.rstrip('/')}/?setup={quote(token)}")
 
 

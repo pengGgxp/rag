@@ -12,12 +12,13 @@ import "./storage-packages.css";
 const json = (body: unknown) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const date = (value: string) => new Date(value).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
 
-export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
-  workspaceId?: string; admin?: boolean; onBusyChange?: (busy: boolean) => void;
+export function StoragePanel({ userId, onBusyChange }: {
+  userId?: string; onBusyChange?: (busy: boolean) => void;
 }) {
   const { session } = useAuth();
-  const canPurchase = !admin && session.workspaces.find(w => w.id === session.workspace_id)?.role === "admin";
-  const root = admin ? `/site/admin/workspaces/${workspaceId}/storage` : "/storage/allowances";
+  const admin = Boolean(userId);
+  const canPurchase = !admin;
+  const root = userId ? `/site/admin/users/${userId}/storage` : "/storage/allowances";
   const [data, setData] = useState<StorageAllowances | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -35,7 +36,7 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
     try { const result = await request<StorageAllowances>(root); if (sequence.current === current) setData(result); }
     catch (e) { if (sequence.current === current) setError(e instanceof Error ? e.message : "读取失败，请重试"); }
     finally { if (sequence.current === current) setLoading(false); }
-  }, [root, session.workspace_id]);
+  }, [root, session.user.id]);
   useEffect(() => { setData(null); setPurchase(null); setGrant(false); setNotice(""); void load(); return () => { sequence.current++; }; }, [load]);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   async function confirm() {
@@ -64,7 +65,7 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
           <div className="storage-package-action"><strong>{formatCredits(item.price_credits ?? 0)} 积分</strong>{canPurchase && <button id={`storage-buy-${item.id}`} className="secondary" disabled={busy} onClick={() => {
             setDialogError(""); setPurchase({ item, id: crypto.randomUUID(), version: data.config_version, expires: new Date(Date.now()+item.days*86400000).toISOString() });
           }}><Plus size={16} />购买</button>}</div>
-        </div>)}</div>{!canPurchase && <p className="storage-note">请联系工作区管理员购买额度。</p>}</section>}
+        </div>)}</div></section>}
       {data.entitlements.length > 0 && <section><h2>可用套餐</h2><div className="storage-package-list">{data.entitlements.map(item => <div className="storage-package-row" key={item.id}>
         <div><strong>{item.name}</strong><span>{item.storage_bytes ? `${bytes(item.storage_bytes)} 存储 · ` : ""}剩余 {bytes(item.remaining_bytes)} 下载</span></div><span>{date(item.expires_at)} 到期</span>
       </div>)}</div></section>}
@@ -76,7 +77,7 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
     {purchase && <Dialog title="确认购买" busy={busy} restoreFocusSelector={`#storage-buy-${purchase.item.id}`} onClose={() => { if (!busy) setPurchase(null); }}>
       <div className="storage-dialog-body">
       <dl className="storage-confirm"><div><dt>套餐</dt><dd>{purchase.item.name}</dd></div>
-        <div><dt>扣除工作区积分</dt><dd>{formatCredits(purchase.item.price_credits ?? 0)} 积分</dd></div>
+        <div><dt>扣除账号积分</dt><dd>{formatCredits(purchase.item.price_credits ?? 0)} 积分</dd></div>
         <div><dt>增加存储空间</dt><dd>{bytes(purchase.item.storage_bytes)}</dd></div>
         <div><dt>增加下载额度</dt><dd>{bytes(purchase.item.download_bytes)}</dd></div>
         <div><dt>有效期</dt><dd>到账后 {purchase.item.days} 天，预计 {date(purchase.expires)} 到期</dd></div></dl>
@@ -85,7 +86,7 @@ export function StoragePanel({ workspaceId, admin = false, onBusyChange }: {
       <div className="storage-dialog-actions"><button className="secondary" disabled={busy} onClick={() => setPurchase(null)}>取消</button><button className="primary" disabled={busy} onClick={() => void confirm()}>{busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}确认购买</button></div>
       </div>
     </Dialog>}
-    {grant && <Dialog title="增加工作区额度" busy={busy} onClose={() => { if (!busy) setGrant(false); }}><form className="storage-grant-form storage-dialog-body" onSubmit={async e => {
+    {grant && <Dialog title="增加额度" busy={busy} onClose={() => { if (!busy) setGrant(false); }}><form className="storage-grant-form storage-dialog-body" onSubmit={async e => {
       e.preventDefault(); if (busy) return; setBusy(true); setDialogError("");
       try { await request(`${root}/grants`, json({ storage_bytes: Number(grantForm.storage)*GiB, download_bytes: Number(grantForm.download)*GiB,
         days: Number(grantForm.days), reason: grantForm.reason, request_id: grantId.current })); setGrant(false); setNotice("额度已增加"); await load(); }

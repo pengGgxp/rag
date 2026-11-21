@@ -1,4 +1,4 @@
-"""Cross-workspace site administration APIs, separate from workspace roles."""
+"""Site administration for user accounts."""
 from datetime import datetime, timedelta, timezone
 import secrets
 from uuid import UUID
@@ -13,8 +13,8 @@ from . import auth
 from .db import get_db
 from .email_auth import email_rate_limit
 from .models import (
-    CreditAccount, CreditLedgerEntry, ExternalIdentity, LLMProviderConfig, LoginSession, Membership,
-    SiteAuditEvent, SiteModelProvider, User, Workspace, QuestionWorkbenchGrant,
+    CreditLedgerEntry, ExternalIdentity, LoginSession,
+    SiteAuditEvent, User, UserCreditAccount, UserModelPolicy, QuestionWorkbenchGrant,
 )
 from .site_auth import site_admin, send_mail
 from .site_audit import record, RETENTION_DAYS
@@ -52,37 +52,6 @@ def adjustment_read(entry, actor_name=None):
         "created_at": entry.created_at.isoformat()}
 
 
-@router.get("/workspaces/{workspace_id}/credits")
-def read_workspace_credits(workspace_id: UUID, db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    if db.get(Workspace, workspace_id) is None:
-        raise HTTPException(404, "工作区不存在")
-    from .model_billing import pending_credits
-    entries = db.execute(select(CreditLedgerEntry, User.name).outerjoin(User,
-        User.id == CreditLedgerEntry.actor_user_id).where(CreditLedgerEntry.workspace_id == workspace_id,
-        CreditLedgerEntry.kind.in_(("manual_credit", "manual_debit")))
-        .order_by(CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc()).limit(30)).all()
-    return {"credits": credit_values(db.get(CreditAccount, workspace_id)),
-        "pending_credits": pending_credits(db, workspace_id),
-        "adjustments": [adjustment_read(entry, name) for entry, name in entries]}
-
-
-@router.post("/workspaces/{workspace_id}/credits/adjustments")
-def adjust_workspace_credits(workspace_id: UUID, payload: CreditAdjustment, request: Request,
-                             db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    from .credits import adjust_balance
-    if db.get(Workspace, workspace_id) is None:
-        raise HTTPException(404, "工作区不存在")
-    signed = payload.amount if payload.direction == "add" else -payload.amount
-    account, entry, created = adjust_balance(db, workspace_id, actor.id, payload.request_id,
-        signed, payload.reason, payload.expected_balance)
-    if created:
-        record(db, actor, "workspace.credits_adjusted", "workspace", workspace_id, request=request,
-            details={"request_id": str(payload.request_id), "resource_id": str(entry.id), "amount": str(signed),
-                     "balance_before": str(entry.balance_after - signed), "balance_after": str(entry.balance_after)})
-    db.commit()
-    return {"credits": credit_values(account), "adjustment": adjustment_read(entry, actor.name)}
-
-
 def reject_operation(db, actor, action, user, request, status, message):
     record(db, actor, action, "user", user.id, request=request, result="blocked")
     db.commit()
@@ -93,12 +62,9 @@ def search_term(value):
 
 
 def user_summary(db: Session, user: User):
-    memberships = db.execute(select(Workspace.id, Workspace.name, Membership.role, CreditAccount.balance,
-        CreditAccount.lifetime_granted, CreditAccount.lifetime_spent)
-        .join(Membership, Membership.workspace_id == Workspace.id)
-        .outerjoin(CreditAccount, CreditAccount.workspace_id == Workspace.id)
-        .where(Membership.user_id == user.id).order_by(Workspace.created_at)).all()
     identities = db.scalars(select(ExternalIdentity.provider).where(ExternalIdentity.user_id == user.id)).all()
+    credits = db.get(UserCreditAccount, user.id)
+    policy = db.get(UserModelPolicy, user.id)
     return {
         "id": str(user.id), "email": user.email, "name": user.name,
         "email_verified": user.email_verified_at is not None,
@@ -112,27 +78,13 @@ def user_summary(db: Session, user: User):
             "other_oauth": any(not provider.startswith("senyu:") for provider in identities)},
         "active_sessions": db.scalar(select(func.count()).select_from(LoginSession).where(
             LoginSession.user_id == user.id, LoginSession.expires_at > datetime.now(timezone.utc))) or 0,
-        "workspaces": [{"id": str(row.id), "name": row.name, "role": row.role,
-            "credits": {"balance": row.balance or 0, "lifetime_granted": row.lifetime_granted or 0,
-                           "lifetime_spent": row.lifetime_spent or 0}} for row in memberships],
-    }
-
-
-def workspace_summary(db: Session, workspace: Workspace):
-    account = db.get(CreditAccount, workspace.id)
-    providers = db.scalars(select(SiteModelProvider.name).join(LLMProviderConfig,
-        LLMProviderConfig.site_provider_id == SiteModelProvider.id).where(
-        LLMProviderConfig.workspace_id == workspace.id, SiteModelProvider.enabled.is_(True))).all()
-    return {
-        "id": str(workspace.id), "name": workspace.name, "created_at": workspace.created_at.isoformat(),
-        "member_count": db.scalar(select(func.count()).select_from(Membership).where(
-            Membership.workspace_id == workspace.id)) or 0,
-        "credits": {"balance": account.balance if account else 0,
-            "lifetime_granted": account.lifetime_granted if account else 0,
-            "lifetime_spent": account.lifetime_spent if account else 0},
-        "configuration": {"enabled_model_providers": len(providers),
-            "provider_names": list(providers)},
-        "billing_multiplier": f"{workspace.billing_multiplier_percent // 100}.{workspace.billing_multiplier_percent % 100:02d}",
+        "credits": credit_values(credits),
+        "model_policy": {
+            "available_models": policy.available_models if policy else [],
+            "default_model": policy.default_model if policy else None,
+            "billing_multiplier_percent": policy.billing_multiplier_percent if policy else 100,
+            "version": policy.version if policy else 0,
+        },
     }
 
 
@@ -147,7 +99,6 @@ def overview(db: Session = Depends(get_db), actor: User = Depends(site_admin)):
             User.email_verified_at.is_(None))) or 0,
         "users_suspended": db.scalar(select(func.count()).select_from(User).where(
             User.is_suspended.is_(True))) or 0,
-        "workspaces_total": db.scalar(select(func.count()).select_from(Workspace)) or 0,
     }
 
 
@@ -178,6 +129,36 @@ def get_user(user_id: UUID, db: Session = Depends(get_db), actor: User = Depends
     return user_summary(db, user)
 
 
+@router.get("/users/{user_id}/credits")
+def user_credits(user_id: UUID, db: Session = Depends(get_db), actor: User = Depends(site_admin)):
+    from .model_billing import pending_credits
+    if db.get(User, user_id) is None:
+        raise HTTPException(404, "用户不存在")
+    entries = db.execute(select(CreditLedgerEntry, User.name)
+        .outerjoin(User, CreditLedgerEntry.actor_user_id == User.id)
+        .where(CreditLedgerEntry.account_id == user_id,
+               CreditLedgerEntry.kind.in_(("manual_credit", "manual_debit")))
+        .order_by(CreditLedgerEntry.created_at.desc(), CreditLedgerEntry.id.desc()).limit(25)).all()
+    return {"credits": credit_values(db.get(UserCreditAccount, user_id)),
+            "pending_credits": pending_credits(db, user_id),
+            "adjustments": [adjustment_read(entry, name) for entry, name in entries]}
+
+
+@router.post("/users/{user_id}/credits/adjustments")
+def adjust_user_credits(user_id: UUID, payload: CreditAdjustment, request: Request,
+                        db: Session = Depends(get_db), actor: User = Depends(site_admin)):
+    from .credits import adjust_balance
+    account, entry, created = adjust_balance(db, user_id, actor.id, payload.request_id,
+        payload.amount if payload.direction == "add" else -payload.amount,
+        payload.reason, payload.expected_balance)
+    if created:
+        record(db, actor, "user.credits_adjusted", "user", user_id, request=request,
+               details={"ledger_entry_id": str(entry.id), "amount": str(entry.amount)})
+    response = {"credits": credit_values(account), "adjustment": adjustment_read(entry, actor.name)}
+    db.commit()
+    return response
+
+
 class UserStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
     suspended: bool
@@ -188,6 +169,57 @@ class WorkbenchAccess(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
     version: int = Field(ge=0)
+
+
+class UserModelPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    available_models: list[UUID] = Field(max_length=100)
+    default_model: UUID | None = None
+    billing_multiplier_percent: int = Field(ge=1, le=10000, strict=True)
+    version: int = Field(ge=0, strict=True)
+
+
+@router.put("/users/{user_id}/model-policy")
+def set_user_model_policy(
+    user_id: UUID,
+    payload: UserModelPolicyUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: User = Depends(site_admin),
+):
+    from .models import SiteModelProvider
+
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None:
+        raise HTTPException(404, "用户不存在")
+    policy = db.get(UserModelPolicy, user.id, with_for_update=True)
+    current_version = policy.version if policy else 0
+    if payload.version != current_version:
+        raise HTTPException(409, "模型策略已更新，请重新读取后重试")
+    available = list(dict.fromkeys(payload.available_models))
+    if payload.default_model is not None and payload.default_model not in available:
+        raise HTTPException(422, "默认模型必须包含在可用模型中")
+    if available:
+        providers = db.scalars(select(SiteModelProvider).where(
+            SiteModelProvider.id.in_(available),
+            SiteModelProvider.enabled.is_(True),
+            SiteModelProvider.supports_chat.is_(True),
+        )).all()
+        if {provider.id for provider in providers} != set(available):
+            raise HTTPException(422, "可用模型包含不存在、停用或不支持对话的模型")
+    if policy is None:
+        policy = UserModelPolicy(user_id=user.id)
+        db.add(policy)
+    policy.available_models = [str(identifier) for identifier in available]
+    policy.default_model = str(payload.default_model) if payload.default_model else None
+    policy.billing_multiplier_percent = payload.billing_multiplier_percent
+    policy.version = current_version + 1
+    record(db, actor, "user.model_policy_changed", "user", user.id, request=request,
+           details={"version": policy.version, "available_models": policy.available_models,
+                    "default_model": policy.default_model,
+                    "billing_multiplier_percent": policy.billing_multiplier_percent})
+    db.commit()
+    return user_summary(db, user)
 
 
 @router.put("/users/{user_id}/question-workbench")
@@ -271,28 +303,6 @@ def resend_verification(user_id: UUID, request: Request, db: Session = Depends(g
         db.commit()
         raise
     return {"message": "验证邮件已提交发送，请用户检查收件箱及垃圾邮件"}
-
-
-@router.get("/workspaces")
-def list_workspaces(q: str = Query(default="", max_length=200), page: int = Query(default=1, ge=1),
-                    page_size: int = Query(default=25, ge=1, le=100), db: Session = Depends(get_db),
-                    actor: User = Depends(site_admin)):
-    filters = [or_(Workspace.name.ilike(search_term(q), escape="\\"), Workspace.id.cast(String).ilike(search_term(q), escape="\\"))] if q.strip() else []
-    total = db.scalar(select(func.count()).select_from(Workspace).where(*filters)) or 0
-    rows = db.scalars(select(Workspace).where(*filters).order_by(Workspace.created_at.desc(), Workspace.id).offset((page-1)*page_size).limit(page_size)).all()
-    return {"items": [workspace_summary(db, row) for row in rows], "total": total, "page": page, "page_size": page_size}
-
-
-@router.get("/workspaces/{workspace_id}")
-def get_workspace(workspace_id: UUID, db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    workspace = db.get(Workspace, workspace_id)
-    if not workspace: raise HTTPException(404, "工作区不存在")
-    members = db.execute(select(User, Membership.role).join(Membership, Membership.user_id == User.id)
-        .where(Membership.workspace_id == workspace.id).order_by(User.created_at)).all()
-    summary = workspace_summary(db, workspace)
-    summary["members"] = [{"id": str(user.id), "email": user.email, "name": user.name,
-        "role": role, "is_suspended": user.is_suspended} for user, role in members]
-    return summary
 
 
 @router.get("/audit")
