@@ -102,7 +102,12 @@ def delete(db, access, paths, *, confirmation=None, request_id=None):
             for row in selected_dirs:
                 db.delete(row)
             return {"deleted": paths, "files": preview["files"], "directories": preview["directories"]}
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        knowledge_prefix = shared.object_key(access.user_id, "知识库/")
+        if any(change["key"].startswith(knowledge_prefix) for change in changes):
+            from .personal_library_sync import reconcile
+            reconcile(db, access)
+        return result
 
 
 def save_files(db, access, files, *, expected=None, request_id=None, source="resource_upload", signature=None,
@@ -143,7 +148,12 @@ def save_files(db, access, files, *, expected=None, request_id=None, source="res
                 row.live_etag = ops.storage(db).head(change["key"]).get("ETag")
                 result.append(read_file(row))
             return {"items": result}
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        knowledge_prefix = shared.object_key(access.user_id, "知识库/")
+        if any(change["key"].startswith(knowledge_prefix) for change in changes):
+            from .personal_library_sync import reconcile
+            reconcile(db, access)
+        return result
 
 
 def create_directory(db, access, path, *, request_id=None):
@@ -296,4 +306,9 @@ def transfer(db, access, paths, destination="", *, move=False, rename=None, poli
                 # Commit the exact rename response with the operation, including a no-op rename.
                 result["file"] = read_file(files[paths[0]])
             return result
-        return ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        result = ops.execute(db, access, changes, update, request_id=request_id, signature=signature)
+        knowledge_prefix = shared.object_key(access.user_id, "知识库/")
+        if any(change["key"].startswith(knowledge_prefix) for change in changes):
+            from .personal_library_sync import reconcile
+            reconcile(db, access)
+        return result
