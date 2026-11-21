@@ -97,12 +97,36 @@ def test_fresh_upgrade_removes_workspace_schema_and_unclaimed_seed(legacy_databa
     assert db.scalars(select(CreditLedgerEntry)).all() == []
 
 
-def test_orphaned_workspace_fails_before_schema_changes(legacy_database):
+def test_orphaned_workspace_without_any_registered_user_fails_before_schema_changes(legacy_database):
     db, migrate = legacy_database
     orphan = insert(db, "workspaces", name="No administrator")
     with pytest.raises(RuntimeError, match=str(orphan)):
         migrate()
     assert not inspect(db.connection()).has_table("personal_account_ownerships")
+
+
+def test_orphaned_workspaces_belong_to_the_earliest_registered_user(legacy_database):
+    db, migrate = legacy_database
+    registered_first = account(
+        db, "Registered first", id=UUID(int=101),
+        created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+    registered_later = account(
+        db, "Registered later", id=UUID(int=102),
+        created_at=datetime(2024, 2, 1, tzinfo=timezone.utc),
+    )
+    no_members = insert(db, "workspaces", name="No members")
+    only_non_admin = insert(db, "workspaces", name="Only non-admin")
+    insert(db, "memberships", workspace_id=only_non_admin,
+           user_id=registered_later, role="editor")
+    no_members_file, _ = old_file(db, no_members, registered_later, "unclaimed.txt")
+    non_admin_file, _ = old_file(db, only_non_admin, registered_later, "legacy.txt")
+
+    migrate()
+
+    assert db.get(WorkspaceFile, no_members_file).owner_user_id == registered_first
+    assert db.get(WorkspaceFile, non_admin_file).owner_user_id == registered_first
+    assert db.get(User, registered_later) is not None
 
 
 def test_merge_preserves_billing_model_policy_and_physical_keys(legacy_database):

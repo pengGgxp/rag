@@ -170,10 +170,18 @@ def upgrade():
     )).all()
     # A fresh install contains a reserved workspace and the default grant even
     # before any user exists. Leave that seed available for first registration.
-    unresolved = [workspace_id for workspace_id in missing if not _unclaimed_seed(connection, workspace_id)]
-    if unresolved:
-        raise RuntimeError("Cannot migrate workspace ownership: no administrator for "
-                           + ", ".join(map(str, unresolved)))
+    unclaimed_seed = (
+        LEGACY in {str(workspace_id) for workspace_id in missing}
+        and _unclaimed_seed(connection, LEGACY)
+    )
+    orphaned = [workspace_id for workspace_id in missing
+                if not (unclaimed_seed and str(workspace_id) == LEGACY)]
+    fallback_user_id = connection.scalar(sa.text(
+        "SELECT id FROM users ORDER BY created_at, id LIMIT 1"
+    )) if orphaned else None
+    if orphaned and fallback_user_id is None:
+        raise RuntimeError("Cannot migrate workspace ownership: no registered user for "
+                           + ", ".join(map(str, orphaned)))
 
     op.create_table(
         "personal_account_ownerships",
@@ -237,21 +245,38 @@ def upgrade():
     for column in ("created_by", "updated_by"):
         op.alter_column("site_skills", column, existing_type=sa.Uuid(), nullable=True)
 
-    # Rank receiving users first, then pick the oldest workspace actually won.
+    # Admin workspaces go to their earliest registered admin. Workspaces with
+    # no admin go to the earliest registered user, preserving all legacy data.
+    # Then pick the oldest workspace won by each user as the physical target.
     connection.execute(sa.text(
         "WITH receivers AS ("
-        "  SELECT DISTINCT ON (m.workspace_id) m.workspace_id, m.user_id, w.created_at "
-        "  FROM memberships m JOIN users u ON u.id = m.user_id "
-        "  JOIN workspaces w ON w.id = m.workspace_id "
-        "  WHERE m.role = 'admin' "
-        "  ORDER BY m.workspace_id, u.created_at, u.id"
+        "  SELECT admin_receivers.workspace_id, admin_receivers.user_id, "
+        "    admin_receivers.created_at, 'admin_created_at' AS selected_by "
+        "  FROM ("
+        "    SELECT DISTINCT ON (m.workspace_id) m.workspace_id, m.user_id, w.created_at "
+        "    FROM memberships m JOIN users u ON u.id = m.user_id "
+        "    JOIN workspaces w ON w.id = m.workspace_id "
+        "    WHERE m.role = 'admin' "
+        "    ORDER BY m.workspace_id, u.created_at, u.id"
+        "  ) admin_receivers "
+        "  UNION ALL "
+        "  SELECT w.id, CAST(:fallback_user_id AS uuid), w.created_at, "
+        "    'earliest_user_fallback' "
+        "  FROM workspaces w "
+        "  WHERE NOT EXISTS (SELECT 1 FROM memberships m "
+        "    WHERE m.workspace_id = w.id AND m.role = 'admin') "
+        "    AND (NOT :unclaimed_seed OR w.id <> CAST(:legacy_workspace_id AS uuid))"
         ") "
         "INSERT INTO personal_account_ownerships "
-        "(workspace_id, user_id, canonical_workspace_id) "
+        "(workspace_id, user_id, canonical_workspace_id, selected_by) "
         "SELECT workspace_id, user_id, "
-        "FIRST_VALUE(workspace_id) OVER (PARTITION BY user_id ORDER BY created_at, workspace_id) "
-        "FROM receivers"
-    ))
+        "FIRST_VALUE(workspace_id) OVER (PARTITION BY user_id ORDER BY created_at, workspace_id), "
+        "selected_by FROM receivers"
+    ), {
+        "fallback_user_id": fallback_user_id,
+        "unclaimed_seed": unclaimed_seed,
+        "legacy_workspace_id": LEGACY,
+    })
     # Former non-receiving members still need personal accounts with an empty
     # resource namespace. Do not give them any of their old memberships.
     connection.execute(sa.text(
