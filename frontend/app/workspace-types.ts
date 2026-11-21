@@ -37,7 +37,6 @@ export function documentIssue(doc: SourceDocument) {
 }
 
 export type SourceDocument = {
-  personal_file_id?: string | null;
   id: string;
   knowledge_base_id: string;
   content_origin?: string;

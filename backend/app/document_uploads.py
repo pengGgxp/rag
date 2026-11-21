@@ -29,7 +29,6 @@ class UploadInput(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = Field(default="application/octet-stream", max_length=150)
     size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
-    relative_path: str | None = Field(default=None, max_length=512)
     version_of: UUID | None = None
     request_key: UUID = Field(default_factory=uuid4)
 
@@ -70,10 +69,6 @@ def cloud_parts(storage, row):
 def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
                   db=Depends(get_db), access=Depends(get_access)):
     access.library(db, library_id, write=True)
-    if payload.relative_path:
-        from .workspace_files import valid_path
-        if valid_path(payload.relative_path).rsplit("/", 1)[-1] != payload.filename:
-            raise HTTPException(422, "相对路径与文件名不一致")
     request_key = idempotency_key or payload.request_key
     # Lock before opening a storage multipart session so concurrent replays share one.
     lock_key = int.from_bytes(hashlib.sha256(
@@ -86,8 +81,8 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
         DocumentUpload.knowledge_base_id == library_id, DocumentUpload.request_key == request_key,
     ).with_for_update())
     if prior:
-        if (prior.filename, prior.content_type, prior.size_bytes, prior.version_of, prior.relative_path) != (
-                payload.filename, payload.content_type, payload.size_bytes, payload.version_of, payload.relative_path):
+        if (prior.filename, prior.content_type, prior.size_bytes, prior.version_of) != (
+                payload.filename, payload.content_type, payload.size_bytes, payload.version_of):
             raise rejection(409, "upload", "idempotency_conflict",
                             "此上传请求已用于其他文件，请重新选择文件")
         result = view(prior)
@@ -117,7 +112,7 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
     identifier = uuid4()
     key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
     row = DocumentUpload(id=identifier, user_id=access.user_id, account_id=access.user_id,
-        knowledge_base_id=library_id, filename=payload.filename, relative_path=payload.relative_path, content_type=payload.content_type,
+        knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
         size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
         multipart_id="", request_key=request_key, state="creating",
         expires_at=now()+timedelta(hours=24))
@@ -277,14 +272,8 @@ def finalize_upload(identifier):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
             lock_workspace(db, row.account_id)
             access = worker_access(db, row)
-            library = access.library(db, row.knowledge_base_id, write=True)
-            if library.directory_path:
-                from .personal_library_files import publish_upload
-                document, job = publish_upload(db, access, library, row.relative_path or row.filename,
-                    row.content_type, content, digest, upload_row=row, replace_id=row.version_of)
-            else:
-                document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
-                    size, digest, row.object_key, row.version_of)
+            document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
+                size, digest, row.object_key, row.version_of)
             row.document_id, row.state = document.id, "completed"
             row.error, row.failure, row.verify_after = None, None, None
             job_id = str(job.id)

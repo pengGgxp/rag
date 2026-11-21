@@ -98,7 +98,6 @@ class DocumentUpload(Base):
     account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
     version_of: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
-    relative_path: Mapped[str | None] = mapped_column(String(512))
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(150))
     size_bytes: Mapped[int] = mapped_column(Integer)
@@ -615,7 +614,6 @@ class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    directory_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -637,7 +635,6 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    personal_file_id: Mapped[UUID | None] = mapped_column(ForeignKey("workspace_files.id"), unique=True)
     knowledge_base_id: Mapped[UUID] = mapped_column(ForeignKey("knowledge_bases.id"), index=True)
     version_group_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True, default=uuid4)
     version_number: Mapped[int] = mapped_column(Integer, default=1)
@@ -663,11 +660,6 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
-    @property
-    def relative_path(self):
-        prefix = f"accounts/{self.knowledge_base.account_id}/resource-directory/"
-        return self.object_key[len(prefix):] if self.personal_file_id and self.object_key.startswith(prefix) else None
-
     jobs: Mapped[list["IngestionJob"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )

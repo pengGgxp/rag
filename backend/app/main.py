@@ -325,19 +325,18 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request,
         account_id=access.user_id,
         owner_id=access.user_id,
     )
-    from .personal_library_files import create_library_directory
-
-    def finish():
-        record_audit(
-            db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-            action="knowledge_base.created", resource_type="knowledge_base",
-            resource_id=knowledge_base.id,
-            metadata={"name": payload.name[:100], "tags": payload.tags},
-            request=request,
-        )
-        return KnowledgeBaseRead.model_validate(knowledge_base).model_dump(mode="json")
-
-    return create_library_directory(db, access, knowledge_base, finish)
+    db.add(knowledge_base)
+    db.flush()
+    record_audit(
+        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
+        action="knowledge_base.created", resource_type="knowledge_base",
+        resource_id=knowledge_base.id,
+        metadata={"name": payload.name[:100], "tags": payload.tags},
+        request=request,
+    )
+    db.commit()
+    db.refresh(knowledge_base)
+    return KnowledgeBaseRead.model_validate(knowledge_base)
 
 
 @app.patch("/knowledge-bases/{knowledge_base_id}", response_model=KnowledgeBaseRead)
@@ -493,19 +492,6 @@ def document_read(document, job):
     })
 
 
-@app.get("/documents/{document_id}/citation-location")
-def citation_location(document_id: UUID, content_hash: str, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id)
-    if document is None:
-        raise HTTPException(404, "原文不可用")
-    library = access.library(db, document.knowledge_base_id)
-    if document.status == DocumentStatus.DELETED or library.status == KnowledgeBaseStatus.ARCHIVED:
-        return {"state": "unavailable"}
-    if document.content_hash != content_hash:
-        return {"state": "changed"}
-    return {"state": "current", "path": document.relative_path, "file_id": document.personal_file_id}
-
-
 @app.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=list[DocumentRead])
 def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.library(db, knowledge_base_id)
@@ -592,12 +578,6 @@ def delete_document(document_id: UUID, request: Request, db: Session = Depends(g
     if document.status == DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
 
-    if document.personal_file_id:
-        from .workspace_mutations import delete
-        delete(db, access, [document.relative_path])
-        db.refresh(document)
-        return DocumentRead.model_validate(document)
-
     was_active = document.is_active
     document.status = DocumentStatus.DELETED
     document.is_active = False
@@ -648,8 +628,6 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
     access.library(db, document.knowledge_base_id, write=True)
     if document.status != DocumentStatus.DELETED:
         return DocumentRead.model_validate(document)
-    if document.object_key.startswith("detached/"):
-        raise HTTPException(409, "原件已移出或删除，请从个人文件重新入库")
     require_indexing_stopped(document)
 
     previous_job = latest_document_job(db, document)
@@ -1086,8 +1064,6 @@ def retrieve_knowledge_base(
         SearchResult(
             trace_id=trace_id,
             chunk=ChunkRead.model_validate(entry["chunk"]).model_copy(update={
-                "relative_path": entry["chunk"].document.relative_path,
-                "document_hash": entry["chunk"].document.content_hash,
                 "version_group_id": entry["chunk"].document.version_group_id,
                 "version_number": entry["chunk"].document.version_number,
                 "content_origin": entry["chunk"].document.content_origin,
@@ -1148,8 +1124,6 @@ def answer_knowledge_base(
         citations = [
             CitationRead(
                 chunk_id=result.chunk.id,
-                document_id=result.chunk.document_id, relative_path=result.chunk.relative_path,
-                document_hash=result.chunk.document_hash,
                 filename=result.filename,
                 content_origin=result.chunk.content_origin,
                 text=result.chunk.text,

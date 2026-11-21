@@ -397,13 +397,11 @@ def _process_document(task, session, job_id, prepared_content):
                 content = source.read()
         else:
             content = prepared_content
-        if document.personal_file_id and __import__("hashlib").sha256(content).hexdigest() != document.content_hash:
-            raise ValueError("文件内容已变化，等待同步")
         parsed = parse_for_ingestion(session, job, document, content)
         if not parsed.text.strip():
             raise ValueError("The document parser produced no text")
-        session.refresh(document, with_for_update=True)
-        session.refresh(job, with_for_update=True)
+        session.refresh(document)
+        session.refresh(job)
         if job.state == JobState.CANCELLED:
             return
         if document.status == DocumentStatus.DELETED:
@@ -594,22 +592,6 @@ def cleanup_workspace_files() -> None:
     from .file_operations import recover_pending
     with SessionLocal() as db:
         recover_pending(db)
-        from .models import KnowledgeBase, User
-        accounts = list(db.scalars(select(KnowledgeBase.account_id).join(User, User.id == KnowledgeBase.account_id)
-            .where(KnowledgeBase.directory_path.is_not(None), User.is_suspended.is_(False)).distinct()))
-    for identifier in accounts:
-        sync_personal_libraries.delay(str(identifier))
-
-
-@celery_app.task
-def sync_personal_libraries(identifier):
-    from .auth import Access
-    from .models import User
-    from .personal_library_sync import reconcile
-    with SessionLocal() as db:
-        user = db.get(User, UUID(identifier))
-        if user and not user.is_suspended:
-            return reconcile(db, Access(user.id, ""))
 
 
 class EmbeddingCancelled(Exception):

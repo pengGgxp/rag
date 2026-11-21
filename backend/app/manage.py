@@ -14,14 +14,6 @@ from .models import AuthToken, User, SiteAuthAudit
 
 
 def main():
-    if sys.argv[1:] in (["personal-libraries", "preview"], ["personal-libraries", "migrate"]):
-        from .migrate_personal_libraries import migrate
-        with SessionLocal() as db:
-            report = migrate(db, apply=sys.argv[-1] == "migrate")
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            if report["problems"]:
-                raise SystemExit(1)
-        return
     if len(sys.argv) >= 2 and sys.argv[1] == "personal-accounts":
         from .personal_accounts import cleanup_external_resources, cleanup_suspended_accounts
         if sys.argv[2:] == ["cleanup-suspended"]:
@@ -96,7 +88,6 @@ def main():
     if sys.argv[1:] != ["bootstrap"]:
         raise SystemExit(
             "Usage: python -m app.manage bootstrap | "
-            "personal-libraries preview|migrate | "
             "personal-accounts cleanup-suspended | "
             "site-admin grant|revoke --email <email> | "
             "model-billing status|enable|disable"
