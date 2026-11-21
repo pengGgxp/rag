@@ -149,6 +149,7 @@ def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)
             job = latest_document_job(db, document)
             if job:
                 from .document_failures import safe_job_failure
+                result["job_id"] = str(job.id)
                 job_failure = safe_job_failure(job, document)
                 if job_failure:
                     result["failure"] = job_failure

@@ -1,12 +1,12 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Check, FileText, FolderOpen, Loader2, Pause, Play, RefreshCw, Upload, X } from "lucide-react";
+import { BookOpen, Check, CircleAlert, FileText, FolderOpen, Loader2, Pause, Play, RefreshCw, Upload, X } from "lucide-react";
 import Link from "next/link";
 import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
 import { ApiError, documentFailure, isTemporary, logDocumentFailure, request, retryAfterMs, type DocumentFailure } from "./api";
-import { canResumeTransfer, isRestorableUploadTask, requiresFreshUpload, restoreUploadState, uploadIssue } from "./upload-recovery";
+import { canPollUploadTask, canResumeTransfer, isRestorableUploadTask, isUploadTaskPending, requiresFreshUpload, restoreUploadState, uploadIssue } from "./upload-recovery";
 import { useAuth } from "./auth";
 import { documentRetryLabel, type IngestionRetryProgress } from "./workspace-types";
 import { BATCH_COUNT, BATCH_LIMIT, DOCUMENT_ACCEPT, DOCUMENT_LIMIT, droppedDocuments, prepareDocuments, type ImportFile, type ImportIssue } from "./document-import";
@@ -15,7 +15,7 @@ import "./uploads.css";
 const LIMIT = DOCUMENT_LIMIT;
 type Destination = { id: string; name: string; versionOf?: string; filename?: string };
 type Task = {
-  key: string; uploadId?: string; workspace: string; library: Destination;
+  key: string; uploadId?: string; jobId?: string; workspace: string; library: Destination;
   name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
   hashes: Record<number, string>; state: string; transferred: number;
   error?: string; failure?: DocumentFailure; documentId?: string; retryLabel?: string;
@@ -23,6 +23,7 @@ type Task = {
 };
 type Remote = {
   id: string; state: string; part_size: number; document_id?: string; error?: string;
+  job_id?: string;
   document_status?: string; document_error?: string;
   retry_progress?: IngestionRetryProgress | null;
   retry_after?: string | null;
@@ -31,15 +32,19 @@ type Remote = {
   failure?: DocumentFailure;
   parts: { number: number; size: number; sha256: string }[];
 };
-type UploadContext = { tasks: Task[]; open: (destination?: Destination) => void };
-const Context = createContext<UploadContext>({ tasks: [], open: () => {} });
+type UploadSuccessNotice = {
+  library: Pick<Destination, "id" | "name">;
+  documents: { id: string; name: string }[];
+};
+type UploadContext = { tasks: Task[]; dialogOpen: boolean; open: (destination?: Destination) => void };
+const Context = createContext<UploadContext>({ tasks: [], dialogOpen: false, open: () => {} });
 export const useDocumentUploads = () => useContext(Context);
 const labels: Record<string, string> = {
-  queued: "等待传输", uploading: "正在传输", paused: "已暂停", verifying: "传输完成 · 正在校验",
-  processing: "校验完成 · 文档处理中", ready: "可检索", failed: "上传未完成",
-  processing_failed: "文档处理失败", cancelled: "已取消", deleted: "已移至回收站", completing: "等待完成上传",
+  queued: "等待上传", uploading: "上传中", paused: "已暂停", verifying: "正在校验",
+  processing: "处理中", ready: "可检索", failed: "需要处理",
+  processing_failed: "需要处理", cancelled: "已取消", deleted: "已移至回收站", completing: "正在确认上传",
 };
-const terminal = ["ready", "cancelled", "deleted", "processing_failed"];
+const inactive = ["cancelled", "deleted"];
 const json = (body: unknown, extraHeaders?: Record<string, string>) => ({
   method: "POST",
   headers: { "Content-Type": "application/json", ...extraHeaders },
@@ -47,6 +52,10 @@ const json = (body: unknown, extraHeaders?: Record<string, string>) => ({
 });
 const size = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 const message = (e: unknown) => e instanceof Error ? e.message : "上传失败，请重试";
+function documentHref(libraryId: string, documentId: string) {
+  const params = new URLSearchParams({ library: libraryId, view: "documents", document: documentId });
+  return `/?${params.toString()}`;
+}
 function failureOf(error: unknown): DocumentFailure | undefined {
   if (!(error instanceof ApiError) || !error.detail || typeof error.detail !== "object") return;
   const detail = error.detail as Partial<DocumentFailure>;
@@ -156,17 +165,21 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   const [dialog, setDialog] = useState<{ destination?: Destination } | null>(null);
   const [selected, setSelected] = useState<ImportFile[]>([]);
   const [issues, setIssues] = useState<ImportIssue[]>([]);
+  const enqueueing = useRef(false);
   const [preparing, setPreparing] = useState(false);
   const selection = useRef<AbortController | null>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const [selectionError, setSelectionError] = useState("");
+  const [successNotice, setSuccessNotice] = useState<UploadSuccessNotice | null>(null);
+  const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [removeBusyKey, setRemoveBusyKey] = useState<string | null>(null);
   const storageKey = `rag-uploads-v1:${session.user.id}`;
   function publish(next: Task[]) {
     current.current = next; setTasks(next);
     try {
       // Never serialize File objects, URLs, credentials or transient errors.
-      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state, error, failure, documentId, queryPaused }) =>
-        ({ key, uploadId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state,
+      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, jobId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state, error, failure, documentId, queryPaused }) =>
+        ({ key, uploadId, jobId, workspace, library, name, sourcePath, size, modified, type, partSize, hashes, state,
           failure: error ? failure : undefined, documentId, queryPaused }))));
     } catch { /* Uploads remain usable if browser storage is unavailable. */ }
   }
@@ -176,7 +189,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const saved: Task[] = JSON.parse(localStorage.getItem(storageKey) || "[]");
-      const restored = Array.isArray(saved) ? saved.filter(task => isRestorableUploadTask(task, LIMIT))
+      const restored = Array.isArray(saved) ? saved.filter(task => isRestorableUploadTask(task, LIMIT) && task.state !== "ready")
         .map(task => ({ ...task, hashes: task.hashes || {}, transferred: 0,
           error: uploadIssue(task.state, task.failure?.message, task.retryLabel, task.queryPaused),
           state: restoreUploadState(task.state, task.failure) })) : [];
@@ -185,6 +198,9 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const controllers = running.current;
     return () => { controllers.forEach(controller => controller.abort()); selection.current?.abort(); };
   }, [storageKey]);
+  useEffect(() => () => {
+    if (successTimer.current) clearTimeout(successTimer.current);
+  }, []);
   useEffect(() => {
     let changed = false;
     const next = current.current.map(task => {
@@ -194,10 +210,35 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     });
     if (changed) publish(next);
     selection.current?.abort(); setPreparing(false); setDialog(null); setSelected([]); setIssues([]);
+    setSuccessNotice(null);
+    if (successTimer.current) clearTimeout(successTimer.current);
+    successTimer.current = null;
     // Upload state remains mounted outside the workspace-keyed page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.workspace_id]);
+  function announceSuccess(task: Task, documentId: string) {
+    const document = { id: documentId, name: task.name };
+    setSuccessNotice(previous => ({
+      library: task.library,
+      documents: previous?.library.id === task.library.id
+        ? [...previous.documents, document]
+        : [document],
+    }));
+    if (successTimer.current) clearTimeout(successTimer.current);
+    successTimer.current = setTimeout(() => {
+      setSuccessNotice(null);
+      successTimer.current = null;
+    }, 8_000);
+  }
+  function dismissSuccess() {
+    if (successTimer.current) clearTimeout(successTimer.current);
+    successTimer.current = null;
+    setSuccessNotice(null);
+  }
   function acceptRemote(task: Task, remote: Remote) {
+    const latest = current.current.find(item => item.key === task.key);
+    if (!latest) return;
+    task = latest;
     let state = remote.state;
     if (state === "uploading" && task.state !== "uploading") state = "paused";
     if (state === "completed") state = remote.document_status === "ready" ? "ready"
@@ -213,18 +254,25 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const retryLabel = state === "verifying" && remote.verify_after
       ? "校验中 · 正在自动重试"
       : documentRetryLabel(remote.document_status, remote.job_state, remote.retry_after, remote.retry_progress);
-    patch(task.key, { state, documentId: remote.document_id, failure, queryPaused: false, retryLabel,
+    const documentId = remote.document_id || task.documentId;
+    patch(task.key, { state, documentId, jobId: remote.job_id || task.jobId, failure, queryPaused: false, retryLabel,
       error: uploadIssue(state, failure?.message || remote.error || remote.document_error || undefined, retryLabel),
       ...(restart ? { uploadId: undefined, hashes: {}, transferred: 0 } : {}),
       ...(["verifying", "processing", "ready", "processing_failed"].includes(state) ? { transferred: task.size } : {}) });
     if (["verifying", "processing", "ready", "processing_failed", "deleted", "cancelled"].includes(state)) files.current.delete(task.key);
     if (remote.document_id && !task.documentId)
       window.dispatchEvent(new CustomEvent("rag-upload-admitted", { detail: { library: task.library.id } }));
+    if (state === "ready" && documentId) {
+      files.current.delete(task.key);
+      publish(current.current.filter(item => item.key !== task.key));
+      announceSuccess(task, documentId);
+      return;
+    }
   }
   const pollInFlight = useRef(new Set<string>());
   async function poll(taskKey?: string) {
     const candidates = current.current.filter(task => task.workspace === workspace.current && task.uploadId
-      && ["verifying", "processing"].includes(task.state)
+      && canPollUploadTask(task.state, task.jobId)
       && (!taskKey || task.key === taskKey)
       && (!task.queryPaused || task.key === taskKey)
       && !pollInFlight.current.has(task.key)
@@ -234,7 +282,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       try {
         const remote = await retryUploadRequest(() => request<Remote>(`/uploads/${task.uploadId}`), new AbortController().signal);
         const latest = current.current.find(t => t.key === task.key);
-        if (latest && remote && latest.workspace === workspace.current && ["verifying", "processing"].includes(latest.state)) acceptRemote(latest, remote);
+        if (latest && remote && latest.workspace === workspace.current && canPollUploadTask(latest.state, latest.jobId)) acceptRemote(latest, remote);
       } catch (e) {
         const expired = e instanceof ApiError && e.status === 410;
         if (expired) files.current.delete(task.key);
@@ -435,6 +483,60 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       setTasks([...current.current]);
     }
   }
+  async function retryProcessing(task: Task) {
+    if (!task.documentId || !task.jobId || running.current.has(task.key)) return;
+    const controller = new AbortController();
+    running.current.set(task.key, controller);
+    patch(task.key, { state: "processing", error: undefined, retryLabel: "正在重新排队", queryPaused: false });
+    try {
+      const job = await request<{ id: string }>(`/jobs/${task.jobId}/retry`, { method: "POST", signal: controller.signal });
+      controller.signal.throwIfAborted();
+      patch(task.key, { state: "processing", jobId: job.id, error: undefined, failure: undefined, retryLabel: undefined });
+    } catch (error) {
+      if (!controller.signal.aborted) patch(task.key, {
+        state: "processing_failed",
+        error: message(error),
+        failure: failureOf(error) || task.failure,
+        retryLabel: undefined,
+      });
+    } finally {
+      running.current.delete(task.key);
+      setTasks([...current.current]);
+    }
+  }
+  function removeTaskRecord(key: string) {
+    files.current.delete(key);
+    publish(current.current.filter(task => task.key !== key));
+  }
+  async function removeTask(task: Task) {
+    if (removeBusyKey) return;
+    setRemoveBusyKey(task.key);
+    if (!task.documentId && task.uploadId) {
+      try {
+        await request(`/uploads/${task.uploadId}`, { method: "DELETE" });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          try {
+            const remote = await request<Remote>(`/uploads/${task.uploadId}`);
+            const latest = current.current.find(item => item.key === task.key);
+            if (latest && remote.document_id) {
+              acceptRemote(latest, remote);
+              removeTaskRecord(task.key);
+              setRemoveBusyKey(null);
+              return;
+            }
+          } catch { /* Keep the task visible when its upload state cannot be confirmed. */ }
+        }
+        if (!(error instanceof ApiError && [404, 410].includes(error.status))) {
+          patch(task.key, { error: "无法停止未完成的上传，请稍后重试移除任务" });
+          setRemoveBusyKey(null);
+          return;
+        }
+      }
+    }
+    removeTaskRecord(task.key);
+    setRemoveBusyKey(null);
+  }
   async function cancel(task: Task) {
     running.current.get(task.key)?.abort();
     patch(task.key, { state: "paused", error: undefined });
@@ -472,7 +574,8 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     selection.current?.abort(); setPreparing(false); setDialog(null); setSelected([]); setIssues([]);
   }
   function enqueue() {
-    if (!dialog?.destination) return;
+    if (!dialog?.destination || enqueueing.current || !selected.length || preparing) return;
+    enqueueing.current = true;
     const next = selected.map(({ file, path }) => {
       const task: Task = { key: crypto.randomUUID(), workspace: session.workspace_id, library: dialog.destination!,
         name: file.name, sourcePath: path, size: file.size, modified: file.lastModified, type: file.type,
@@ -480,10 +583,33 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       files.current.set(task.key, file); return task;
     });
     publish([...current.current, ...next]); setSelected([]); setIssues([]);
+    queueMicrotask(() => { enqueueing.current = false; });
   }
   const visible = tasks.filter(task => task.workspace === session.workspace_id);
+  const pendingCount = visible.filter(task => isUploadTaskPending(task.state)).length;
+  const dialogOpen = Boolean(dialog);
   const open = (destination?: Destination) => { selection.current?.abort(); setPreparing(false); setDialog({ destination }); setSelected([]); setIssues([]); setSelectionError(""); };
-  return <Context.Provider value={{ tasks: visible, open }}>
+  const successFeedback = successNotice && (
+    <div className={`toast upload-success-toast ${dialog ? "is-inline" : ""}`} role="status" aria-live="polite">
+      <Check size={18} aria-hidden="true" />
+      <div className="upload-success-copy">
+        <strong>{successNotice.documents.length} 个文档已可检索</strong>
+        <span title={successNotice.documents[successNotice.documents.length - 1]?.name}>
+          {successNotice.documents.length === 1
+            ? successNotice.documents[0].name
+            : `最近完成：${successNotice.documents[successNotice.documents.length - 1]?.name}`}
+        </span>
+      </div>
+      <Link className="secondary upload-success-action" href={documentHref(
+        successNotice.library.id,
+        successNotice.documents[successNotice.documents.length - 1].id,
+      )} onClick={() => { closeDialog(); dismissSuccess(); }}>
+        查看已上传文档
+      </Link>
+      <button className="icon-button" aria-label="关闭上传完成通知" onClick={dismissSuccess}><X size={16} /></button>
+    </div>
+  );
+  return <Context.Provider value={{ tasks: visible, dialogOpen, open }}>
     {children}
     {dialog && <Dialog title={dialog.destination?.versionOf ? `上传 ${dialog.destination.filename} 的新版本` : dialog.destination ? "上传文档" : "上传任务"}
       onClose={closeDialog} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
@@ -520,11 +646,16 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
           {selectionError && <p className="form-error" role="alert">{selectionError}</p>}
           <div className="upload-start"><button className="primary" disabled={!selected.length || preparing} onClick={enqueue}><Upload size={15} />上传{selected.length ? ` ${selected.length} 个文档` : ""}</button></div>
         </>}
+        {!dialog.destination && !!visible.length && <div className="upload-task-summary" aria-live="polite">
+          <span>{pendingCount} 项未完成</span>
+          <span>{visible.filter(task => ["paused", "failed", "processing_failed"].includes(task.state)).length} 项需要处理</span>
+        </div>}
         <ul className="transfer-list" aria-label="上传任务">
           {visible.map(task => <li key={task.key}>
             <div className="transfer-heading"><FileText size={17} /><strong title={task.sourcePath || task.name}>{task.sourcePath || task.name}</strong><span>{size(task.size)}</span></div>
-            <div className="transfer-state" aria-live="polite">
-              {task.state === "ready" ? <Check size={14} /> : !task.queryPaused && ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
+            <div className={`transfer-state ${["failed", "processing_failed"].includes(task.state) ? "is-failed" : task.state === "processing" ? "is-processing" : ""}`} aria-live="polite">
+              {["paused", "failed", "processing_failed"].includes(task.state) ? <CircleAlert size={14} />
+                : !task.queryPaused && ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
               <span>{task.queryPaused ? "进度查询已暂停" : task.retryLabel
                 || (task.state === "uploading" && !task.uploadId ? "正在准备上传" : labels[task.state]) || "等待恢复"}</span>
               {task.state === "uploading" && <span>{Math.floor(Math.min(task.transferred, task.size) / task.size * 100)}%</span>}
@@ -541,24 +672,44 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
                 : ["paused", "failed"].includes(task.state) && (canResumeTransfer(task.failure) && files.current.has(task.key)
                 ? <button className="secondary" onClick={() => resume(task)}><Play size={14} />继续上传</button>
                 : (canResumeTransfer(task.failure) || requiresFreshUpload(task.failure?.code)) && <label className="secondary transfer-reselect"><Upload size={14} />{requiresFreshUpload(task.failure?.code) ? "重新选择文件上传" : "重选原文件继续"}<input type="file" aria-label={`重新选择${task.name}`} accept={DOCUMENT_ACCEPT} onChange={e => { if (e.target.files?.[0]) resume(task, e.target.files[0]); e.target.value = ""; }} /></label>)}
+              {task.state === "processing_failed" && task.jobId && task.failure?.retryable !== false && <button className="secondary" disabled={running.current.has(task.key)} onClick={() => void retryProcessing(task)}><RefreshCw size={14} />重试处理</button>}
               {["verifying", "processing"].includes(task.state) && (task.queryPaused || task.error && !task.failure?.retryable) && <button className="secondary" onClick={() => void poll(task.key)}><RefreshCw size={14} />重试查询</button>}
-              {task.documentId && <Link className="secondary" href={`/?library=${task.library.id}`} onClick={() => setDialog(null)}>查看文档</Link>}
-              {!terminal.includes(task.state) && task.state !== "processing" && <Tooltip content="取消上传"><button className="icon-button" aria-label={`取消${task.name}`} onClick={() => void cancel(task)}><X size={16} /></button></Tooltip>}
-              {terminal.includes(task.state) && <Tooltip content="移除此任务记录"><button className="icon-button" aria-label={`移除${task.name}记录`} onClick={() => publish(current.current.filter(t => t.key !== task.key))}><X size={16} /></button></Tooltip>}
+              {task.documentId && <Link className="secondary" href={documentHref(task.library.id, task.documentId)} onClick={closeDialog}>查看文档</Link>}
+              {!task.documentId && ["uploading", "queued", "verifying", "completing"].includes(task.state) && <Tooltip content="取消上传"><button className="icon-button" aria-label={`取消${task.name}`} onClick={() => void cancel(task)}><X size={16} /></button></Tooltip>}
+              {(inactive.includes(task.state) || ["paused", "failed", "processing_failed"].includes(task.state))
+                && !running.current.has(task.key) && <details className="transfer-remove-confirmation">
+                  <summary>移除任务</summary>
+                  <div role="group" aria-label={`确认移除${task.name}任务`}>
+                    <p>{task.documentId
+                      ? "只移除此任务记录，不会删除知识库中的文档。"
+                      : "停止这次未完成的上传并移除任务记录，不会删除知识库中的文档。"}</p>
+                    <button className="danger" disabled={removeBusyKey === task.key} onClick={() => void removeTask(task)}>
+                      {removeBusyKey === task.key ? <Loader2 size={14} className="spin" /> : <X size={14} />}
+                      确认移除任务
+                    </button>
+                    <button className="secondary" disabled={removeBusyKey === task.key} onClick={event => {
+                      const details = event.currentTarget.closest("details");
+                      if (details) details.open = false;
+                      details?.querySelector("summary")?.focus();
+                    }}>保留任务</button>
+                  </div>
+                </details>}
             </div>
           </li>)}
         </ul>
         {!visible.length && !dialog.destination && <p className="upload-empty">没有上传任务</p>}
       </div>
+      {successFeedback}
     </Dialog>}
+    {!dialog && successFeedback}
   </Context.Provider>;
 }
 
 export function UploadTaskEntry({ onOpen }: { onOpen: () => void }) {
-  const { tasks, open } = useDocumentUploads();
-  if (!tasks.length) return null;
-  const pending = tasks.filter(t => !terminal.includes(t.state)).length;
+  const { tasks, dialogOpen, open } = useDocumentUploads();
+  if (!tasks.length && !dialogOpen) return null;
+  const pending = tasks.filter(t => isUploadTaskPending(t.state)).length;
   return <button className="navigation-item upload-task-entry" data-upload-tasks onClick={() => { onOpen(); open(); }}>
-    <Upload size={18} /><span>上传任务</span><small>{pending || tasks.length}</small>
+    <Upload size={18} /><span>上传任务</span><small>{pending}</small>
   </button>;
 }

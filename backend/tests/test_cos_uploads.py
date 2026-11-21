@@ -131,7 +131,9 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     assert len(processed) == 1 and processed[0][0] == (str(db.scalar(
         select(IngestionJob.id).where(IngestionJob.document_id == document.id)
     )),)
-    assert owner.get(f"/uploads/{row.id}").json()["document_status"] == "queued"
+    status = owner.get(f"/uploads/{row.id}").json()
+    assert status["document_status"] == "queued"
+    assert status["job_id"] == processed[0][0][0]
     assert db.scalar(select(func.count()).select_from(IngestionJob)) == 1
     assert owner.post(f"/uploads/{row.id}/complete").json()["document_id"] == str(document.id)
 
@@ -181,7 +183,9 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
     monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider",
                         lambda: SimpleNamespace(status=SimpleNamespace(configured=False, provider=None, model=None)))
     tasks.embed_document.run(*vectors[0])
-    assert owner.get(f"/uploads/{identifier}").json()["document_status"] == "ready"
+    status = owner.get(f"/uploads/{identifier}").json()
+    assert status["document_status"] == "ready"
+    assert status["job_id"] == vectors[0][1]
 
     response = owner.post(f"/knowledge-bases/{kb}/retrieval", json={"query": "orchid"})
     assert response.status_code == 200, response.text
@@ -293,6 +297,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     assert not upload.get("retry_progress")
     if outcome == "exhaust":
         assert upload["failure"]["message"] == "处理服务暂时繁忙，请稍后重试"
+        assert upload["job_id"] == str(job_id)
         listed = owner.get(f"/knowledge-bases/{kb}/documents").json()[0]
         assert listed["job"]["state"] == "failed"
         assert listed["job"]["id"] == str(job_id)
@@ -317,6 +322,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert manual.status_code == 202
         assert dispatched == [(str(doc_id), manual.json()["id"])]
         assert not manual.json()["retry_progress"]
+        assert owner.get(f"/uploads/{upload_id}").json()["job_id"] == manual.json()["id"]
         manual_retry = True
         tasks.embed_document.run(*dispatched[0])
         assert calls[-1:] == ["20"]
