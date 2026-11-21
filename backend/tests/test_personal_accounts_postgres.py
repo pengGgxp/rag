@@ -14,8 +14,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AuditLog, BillingSnapshot, CreditLedgerEntry, KnowledgeBase,
-    LegacyAccountObjectPrefix, LoginSession, User, UserCreditAccount,
+    AuditLog, BillingSnapshot, CreditLedgerEntry, DocumentUpload, IngestionJob,
+    KnowledgeBase, LegacyAccountObjectPrefix, LoginSession, User, UserCreditAccount,
     UserModelPolicy, WorkspaceFile, WorkspaceFileVersion,
 )
 from app.personal_accounts import cleanup_suspended_accounts
@@ -34,16 +34,20 @@ def legacy_database():
         with engine.connect() as connection, connection.begin() as transaction:
             context = MigrationContext.configure(connection)
             assert context.get_current_revision() == "0078_tool_detail"
+
+            def upgrade(*revisions):
+                with Operations.context(context):
+                    for name in revisions:
+                        path = Path(__file__).parents[1] / "alembic" / "versions" / f"{name}.py"
+                        spec = spec_from_file_location(name, path)
+                        revision = module_from_spec(spec)
+                        spec.loader.exec_module(revision)
+                        revision.upgrade()
+
+            upgrade("0079_document_recovery")
             with Session(connection) as db:
                 def migrate():
-                    with Operations.context(context):
-                        for name in ("0079_personal_account_ownership", "0080_user_resources",
-                                     "0081_direct_account_ownership"):
-                            path = Path(__file__).parents[1] / "alembic" / "versions" / f"{name}.py"
-                            spec = spec_from_file_location(name, path)
-                            revision = module_from_spec(spec)
-                            spec.loader.exec_module(revision)
-                            revision.upgrade()
+                    upgrade("0079_personal_account_ownership", "0080_user_resources", "0081_direct_account_ownership")
                 try:
                     yield db, migrate
                 finally:
@@ -170,6 +174,41 @@ def test_merge_preserves_billing_model_policy_and_physical_keys(legacy_database)
     snapshots = db.scalars(select(BillingSnapshot).where(BillingSnapshot.request_id == request_id)).all()
     assert {row.account_id for row in snapshots} == {owner}
     assert {row.context["multiplier_percent"] for row in snapshots} == {100, 200}
+
+
+def test_document_recovery_state_survives_account_transfer(legacy_database):
+    db, migrate = legacy_database
+    admin = account(db, "upload-admin")
+    editor = account(db, "upload-editor")
+    source = workspace(db, "Upload recovery", admin)
+    insert(db, "memberships", workspace_id=source, user_id=editor, role="editor")
+    library = insert(db, "knowledge_bases", workspace_id=source, name="Recovery", status="PROCESSING",
+                     restricted=False, tags=[])
+    key, metering_id = uuid4(), uuid4()
+    document = insert(db, "documents", knowledge_base_id=library, filename="started.txt",
+                      content_type="text/plain", size_bytes=6, object_key=f"{library}/started.txt",
+                      content_hash="a" * 64, status="PROCESSING", version_group_id=uuid4(),
+                      version_number=1, is_active=True)
+    job_id = insert(db, "ingestion_jobs", document_id=document, state="QUEUED", phase="parsing",
+                    metering_id=metering_id, submission_pending=True)
+    object_key = f"{library}/pending.txt"
+    upload_id = insert(db, "document_uploads", workspace_id=source, user_id=editor,
+                       knowledge_base_id=library, filename="pending.txt", content_type="text/plain",
+                       size_bytes=6, object_key=object_key, multipart_id="sealed", state="verifying",
+                       parts={}, expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                       request_key=key, verify_attempts=2)
+
+    migrate()
+
+    upload = db.get(DocumentUpload, upload_id)
+    assert (upload.user_id, upload.account_id) == (admin, admin)
+    assert (upload.object_key, upload.request_key, upload.verify_attempts) == (object_key, key, 2)
+    job = db.get(IngestionJob, job_id)
+    assert (job.document_id, job.phase, job.metering_id, job.submission_pending) == (
+        document, "parsing", metering_id, True)
+    constraints = inspect(db.connection()).get_unique_constraints("document_uploads")
+    assert next(item["column_names"] for item in constraints if item["name"] == "uq_document_upload_request") == [
+        "account_id", "user_id", "knowledge_base_id", "request_key"]
 
 
 def test_suspended_cleanup_retries_objects_and_preserves_other_owner(legacy_database):

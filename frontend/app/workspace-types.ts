@@ -8,9 +8,32 @@ export type KnowledgeBase = {
 };
 
 export type IngestionRetryProgress = { number: number; maximum: number };
+export type DocumentFailure = {
+  code: string;
+  stage: string;
+  message: string;
+  retryable: boolean;
+  request_id: string;
+};
 
 export function ingestionRetryLabel(progress?: IngestionRetryProgress | null) {
   return progress ? `正在自动重试 ${progress.number}/${progress.maximum}` : undefined;
+}
+
+export function documentRetryLabel(
+  status: string | undefined,
+  state: string | undefined,
+  retryAfter?: string | null,
+  progress?: IngestionRetryProgress | null,
+) {
+  if (status !== "processing") return;
+  if (state === "queued" && retryAfter) return "解析中 · 正在自动重试";
+  if (state === "running") return ingestionRetryLabel(progress);
+}
+
+export function documentIssue(doc: SourceDocument) {
+  return documentRetryLabel(doc.status, doc.job?.state, doc.job?.retry_after, doc.job?.retry_progress)
+    ? undefined : doc.failure?.message || doc.job?.failure?.message;
 }
 
 export type SourceDocument = {
@@ -28,7 +51,16 @@ export type SourceDocument = {
   created_at: string;
   parser_name?: string | null;
   error_detail?: string | null;
-  job?: { id: string; state: string; error_detail?: string | null; retry_progress?: IngestionRetryProgress | null };
+  failure?: DocumentFailure | null;
+  job?: {
+    id: string;
+    state: string;
+    error_detail?: string | null;
+    retry_progress?: IngestionRetryProgress | null;
+    retry_after?: string | null;
+    failure?: DocumentFailure | null;
+    phase?: string | null;
+  };
 };
 
 export type Health = {

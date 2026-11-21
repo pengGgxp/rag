@@ -1,20 +1,24 @@
 """Scoped, resumable multipart uploads. Only the server can seal or admit an object."""
 import hashlib
 import math
+import random
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, text
+from sqlalchemy.exc import OperationalError
 
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
-from .document_ingestion import admit, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
-from .models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, User
+from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
+from .document_ingestion import admit, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
+from .models import Document, DocumentStatus, DocumentUpload, User
 from .storage_backend import current_storage
+from .upstream_retries import retry_after
 
 router = APIRouter(tags=["document-uploads"])
 PART_SIZE = 8 * 1024 * 1024
@@ -26,6 +30,7 @@ class UploadInput(BaseModel):
     content_type: str = Field(default="application/octet-stream", max_length=150)
     size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
     version_of: UUID | None = None
+    request_key: UUID = Field(default_factory=uuid4)
 
 
 class PartInput(BaseModel):
@@ -35,18 +40,21 @@ class PartInput(BaseModel):
 
 def view(row, parts=None):
     return {"id": str(row.id), "knowledge_base_id": str(row.knowledge_base_id), "filename": row.filename,
-        "size_bytes": row.size_bytes, "part_size": PART_SIZE, "state": row.state, "error": row.error,
+        "size_bytes": row.size_bytes, "part_size": PART_SIZE, "state": row.state,
+        "error": row.failure.get("message") if row.failure else ("上传任务未完成，请重试" if row.error else None),
+        "failure": row.failure,
+        "verify_after": row.verify_after.isoformat() if row.verify_after else None,
         "expires_at": row.expires_at.isoformat(), "parts": parts or [],
         "document_id": str(row.document_id) if row.document_id else None}
 
 
-def owned(db, access, identifier):
-    row = db.get(DocumentUpload, identifier, with_for_update=True, populate_existing=True)
-    if not row or row.user_id != access.user_id:
+def owned(db, access, identifier, *, lock=True):
+    row = db.get(DocumentUpload, identifier, with_for_update=lock, populate_existing=True)
+    if not row or row.account_id != access.user_id or row.user_id != access.user_id:
         raise HTTPException(404, "上传任务不存在")
     access.library(db, row.knowledge_base_id, write=True)
-    if aware(row.expires_at) <= now() and row.state in ("uploading", "completing"):
-        raise HTTPException(410, "上传已过期，请重新选择文件")
+    if aware(row.expires_at) <= now() and row.state not in ("completed", "cancelled", "cleaned"):
+        raise rejection(410, "upload", "upload_expired", "上传已过期，请重新选择文件")
     return row
 
 
@@ -58,41 +66,79 @@ def cloud_parts(storage, row):
 
 
 @router.post("/knowledge-bases/{library_id}/uploads", status_code=201)
-def create_upload(library_id: UUID, payload: UploadInput, db=Depends(get_db), access=Depends(get_access)):
+def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID | None = Header(default=None, alias="Idempotency-Key"),
+                  db=Depends(get_db), access=Depends(get_access)):
     access.library(db, library_id, write=True)
+    request_key = idempotency_key or payload.request_key
+    # Lock before opening a storage multipart session so concurrent replays share one.
+    lock_key = int.from_bytes(hashlib.sha256(
+        f"{access.user_id}:{library_id}:{request_key}".encode()
+    ).digest()[:8], "big", signed=True)
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+    prior = db.scalar(select(DocumentUpload).where(
+        DocumentUpload.account_id == access.user_id, DocumentUpload.user_id == access.user_id,
+        DocumentUpload.knowledge_base_id == library_id, DocumentUpload.request_key == request_key,
+    ).with_for_update())
+    if prior:
+        if (prior.filename, prior.content_type, prior.size_bytes, prior.version_of) != (
+                payload.filename, payload.content_type, payload.size_bytes, payload.version_of):
+            raise rejection(409, "upload", "idempotency_conflict",
+                            "此上传请求已用于其他文件，请重新选择文件")
+        result = view(prior)
+        if aware(prior.expires_at) <= now() and prior.state not in ("completed", "cancelled", "cleaned"):
+            result["state"] = "expired"
+            result["failure"] = failure(
+                "upload", "upload_expired", "上传已过期，请重新选择文件后上传",
+                request_id=str(prior.id),
+            )
+            result["error"] = result["failure"]["message"]
+        if result["state"] == "creating":
+            return open_multipart(db, prior)
+        return result
     from .storage_billing import check_capacity
     check_capacity(db, access.user_id, payload.size_bytes)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
-        raise HTTPException(415, "不支持的文件名或文档格式")
+        raise rejection(415, "upload", "invalid_format", "不支持此文件格式，或文件名无效")
     if payload.version_of:
         previous = db.get(Document, payload.version_of)
         if not previous or previous.knowledge_base_id != library_id or previous.status == DocumentStatus.DELETED:
-            raise HTTPException(404, "原文档版本不存在")
+            raise rejection(404, "upload", "version_not_found", "原文档版本不存在，请刷新后重试")
     if db.scalar(select(func.count()).select_from(DocumentUpload).where(
-            DocumentUpload.user_id == access.user_id, DocumentUpload.state.in_(["uploading", "completing", "verifying"]),
+            DocumentUpload.user_id == access.user_id, DocumentUpload.state.in_(["creating", "uploading", "completing", "verifying"]),
             DocumentUpload.expires_at > now())) >= 20:
-        raise HTTPException(429, "进行中的上传过多，请先完成或取消部分任务")
-    storage = current_storage(db)
+        raise rejection(429, "upload", "upload_limit", "进行中的上传过多，请先完成或取消部分任务")
     identifier = uuid4()
     key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
-    multipart_id = storage.begin(key, payload.content_type)
     row = DocumentUpload(id=identifier, user_id=access.user_id, account_id=access.user_id,
         knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
         size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
-        multipart_id=multipart_id, state="uploading", expires_at=now()+timedelta(hours=24))
+        multipart_id="", request_key=request_key, state="creating",
+        expires_at=now()+timedelta(hours=24))
     db.add(row)
-    try:
-        db.commit()
-    except Exception:
-        storage.abort(key, multipart_id)
-        raise
+    db.commit()
+    row = owned(db, access, identifier)
+    return open_multipart(db, row)
+
+
+def open_multipart(db, row):
+    if row.state != "creating":
+        return view(row)
+    storage = current_storage(db)
+    # The reservation owns this object key even if the provider response was lost.
+    existing = next((item["UploadId"] for item in storage.incomplete_uploads(prefix=row.object_key)
+                     if item["Key"] == row.object_key), None)
+    if existing is None:
+        existing = storage.begin(row.object_key, row.content_type)
+    row.multipart_id, row.state = existing, "uploading"
+    db.commit()
     return view(row)
 
 
 @router.get("/uploads/{identifier}")
 def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, access, identifier)
+    row = owned(db, access, identifier, lock=False)
     parts = cloud_parts(current_storage(db), row) if row.state == "uploading" else []
     result = view(row, [{"number": int(part["PartNumber"]), "size": int(part["Size"]),
         "sha256": row.parts.get(str(part["PartNumber"]))} for part in parts])
@@ -100,16 +146,15 @@ def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)
         document = db.get(Document, row.document_id, populate_existing=True)
         if document:
             result["document_status"] = document.status.value
-            result["document_error"] = document.error_detail
-            if document.status == DocumentStatus.PROCESSING:
-                job = db.scalar(
-                    select(IngestionJob)
-                    .where(IngestionJob.document_id == document.id, IngestionJob.state == JobState.RUNNING,
-                           IngestionJob.retry_progress.is_not(None))
-                    .order_by(IngestionJob.created_at.desc())
-                    .limit(1)
-                )
-                result["retry_progress"] = job.retry_progress if job else None
+            job = latest_document_job(db, document)
+            if job:
+                from .document_failures import safe_job_failure
+                job_failure = safe_job_failure(job, document)
+                if job_failure:
+                    result["failure"] = job_failure
+                result["retry_progress"] = job.retry_progress
+                result["retry_after"] = job.retry_after.isoformat() if job.retry_after else None
+                result["job_state"] = job.state.value
     return result
 
 
@@ -122,7 +167,7 @@ def sign_part(identifier: UUID, number: int, payload: PartInput, db=Depends(get_
         raise HTTPException(422, "分片编号不正确")
     old = row.parts.get(str(number))
     if old and old != payload.sha256:
-        raise HTTPException(409, "文件内容与原上传不一致，请重新发起上传")
+        raise rejection(409, "upload", "integrity_mismatch", "文件内容与原上传不一致，请重新选择文件上传")
     size = min(PART_SIZE, row.size_bytes - (number-1)*PART_SIZE)
     row.parts = {**row.parts, str(number): payload.sha256}
     url = current_storage(db).part_url(row.object_key, row.multipart_id, number, size)
@@ -133,8 +178,15 @@ def sign_part(identifier: UUID, number: int, payload: PartInput, db=Depends(get_
 @router.post("/uploads/{identifier}/complete", status_code=202)
 def complete_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
+    if row.state == "failed" and row.failure and row.failure.get("retryable"):
+        row.state, row.error, row.failure = "verifying", None, None
+        row.verify_attempts, row.verify_wait_ms, row.verify_after = 0, 0, None
+        db.commit()
+        from .tasks import verify_upload
+        verify_upload.delay(str(row.id))
+        return view(row)
     if row.state in ("completed", "verifying"):
-        if row.state == "verifying":
+        if row.state == "verifying" and row.verify_after is None:
             from .tasks import verify_upload
             verify_upload.delay(str(row.id))
         return view(row)
@@ -162,7 +214,16 @@ def complete_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acc
             [{"PartNumber": int(part["PartNumber"]), "ETag": part["ETag"]} for part in parts])
         head = storage.head(row.object_key)
     if int(head["Content-Length"]) != row.size_bytes:
-        raise HTTPException(409, "文件实际大小与声明不符")
+        row.state = "failed"
+        row.failure = failure("verification", "integrity_mismatch", "文件实际大小不符，请重新上传",
+                              request_id=str(row.id))
+        row.error = row.failure["message"]
+        db.commit()
+        try:
+            storage.delete(row.object_key)
+        except Exception:
+            pass
+        return view(row)
     row.state = "verifying"
     db.commit()
     from .tasks import verify_upload
@@ -184,13 +245,16 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
 
 
 def finalize_upload(identifier):
+    from .storage_billing import lock_workspace
     from .tasks import process_document
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
-        if not row or row.state != "verifying":
+        if (not row or row.state != "verifying" or aware(row.expires_at) <= now()
+                or (row.verify_after is not None and aware(row.verify_after) > now())):
             return
-        storage = current_storage(db)
+        storage = None
         try:
+            storage = current_storage(db)
             access = worker_access(db, row)
             access.library(db, row.knowledge_base_id, write=True)
             with storage.download(row.object_key) as stream:
@@ -205,37 +269,105 @@ def finalize_upload(identifier):
                 chunk = content[(number-1)*PART_SIZE:number*PART_SIZE]
                 if hashlib.sha256(chunk).hexdigest() != row.parts.get(str(number)):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
+            lock_workspace(db, row.account_id)
             access = worker_access(db, row)
             document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
                 size, digest, row.object_key, row.version_of)
             row.document_id, row.state = document.id, "completed"
+            row.error, row.failure, row.verify_after = None, None, None
             job_id = str(job.id)
             db.commit()
         except Exception as error:
             db.rollback()
             row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
             if row and row.state == "verifying":
-                row.state, row.error = "failed", error.detail if isinstance(error, HTTPException) else "文件校验失败，请重试上传"
+                row.verify_attempts += 1
+                row.failure = classify_verification_error(error, row)
+                log_worker_failure(
+                    stage="verification",
+                    route="/uploads/{upload_id}/complete",
+                    request_id=row.failure["request_id"],
+                    upload_id=str(row.id),
+                    document_id=str(row.document_id) if row.document_id else None,
+                    status=error.status_code if isinstance(error, HTTPException) else None,
+                    code=row.failure["code"],
+                    retryable=bool(row.failure["retryable"]),
+                    exception_type=type(error).__name__,
+                    sqlstate=database_sqlstate(error),
+                )
+                if row.failure["retryable"] and row.verify_attempts < 4:
+                    headers = getattr(error, "headers", None) or {}
+                    after = retry_after(next((v for k, v in headers.items() if k.lower() == "retry-after"), None))
+                    delay_ms = math.ceil(1000 * max(after or 0, 2 ** (row.verify_attempts - 1) + random.uniform(0, 0.5)))
+                else:
+                    delay_ms = None
+                if delay_ms is not None and row.verify_wait_ms + delay_ms <= 60_000:
+                    row.verify_wait_ms += delay_ms
+                    delay = delay_ms / 1000
+                    row.verify_after = now() + timedelta(seconds=delay)
+                    db.commit()
+                    from .tasks import verify_upload
+                    try:
+                        verify_upload.apply_async(args=[str(row.id)], countdown=delay)
+                    except Exception:
+                        # The durable due timestamp lets maintenance redispatch it.
+                        pass
+                    return
+                row.state = "failed"
+                row.error = row.failure["message"]
+                row.verify_after = None
                 db.commit()
-                try:
-                    storage.delete(row.object_key)
-                except Exception:
-                    pass
+                if storage and not row.failure["retryable"]:
+                    try:
+                        storage.delete(row.object_key)
+                    except Exception:
+                        pass
             return
-    process_document.run(job_id, prepared_content=content)
+    process_document.delay(job_id)
 
 
 def worker_access(db, row):
-    user = db.get(User, row.user_id, populate_existing=True, with_for_update=True)
-    if not user or user.is_suspended:
+    user = db.get(User, row.account_id, populate_existing=True)
+    if not user or user.is_suspended or row.user_id != row.account_id:
         raise HTTPException(403, "上传权限已失效")
     return Access(row.user_id, "")
+
+
+def classify_verification_error(error, row):
+    if isinstance(error, OperationalError):
+        return classify("verification", error, request_id=str(row.id))
+    if isinstance(error, HTTPException):
+        status = error.status_code
+        if status == 409 and any(word in str(error.detail) for word in ("大小", "摘要", "fingerprint", "size")):
+            return failure("verification", "integrity_mismatch", "文件大小或摘要校验不符，请重新上传",
+                           request_id=str(row.id))
+        if status == 409 and any(word in str(error.detail) for word in ("已存在", "重复", "duplicate")):
+            return failure("verification", "duplicate_document", "文档内容已存在，请查看文档列表",
+                           request_id=str(row.id))
+        if status == 409:
+            return failure("verification", "verification_conflict", "校验状态已变化，请重试查询",
+                           retryable=True, request_id=str(row.id))
+        if status == 415:
+            return failure("verification", "invalid_format", "文件内容与所选格式不符，请检查文件",
+                           request_id=str(row.id))
+        if status in (401, 403, 404):
+            return failure("verification", "permission_denied", "上传权限已变化，请刷新页面后重试",
+                           request_id=str(row.id))
+        if status in (402, 413, 422) or isinstance(error.detail, dict):
+            return classify("verification", error, request_id=str(row.id))
+        if status == 429 or status >= 500:
+            return failure("verification", "storage_unavailable", "文件暂时无法读取，请稍后重试",
+                           retryable=True, request_id=str(row.id))
+        return failure("verification", "validation_failed", "文件校验失败，请检查文件",
+                       request_id=str(row.id))
+    return failure("verification", "storage_unavailable", "服务暂时不可用，请稍后重试",
+                   retryable=True, request_id=str(row.id))
 
 
 def cleanup_uploads():
     with SessionLocal() as db:
         rows = db.scalars(select(DocumentUpload).where(DocumentUpload.expires_at <= now(),
-            DocumentUpload.state.in_(["uploading", "completing", "failed", "cancelled", "expired"]))
+            DocumentUpload.state.in_(["creating", "uploading", "completing", "verifying", "failed", "cancelled", "expired"]))
             .with_for_update(skip_locked=True)).all()
         if not rows:
             return
@@ -258,13 +390,27 @@ def recover_uploads():
     from .tasks import verify_upload, process_document
     from .models import IngestionJob, JobState
     with SessionLocal() as db:
-        for identifier in db.scalars(select(DocumentUpload.id).where(DocumentUpload.state == "verifying")):
+        if db.get_bind().dialect.name == "postgresql":
+            from .ingestion_recovery import recover_interrupted_ingestion
+            recover_interrupted_ingestion(db)
+        due = select(DocumentUpload).where(DocumentUpload.state == "verifying", DocumentUpload.expires_at > now(),
+            DocumentUpload.verify_after.is_(None) | (DocumentUpload.verify_after <= now())
+        ).with_for_update(skip_locked=True)
+        for row in db.scalars(due):
+            identifier = row.id
             verify_upload.delay(str(identifier))
-        # Admission can commit just before the verifier stops; recover only unstarted work.
-        for job in db.scalars(select(IngestionJob).join(DocumentUpload,
-                DocumentUpload.document_id == IngestionJob.document_id).where(
-                    DocumentUpload.state == "completed", IngestionJob.state == JobState.QUEUED)):
-            process_document.delay(str(job.id))
+        # Recover queued work whose broker delivery was lost or whose backoff elapsed.
+        jobs = db.scalars(select(IngestionJob).where(
+            IngestionJob.state == JobState.QUEUED,
+            IngestionJob.submission_pending.is_(True),
+            or_(IngestionJob.retry_after.is_(None), IngestionJob.retry_after <= now()),
+        ).with_for_update(skip_locked=True)).all()
+        for job in jobs:
+            if job.phase == "indexing":
+                from .tasks import embed_document
+                embed_document.delay(str(job.document_id), str(job.id))
+            else:
+                process_document.delay(str(job.id))
 
 
 def cleanup_orphans():
@@ -286,7 +432,7 @@ def cleanup_orphans():
             key = candidate["Key"]
             if managed.fullmatch(key) and old(candidate.get("Initiated")) and not db.scalar(
                     select(DocumentUpload.id).where(DocumentUpload.object_key == key,
-                        DocumentUpload.state.in_(["uploading", "completing", "verifying"]))):
+                        DocumentUpload.state.in_(["creating", "uploading", "completing", "verifying"]))):
                 storage.abort(key, candidate["UploadId"])
         for candidate in storage.iter_objects():
             key = candidate["Key"]
@@ -302,5 +448,6 @@ def cleanup_orphans():
                 # Include soft-deleted originals: restore and references must remain valid.
                 if not db.scalar(select(Document.id).where(Document.object_key == key)) and not db.scalar(
                         select(DocumentUpload.id).where(DocumentUpload.object_key == key,
-                            DocumentUpload.state.in_(["uploading", "completing", "verifying"]))):
+                            DocumentUpload.expires_at > now(),
+                            DocumentUpload.state.in_(["creating", "uploading", "completing", "verifying", "failed"]))):
                     storage.delete(key)

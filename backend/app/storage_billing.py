@@ -89,7 +89,8 @@ def settings(db, *, lock=False):
 
 
 def lock_workspace(db, identifier):
-    if db.get(User, identifier, with_for_update=True, populate_existing=True) is None:
+    # NO KEY UPDATE serializes quota writers without blocking foreign-key checks.
+    if db.get(User, identifier, with_for_update={"key_share": True}, populate_existing=True) is None:
         raise HTTPException(404, "账号不存在")
 
 

@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "0079_personal_account_ownership"
-down_revision = "0078_tool_detail"
+down_revision = "0079_document_recovery"
 branch_labels = None
 depends_on = None
 LEGACY = "00000000-0000-4000-a000-000000000001"

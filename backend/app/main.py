@@ -11,7 +11,7 @@ import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import case, func, or_, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -46,6 +46,7 @@ from .schemas import (
     ChunkRead,
     DocumentPreviewRead,
     JobRead,
+    DocumentFailureRead,
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
     KnowledgeBaseRead,
@@ -58,9 +59,13 @@ from .schemas import (
     RetrievalRequest,
 )
 from .storage import upload_fileobj
-from .document_ingestion import MAX_DOCUMENT_BYTES, inspect_file as inspect_upload, stage_upload, commit_upload, dispatch_ingestion
+from .document_ingestion import (
+    MAX_DOCUMENT_BYTES, commit_upload, dispatch_ingestion, inspect_file as inspect_upload,
+    latest_document_job, stage_upload,
+)
 from .storage_settings import router as storage_settings_router
 from .document_uploads import router as document_uploads_router
+from . import document_failures
 from .skill_uploads import router as skill_uploads_router
 from .tasks import embed_document, process_document
 from .conversations import chat_router, recover_interrupted_conversations
@@ -111,11 +116,16 @@ async def lifespan(_: FastAPI):
                 logging.getLogger(__name__).warning("Retention maintenance unavailable; retrying next hour")
     async def recover_document_saves():
         from .conversation_documents import recover_pending
+        from .tasks import recover_document_ingestion
         while True:
             try:
                 await asyncio.to_thread(recover_pending, SessionLocal)
             except Exception:
                 logging.getLogger(__name__).warning("Document submission recovery deferred")
+            try:
+                await asyncio.to_thread(recover_document_ingestion.delay)
+            except Exception:
+                logging.getLogger(__name__).warning("Ingestion recovery deferred")
             await asyncio.sleep(30)
     try:
         from .tasks import maintain_uploads
@@ -161,6 +171,61 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
 
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+@app.middleware("http")
+async def document_request(request, call_next):
+    stage = document_failures.route_stage(request.url.path, request.method)
+    if not stage:
+        return await call_next(request)
+    request.state.document_stage = stage
+    request.state.document_request_id = str(uuid4())
+    exception_type = None
+    sqlstate = None
+    try:
+        response = await call_next(request)
+    except Exception as error:
+        exception_type = type(error).__name__
+        sqlstate = document_failures.database_sqlstate(error)
+        response = document_failures.error_response(request, error)
+    response.headers["X-Request-ID"] = request.state.document_request_id
+    route = request.scope.get("route")
+    params = request.path_params
+    route_path = getattr(route, "path", "-")
+    common = (
+        request.state.document_request_id, stage, route_path, response.status_code,
+        response.headers.get("content-type"), params.get("identifier"), params.get("job_id"),
+        params.get("library_id") or params.get("knowledge_base_id"),
+    )
+    if response.status_code >= 400:
+        document_failures.log.warning(
+            "document_request_failed request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s library_id=%s exception_type=%s sqlstate=%s",
+            *common, exception_type, sqlstate,
+        )
+    elif request.method == "POST":
+        document_failures.log.info(
+            "document_request_succeeded request_id=%s stage=%s route=%s status=%s content_type=%s upload_id=%s job_id=%s library_id=%s request_key=%s",
+            *common, request.headers.get("idempotency-key"),
+        )
+    return response
+
+
+@app.exception_handler(StarletteHTTPException)
+async def document_http_error(request, error):
+    if getattr(request.state, "document_stage", None):
+        return document_failures.error_response(request, error)
+    return await http_exception_handler(request, error)
+
+
+@app.exception_handler(RequestValidationError)
+async def document_validation_error(request, error):
+    if getattr(request.state, "document_stage", None):
+        return document_failures.error_response(request, HTTPException(422))
+    return await request_validation_exception_handler(request, error)
+
 
 from .context_windows import ContextWindowError
 
@@ -183,6 +248,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After", "X-Request-ID"],
 )
 app.add_middleware(DeploymentMaintenanceMiddleware)
 
@@ -413,36 +479,25 @@ def upload_document(
     )
 
 
+def document_read(document, job):
+    detail = document_failures.safe_job_failure(job, document) if job else None
+    failure = DocumentFailureRead.model_validate(detail) if detail else None
+    return DocumentRead.model_validate(document).model_copy(update={
+        "error_detail": document_failures.safe_document_message(document, detail),
+        "failure": failure,
+        "job": JobRead.model_validate(job).model_copy(update={
+            "failure": failure,
+            "error_detail": detail["message"] if detail else None,
+        }) if job else None,
+    })
+
+
 @app.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=list[DocumentRead])
 def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.library(db, knowledge_base_id)
-    documents = db.scalars(
-        select(Document)
-        .where(Document.knowledge_base_id == knowledge_base_id)
-        .order_by(Document.created_at.desc())
-    ).all()
-    result = []
-    for document in documents:
-        job = db.scalar(
-            select(IngestionJob)
-            .where(IngestionJob.document_id == document.id)
-            .order_by(
-                IngestionJob.created_at.desc(),
-                case(
-                    (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
-                    (IngestionJob.state == JobState.SUCCEEDED, 1 if document.status == DocumentStatus.READY else 2),
-                    else_=2 if document.status == DocumentStatus.READY else 1,
-                ),
-                IngestionJob.updated_at.desc(),
-            )
-            .limit(1)
-        )
-        result.append(
-            DocumentRead.model_validate(document).model_copy(
-                update={"job": JobRead.model_validate(job) if job else None}
-            )
-        )
-    return result
+    documents = db.scalars(select(Document).where(Document.knowledge_base_id == knowledge_base_id)
+                           .order_by(Document.created_at.desc())).all()
+    return [document_read(document, latest_document_job(db, document)) for document in documents]
 
 
 @app.get("/documents/{document_id}/preview", response_model=DocumentPreviewRead)
@@ -455,8 +510,18 @@ def preview_document(
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id)
+    job = latest_document_job(db, document)
+    retrying = job and document.status == DocumentStatus.PROCESSING and (
+        (job.state == JobState.QUEUED and job.retry_after is not None)
+        or (job.state == JobState.RUNNING and job.retry_progress)
+    )
+    job_failure = document_failures.safe_job_failure(job, document) if job and not retrying else None
     return DocumentPreviewRead.model_validate(document).model_copy(
-        update={"parsed_text": None if document.status == DocumentStatus.DELETED else document.parsed_text}
+        update={
+            "parsed_text": None if document.status == DocumentStatus.DELETED else document.parsed_text,
+            "error_detail": None if retrying else document_failures.safe_document_message(document, job_failure),
+            "failure": DocumentFailureRead.model_validate(job_failure) if job_failure else None,
+        }
     )
 
 
@@ -471,7 +536,7 @@ def list_document_versions(document_id: UUID, db: Session = Depends(get_db), acc
         .where(Document.version_group_id == document.version_group_id)
         .order_by(Document.version_number.desc())
     ).all()
-    return [DocumentRead.model_validate(item) for item in documents]
+    return [document_read(item, latest_document_job(db, item)) for item in documents]
 
 
 @app.post("/documents/{document_id}/activate", response_model=DocumentRead)
@@ -565,6 +630,16 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
         return DocumentRead.model_validate(document)
     require_indexing_stopped(document)
 
+    previous_job = latest_document_job(db, document)
+    previous_failure = document_failures.safe_job_failure(previous_job, document) if previous_job else None
+    needs_reconciliation = previous_failure and previous_failure["code"] == "needs_reconciliation"
+    if needs_reconciliation:
+        document.status = DocumentStatus.FAILED
+        document.error_detail = previous_failure["message"]
+        document.knowledge_base.status = KnowledgeBaseStatus.ERROR
+        db.commit()
+        return document_read(document, previous_job)
+
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     has_ready_embeddings = bool(document.chunks) and all(
@@ -577,7 +652,11 @@ def restore_document(document_id: UUID, request: Request, db: Session = Depends(
             chunk.embedding = None
             chunk.embedding_status = EmbeddingStatus.PENDING
             chunk.embedding_error = None
-    job = IngestionJob(document_id=document.id)
+    job = IngestionJob(
+        document_id=document.id,
+        phase="indexing" if not has_ready_embeddings else None,
+        submission_pending=not has_ready_embeddings,
+    )
     if has_ready_embeddings:
         job.state = JobState.SUCCEEDED
     db.add(job)
@@ -606,12 +685,26 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     access.library(db, job.document.knowledge_base_id)
-    return job
+    failure_detail = document_failures.safe_job_failure(job, job.document)
+    return JobRead.model_validate(job).model_copy(
+        update={
+            "failure": DocumentFailureRead.model_validate(failure_detail) if failure_detail else None,
+            "error_detail": document_failures.safe_job_message(job, job.document),
+        }
+    )
 
 
 def require_indexing_stopped(document):
     if any(chunk.embedding_status == EmbeddingStatus.RUNNING for chunk in document.chunks):
         raise HTTPException(status_code=409, detail="上一次文档处理尚未结束，请稍后重试")
+
+
+def reset_abandoned_indexing(db: Session, document, job: IngestionJob):
+    for chunk in document.chunks:
+        if chunk.embedding_status == EmbeddingStatus.RUNNING:
+            chunk.embedding_status = EmbeddingStatus.FAILED
+            chunk.embedding_error = "上一次索引任务未完成，请重试"
+    release_embedding_hold(db, document.knowledge_base.account_id, job.id)
 
 
 def lock_ingestion_job(db, job_id, access):
@@ -674,6 +767,16 @@ def retry_job(
     old_job, document = lock_ingestion_job(db, job_id, access)
     if document.status == DocumentStatus.DELETED:
         raise HTTPException(status_code=409, detail="请先恢复文档，再重试处理")
+    existing = db.scalar(select(IngestionJob).where(IngestionJob.retry_of == old_job.id))
+    if existing is not None:
+        return existing
+    failure_detail = document_failures.safe_job_failure(old_job, document)
+    if failure_detail and failure_detail.get("code") == "needs_reconciliation":
+        old_job.failure = failure_detail
+        old_job.error_detail = failure_detail["message"]
+        db.commit()
+        raise document_failures.rejection(409, failure_detail["stage"], "needs_reconciliation",
+                                          failure_detail["message"])
     if old_job.state not in (JobState.FAILED, JobState.CANCELLED):
         raise HTTPException(status_code=409, detail="Only failed or cancelled jobs can be retried")
     active = db.scalar(select(IngestionJob).where(
@@ -682,11 +785,15 @@ def retry_job(
     ))
     if active is not None:
         raise HTTPException(status_code=409, detail="This document already has an active job")
-    require_indexing_stopped(document)
+    reset_abandoned_indexing(db, document, old_job)
     document.status = DocumentStatus.QUEUED
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    new_job = IngestionJob(document_id=document.id)
+    phase = "indexing" if document.parsed_text and document.chunks else "parsing"
+    new_job = IngestionJob(document_id=document.id, retry_of=old_job.id,
+                           phase=phase,
+                           metering_id=old_job.metering_id or old_job.id,
+                           submission_pending=True)
     db.add(new_job)
     db.flush()
     record_audit(
@@ -696,11 +803,16 @@ def retry_job(
     )
     db.commit()
     db.refresh(new_job)
-    if document.parsed_text and document.chunks:
-        embed_document.delay(str(document.id), str(new_job.id))
-    else:
-        process_document.delay(str(new_job.id))
+    _dispatch_retried_job(db, new_job)
     return new_job
+
+
+def _dispatch_retried_job(db: Session, job: IngestionJob):
+    document = db.get(Document, job.document_id)
+    if job.phase == "indexing" and document.parsed_text and document.chunks:
+        embed_document.delay(str(document.id), str(job.id))
+    else:
+        process_document.delay(str(job.id))
 
 
 @app.get("/traces/{trace_id}", response_model=QueryTraceRead)
@@ -734,6 +846,11 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     if document.status in (DocumentStatus.DELETED, DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
         raise HTTPException(status_code=409, detail="请在文档处理结束后重新索引，已删除的文档需先恢复")
     require_indexing_stopped(document)
+    recent_job = latest_document_job(db, document)
+    if recent_job:
+        detail = document_failures.safe_job_failure(recent_job, document)
+        if detail and detail["code"] == "needs_reconciliation":
+            raise document_failures.rejection(409, detail["stage"], detail["code"], detail["message"])
     for chunk in document.chunks:
         chunk.embedding = None
         chunk.embedding_status = EmbeddingStatus.PENDING
@@ -741,7 +858,7 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     document.status = DocumentStatus.PROCESSING
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    job = IngestionJob(document_id=document.id)
+    job = IngestionJob(document_id=document.id, phase="indexing", submission_pending=True)
     db.add(job)
     record_audit(
         db, owner_user_id=access.user_id, actor_user_id=access.user_id,

@@ -5,9 +5,10 @@ import { BookOpen, Check, FileText, FolderOpen, Loader2, Pause, Play, RefreshCw,
 import Link from "next/link";
 import { Dialog } from "../components/ui/dialog";
 import { Tooltip } from "../components/ui/tooltip";
-import { ApiError, request } from "./api";
+import { ApiError, documentFailure, isTemporary, logDocumentFailure, request, retryAfterMs, type DocumentFailure } from "./api";
+import { canResumeTransfer, isRestorableUploadTask, requiresFreshUpload, restoreUploadState, uploadIssue } from "./upload-recovery";
 import { useAuth } from "./auth";
-import { ingestionRetryLabel, type IngestionRetryProgress } from "./workspace-types";
+import { documentRetryLabel, type IngestionRetryProgress } from "./workspace-types";
 import { BATCH_COUNT, BATCH_LIMIT, DOCUMENT_ACCEPT, DOCUMENT_LIMIT, droppedDocuments, prepareDocuments, type ImportFile, type ImportIssue } from "./document-import";
 import "./uploads.css";
 
@@ -17,12 +18,17 @@ type Task = {
   key: string; uploadId?: string; library: Destination;
   name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
   hashes: Record<number, string>; state: string; transferred: number;
-  error?: string; documentId?: string; retryProgress?: IngestionRetryProgress | null;
+  error?: string; failure?: DocumentFailure; documentId?: string; retryLabel?: string;
+  queryPaused?: boolean;
 };
 type Remote = {
   id: string; state: string; part_size: number; document_id?: string; error?: string;
   document_status?: string; document_error?: string;
   retry_progress?: IngestionRetryProgress | null;
+  retry_after?: string | null;
+  verify_after?: string | null;
+  job_state?: string;
+  failure?: DocumentFailure;
   parts: { number: number; size: number; sha256: string }[];
 };
 type UploadContext = { tasks: Task[]; open: (destination?: Destination) => void };
@@ -31,29 +37,81 @@ export const useDocumentUploads = () => useContext(Context);
 const labels: Record<string, string> = {
   queued: "等待传输", uploading: "正在传输", paused: "已暂停", verifying: "传输完成 · 正在校验",
   processing: "校验完成 · 文档处理中", ready: "可检索", failed: "上传未完成",
-  processing_failed: "文档处理失败", cancelled: "已取消", deleted: "已移至回收站",
+  processing_failed: "文档处理失败", cancelled: "已取消", deleted: "已移至回收站", completing: "等待完成上传",
 };
 const terminal = ["ready", "cancelled", "deleted", "processing_failed"];
-const json = (body: unknown) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const json = (body: unknown, extraHeaders?: Record<string, string>) => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json", ...extraHeaders },
+  body: JSON.stringify(body),
+});
 const size = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 const message = (e: unknown) => e instanceof Error ? e.message : "上传失败，请重试";
+function failureOf(error: unknown): DocumentFailure | undefined {
+  if (!(error instanceof ApiError) || !error.detail || typeof error.detail !== "object") return;
+  const detail = error.detail as Partial<DocumentFailure>;
+  return typeof detail.code === "string" && typeof detail.stage === "string"
+    && typeof detail.message === "string" && typeof detail.retryable === "boolean"
+    && typeof detail.request_id === "string" ? detail as DocumentFailure : undefined;
+}
 
 async function digest(blob: Blob) {
   const bytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
   return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
 }
-function put(url: string, blob: Blob, signal: AbortSignal, progress: (n: number) => void) {
+function put(
+  url: string,
+  blob: Blob,
+  signal: AbortSignal,
+  progress: (n: number) => void,
+  uploadId: string,
+  partNumber: number,
+) {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const abort = () => xhr.abort();
-    const finish = (error?: Error) => { signal.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
+    const finish = (error?: Error) => {
+      signal.removeEventListener("abort", abort);
+      if (error && !(error instanceof DOMException && error.name === "AbortError")) {
+        logDocumentFailure(`/uploads/${uploadId}/parts/${partNumber}`, {
+          status: error instanceof ApiError ? error.status : xhr.status || 0,
+          contentType: xhr.getResponseHeader("Content-Type"),
+          requestId: xhr.getResponseHeader("X-Request-ID") || undefined,
+        });
+      }
+      error ? reject(error) : resolve();
+    };
     xhr.open("PUT", url);
     xhr.timeout = 10 * 60_000;
     xhr.upload.onprogress = event => progress(Math.min(event.loaded, blob.size));
-    xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300 && xhr.getResponseHeader("ETag")
-      ? undefined : new Error("上传失败，请重试；若仍失败，请联系管理员"));
-    xhr.onerror = () => finish(new Error("上传连接中断，请检查网络后重试"));
-    xhr.ontimeout = () => finish(new Error("上传超时，请继续上传"));
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300 && xhr.getResponseHeader("ETag")) {
+        finish();
+        return;
+      }
+      const retryable = xhr.status === 0 || xhr.status === 429 || xhr.status >= 500;
+      const code = xhr.status === 429 ? "rate_limited"
+        : xhr.status >= 500 ? "service_unavailable"
+          : xhr.status === 0 ? "network_error" : "transfer_failed";
+      const message = xhr.status === 429 ? "请求过于频繁，请稍后重试"
+        : xhr.status >= 500 ? "服务暂时不可用，请稍后重试"
+          : xhr.status === 0 ? "上传连接中断，请检查网络后重试" : "上传失败，请重试";
+      const detail = documentFailure(`/uploads/${uploadId}/parts/${partNumber}`,
+        code, message, retryable,
+        xhr.getResponseHeader("X-Request-ID") || undefined);
+      finish(new ApiError(xhr.status || 0, message, detail,
+        retryAfterMs(xhr.getResponseHeader("Retry-After")), detail.request_id));
+    };
+    xhr.onerror = () => {
+      const detail = documentFailure(`/uploads/${uploadId}/parts/${partNumber}`,
+        "network_error", "上传连接中断，请检查网络后重试", true);
+      finish(new ApiError(0, detail.message, detail, undefined, detail.request_id));
+    };
+    xhr.ontimeout = () => {
+      const detail = documentFailure(`/uploads/${uploadId}/parts/${partNumber}`,
+        "request_timeout", "上传超时，请继续上传", true);
+      finish(new ApiError(0, detail.message, detail, undefined, detail.request_id));
+    };
     xhr.onabort = () => finish(new DOMException("上传已暂停", "AbortError"));
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) { finish(new DOMException("上传已暂停", "AbortError")); return; }
@@ -68,6 +126,23 @@ function wait(ms: number, signal: AbortSignal) {
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
   });
+}
+
+async function retryUploadRequest<T>(send: () => Promise<T>, signal: AbortSignal) {
+  let retryWait = 0;
+  for (let attempt = 0; ; attempt++) {
+    signal.throwIfAborted();
+    try {
+      return await send();
+    } catch (error) {
+      if (signal.aborted || !isTemporary(error) || attempt >= 3) throw error;
+      const delay = error instanceof ApiError ? error.retryAfter || 0 : 0;
+      const nextWait = Math.max(delay, 1_000 * 2 ** attempt + Math.random() * 500);
+      if (retryWait + nextWait > 60_000) throw error;
+      await wait(nextWait, signal);
+      retryWait += nextWait;
+    }
+  }
 }
 
 export function DocumentUploadProvider({ children }: { children: ReactNode }) {
@@ -88,8 +163,9 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     current.current = next; setTasks(next);
     try {
       // Never serialize File objects, URLs, credentials or transient errors.
-      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state, documentId }) =>
-        ({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state, documentId }))));
+      localStorage.setItem(storageKey, JSON.stringify(next.map(({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state, error, failure, documentId, queryPaused }) =>
+        ({ key, uploadId, library, name, sourcePath, size, modified, type, partSize, hashes, state,
+          failure: error ? failure : undefined, documentId, queryPaused }))));
     } catch { /* Uploads remain usable if browser storage is unavailable. */ }
   }
   function patch(key: string, changes: Partial<Task>) {
@@ -98,10 +174,10 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const saved: Task[] = JSON.parse(localStorage.getItem(storageKey) || "[]");
-      const restored = Array.isArray(saved) ? saved.filter(task => typeof task.uploadId === "string" && /^[0-9a-f-]{36}$/.test(task.uploadId)
-        && typeof task.name === "string" && task.size > 0 && task.size <= LIMIT && typeof task.library?.id === "string")
+      const restored = Array.isArray(saved) ? saved.filter(task => isRestorableUploadTask(task, LIMIT))
         .map(task => ({ ...task, hashes: task.hashes || {}, transferred: 0,
-          state: ["uploading", "queued", "failed"].includes(task.state) ? "paused" : task.state })) : [];
+          error: uploadIssue(task.state, task.failure?.message, task.retryLabel, task.queryPaused),
+          state: restoreUploadState(task.state, task.failure) })) : [];
       current.current = restored; setTasks(restored);
     } catch { /* Invalid local metadata cannot authorize server operations. */ }
     const controllers = running.current;
@@ -109,28 +185,73 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   }, [storageKey]);
   function acceptRemote(task: Task, remote: Remote) {
     let state = remote.state;
+    if (state === "uploading" && task.state !== "uploading") state = "paused";
     if (state === "completed") state = remote.document_status === "ready" ? "ready"
       : remote.document_status === "failed" ? "processing_failed" : remote.document_status === "deleted" ? "deleted" : "processing";
-    const restart = ["failed", "expired", "cleaned"].includes(state);
+    const restart = ["expired", "cleaned"].includes(state);
     if (restart) state = "failed";
-    patch(task.key, { state, documentId: remote.document_id, error: remote.error || remote.document_error || undefined,
-      retryProgress: state === "processing" ? remote.retry_progress : undefined,
+    if (restart) files.current.delete(task.key);
+    const failure = restart ? {
+      code: "upload_expired", stage: "upload", message: "上传已过期，请重新选择文件后上传",
+      retryable: false, request_id: task.key,
+    } : remote.failure;
+    if (failure && !failure.retryable) files.current.delete(task.key);
+    const retryLabel = state === "verifying" && remote.verify_after
+      ? "校验中 · 正在自动重试"
+      : documentRetryLabel(remote.document_status, remote.job_state, remote.retry_after, remote.retry_progress);
+    patch(task.key, { state, documentId: remote.document_id, failure, queryPaused: false, retryLabel,
+      error: uploadIssue(state, failure?.message || remote.error || remote.document_error || undefined, retryLabel),
       ...(restart ? { uploadId: undefined, hashes: {}, transferred: 0 } : {}),
       ...(["verifying", "processing", "ready", "processing_failed"].includes(state) ? { transferred: task.size } : {}) });
     if (["verifying", "processing", "ready", "processing_failed", "deleted", "cancelled"].includes(state)) files.current.delete(task.key);
     if (remote.document_id && !task.documentId)
       window.dispatchEvent(new CustomEvent("rag-upload-admitted", { detail: { library: task.library.id } }));
   }
-  async function poll() {
-    await Promise.all(current.current.filter(task => task.uploadId
-      && ["verifying", "processing"].includes(task.state)).map(async task => {
+  const pollInFlight = useRef(new Map<string, AbortController>());
+  useEffect(() => {
+    const controllers = pollInFlight.current;
+    return () => controllers.forEach(controller => controller.abort());
+  }, []);
+  async function poll(taskKey?: string) {
+    const candidates = current.current.filter(task => task.uploadId
+      && ["verifying", "processing"].includes(task.state)
+      && (!taskKey || task.key === taskKey)
+      && (!task.queryPaused || task.key === taskKey)
+      && !pollInFlight.current.has(task.key)
+      && !running.current.has(task.key));
+    await Promise.all(candidates.map(async task => {
+      const controller = new AbortController();
+      pollInFlight.current.set(task.key, controller);
       try {
-        const remote = await request<Remote>(`/uploads/${task.uploadId}`);
+        const remote = await retryUploadRequest(
+          () => request<Remote>(`/uploads/${task.uploadId}`, { signal: controller.signal }), controller.signal);
         const latest = current.current.find(t => t.key === task.key);
-          if (latest && ["verifying", "processing"].includes(latest.state)) acceptRemote(latest, remote);
+        if (!controller.signal.aborted && latest && remote && ["verifying", "processing"].includes(latest.state)) acceptRemote(latest, remote);
       } catch (e) {
-          patch(task.key, { error: message(e),
-            ...(e instanceof ApiError && [403, 404, 410].includes(e.status) ? { state: "failed" } : {}) });
+        if (controller.signal.aborted) return;
+        const expired = e instanceof ApiError && e.status === 410;
+        if (expired) files.current.delete(task.key);
+        const queryFailure = expired ? {
+          code: "upload_expired",
+          stage: "upload",
+          message: "上传已过期，请重新选择文件后上传",
+          retryable: false,
+          request_id: e instanceof ApiError ? e.requestId || task.key : task.key,
+        } : (!isTemporary(e) && failureOf(e)) || documentFailure(
+          `/uploads/${task.uploadId}`,
+          "query_failed",
+          "暂时无法获取上传进度，请点击重试查询",
+          isTemporary(e),
+          e instanceof ApiError ? e.requestId : undefined,
+        );
+        patch(task.key, {
+          error: queryFailure.message,
+          failure: queryFailure,
+          queryPaused: !expired,
+          ...(expired ? { state: "failed", uploadId: undefined, hashes: {}, transferred: 0 } : {}),
+        });
+      } finally {
+        pollInFlight.current.delete(task.key);
       }
     }));
   }
@@ -146,13 +267,15 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     const controller = new AbortController();
     running.current.set(task.key, controller);
     const signal = controller.signal;
-    patch(task.key, { state: "uploading", error: undefined });
+    patch(task.key, { state: "uploading", error: undefined, retryLabel: undefined });
     const sending = new Map<number, number>();
+    let completing = false;
     try {
       let remote = task.uploadId ? await request<Remote>(`/uploads/${task.uploadId}`, { signal })
-        : await request<Remote>(`/knowledge-bases/${task.library.id}/uploads`, json({
-          filename: file.name, size_bytes: file.size, content_type: file.type || "application/octet-stream", version_of: task.library.versionOf || null,
-        }));
+        : await retryUploadRequest(() => request<Remote>(`/knowledge-bases/${task.library.id}/uploads`, json({
+          filename: file.name, size_bytes: file.size, content_type: file.type || "application/octet-stream",
+          version_of: task.library.versionOf || null,
+        }, { "Idempotency-Key": task.key })), signal);
       task = { ...task, uploadId: remote.id, partSize: remote.part_size };
       patch(task.key, { uploadId: remote.id, partSize: remote.part_size });
       if (signal.aborted) {
@@ -161,6 +284,13 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (remote.state === "completing") {
+        completing = true;
+        remote = await request<Remote>(`/uploads/${remote.id}/complete`, { ...json({}), signal });
+        signal.throwIfAborted();
+        acceptRemote(task, remote); return;
+      }
+      if (remote.state === "failed" && remote.failure?.retryable && remote.failure.stage === "verification") {
+        completing = true;
         remote = await request<Remote>(`/uploads/${remote.id}/complete`, { ...json({}), signal });
         signal.throwIfAborted();
         acceptRemote(task, remote); return;
@@ -171,7 +301,11 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       for (const part of remote.parts) {
         const hash = await digest(file.slice((part.number - 1) * task.partSize, (part.number - 1) * task.partSize + part.size));
         signal.throwIfAborted();
-        if (hash !== part.sha256) throw new Error("原文件与已上传分片不一致，请取消此任务后重新上传");
+        if (hash !== part.sha256) {
+          const detail = documentFailure(`/uploads/${remote.id}/parts/${part.number}`,
+            "integrity_mismatch", "所选文件与已上传的分片不一致，请重新选择文件上传", false);
+          throw new ApiError(409, detail.message, detail);
+        }
         uploaded.add(part.number); completedBytes += part.size;
       }
       patch(task.key, { transferred: completedBytes });
@@ -187,16 +321,21 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
           signal.throwIfAborted();
           const latest = current.current.find(t => t.key === task.key)!;
           patch(task.key, { hashes: { ...latest.hashes, [number]: hash } });
+          let retryWait = 0;
           for (let attempt = 0; ; attempt++) {
             try {
               const signed = await request<{ url: string }>(`/uploads/${remote.id}/parts/${number}`, { ...json({ sha256: hash }), signal });
               signal.throwIfAborted();
-              await put(signed.url, blob, signal, n => { sending.set(number, n); progress(); });
+              await put(signed.url, blob, signal, n => { sending.set(number, n); progress(); }, remote.id, number);
               break;
             } catch (e) {
-              if (signal.aborted || attempt >= 3 || e instanceof ApiError && e.status < 500) throw e;
+              if (signal.aborted || attempt >= 3 || !isTemporary(e)) throw e;
               sending.delete(number); progress();
-              await wait(500 * 2 ** attempt, signal);
+              const retryAfter = e instanceof ApiError ? e.retryAfter || 0 : 0;
+              const nextWait = Math.max(retryAfter, 1_000 * 2 ** attempt + Math.random() * 500);
+              if (retryWait + nextWait > 60_000) throw e;
+              await wait(nextWait, signal);
+              retryWait += nextWait;
             }
           }
           sending.delete(number); completedBytes += blob.size; progress();
@@ -208,11 +347,12 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       }));
       if (failure) {
         if (!(failure instanceof DOMException && failure.name === "AbortError"))
-          patch(task.key, { state: "failed", error: message(failure) });
+          patch(task.key, { state: "failed", error: message(failure), failure: failureOf(failure) });
         return;
       }
       signal.throwIfAborted();
       patch(task.key, { state: "verifying", transferred: file.size });
+      completing = true;
       remote = await request<Remote>(`/uploads/${remote.id}/complete`, { ...json({}), signal });
       signal.throwIfAborted();
       acceptRemote(task, remote);
@@ -220,7 +360,12 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       if (!signal.aborted) {
         // Stop sibling parts before exposing Retry.
         controller.abort();
-        patch(task.key, { state: "failed", error: message(e) });
+        const expired = e instanceof ApiError && e.status === 410;
+        if (expired) files.current.delete(task.key);
+        const reconciling = completing && isTemporary(e);
+        patch(task.key, { state: reconciling ? "verifying" : "failed",
+          error: reconciling ? undefined : message(e), failure: failureOf(e),
+          retryLabel: reconciling ? "正在确认上传状态" : undefined });
       }
     } finally {
       running.current.delete(task.key);
@@ -236,12 +381,52 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   }, [tasks]);
   function resume(task: Task, file?: File) {
     if (file) {
+      if (requiresFreshUpload(task.failure?.code)) {
+        void startFreshUpload(task, file);
+        return;
+      }
       if (file.name !== task.name || file.size !== task.size) {
         patch(task.key, { error: "请选择原文件，名称及大小必须一致；继续前还会核对已上传分片" }); return;
       }
       files.current.set(task.key, file);
     }
-    patch(task.key, { state: "queued", error: undefined });
+    patch(task.key, { state: "queued", error: undefined, queryPaused: false });
+  }
+  async function startFreshUpload(task: Task, file: File) {
+    if (task.uploadId) {
+      try { await request(`/uploads/${task.uploadId}`, { method: "DELETE" }); }
+      catch { /* A sealed or expired session may already be unavailable for cancellation. */ }
+    }
+    const key = crypto.randomUUID();
+    files.current.delete(task.key);
+    files.current.set(key, file);
+    publish(current.current.map(item => item.key === task.key
+      ? { ...item, key, uploadId: undefined, hashes: {}, transferred: 0, documentId: undefined,
+        name: file.name, size: file.size, sourcePath: undefined,
+        modified: file.lastModified, type: file.type, state: "queued",
+        error: undefined, failure: undefined, queryPaused: false }
+      : item));
+  }
+  async function retryVerification(task: Task) {
+    if (!task.uploadId || running.current.has(task.key) || pollInFlight.current.has(task.key)) return;
+    const controller = new AbortController();
+    running.current.set(task.key, controller);
+    patch(task.key, { state: "verifying", error: undefined, retryLabel: undefined, queryPaused: false });
+    try {
+      const remote = await request<Remote>(`/uploads/${task.uploadId}/complete`, { ...json({}), signal: controller.signal });
+      controller.signal.throwIfAborted();
+      acceptRemote(task, remote);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const reconciling = isTemporary(error);
+        patch(task.key, { state: reconciling ? "verifying" : "failed",
+          failure: failureOf(error) || task.failure, error: reconciling ? undefined : message(error),
+          retryLabel: reconciling ? "正在确认上传状态" : undefined });
+      }
+    } finally {
+      running.current.delete(task.key);
+      setTasks([...current.current]);
+    }
   }
   async function cancel(task: Task) {
     running.current.get(task.key)?.abort();
@@ -332,8 +517,9 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
           {visible.map(task => <li key={task.key}>
             <div className="transfer-heading"><FileText size={17} /><strong title={task.sourcePath || task.name}>{task.sourcePath || task.name}</strong><span>{size(task.size)}</span></div>
             <div className="transfer-state" aria-live="polite">
-              {task.state === "ready" ? <Check size={14} /> : ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
-              <span>{ingestionRetryLabel(task.retryProgress) || labels[task.state] || "等待恢复"}</span>
+              {task.state === "ready" ? <Check size={14} /> : !task.queryPaused && ["uploading", "verifying", "processing"].includes(task.state) ? <Loader2 size={14} className="spin" /> : null}
+              <span>{task.queryPaused ? "进度查询已暂停" : task.retryLabel
+                || (task.state === "uploading" && !task.uploadId ? "正在准备上传" : labels[task.state]) || "等待恢复"}</span>
               {task.state === "uploading" && <span>{Math.floor(Math.min(task.transferred, task.size) / task.size * 100)}%</span>}
               <small>{task.library.name}</small>
             </div>
@@ -343,10 +529,12 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
               {["uploading", "queued"].includes(task.state) && <Tooltip content="暂停传输"><button className="icon-button" aria-label={`暂停${task.name}`} onClick={() => {
                 patch(task.key, { state: "paused" }); running.current.get(task.key)?.abort();
               }}><Pause size={16} /></button></Tooltip>}
-              {["paused", "failed"].includes(task.state) && (files.current.has(task.key)
-                ? <button className="secondary" onClick={() => resume(task)}><Play size={14} />{task.state === "failed" ? "重试" : "继续"}</button>
-                : <label className="secondary transfer-reselect"><Upload size={14} />重选原文件继续<input type="file" aria-label={`重新选择${task.name}`} onChange={e => { if (e.target.files?.[0]) resume(task, e.target.files[0]); e.target.value = ""; }} /></label>)}
-              {["verifying", "processing"].includes(task.state) && task.error && <button className="secondary" onClick={() => void poll()}><RefreshCw size={14} />重试查询</button>}
+              {task.state === "completing" || task.state === "failed" && task.failure?.retryable && task.failure.stage === "verification"
+                ? <button className="secondary" onClick={() => void retryVerification(task)}><RefreshCw size={14} />重试校验</button>
+                : ["paused", "failed"].includes(task.state) && (canResumeTransfer(task.failure) && files.current.has(task.key)
+                ? <button className="secondary" onClick={() => resume(task)}><Play size={14} />继续上传</button>
+                : (canResumeTransfer(task.failure) || requiresFreshUpload(task.failure?.code)) && <label className="secondary transfer-reselect"><Upload size={14} />{requiresFreshUpload(task.failure?.code) ? "重新选择文件上传" : "重选原文件继续"}<input type="file" aria-label={`重新选择${task.name}`} accept={DOCUMENT_ACCEPT} onChange={e => { if (e.target.files?.[0]) resume(task, e.target.files[0]); e.target.value = ""; }} /></label>)}
+              {["verifying", "processing"].includes(task.state) && (task.queryPaused || task.error && !task.failure?.retryable) && <button className="secondary" onClick={() => void poll(task.key)}><RefreshCw size={14} />重试查询</button>}
               {task.documentId && <Link className="secondary" href={`/?library=${task.library.id}`} onClick={() => setDialog(null)}>查看文档</Link>}
               {!terminal.includes(task.state) && task.state !== "processing" && <Tooltip content="取消上传"><button className="icon-button" aria-label={`取消${task.name}`} onClick={() => void cancel(task)}><X size={16} /></button></Tooltip>}
               {terminal.includes(task.state) && <Tooltip content="移除此任务记录"><button className="icon-button" aria-label={`移除${task.name}记录`} onClick={() => publish(current.current.filter(t => t.key !== task.key))}><X size={16} /></button></Tooltip>}

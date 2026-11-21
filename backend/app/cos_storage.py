@@ -104,11 +104,11 @@ class CosStorage:
                 return
             marker = response.get("NextMarker") or rows[-1]["Key"]
 
-    def incomplete_uploads(self):
+    def incomplete_uploads(self, prefix=None):
         key_marker, upload_marker = "", ""
         while True:
             response = self._call("list_multipart_uploads", KeyMarker=key_marker,
-                UploadIdMarker=upload_marker, MaxUploads=1000)
+                UploadIdMarker=upload_marker, MaxUploads=1000, **({"Prefix": prefix} if prefix else {}))
             rows = response.get("Upload", [])
             yield from [rows] if isinstance(rows, dict) else rows
             if str(response.get("IsTruncated", "")).lower() != "true":

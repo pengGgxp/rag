@@ -91,6 +91,8 @@ class StorageMigrationObject(Base):
 
 class DocumentUpload(Base):
     __tablename__ = "document_uploads"
+    __table_args__ = (UniqueConstraint("account_id", "user_id", "knowledge_base_id", "request_key",
+                                       name="uq_document_upload_request"),)
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     account_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
@@ -105,6 +107,11 @@ class DocumentUpload(Base):
     parts: Mapped[dict] = mapped_column(JSON, default=dict)
     document_id: Mapped[UUID | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    request_key: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    failure: Mapped[dict | None] = mapped_column(JSON)
+    verify_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    verify_wait_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    verify_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -726,6 +733,14 @@ class IngestionJob(Base):
     state: Mapped[JobState] = mapped_column(SqlEnum(JobState), default=JobState.QUEUED)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_progress: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    failure: Mapped[dict | None] = mapped_column(JSON)
+    phase: Mapped[str | None] = mapped_column(String(16))
+    retry_of: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), unique=True)
+    metering_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    submission_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    embedding_submitting: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    retry_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
