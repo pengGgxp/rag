@@ -18,7 +18,117 @@ export const API_URL =
 
 let csrfToken = "";
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public detail?: unknown) { super(message); }
+  public status: number;
+  public detail?: unknown;
+  public retryAfter?: number;
+  public requestId?: string;
+
+  constructor(status: number, message: string, detail?: unknown, retryAfter?: number, requestId?: string) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+    this.retryAfter = retryAfter;
+    this.requestId = requestId;
+  }
+}
+
+export type DocumentFailure = {
+  code: string;
+  stage: string;
+  message: string;
+  retryable: boolean;
+  request_id: string;
+};
+
+export function retryAfterMs(value: string | null): number | undefined {
+  if (!value) return;
+  if (/^\d+$/.test(value)) return Number(value) * 1_000;
+  const date = Date.parse(value);
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+}
+
+export function isTemporary(error: unknown) {
+  if (!(error instanceof ApiError)) return false;
+  if (error.detail && typeof error.detail === "object" && "retryable" in error.detail)
+    return error.detail.retryable === true;
+  return error.status === 0 || error.status === 429 || error.status >= 500;
+}
+
+type DocumentRoute = { route: string; libraryId?: string; uploadId?: string; jobId?: string; documentId?: string };
+function documentRoute(path: string): DocumentRoute | undefined {
+  const pathname = path.split("?", 1)[0];
+  let match = pathname.match(/^\/knowledge-bases\/([^/]+)\/uploads$/);
+  if (match) return { route: "/knowledge-bases/{library_id}/uploads", libraryId: match[1] };
+  match = pathname.match(/^\/knowledge-bases\/([^/]+)\/documents$/);
+  if (match) return { route: "/knowledge-bases/{library_id}/documents", libraryId: match[1] };
+  match = pathname.match(/^\/uploads\/([^/]+)(\/parts\/(\d+)|\/complete)?$/);
+  if (match) return {
+    route: match[2]?.startsWith("/parts/") ? "/uploads/{upload_id}/parts/{number}"
+      : match[2] ? "/uploads/{upload_id}/complete" : "/uploads/{upload_id}",
+    uploadId: match[1],
+  };
+  match = pathname.match(/^\/jobs\/([^/]+)(\/retry|\/cancel)?$/);
+  if (match) return {
+    route: match[2] ? `/jobs/{job_id}${match[2]}` : "/jobs/{job_id}",
+    jobId: match[1],
+  };
+  match = pathname.match(/^\/documents\/([^/]+)\/reindex$/);
+  if (match) return { route: "/documents/{document_id}/reindex", documentId: match[1] };
+  return undefined;
+}
+
+function documentStage(path: string): string {
+  const route = documentRoute(path)?.route;
+  if (!route) return "response";
+  if (route === "/uploads/{upload_id}" && path.split("?", 1)[0].startsWith("/uploads/")) return "query";
+  if (route.endsWith("/complete")) return "verification";
+  if (route.includes("/parts/") || route.endsWith("/uploads")) return "upload";
+  return "processing";
+}
+
+function newRequestId() {
+  return globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+export function documentFailure(
+  path: string,
+  code: string,
+  message: string,
+  retryable: boolean,
+  requestId = newRequestId(),
+): DocumentFailure {
+  return {
+    code,
+    stage: documentStage(path),
+    message,
+    retryable,
+    request_id: requestId,
+  };
+}
+
+function failureCode(detail: unknown) {
+  return detail && typeof detail === "object" && "code" in detail && typeof detail.code === "string"
+    ? detail.code : undefined;
+}
+
+export function logDocumentFailure(
+  path: string,
+  diagnostic: { status: number; contentType?: string | null; requestId?: string; code?: string },
+) {
+  const route = documentRoute(path);
+  if (!route) return;
+  console.warn("document_request_failed", {
+    route: route.route,
+    status: diagnostic.status,
+    content_type: diagnostic.contentType || undefined,
+    request_id: diagnostic.requestId,
+    library_id: route.libraryId,
+    upload_id: route.uploadId,
+    job_id: route.jobId,
+    document_id: route.documentId,
+    code: diagnostic.code,
+  });
 }
 
 const VALIDATION_FIELD_NAMES: Record<string, string> = {
@@ -89,31 +199,93 @@ export async function request<T>(
   const upstreamSignal = options?.signal;
   const abortFromCaller = () => controller.abort();
   upstreamSignal?.addEventListener("abort", abortFromCaller, { once: true });
-  let response: Response;
+  if (upstreamSignal?.aborted) abortFromCaller();
+  let diagnosticStatus = 0;
+  let diagnosticContentType: string | null = null;
+  let diagnosticRequestId: string | undefined;
+  let diagnosticDetail: unknown;
   try {
-    response = await fetch(`${API_URL}${path}`, {
-      ...options,
-      credentials: "include",
-      headers: sessionHeaders(options),
-      signal: controller.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}${path}`, {
+        ...options,
+        credentials: "include",
+        headers: sessionHeaders(options),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      const message = timedOut ? "连接服务超时，请稍后重试" : "无法连接服务，请检查网络后重试";
+      const detail = documentFailure(path, timedOut ? "request_timeout" : "network_error", message, true);
+      if (timedOut) throw new ApiError(0, message, detail, undefined, detail.request_id);
+      if (upstreamSignal?.aborted) throw error;
+      throw new ApiError(0, message, detail, undefined, detail.request_id);
+    }
+    diagnosticStatus = response.status;
+    diagnosticContentType = response.headers.get("content-type");
+    diagnosticRequestId = response.headers.get("x-request-id") || undefined;
+    if (response.status === 401 && !["/auth/me", "/auth/login", "/auth/register", "/auth/bootstrap"].includes(path))
+      window.dispatchEvent(new Event("rag-session-expired"));
+    if (response.status === 204) return undefined as T;
+    const mediaType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+    const retryAfter = retryAfterMs(response.headers.get("retry-after"));
+    let data: unknown;
+    let parsed = false;
+    if (mediaType === "application/json" || mediaType?.endsWith("+json")) {
+      let body: string;
+      try { body = await response.text(); }
+      catch (error) {
+        if (upstreamSignal?.aborted) throw error;
+        const message = timedOut ? "读取服务响应超时，请稍后重试" : "读取服务响应失败，请稍后重试";
+        const retryable = response.ok || response.status === 429 || response.status >= 500;
+        const detail = documentFailure(path, "transport_error", message, retryable, diagnosticRequestId);
+        throw new ApiError(response.ok ? 0 : response.status, message, detail, retryAfter, detail.request_id);
+      }
+      try {
+        data = JSON.parse(body) as unknown;
+        parsed = true;
+      } catch {
+        // A malformed body is distinct from an interrupted response read.
+      }
+    }
+    if (!response.ok) {
+      let detail = data && typeof data === "object" && "detail" in data ? data.detail : undefined;
+      diagnosticDetail = detail;
+      if (detail && typeof detail === "object" && "request_id" in detail && typeof detail.request_id === "string")
+        diagnosticRequestId = detail.request_id;
+      const fallback = response.status >= 500 ? "服务暂时不可用，请稍后重试"
+        : response.status === 429 ? "请求过于频繁，请稍后重试" : errorMessage(undefined, response.status);
+      if (detail === undefined) {
+        const code = mediaType === "application/json" || mediaType?.endsWith("+json")
+          ? parsed ? "invalid_response" : "malformed_response"
+          : response.status === 429 ? "rate_limited" : response.status >= 500 ? "service_unavailable" : "request_failed";
+        detail = documentFailure(path, code, fallback, response.status === 429 || response.status >= 500, diagnosticRequestId);
+        diagnosticDetail = detail;
+        diagnosticRequestId = (detail as DocumentFailure).request_id;
+      }
+      throw new ApiError(response.status, detail === undefined ? fallback : errorMessage(detail, response.status),
+        detail, retryAfter, diagnosticRequestId);
+    }
+    if (!parsed) throw new ApiError(response.status, "服务返回异常，请稍后重试", {
+      ...documentFailure(path, "protocol_error", "服务返回异常，请稍后重试", true, diagnosticRequestId),
+    }, retryAfter, diagnosticRequestId);
+    return data as T;
   } catch (error) {
-    if (timedOut) throw new Error("连接服务超时，请检查服务状态后重试");
+    if (!(upstreamSignal?.aborted && error instanceof DOMException && error.name === "AbortError")) {
+      const status = error instanceof ApiError ? error.status : diagnosticStatus;
+      const detail = error instanceof ApiError ? error.detail : diagnosticDetail;
+      const requestId = error instanceof ApiError ? error.requestId : diagnosticRequestId;
+      logDocumentFailure(path, {
+        status,
+        contentType: diagnosticContentType,
+        requestId,
+        code: failureCode(detail),
+      });
+    }
     throw error;
   } finally {
     window.clearTimeout(timer);
     upstreamSignal?.removeEventListener("abort", abortFromCaller);
   }
-  if (response.status === 401 && !["/auth/me", "/auth/login", "/auth/register", "/auth/bootstrap"].includes(path))
-    window.dispatchEvent(new Event("rag-session-expired"));
-  if (response.status === 204) return undefined as T;
-  const data = await response.json();
-  if (!response.ok)
-    throw new ApiError(response.status,
-      errorMessage(data.detail, response.status),
-      data.detail,
-    );
-  return data as T;
 }
 
 export async function downloadFile(path: string, filename: string): Promise<void> {

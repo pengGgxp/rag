@@ -145,11 +145,12 @@ class OssStorage:
                 return
             token = result.next_continuation_token
 
-    def incomplete_uploads(self):
+    def incomplete_uploads(self, prefix=None):
         key_marker = upload_marker = None
         while True:
             result = self._request("list_multipart_uploads", oss.ListMultipartUploadsRequest(
-                bucket=self.bucket, max_uploads=1000, key_marker=key_marker, upload_id_marker=upload_marker))
+                bucket=self.bucket, max_uploads=1000, key_marker=key_marker,
+                upload_id_marker=upload_marker, prefix=prefix))
             for item in result.uploads or []:
                 yield {"Key": item.key, "UploadId": item.upload_id,
                     "Initiated": item.initiated.isoformat() if item.initiated else None}

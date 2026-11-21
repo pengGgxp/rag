@@ -5,13 +5,23 @@ import logging
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from .audit_log import record_audit
-from .models import Document, DocumentStatus, IngestionJob, KnowledgeBase, KnowledgeBaseStatus
+from .models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus
 
 MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
 SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".csv", ".xlsx"}
+
+
+def latest_document_job(db, document):
+    ready = document.status == DocumentStatus.READY
+    return db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id)
+                     .order_by(IngestionJob.created_at.desc(), case(
+                         (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
+                         (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
+                         else_=2 if ready else 1,
+                     ), IngestionJob.updated_at.desc(), IngestionJob.id.desc()).limit(1))
 
 
 def inspect_file(stream):
@@ -95,7 +105,7 @@ def admit(db, access, knowledge_base_id, filename, content_type, size, digest, k
         supersedes_id=previous.id if previous else None, is_active=not bool(previous))
     db.add(document)
     db.flush()
-    job = IngestionJob(document_id=document.id)
+    job = IngestionJob(document_id=document.id, submission_pending=True)
     db.add(job)
     library.status = KnowledgeBaseStatus.PROCESSING
     record_audit(db, workspace_id=access.workspace_id, actor_user_id=access.user_id,

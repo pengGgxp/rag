@@ -11,7 +11,7 @@ import { WorkspaceNavigation, WorkspaceShell } from "./workspace-shell";
 import { KnowledgeNavigation } from "./knowledge-navigation";
 import { WorkspaceHeader, WorkspaceSkeleton } from "./workspace-header";
 import { useDocumentUploads } from "./document-uploads";
-import { ingestionRetryLabel } from "./workspace-types";
+import { documentIssue, documentRetryLabel } from "./workspace-types";
 import type {
   Health,
   KnowledgeBase,
@@ -406,7 +406,7 @@ export default function KnowledgeWorkspace() {
       filename: doc.filename,
       text: "正在加载解析内容…",
       detail: `${extension(doc.filename)} · ${sizeLabel(doc.size_bytes)}${doc.parser_name ? ` · ${doc.parser_name}` : ""}`,
-      error: doc.error_detail || doc.job?.error_detail,
+      error: documentIssue(doc),
     });
     try {
       const preview = await request<{
@@ -416,6 +416,7 @@ export default function KnowledgeWorkspace() {
         content_origin?: string;
         parsed_text?: string | null;
         error_detail?: string | null;
+        failure?: { message: string } | null;
       }>(`/documents/${doc.id}/preview`);
       setPreview((current) =>
         current?.id === doc.id
@@ -423,7 +424,7 @@ export default function KnowledgeWorkspace() {
               ...current,
               text: preview.parsed_text || "暂无解析内容",
               detail: `${extension(preview.filename)} · ${sizeLabel(doc.size_bytes)}${preview.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}`,
-              error: preview.error_detail || current.error,
+              error: preview.failure?.message || preview.error_detail || current.error,
             }
           : current,
       );
@@ -844,7 +845,9 @@ export default function KnowledgeWorkspace() {
                               </td>
                             </tr>
                           ))
-                        : visibleDocuments.map((doc) => (
+                        : visibleDocuments.map((doc) => {
+                          const issue = documentIssue(doc);
+                          return (
                             <tr key={doc.id}>
                               <td>
                                 <button
@@ -869,18 +872,14 @@ export default function KnowledgeWorkspace() {
                               <td>
                                 <span
                                   className={`status-badge ${doc.status}`}
-                                  title={doc.error_detail || doc.job?.error_detail || undefined}
+                                  title={issue}
                                   role="status"
                                 >
                                   <span className="status-dot" />
-                                  {(doc.status === "processing" && doc.job?.state === "running"
-                                    && ingestionRetryLabel(doc.job.retry_progress)) || STATUS[doc.status] || doc.status}
+                                  {documentRetryLabel(doc.status, doc.job?.state, doc.job?.retry_after, doc.job?.retry_progress)
+                                    || STATUS[doc.status] || doc.status}
                                 </span>
-                                {(doc.error_detail || doc.job?.error_detail) && (
-                                  <small className="document-error">
-                                    {doc.error_detail || doc.job?.error_detail}
-                                  </small>
-                                )}
+                                {issue && <small className="document-error">{issue}</small>}
                               </td>
                               <td className="size-column metadata">
                                 {sizeLabel(doc.size_bytes)}
@@ -926,10 +925,10 @@ export default function KnowledgeWorkspace() {
                                   </button>
                                   {!trash && canEdit && (
                                     <>
-                                      {doc.status === "failed" && doc.job &&
-                                        ["failed", "cancelled"].includes(
-                                          doc.job.state,
-                                        ) && (
+                                      {doc.job &&
+                                        ["failed", "cancelled"].includes(doc.job.state) &&
+                                        doc.job.failure?.code !== "needs_reconciliation" &&
+                                        (doc.job.state === "cancelled" || doc.job.failure?.retryable !== false) && (
                                           <button
                                             className="icon-button"
                                             title="重试处理"
@@ -981,7 +980,8 @@ export default function KnowledgeWorkspace() {
                                 </div>
                               </td>
                             </tr>
-                          ))}
+                          );
+                        })}
                     </tbody>
                   </table>
                   {!loading && !documentError && !visibleDocuments.length && (

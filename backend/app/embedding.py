@@ -23,11 +23,12 @@ class EmbeddingProviderError(RuntimeError):
     """Raised when an OpenAI-compatible provider returns an invalid response."""
 
     def __init__(self, message: str, *, status: int | None = None, permanent_quota: bool = False,
-                 retry_after_header: str | None = None):
+                 retry_after_header: str | None = None, uncertain: bool = False):
         super().__init__(message)
         self.status = status
         self.permanent_quota = permanent_quota
         self.retry_after_header = retry_after_header
+        self.uncertain = uncertain
 
     @property
     def user_message(self) -> str:
@@ -65,7 +66,8 @@ class OpenAICompatibleEmbeddingProvider:
         )
 
     def embed_texts(self, texts: list[str], *, retry_policy: RetryPolicy | None = None,
-                    retry_progress=None) -> list[list[float]]:
+                    retry_progress=None, batch_start=None, batch_rejected=None,
+                    batch_success=None) -> list[list[float]]:
         if not texts:
             return []
         if not self.settings.embedding_configured:
@@ -79,14 +81,30 @@ class OpenAICompatibleEmbeddingProvider:
         for offset in range(0, len(texts), self.MAX_BATCH_SIZE):
             batch = texts[offset:offset + self.MAX_BATCH_SIZE]
             if retry_policy is None:
-                vectors.extend(self._embed_batch(batch))
+                result = self._embed_batch(batch)
             else:
-                result, waited = self._retry_batch(batch, retry_policy, wait_remaining, retry_progress)
-                vectors.extend(result)
+                result, waited = self._retry_batch(
+                    batch, retry_policy, wait_remaining, retry_progress, batch_start, batch_rejected)
                 wait_remaining = max(0, wait_remaining - waited)
+            vectors.extend(result)
+            if batch_success:
+                batch_success(offset, result)
         return vectors
 
-    def _retry_batch(self, texts, policy, wait_remaining, progress):
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed one provider-sized batch without layering another retry policy."""
+        if not self.settings.embedding_configured:
+            raise EmbeddingConfigurationError(
+                "Embedding is not configured. Set EMBEDDING_BASE_URL, "
+                "EMBEDDING_API_KEY, and EMBEDDING_MODEL."
+            )
+        if not texts:
+            return []
+        if len(texts) > self.MAX_BATCH_SIZE:
+            raise ValueError(f"Embedding batch exceeds {self.MAX_BATCH_SIZE} items")
+        return self._embed_batch(texts)
+
+    def _retry_batch(self, texts, policy, wait_remaining, progress, batch_start, batch_rejected):
         budget = RetryBudget("embedding", policy=policy)
         waited = 0.0
         failure = EmbeddingProviderError("Embedding retry budget expired")
@@ -95,10 +113,16 @@ class OpenAICompatibleEmbeddingProvider:
             remaining = budget.remaining()
             if remaining <= 0:
                 break
+            if batch_start:
+                batch_start()
             try:
                 vectors = self._embed_batch(texts, timeout=min(
                     self.settings.embedding_timeout_seconds, remaining))
             except EmbeddingProviderError as error:
+                if batch_rejected and not error.uncertain:
+                    batch_rejected()
+                if error.uncertain:
+                    raise
                 safe_connection = isinstance(error.__cause__, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
                 if not safe_connection:
                     if error.status not in TRANSIENT_STATUS or error.permanent_quota:
@@ -135,7 +159,14 @@ class OpenAICompatibleEmbeddingProvider:
                 timeout=self.settings.embedding_timeout_seconds if timeout is None else timeout,
             )
         except httpx.HTTPError as exc:
-            raise EmbeddingProviderError(f"Embedding request failed: {type(exc).__name__}") from exc
+            safe_connection = isinstance(
+                exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+            )
+            raise EmbeddingProviderError(
+                f"Embedding request {'connection failed' if safe_connection else 'outcome is unknown'}"
+                + (f": {type(exc).__name__}" if safe_connection else ""),
+                uncertain=not safe_connection,
+            ) from exc
 
         if response.status_code >= 400:
             permanent_quota = False
@@ -151,12 +182,17 @@ class OpenAICompatibleEmbeddingProvider:
                 f"Embedding provider returned HTTP {response.status_code}",
                 status=response.status_code, permanent_quota=permanent_quota,
                 retry_after_header=response.headers.get("Retry-After"),
+                uncertain=response.status_code >= 500,
             )
         try:
             body = response.json()
         except ValueError as exc:
-            raise EmbeddingProviderError("Embedding provider returned invalid JSON") from exc
-        return self._parse_embeddings(body, expected_count=len(texts))
+            raise EmbeddingProviderError("Embedding provider returned invalid JSON", uncertain=True) from exc
+        try:
+            return self._parse_embeddings(body, expected_count=len(texts))
+        except EmbeddingProviderError as exc:
+            exc.uncertain = True
+            raise
 
     def _embeddings_url(self, base_url: str) -> str:
         normalized = base_url.rstrip("/")

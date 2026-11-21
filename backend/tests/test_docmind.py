@@ -113,8 +113,9 @@ def test_provider_errors_never_expose_credentials_or_signed_urls():
         raise CloudError("test-secret https://private.invalid?Signature=secret")
 
     provider = AliyunDocMind(configured(), SimpleNamespace(submit_doc_parser_job_advance=denied))
-    with pytest.raises(DocMindError, match="鉴权") as caught:
+    with pytest.raises(DocMindError) as caught:
         provider.submit(b"pdf", 1)
+    assert caught.value.code == "permission_denied"
     assert "test-secret" not in str(caught.value)
     assert "Signature" not in str(caught.value)
     assert caught.value.__suppress_context__

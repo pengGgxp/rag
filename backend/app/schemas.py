@@ -55,6 +55,14 @@ class IngestionRetryProgress(BaseModel):
     maximum: int
 
 
+class DocumentFailureRead(BaseModel):
+    code: str
+    stage: str
+    message: str
+    retryable: bool
+    request_id: str
+
+
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -63,6 +71,9 @@ class JobRead(BaseModel):
     state: JobState
     error_detail: str | None
     retry_progress: IngestionRetryProgress | None = None
+    failure: DocumentFailureRead | None = None
+    phase: str | None = None
+    retry_after: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -82,6 +93,7 @@ class DocumentRead(BaseModel):
     size_bytes: int
     status: DocumentStatus
     error_detail: str | None
+    failure: DocumentFailureRead | None = None
     parser_name: str | None = None
     created_at: datetime
     job: JobRead | None = None
@@ -101,6 +113,7 @@ class DocumentPreviewRead(BaseModel):
     size_bytes: int
     status: DocumentStatus
     error_detail: str | None
+    failure: DocumentFailureRead | None = None
     parser_name: str | None
     parsed_text: str | None
     created_at: datetime
