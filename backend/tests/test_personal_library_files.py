@@ -70,3 +70,31 @@ def test_mounted_edit_move_copy_and_delete(accounts, resource_store):
     del objects[key('乙库/b.txt')]
     assert reconcile(db, actor)['deleted'] == 1
     assert db.get(Document, identifier).status == DocumentStatus.DELETED
+
+
+def test_current_original_migration_is_repeatable(accounts, resource_store):
+    from hashlib import sha256
+    from app.models import KnowledgeBase, Document, DocumentStatus
+    from app.migrate_personal_libraries import migrate
+    (client, _, _), db = accounts
+    register(client)
+    actor = access_for(client, db)
+    lib = KnowledgeBase(account_id=actor.user_id, owner_id=actor.user_id, name='资料')
+    db.add(lib); db.flush()
+    def add(key, body, active, **fields):
+        doc = Document(knowledge_base_id=lib.id, filename='same.txt', object_key=key,
+            size_bytes=len(body), content_hash=sha256(body).hexdigest(), content_type='text/plain',
+            status=DocumentStatus.READY, is_active=active, **fields)
+        db.add(doc); db.flush()
+        resource_store[0][key] = body
+        return doc
+    old = add('before', b'old', False)
+    current = add('after', b'new', True, version_group_id=old.version_group_id, version_number=2)
+    db.commit()
+    resource_store[0]['after'] = b'bad'
+    assert migrate(db, apply=True)['problems'] and lib.directory_path is None
+    resource_store[0]['after'] = b'new'
+    assert not migrate(db, apply=True)['problems']
+    assert current.relative_path == '知识库/资料/same.txt' and current.status == DocumentStatus.READY
+    assert old.status == DocumentStatus.DELETED
+    assert migrate(db, apply=True)['current'] == []
