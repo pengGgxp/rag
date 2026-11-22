@@ -207,11 +207,17 @@ class AlibabaSandbox:
         if mount:
             network["allow_out"] = [
                 f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
+            from .knowledge_originals import MOUNT_ROOT
+            points = [{
+                "bucketName": mount["bucket"], "mountDir": directory,
+                "bucketPath": "/" + prefix.rstrip("/"),
+                "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": read_only,
+            } for directory, prefix, read_only in (
+                (ROOT, mount["prefix"], False),
+                (MOUNT_ROOT, mount.get("knowledge_prefix"), True),
+            ) if prefix]
             metadata.update({"fc.sandbox.auth.role": self.config["oss_role_arn"],
-                "fc.sandbox.storage.oss": json.dumps({"mountPoints": [{
-                    "bucketName": mount["bucket"], "mountDir": ROOT,
-                    "bucketPath": "/" + mount["prefix"].rstrip("/"),
-                    "endpoint": f"https://oss-{mount['region']}.aliyuncs.com", "readOnly": False}]})})
+                "fc.sandbox.storage.oss": json.dumps({"mountPoints": points})})
         sandbox = self.sdk.create(template=self.config["template"], timeout=self.config["max_seconds"],
             metadata=metadata, secure=True,
             allow_internet_access=True,
@@ -248,6 +254,9 @@ class AlibabaSandbox:
 
     def prepare(self, sandbox):
         sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {DEPENDENCIES}", user="user")
+        if self.config.get("resource_mount", {}).get("knowledge_prefix"):
+            from .knowledge_originals import MOUNT_ROOT
+            sandbox.commands.run(f"test -r {MOUNT_ROOT}/.rag-directory", user="user")
         sandbox.files.write(f"{STATE}/launcher.py", LAUNCHER, user="user")
 
     def write(self, sandbox, path, data, root=ROOT):

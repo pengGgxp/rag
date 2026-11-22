@@ -104,11 +104,22 @@ def inspect_image(value, root=Path("/home/user/workspace")):
     return {"size_bytes": read, "sha256": digest.hexdigest()}
 
 
-def perform(operation, root=Path("/home/user/workspace")):
+def perform(operation, root=Path("/home/user/workspace"), knowledge_root=Path("/home/user/knowledge")):
     name = operation["name"]
+    if operation.get("knowledge"):
+        if name not in {"list_files", "read_file"}:
+            raise ValueError("知识库原件为只读")
+        root = knowledge_root
     if name == "inspect_image":
         return inspect_image(operation["path"], root)
     if name == "list_files":
+        if operation.get("knowledge"):
+            items = []
+            for relative in operation["paths"]:
+                path = safe_path(root, relative)
+                if path.is_file():
+                    items.append({"path": relative, "size_bytes": path.stat().st_size})
+            return {"items": items}
         items = []
         for directory, dirs, files in os.walk(root, followlinks=False):
             dirs[:] = sorted(name for name in dirs if name not in {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"} and not Path(directory, name).is_symlink())

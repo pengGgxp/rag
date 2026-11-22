@@ -41,7 +41,9 @@ def test_concurrent_cloud_admission_and_replay(auth_postgres, monkeypatch):
     monkeypatch.setattr(cloud, "dispatch", lambda *_: None)
     monkeypatch.setattr("app.storage_backend.active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: store)
     fake = FakeCloud()
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     with Session(engine) as db:
@@ -98,7 +100,9 @@ def test_tool_call_concurrency_worker_restart_and_billing(auth_postgres, monkeyp
         access = auth.Access(user.id, session_hash)
         conversation_id = conversation.id
     fake = FakeCloud()
-    monkeypatch.setattr("app.shared_resources.backend", lambda _: None)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.shared_resources.backend", lambda _: store)
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     def dispatch(*_):
         assert not inline, "Agent 任务不得二次派发"
