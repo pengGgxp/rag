@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -55,14 +56,14 @@ def retrieval_client(monkeypatch):
         engine.dispose()
 
 
-def add_document(session, library, text, *, status=DocumentStatus.READY):
+def add_document(session, library, text, *, status=DocumentStatus.READY, store=None):
     document = Document(
         knowledge_base_id=library.id,
         filename=f"{uuid4()}.txt",
         content_type="text/plain",
         size_bytes=len(text.encode()),
         object_key=str(uuid4()),
-        content_hash=str(uuid4()),
+        content_hash=hashlib.sha256(text.encode()).hexdigest(),
         status=status,
     )
     document.chunks.append(
@@ -76,6 +77,8 @@ def add_document(session, library, text, *, status=DocumentStatus.READY):
             embedding_status=EmbeddingStatus.READY,
         )
     )
+    if store is not None:
+        store.objects[document.object_key] = text.encode()
     session.add(document)
     session.commit()
     return document
@@ -160,7 +163,7 @@ def test_document_filter_cannot_escape_library_or_active_version(retrieval_clien
     assert [row["chunk"]["document_id"] for row in response.json()["results"]] == [str(active.id)]
 
 
-def test_document_versions_preserve_history_and_only_active_version_is_retrieved(retrieval_client):
+def test_historical_versions_cannot_be_retrieved_or_activated(retrieval_client):
     client, session = retrieval_client
     library = add_library(session)
     first = add_document(session, library, "old release guidance")
@@ -190,11 +193,12 @@ def test_document_versions_preserve_history_and_only_active_version_is_retrieved
     results = client.post(f"/knowledge-bases/{library.id}/search", params={"query": "release"}).json()
     assert [row["chunk"]["text"] for row in results] == ["old release guidance"]
     versions = client.get(f"/documents/{first.id}/versions")
-    assert versions.status_code == 200
-    assert [row["version_number"] for row in versions.json()] == [2, 1]
-    assert client.post(f"/documents/{second.id}/activate").status_code == 200
-    results = client.post(f"/knowledge-bases/{library.id}/search", params={"query": "release"}).json()
-    assert [row["chunk"]["text"] for row in results] == ["new release guidance"]
+    assert versions.status_code == 404
+    assert client.post(f"/documents/{second.id}/activate").status_code == 404
+    assert client.get(f"/documents/{second.id}/preview").status_code == 404
+    assert client.get(f"/documents/{second.id}/chunks").status_code == 404
+
+
 def test_empty_retrieval_returns_a_unique_persisted_trace(retrieval_client):
     client, session = retrieval_client
     library = add_library(session)

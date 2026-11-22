@@ -14,7 +14,7 @@ from test_retrieval import add_document
 
 @pytest.mark.parametrize("new_version", [False, True])
 @pytest.mark.parametrize("size", [0, 200 * 1024 * 1024, 200 * 1024 * 1024 + 1])
-def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypatch, size, new_version):
+def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypatch, tmp_path, size, new_version):
     (owner, _, _), db = accounts
     register(owner)
     kb_id = library(owner)
@@ -22,18 +22,38 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
     session = db.get(LoginSession, auth.digest(owner.cookies.get(auth.COOKIE)))
     access = auth.get_access(session)
     stored, queued = [], []
+    from shutil import copyfile, copyfileobj
 
-    def store(fileobj, **kwargs):
-        assert fileobj.tell() == 0
-        total = 0
-        digest = hashlib.sha256()
-        while block := fileobj.read(1024 * 1024):
-            total += len(block)
-            digest.update(block)
-        stored.append((total, digest.hexdigest()))
+    class DiskStore:
+        def path(self, key):
+            return tmp_path / hashlib.sha256(key.encode()).hexdigest()
 
-    monkeypatch.setattr(main, "upload_fileobj", store)
+        def put(self, key, fileobj, _):
+            with self.path(key).open("wb") as target:
+                copyfileobj(fileobj, target)
+            stored.append(self.path(key).stat().st_size)
+
+        def head(self, key):
+            path = self.path(key)
+            return {"Content-Length": path.stat().st_size} if path.exists() else None
+
+        def download(self, key):
+            return self.path(key).open("rb")
+
+        def copy(self, source, target, **_):
+            copyfile(self.path(source), self.path(target))
+
+        def delete(self, key):
+            self.path(key).unlink(missing_ok=True)
+
+    storage = DiskStore()
+
+    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
     monkeypatch.setattr(main.process_document, "delay", queued.append)
+    if previous:
+        storage.path(previous.object_key).write_bytes(b"previous version")
+    kwargs = {"replace_document_id": previous.id if previous else None,
+              "expected_content_hash": previous.content_hash if previous else None, "db": db, "access": access}
     before_docs = db.scalar(select(func.count()).select_from(Document))
     before_jobs = db.scalar(select(func.count()).select_from(IngestionJob))
     request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1234)})
@@ -41,17 +61,17 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
         stream.truncate(size)
         upload = UploadFile(stream, filename="large.txt", headers=Headers({"content-type": "text/plain"}))
         if size == main.MAX_DOCUMENT_BYTES:
-            result = main.upload_document(kb_id, request, upload, previous.id if previous else None, db, access)
+            result = main.upload_document(kb_id, request, upload, **kwargs)
             assert result.size_bytes == size
-            assert stored == [(size, db.get(Document, result.id).content_hash)]
+            assert stored == [size]
             assert len(queued) == 1
-            assert result.version_number == (2 if new_version else 1)
+            assert result.version_number == 1
             if previous:
-                assert result.supersedes_id == previous.id
+                assert result.id == previous.id
                 assert previous.is_active
         else:
             with pytest.raises(HTTPException) as caught:
-                main.upload_document(kb_id, request, upload, previous.id if previous else None, db, access)
+                main.upload_document(kb_id, request, upload, **kwargs)
             assert caught.value.status_code == (400 if size == 0 else 413)
             assert stored == queued == []
             assert db.scalar(select(func.count()).select_from(Document)) == before_docs
@@ -71,4 +91,5 @@ def test_upload_inspection_only_uses_bounded_reads():
             self.remaining -= 1
             return b"text" if self.remaining >= 0 else b""
 
-    assert main.inspect_upload(Stream()) == (12, hashlib.sha256(b"text" * 3).hexdigest())
+    from app.document_ingestion import inspect_file
+    assert inspect_file(Stream()) == (12, hashlib.sha256(b"text" * 3).hexdigest())

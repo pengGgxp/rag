@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronLeft, ChevronRight, Download, File, FileText, ImageIcon, Info, Loader2, Maximize, Minus, Plus, RotateCcw } from "lucide-react";
 import { downloadFile } from "./api";
 import { Modal } from "./modal";
@@ -196,19 +196,19 @@ function OfficePage({ reader, page, zoom, onCount, onError }: PageProps) {
   </div> : <div className="resource-reader-empty" role="status"><Loader2 size={22} className="spin" />正在打开文档</div>}</div>;
 }
 
-type ViewerProps = { file: FileReference; scope: string; onClose: () => void; restoreFocusSelector?: string; alternate?: ReactNode };
+type ViewerProps = { file: FileReference; scope: string; onClose: () => void; restoreFocusSelector?: string; alternate?: ReactNode; initialPage?: number };
 export function FilePreview(props: ViewerProps) {
   return <FileViewer key={`${props.scope}:${props.file.type}:${props.file.id}`} {...props} />;
 }
 
-function FileViewer({ file, scope, onClose, restoreFocusSelector, alternate }: ViewerProps) {
+function FileViewer({ file, scope, onClose, restoreFocusSelector, alternate, initialPage = 1 }: ViewerProps) {
   const [attempt, setAttempt] = useState(0), [error, setError] = useState(""), [url, setUrl] = useState(""), [text, setText] = useState<string | null>(null), [truncated, setTruncated] = useState(false);
-  const [page, setPage] = useState(1), [count, setCount] = useState(0), [zoom, setZoom] = useState(1), [details, setDetails] = useState(false), [downloadError, setDownloadError] = useState("");
+  const [page, setPage] = useState(initialPage), [count, setCount] = useState(0), [zoom, setZoom] = useState(1), [details, setDetails] = useState(false), [downloadError, setDownloadError] = useState("");
   const { reader, error: accessError } = useFileSession(file, scope, attempt);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number; baseX: number; baseY: number } | null>(null);
   useEffect(() => {
-    setUrl(""); setText(null); setError(""); setPage(1); setCount(0); setZoom(1); setDrag({ x: 0, y: 0 });
+    setUrl(""); setText(null); setError(""); setPage(initialPage); setCount(0); setZoom(1); setDrag({ x: 0, y: 0 });
     if (!reader || !["image", "text"].includes(reader.access.kind)) return;
     let disposed = false, source = "";
     const textLimit = 4 * 1024 * 1024;
@@ -219,7 +219,11 @@ function FileViewer({ file, scope, onClose, restoreFocusSelector, alternate }: V
       else { source = URL.createObjectURL(blob); setUrl(source); }
     }).catch(() => { if (!disposed && !reader.signal.aborted) setError("文件未能加载，请重试或下载查看"); });
     return () => { disposed = true; if (source) URL.revokeObjectURL(source); };
-  }, [reader]);
+  }, [reader, initialPage]);
+  const setPageCount = useCallback((total: number) => {
+    setCount(total);
+    if (total > 0) setPage(value => Math.min(value, total));
+  }, []);
   const kind = reader?.access.kind, paged = kind === "pdf" || kind === "docx" || kind === "pptx";
   const failure = accessError || error;
   const download = <Tooltip content="下载原文件"><button type="button" className="file-download icon-button" aria-label="下载原文件" onClick={() => void downloadFile(fileDownload(file), file.name).catch(() => setDownloadError("下载失败，请重试"))}><Download size={18} /><span>下载原文件</span></button></Tooltip>;
@@ -234,8 +238,8 @@ function FileViewer({ file, scope, onClose, restoreFocusSelector, alternate }: V
       {details && <div className="file-viewer-info">{reader ? `${reader.access.filename} · ${reader.access.content_type} · ${(reader.access.size_bytes / 1024).toFixed(1)} KB` : file.name}</div>}
       {alternate}
       {failure ? <div className="resource-reader-empty" role="alert"><FileText size={36} strokeWidth={1.2} /><p>{failure}</p><button className="secondary" type="button" onClick={() => { setError(""); setAttempt(value => value + 1); }}><RotateCcw size={16} />重试</button></div>
-        : reader && kind === "pdf" ? <PdfPage reader={reader} page={page} zoom={zoom} onCount={setCount} onError={setError} />
-          : reader && (kind === "docx" || kind === "pptx") ? <OfficePage reader={reader} page={page} zoom={zoom} onCount={setCount} onError={setError} />
+        : reader && kind === "pdf" ? <PdfPage reader={reader} page={page} zoom={zoom} onCount={setPageCount} onError={setError} />
+          : reader && (kind === "docx" || kind === "pptx") ? <OfficePage reader={reader} page={page} zoom={zoom} onCount={setPageCount} onError={setError} />
             : reader && url ? <div className="resource-image-stage" onPointerDown={event => { if (zoom <= 1) return; event.currentTarget.setPointerCapture(event.pointerId); pointer.current = { x: event.clientX, y: event.clientY, baseX: drag.x, baseY: drag.y }; }}
               onPointerMove={event => { if (pointer.current) setDrag({ x: pointer.current.baseX + event.clientX - pointer.current.x, y: pointer.current.baseY + event.clientY - pointer.current.y }); }} onPointerUp={() => { pointer.current = null; }} onPointerCancel={() => { pointer.current = null; }}>
               <img src={url} alt={file.name} draggable={false} onError={() => setError("图片未能加载，请重试")} style={{ transform: `translate(${drag.x}px, ${drag.y}px) scale(${zoom})` }} /></div>

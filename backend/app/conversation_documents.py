@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from .auth import get_access
 from .db import get_db
-from .document_ingestion import stage_upload, commit_upload, dispatch_ingestion
+from .document_ingestion import stage_upload, dispatch_ingestion
 from .models import (ChatMessage, Chunk, Conversation, ConversationDocumentSave, Document,
                      DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus)
 
@@ -36,9 +36,9 @@ def definition(name, description, schema):
 
 
 TOOLS = [
-    definition("list_writable_knowledge_bases", "列出当前工作区可保存资料的知识库，仅返回名称和ID，不扩大检索权限。",
+    definition("list_writable_knowledge_bases", "列出本人可保存资料的知识库，仅返回名称和ID，不扩大检索权限。",
         {"type": "object", "properties": {}, "additionalProperties": False}),
-    definition("save_to_knowledge_base", "仅在用户明确要求或确认后，将确定的文字成果保存为新资料。目标知识库的有权成员可见，按原上传规则处理并计费。不能保存思考、聊天日志或未经用户确认的资料。提交成功不代表已可检索。",
+    definition("save_to_knowledge_base", "仅在用户明确要求或确认后，将确定的文字成果保存为新资料。按原上传规则处理并计费。不能保存思考、聊天日志或未经用户确认的资料。提交成功不代表已可检索。",
         SaveInput.model_json_schema()),
     definition("get_saved_document_status", "查询本人的成果保存任务状态，不重复上传；通常由界面展示进度，不必反复轮询。",
         StatusInput.model_json_schema()),
@@ -50,15 +50,17 @@ def saved_view(db, access, row):
         raise HTTPException(404, "保存记录不存在")
     access.library(db, row.knowledge_base_id)
     document = db.get(Document, row.document_id, populate_existing=True)
-    latest = db.scalar(select(IngestionJob).where(IngestionJob.document_id == row.document_id)
-        .order_by(IngestionJob.created_at.desc(), IngestionJob.id.desc()))
-    state = document.status.value
+    from .document_ingestion import latest_document_job
+    latest = latest_document_job(db, document)
+    state = document.status.value if document.is_active else "deleted"
     terminal = state in ("ready", "failed", "deleted") or bool(latest and latest.state == JobState.CANCELLED)
     summary = ("已存入，可供检索" if state == "ready" else "资料已删除" if state == "deleted"
         else "处理已取消，请在文档列表中重试" if latest and latest.state == JobState.CANCELLED
         else "处理未完成，请在文档列表中查看并重试" if state == "failed"
         else "已提交，正在处理")
-    return {"save_id": str(row.id), "document_id": str(document.id), "knowledge_base_id": str(row.knowledge_base_id),
+    from .knowledge_originals import mount_path
+    return {"original_path": mount_path(document, access.user_id), "searchable": state == "ready",
+        "save_id": str(row.id), "document_id": str(document.id), "knowledge_base_id": str(row.knowledge_base_id),
         "filename": document.filename, "document_status": state, "terminal": terminal, "summary": summary,
         "url": f"/?library={row.knowledge_base_id}&view=documents&document={document.id}",
         "content_origin": document.content_origin}
@@ -75,7 +77,8 @@ def dispatch_save(db, row):
         return
     job = db.get(IngestionJob, row.job_id, populate_existing=True)
     document = db.get(Document, row.document_id, populate_existing=True)
-    if job.state == JobState.QUEUED and document.status != DocumentStatus.DELETED:
+    from .document_ingestion import job_matches_original
+    if job.state == JobState.QUEUED and document.is_active and document.status != DocumentStatus.DELETED and job_matches_original(document, job):
         try:
             dispatch_ingestion(job.id)
         except Exception:
@@ -115,7 +118,8 @@ def verified_sources(db, access, message, markdown, current_sources):
             access.library(db, document.knowledge_base_id)
         except (ValueError, HTTPException):
             continue
-        result.append({"chunk_id": raw, "version_id": str(document.id), "document_id": str(document.version_group_id)})
+        result.append({"chunk_id": raw, "document_id": str(document.id), "original_hash": document.content_hash,
+                       "page_number": item.get("page_number")})
         seen.add(raw)
     return result
 
@@ -143,39 +147,40 @@ def execute(runtime, name, arguments):
         if not conversation or conversation.deleted_at is not None or conversation.owner_id != access.user_id or conversation.account_id != access.user_id or message.role != "assistant" or message.request_id != UUID(str(runtime.request_id)):
             raise HTTPException(404, "对话不存在或无权访问")
         access.library(db, payload.knowledge_base_id, write=True)
-        from .storage_billing import lock_workspace
-        lock_workspace(db, access.user_id)
-        # Same-library admission and content deduplication share the normal upload lock.
-        db.get(KnowledgeBase, payload.knowledge_base_id, with_for_update=True, populate_existing=True)
+        from .file_operations import workspace_lock
         content = payload.markdown.encode("utf-8")
         digest = hashlib.sha256(content).hexdigest()
-        row = db.scalar(select(ConversationDocumentSave).where(ConversationDocumentSave.user_id == access.user_id,
-            ConversationDocumentSave.request_id == UUID(str(runtime.request_id)),
-            ConversationDocumentSave.knowledge_base_id == payload.knowledge_base_id,
-            ConversationDocumentSave.content_hash == digest))
-        if row:
+        with workspace_lock(db, access.user_id):
+            row = db.scalar(select(ConversationDocumentSave).where(
+                ConversationDocumentSave.user_id == access.user_id,
+                ConversationDocumentSave.request_id == UUID(str(runtime.request_id)),
+                ConversationDocumentSave.knowledge_base_id == payload.knowledge_base_id,
+                ConversationDocumentSave.content_hash == digest))
+            if row is None:
+                sources = verified_sources(db, access, message, payload.markdown, runtime.verified_citations)
+
+                def finish(document, job, queued):
+                    nonlocal row
+                    if queued:
+                        document.content_origin = "ai_assisted"
+                    row = ConversationDocumentSave(account_id=access.user_id, user_id=access.user_id,
+                        conversation_id=conversation.id, message_id=message.id, request_id=UUID(str(runtime.request_id)),
+                        knowledge_base_id=payload.knowledge_base_id, document_id=document.id, job_id=job.id,
+                        content_hash=digest, dispatch_pending=queued, source_citations=sources)
+                    db.add(row)
+
+                document = db.scalar(select(Document).where(Document.knowledge_base_id == payload.knowledge_base_id,
+                    Document.content_hash == digest, Document.is_active.is_(True), Document.status != DocumentStatus.DELETED))
+                if document is None:
+                    stage_upload(db, access, payload.knowledge_base_id,
+                        title if title.lower().endswith(".md") else title + ".md", "text/markdown", io.BytesIO(content),
+                        finish=finish)
+                else:
+                    from .document_ingestion import latest_document_job
+                    job = latest_document_job(db, document)
+                    if job is None:
+                        raise HTTPException(409, "已有同内容文档，请在知识库中查看")
+                    finish(document, job, False)
+                    db.commit()
             dispatch_save(db, row)
             return saved_view(db, access, row)
-        document = db.scalar(select(Document).where(Document.knowledge_base_id == payload.knowledge_base_id,
-            Document.content_hash == digest, Document.status != DocumentStatus.DELETED))
-        new_upload = document is None
-        if new_upload:
-            document, job = stage_upload(db, access, payload.knowledge_base_id,
-                title if title.lower().endswith(".md") else title + ".md", "text/markdown", io.BytesIO(content))
-            document.content_origin = "ai_assisted"
-        else:
-            job = db.scalar(select(IngestionJob).where(IngestionJob.document_id == document.id).order_by(IngestionJob.created_at).limit(1))
-            if job is None:
-                raise HTTPException(409, "已有同内容文档，请在知识库中查看")
-        row = ConversationDocumentSave(account_id=access.user_id, user_id=access.user_id,
-            conversation_id=conversation.id, message_id=message.id, request_id=UUID(str(runtime.request_id)),
-            knowledge_base_id=payload.knowledge_base_id, document_id=document.id, job_id=job.id,
-            content_hash=digest, dispatch_pending=new_upload,
-            source_citations=verified_sources(db, access, message, payload.markdown, runtime.verified_citations))
-        db.add(row)
-        if new_upload:
-            commit_upload(db, document)
-        else:
-            db.commit()
-        dispatch_save(db, row)
-        return saved_view(db, access, row)

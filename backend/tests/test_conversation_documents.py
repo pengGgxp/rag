@@ -27,9 +27,10 @@ def saving(accounts, monkeypatch):
         request_id=request_id, content='Synthetic output', status='completed')
     db.add(message); db.commit()
     access = auth.Access(UUID(session['user']['id']), auth.digest(owner.cookies.get(auth.COOKIE)))
-    stored, queued, deleted = {}, [], []
-    monkeypatch.setattr(storage, 'upload_fileobj', lambda **kw: stored.update({kw['object_key']: kw['fileobj'].read()}))
-    monkeypatch.setattr(storage, 'delete_object', deleted.append)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    stored, queued, deleted = store.objects, [], []
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
     monkeypatch.setattr(saves, 'dispatch_ingestion', queued.append)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message.id, request_id=request_id)
@@ -129,7 +130,7 @@ def test_verified_provenance_and_text_parser_do_not_invent_sources(saving):
     e.runtime.verified_citations=[{'chunk_id':str(chunk.id)}, {'chunk_id':str(uuid4())}]
     result=e.runtime.execute('save_to_knowledge_base',payload(e,markdown=f'结论 [{chunk.id}]'))
     receipt=e.db.get(ConversationDocumentSave,UUID(result['save_id']))
-    assert receipt.source_citations==[{'chunk_id':str(chunk.id),'version_id':str(doc.id),'document_id':str(doc.version_group_id)}]
+    assert receipt.source_citations==[{'chunk_id':str(chunk.id),'document_id':str(doc.id),'original_hash':doc.content_hash,'page_number':None}]
     from app.tasks import parse_for_ingestion
     created=e.db.get(Document,UUID(result['document_id']))
     parsed=parse_for_ingestion(e.db,e.db.get(IngestionJob,receipt.job_id),created,next(iter(e.stored.values())))
@@ -138,13 +139,13 @@ def test_verified_provenance_and_text_parser_do_not_invent_sources(saving):
 
 def test_commit_failure_cleans_object(saving,monkeypatch):
     e=saving
-    def failed(_): raise RuntimeError('synthetic commit failure')
-    class Broken:
-        def commit(self): raise RuntimeError('synthetic commit failure')
-        def rollback(self): pass
+    def failed(*_, **__):
+        raise RuntimeError('synthetic metadata failure')
+    monkeypatch.setattr(document_ingestion, 'record_audit', failed)
     with pytest.raises(RuntimeError):
-        document_ingestion.commit_upload(Broken(),SimpleNamespace(object_key='synthetic-object'))
-    assert e.deleted==['synthetic-object']
+        saves.execute(e.runtime, 'save_to_knowledge_base', payload(e))
+    assert not e.stored and not e.queued
+    assert e.db.scalar(select(func.count()).select_from(Document)) == 0
 
 
 def test_stream_emits_saved_document_activity_at_actual_call(saving):

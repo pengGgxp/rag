@@ -8,7 +8,9 @@ from app.models import Document, DocumentStatus
 
 @pytest.fixture(autouse=True)
 def local_upload_io(monkeypatch):
-    monkeypatch.setattr(main, "upload_fileobj", lambda **_: None)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
     monkeypatch.setattr(main.process_document, "delay", lambda *_: None)
 
 

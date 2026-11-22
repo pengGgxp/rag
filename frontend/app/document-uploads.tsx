@@ -13,7 +13,7 @@ import { BATCH_COUNT, BATCH_LIMIT, DOCUMENT_ACCEPT, DOCUMENT_LIMIT, droppedDocum
 import "./uploads.css";
 
 const LIMIT = DOCUMENT_LIMIT;
-type Destination = { id: string; name: string; versionOf?: string; filename?: string };
+type Destination = { id: string; name: string; replacement?: { id: string; hash: string }; filename?: string };
 type Task = {
   key: string; uploadId?: string; jobId?: string; library: Destination;
   name: string; sourcePath?: string; size: number; modified: number; type: string; partSize: number;
@@ -319,7 +319,8 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
       let remote = task.uploadId ? await request<Remote>(`/uploads/${task.uploadId}`, { signal })
         : await retryUploadRequest(() => request<Remote>(`/knowledge-bases/${task.library.id}/uploads`, json({
           filename: file.name, size_bytes: file.size, content_type: file.type || "application/octet-stream",
-          version_of: task.library.versionOf || null,
+          replace_document_id: task.library.replacement?.id ?? null,
+          expected_content_hash: task.library.replacement?.hash ?? null,
         }, { "Idempotency-Key": task.key })), signal);
       task = { ...task, uploadId: remote.id, partSize: remote.part_size };
       patch(task.key, { uploadId: remote.id, partSize: remote.part_size });
@@ -541,9 +542,9 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
     setPreparing(true); setSelectionError("");
     try {
       const candidates = typeof input === "function" ? await input(controller.signal) : input;
-      const result = await prepareDocuments(candidates, controller.signal, Boolean(dialog?.destination?.versionOf));
+      const result = await prepareDocuments(candidates, controller.signal, Boolean(dialog?.destination?.replacement));
       controller.signal.throwIfAborted();
-      const merged = dialog?.destination?.versionOf ? [] : [...selected];
+      const merged = dialog?.destination?.replacement ? [] : [...selected];
       let bytes = merged.reduce((sum, item) => sum + item.file.size, 0);
       for (const item of result.files) {
         if (merged.some(old => old.path === item.path && old.file.size === item.file.size && old.file.lastModified === item.file.lastModified)) {
@@ -601,7 +602,7 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
   );
   return <Context.Provider value={{ tasks: visible, dialogOpen, open }}>
     {children}
-    {dialog && <Dialog title={dialog.destination?.versionOf ? `上传 ${dialog.destination.filename} 的新版本` : dialog.destination ? "上传文档" : "上传任务"}
+    {dialog && <Dialog title={dialog.destination?.replacement ? `替换 ${dialog.destination.filename} 的原件` : dialog.destination ? "上传文档" : "上传任务"}
       onClose={closeDialog} restoreFocusSelector={dialog.destination ? "[data-upload-trigger]" : "[data-upload-tasks]"}>
       <div className="upload-window">
         {dialog.destination && <>
@@ -611,15 +612,15 @@ export function DocumentUploadProvider({ children }: { children: ReactNode }) {
             const transfer = e.dataTransfer;
             void choose(signal => droppedDocuments(transfer, signal));
           }}>
-            <input type="file" aria-label="选择文件" disabled={preparing} multiple={!dialog.destination.versionOf}
-              accept={DOCUMENT_ACCEPT + (dialog.destination.versionOf ? "" : ",.zip")}
+            <input type="file" aria-label="选择文件" disabled={preparing} multiple={!dialog.destination.replacement}
+              accept={DOCUMENT_ACCEPT + (dialog.destination.replacement ? "" : ",.zip")}
               onChange={e => { void choose(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
             <span className="upload-symbol"><Upload size={26} /></span>
             <strong>{preparing ? "正在整理文件" : selected.length ? `待上传 ${selected.length} 个文档` : "选择文件或拖拽到此处"}</strong>
-            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX{!dialog.destination.versionOf && "、ZIP"}</span>
-            <small>单文件最大 200 MiB{!dialog.destination.versionOf && " · 每批最多 200 个文档、500 MiB"}</small>
+            <span>PDF、DOCX、MD、TXT、HTML、CSV、XLSX{!dialog.destination.replacement && "、ZIP"}</span>
+            <small>单文件最大 200 MiB{!dialog.destination.replacement && " · 每批最多 200 个文档、500 MiB"}</small>
           </label>
-          {!dialog.destination.versionOf && <div className="upload-selection-actions">
+          {!dialog.destination.replacement && <div className="upload-selection-actions">
             <input type="file" ref={folderInput} aria-label="选择文件夹" className="sr-only" tabIndex={-1} disabled={preparing} multiple
               {...{ webkitdirectory: "", directory: "" }} onChange={e => { void choose(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
             <button className="secondary" disabled={preparing} onClick={() => folderInput.current?.click()}><FolderOpen size={16} />选择文件夹</button>

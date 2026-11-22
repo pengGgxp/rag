@@ -1,3 +1,4 @@
+import hashlib
 import io
 from uuid import UUID
 
@@ -39,6 +40,13 @@ def pdf_job(accounts, monkeypatch):
     writer.add_blank_page(width=600, height=800)
     content = io.BytesIO()
     writer.write(content)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    store.objects[doc.object_key] = content.getvalue()
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    doc.size_bytes = len(content.getvalue())
+    doc.content_hash = hashlib.sha256(content.getvalue()).hexdigest()
+    db.commit()
     monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
     settings = tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"})
@@ -240,6 +248,10 @@ def test_pdf_ingestion_preserves_original_version_and_single_processing(pdf_job,
     owner, outsider, db, _, doc_id, job_id, embedded = pdf_job
     content = make_pdf(password=password)
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    document = db.get(Document, doc_id)
+    document.content_hash = hashlib.sha256(content).hexdigest()
+    document.size_bytes = len(content)
+    db.commit()
     settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
     monkeypatch.setattr(tasks, "get_settings", lambda: settings)
     document = db.get(Document, doc_id)
@@ -282,6 +294,10 @@ def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatc
 
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    document = db.get(Document, doc_id)
+    document.content_hash = hashlib.sha256(content).hexdigest()
+    document.size_bytes = len(content)
+    db.commit()
     settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
     monkeypatch.setattr(tasks, "get_settings", lambda: settings)
     before = [(row.user_id, row.balance, row.lifetime_spent) for row in db.scalars(select(UserCreditAccount))]
@@ -316,6 +332,10 @@ def test_timeout_retry_reuses_remote_task_instead_of_submitting_again(pdf_job, m
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     content = make_pdf(password=password)
     monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    document = db.get(Document, doc_id)
+    document.content_hash = hashlib.sha256(content).hexdigest()
+    document.size_bytes = len(content)
+    db.commit()
 
     def timeout(_):
         raise DocMindError("wait timed out")

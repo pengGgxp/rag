@@ -87,6 +87,8 @@ class DocumentRead(BaseModel):
     version_number: int
     is_active: bool
     supersedes_id: UUID | None
+    content_hash: str | None = None
+    searchable: bool = False
     filename: str
     content_origin: str = "uploaded"
     content_type: str
@@ -132,6 +134,7 @@ class ChunkRead(BaseModel):
 
     id: UUID
     document_id: UUID
+    original_hash: str | None = None
     ordinal: int
     content_origin: str = "uploaded"
     text: str
@@ -203,6 +206,8 @@ class AnswerRequest(BaseModel):
 
 
 class CitationRead(BaseModel):
+    document_id: UUID | None = None
+    original_hash: str | None = None
     chunk_id: UUID
     filename: str
     content_origin: str = "uploaded"

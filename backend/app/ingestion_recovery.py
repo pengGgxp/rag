@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from sqlalchemy import select, text
 
 from .auth import now
+from .document_ingestion import job_matches_original
 from .document_failures import failure, uncertain_submission
 from .models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
 
@@ -40,7 +41,8 @@ def recover_interrupted_ingestion(db):
             if not document or not job or job.state != JobState.RUNNING:
                 db.rollback()
                 continue
-            if document.status == DocumentStatus.DELETED:
+            if (not document.is_active or document.status == DocumentStatus.DELETED
+                    or not job_matches_original(document, job)):
                 job.state = JobState.CANCELLED
             elif job.embedding_submitting or uncertain_submission(document):
                 job.state = JobState.FAILED

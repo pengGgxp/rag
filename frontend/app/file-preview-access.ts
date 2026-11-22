@@ -1,6 +1,6 @@
 "use client";
 
-import { ApiError, request } from "./api";
+import { API_URL, ApiError, request } from "./api";
 import { cachedPreview, clearPreviewCache } from "./resource-preview-cache";
 
 export type FileReference = { type: "resource" | "attachment" | "document"; id: string; name: string };
@@ -56,7 +56,9 @@ export class FileReaderSession {
         if (range) headers.set("Range", `bytes=${range[0]}-${range[1] - 1}`);
         let response: Response;
         try {
-          response = await fetch(this.access.url, { credentials: "omit", referrerPolicy: "no-referrer",
+          const document = this.file.type === "document";
+          const url = document ? `${API_URL.replace(/\/$/, "")}${this.access.url}` : this.access.url;
+          response = await fetch(url, { credentials: document ? "include" : "omit", referrerPolicy: "no-referrer",
             headers, signal: this.signal, cache: "no-store" });
         } catch (error) {
           this.signal.throwIfAborted();

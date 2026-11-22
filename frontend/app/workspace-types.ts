@@ -41,6 +41,8 @@ export type SourceDocument = {
   knowledge_base_id: string;
   content_origin?: string;
   filename: string;
+  content_hash?: string | null;
+  searchable?: boolean;
   version_group_id: string;
   version_number: number;
   is_active: boolean;
