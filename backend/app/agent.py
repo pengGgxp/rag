@@ -83,6 +83,9 @@ AGENT_SYSTEM_PROMPT = (
     "可直接使用 run_command 在隔离环境中编写和运行命令、处理工作区文件，不要求选择或加载 Skill。"
     "资源库就是当前云电脑的工作目录，工作区文件已挂载，可直接用路径读写，无需下载、缓存或准备输入。"
     "需要执行任务时主动调用 create_cloud_computer 创建云电脑，取得 computer_id；"
+    "需要查看知识库原件时，先确认已启动的云电脑返回 knowledge_mounted=true，必要时调用 create_cloud_computer。"
+    "用 get_knowledge_base_document_status 获取原件路径，从 /home/user/knowledge 只读挂载读取。"
+    "可用 list_files 的 knowledge=true、read_file 的绝对路径，或用 run_command 核对 PDF 页码。普通检索无需云电脑。"
     "文件工具、read_image、run_command、start_preview、stop_preview 均明确传入该 ID，不会自动创建或选择实例。"
     "你负责选择沿用哪台或新建另一台；可用 list_cloud_computers / get_cloud_computer 找回并核对实例，"
     "end_cloud_computer 结束指定实例。创建结果不确定时查询原 ID，不为取回结果重复创建。"
@@ -215,7 +218,7 @@ SEARCH_TOOL: dict[str, Any] = {
                     "type": "array", "items": {"type": "string", "format": "uuid"},
                     "minItems": 1,
                     "maxItems": 8,
-                    "description": "Optional document IDs from discovery, user mentions or search evidence. Stable document_id values resolve to the current active version; version_id values must still be active. Omit this field when not filtering by document. Documents must belong to the selected knowledge bases; the server rechecks access and availability.",
+                    "description": "Optional stable document IDs from discovery, user mentions or search evidence. Omit this field when not filtering by document. Documents must belong to the selected knowledge bases. The server rechecks access and availability.",
                 },
                 "top_k": {
                     "type": "integer", "minimum": 1, "maximum": 30,
@@ -827,7 +830,8 @@ def stream_retrieval_agent(
                         ranking = rankings[str(result.chunk.id)]
                         found.append((result.score, {
                             "chunk_id": str(result.chunk.id),
-                            "document_id": str(result.chunk.version_group_id or result.chunk.document_id),
+                            "document_id": str(result.chunk.document_id),
+                            "original_hash": getattr(result.chunk, "original_hash", None),
                             "version_id": str(result.chunk.document_id),
                             "filename": result.filename,
                             "content_origin": getattr(result.chunk, "content_origin", "uploaded"),

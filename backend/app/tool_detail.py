@@ -58,7 +58,7 @@ def receipt_projection(db, access, conversation_id, request_id, execution_id, of
         add("检索词", data.get("query"))
         add("命中", data.get("result_count"))
         for item in data.get("evidence", []):
-            add("来源", f"{item['knowledge_base_name']} · {item['filename']} · v{item['version_number']}")
+            add("来源", f"{item['knowledge_base_name']} · {item['filename']}")
             add("原文", item.get("text"))
     elif name in ("web_search", "web_fetch"):
         add("检索词", args.get("query"))

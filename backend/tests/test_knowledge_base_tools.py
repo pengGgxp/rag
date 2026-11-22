@@ -173,9 +173,10 @@ def test_document_states_versions_deletion_and_pagination(saving):
     e.db.add(job)
     e.db.commit()
     result = execute(e, "get_knowledge_base_document_status", {"knowledge_base_id": str(e.library)})
-    assert len(result["documents"]) == 5
+    assert len(result["documents"]) == 4
     by_id = {row["id"]: row for row in result["documents"]}
-    assert [by_id[str(row.id)]["searchable"] for row in rows[:5]] == [False, False, False, True, False]
+    assert [by_id[str(row.id)]["searchable"] for row in rows[:4]] == [False, False, False, True]
+    assert str(rows[4].id) not in by_id
     assert "已取消" in by_id[str(rows[2].id)]["summary"]
     assert not any(text in json.dumps(result) for text in ["secret", "/private", "private log", "parsed_text", "object_key"])
     args = {"knowledge_base_id": str(e.library), "limit": 2}

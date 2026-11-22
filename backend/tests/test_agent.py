@@ -106,7 +106,7 @@ def test_retrieval_agent_only_searches_allowed_knowledge_bases():
     assert calls == [(allowed, "needle")]
     assert len(run.citations) == 1
     assert run.citations[0]["page_number"] == 2
-    assert run.citations[0]["document_id"] == str(version_group_id)
+    assert run.citations[0]["document_id"] == str(document_id)
     assert run.citations[0]["version_id"] == str(document_id)
     assert "error" in run.tool_results[0]
     assert run.tool_results[1]["result_count"] == 1

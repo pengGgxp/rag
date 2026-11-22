@@ -99,7 +99,7 @@ def test_search_evidence_document_id_can_be_reused_for_scoped_retrieval(client, 
                 arguments = {"knowledge_base_ids": [str(library.id)], "query": "needle"}
             elif self.step == 2:
                 evidence = json.loads(messages[-1]["content"])["evidence"]
-                assert evidence[0]["document_id"] == str(document.version_group_id)
+                assert evidence[0]["document_id"] == str(document.id)
                 arguments = {"knowledge_base_ids": [str(library.id)], "query": "needle",
                     "document_ids": [evidence[0]["document_id"], evidence[0]["version_id"]]}
             else:
@@ -602,10 +602,13 @@ def test_agent_direct_answer_does_not_require_retrieval_evidence(client, monkeyp
     assert [name for name, _ in events].count("tool_call") == 0
 
 
-def test_followup_does_not_reuse_deleted_document_as_evidence(client):
+def test_followup_does_not_reuse_deleted_document_as_evidence(client, monkeypatch):
     http, db, captured = client
     library = add_library(db)
-    document = add_document(db, library, "needle duration is 3 days")
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    document = add_document(db, library, "needle duration is 3 days", store=store)
     conversation = create(http, [library])
     turn(http, conversation["id"])
     assert http.delete(f"/documents/{document.id}").status_code == 200
