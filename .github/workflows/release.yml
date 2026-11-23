@@ -105,7 +105,7 @@ jobs:
             | jq -e '.mediaType == "application/vnd.docker.distribution.manifest.v2+json"'
           mkdir -p digests
           printf '%s\n' "$DIGEST" > "digests/$SERVICE.digest"
-          printf '`%s@%s`\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf -- '- %s@%s\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.service }}
