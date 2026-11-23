@@ -5,8 +5,8 @@ from typing import Any
 
 import httpx
 
-from .config import Settings, get_settings
-from .upstream_retries import RetryBudget, RetryPolicy, TRANSIENT_STATUS, retry_after
+from ...config import Settings, get_settings
+from ...upstream_retries import RetryBudget, RetryPolicy, TRANSIENT_STATUS, retry_after
 
 
 INGESTION_RETRY = RetryPolicy(

@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 import socket
 
-from app.parsed_document import ParsedDocument
-from app.parsers import parse_document, pdf_pages
+from app.knowledge.ingestion.parsed_document import ParsedDocument
+from app.knowledge.ingestion.parsers import parse_document, pdf_pages
 from .selective_parser import parse_docx, parse_pdf, Policy, Result
 
 

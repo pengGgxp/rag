@@ -285,7 +285,7 @@ def execute_tool(name, arguments, db, access, account_id, conversation_id=None, 
         return execute(db, access, conversation_id, request_id, arguments, check_active, **execution)
     if name not in {"list_files", "read_file", "write_file", "apply_patch", "delete_file"}:
         return {"error": "未知文件工具"}
-    from .knowledge_originals import MOUNT_ROOT
+    from .knowledge.originals import MOUNT_ROOT
     path = arguments.get("path") or ""
     if (name == "list_files" and arguments.get("knowledge")) or (
             name == "read_file" and path.startswith(MOUNT_ROOT + "/") and not arguments.get("id")):
@@ -379,7 +379,7 @@ def execute_tool(name, arguments, db, access, account_id, conversation_id=None, 
 
 def execute_knowledge_read(name, arguments, db, access, conversation_id, request_id, check_active, **execution):
     from .cloud_computer import execute
-    from .knowledge_originals import MOUNT_ROOT, mount_path, prefix
+    from .knowledge.originals import MOUNT_ROOT, mount_path, prefix
     from .models import Document, DocumentStatus, KnowledgeBase
 
     root = prefix(access.user_id)

@@ -5,8 +5,8 @@ import pytest
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from app import parsers
-from app.parsed_document import parsed_chunks
+from app.knowledge.ingestion import parsers
+from app.knowledge.ingestion.parsed_document import parsed_chunks
 from pdf_fixtures import make_pdf
 
 

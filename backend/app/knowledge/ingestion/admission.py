@@ -5,35 +5,15 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import case, select
+from sqlalchemy import select
 
-from .audit_log import record_audit
-from .models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus
+from ...audit_log import record_audit
+from ...models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus
+
+from .jobs import latest_document_job, stop_ingestion_job
 
 MAX_DOCUMENT_BYTES = 200 * 1024 * 1024
 SUFFIXES = {".pdf", ".docx", ".md", ".txt", ".html", ".htm", ".csv", ".xlsx"}
-
-
-def job_matches_original(document, job):
-    return (job.original_revision == document.original_revision
-            and (job.original_hash is None or job.original_hash == document.content_hash))
-
-
-def latest_document_job(db, document, *, prefer_ready=False):
-    ready = prefer_ready or document.status == DocumentStatus.READY
-    ordering = [case(
-        (IngestionJob.state.in_((JobState.RUNNING, JobState.QUEUED)), 0),
-        (IngestionJob.state == JobState.SUCCEEDED, 1 if ready else 2),
-        else_=2 if ready else 1,
-    )]
-    if ready:
-        ordering.append(case((IngestionJob.phase == "indexing", 0), else_=1))
-    ordering.extend((IngestionJob.created_at.desc(), IngestionJob.updated_at.desc(), IngestionJob.id.desc()))
-    return db.scalar(select(IngestionJob).where(
-        IngestionJob.document_id == document.id,
-        IngestionJob.original_revision == document.original_revision,
-        (IngestionJob.original_hash == document.content_hash) | IngestionJob.original_hash.is_(None),
-    ).order_by(*ordering).limit(1))
 
 
 def inspect_file(stream):
@@ -61,7 +41,7 @@ def check_format(stream, filename):
 
 def stage_upload(db, access, library_id, filename, content_type, stream, *, replace_id=None,
                  expected_hash=None, request=None, request_id=None, finish=None):
-    from . import file_operations as ops
+    from ... import file_operations as ops
 
     if not filename or len(filename) > 255 or "/" in filename or "\\" in filename or any(
             ord(character) < 32 for character in filename):
@@ -83,7 +63,7 @@ def stage_upload(db, access, library_id, filename, content_type, stream, *, repl
 
 
 def dispatch_ingestion(job_id, dispatch=None):
-    from .tasks import process_document
+    from ...tasks import process_document
     (dispatch or process_document.delay)(str(job_id))
 
 
@@ -97,10 +77,9 @@ def replacement_target(db, library_id, identifier):
 
 def publish(db, access, library_id, filename, content_type, size, digest, key, *, replace_id=None,
             expected_hash=None, request=None, request_id=None, finish=None):
-    from . import file_operations as ops
-    from .knowledge_originals import copy_change, delete_change, original_key
-    from .main import stop_ingestion_job
-    from .storage_billing import check_capacity
+    from ... import file_operations as ops
+    from ..originals import copy_change, delete_change, original_key
+    from ...storage_billing import check_capacity
 
     signature = ops.fingerprint([library_id, filename, content_type, digest, replace_id, expected_hash])
     with ops.workspace_lock(db, access.user_id):
@@ -115,7 +94,7 @@ def publish(db, access, library_id, filename, content_type, size, digest, key, *
             if finish:
                 finish(previous, job, False)
             if request_id:
-                from .models import WorkspaceFileOperation
+                from ...models import WorkspaceFileOperation
                 db.add(WorkspaceFileOperation(account_id=access.user_id, user_id=access.user_id,
                     request_id=request_id, fingerprint=signature, state="completed", steps=[],
                     result={"document_id": str(previous.id), "job_id": str(job.id) if job else None}))

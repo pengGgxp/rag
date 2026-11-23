@@ -1,7 +1,7 @@
 import pytest
 
-from app.chunking import chunk_text
-from app.parsed_document import ParsedDocument, parsed_chunks
+from app.knowledge.ingestion.chunking import chunk_text
+from app.knowledge.ingestion.parsed_document import ParsedDocument, parsed_chunks
 
 
 def test_chunking_is_deterministic_and_preserves_offsets():

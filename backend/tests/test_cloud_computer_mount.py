@@ -84,7 +84,7 @@ def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accoun
 
 def test_knowledge_file_tools_use_the_owned_mount_and_hide_other_accounts(accounts, monkeypatch, tmp_path):
     from app.cloud_file_operation import perform
-    from app.knowledge_originals import MOUNT_ROOT, prefix
+    from app.knowledge.originals import MOUNT_ROOT, prefix
     from app.models import Document
     from test_auth import library
 
@@ -94,7 +94,7 @@ def test_knowledge_file_tools_use_the_owned_mount_and_hide_other_accounts(accoun
     own_library, other_library = library(client), library(other)
     storage = MemoryMount()
     configure_mount(db, monkeypatch, storage)
-    monkeypatch.setattr("app.main.process_document.delay", lambda _: None)
+    monkeypatch.setattr("app.knowledge.routes.process_document.delay", lambda _: None)
 
     def upload_original(owner, library_id, content):
         response = owner.post(f"/knowledge-bases/{library_id}/documents",
@@ -243,11 +243,11 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
     db.commit()
     monkeypatch.setattr(cloud, "adapter", lambda config, encrypted: AlibabaSandbox(config, reveal(encrypted)))
     item = upload(client, "resume.txt", b"synthetic original")
-    from app.knowledge_originals import mount_path
+    from app.knowledge.originals import mount_path
     from app.models import Document
     from pdf_fixtures import make_pdf
     from test_auth import library
-    monkeypatch.setattr("app.main.process_document.delay", lambda _: None)
+    monkeypatch.setattr("app.knowledge.routes.process_document.delay", lambda _: None)
     pdf, replacement = make_pdf(), make_pdf(page_count=3)
     kb, other_kb = library(client), library(client)
 

@@ -8,35 +8,21 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import OperationalError
 
-from .auth import Access, aware, now, get_access
-from .db import get_db, SessionLocal
-from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
-from .document_ingestion import publish, replacement_target, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
-from .models import Document, DocumentStatus, DocumentUpload, User
-from .storage_backend import current_storage
-from .upstream_retries import retry_after
+from ...auth import Access, aware, now, get_access
+from ...db import get_db, SessionLocal
+from .failures import classify, database_sqlstate, failure, log_worker_failure, rejection
+from .admission import publish, replacement_target, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
+from .jobs import latest_document_job
+from ..schemas import PartInput, UploadInput
+from ...models import Document, DocumentStatus, DocumentUpload, User
+from ...storage_backend import current_storage
+from ...upstream_retries import retry_after
 
 router = APIRouter(tags=["document-uploads"])
 PART_SIZE = 8 * 1024 * 1024
-
-
-class UploadInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    filename: str = Field(min_length=1, max_length=255)
-    content_type: str = Field(default="application/octet-stream", max_length=150)
-    size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
-    replace_document_id: UUID | None = None
-    expected_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    request_key: UUID = Field(default_factory=uuid4)
-
-
-class PartInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def view(row, parts=None):
@@ -103,7 +89,7 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
     previous = replacement_target(db, library_id, payload.replace_document_id) if payload.replace_document_id else None
     if previous and previous.content_hash != payload.expected_content_hash:
         raise HTTPException(412, "原件已经更新，请刷新后重新选择文件")
-    from .storage_billing import check_capacity
+    from ...storage_billing import check_capacity
     check_capacity(db, access.user_id, payload.size_bytes, replaced_bytes=previous.size_bytes if previous else 0)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
@@ -152,7 +138,7 @@ def read_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_access)
             result["document_status"] = document.status.value
             job = latest_document_job(db, document)
             if job:
-                from .document_failures import safe_job_failure
+                from .failures import safe_job_failure
                 result["job_id"] = str(job.id)
                 job_failure = safe_job_failure(job, document)
                 if job_failure:
@@ -187,12 +173,12 @@ def complete_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acc
         row.state, row.error, row.failure = "verifying", None, None
         row.verify_attempts, row.verify_wait_ms, row.verify_after = 0, 0, None
         db.commit()
-        from .tasks import verify_upload
+        from ...tasks import verify_upload
         verify_upload.delay(str(row.id))
         return view(row)
     if row.state in ("completed", "verifying"):
         if row.state == "verifying" and row.verify_after is None:
-            from .tasks import verify_upload
+            from ...tasks import verify_upload
             verify_upload.delay(str(row.id))
         return view(row)
     if row.state not in ("uploading", "completing"):
@@ -231,7 +217,7 @@ def complete_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acc
         return view(row)
     row.state = "verifying"
     db.commit()
-    from .tasks import verify_upload
+    from ...tasks import verify_upload
     verify_upload.delay(str(row.id))
     return view(row)
 
@@ -250,7 +236,7 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
 
 
 def finalize_upload(identifier):
-    from .file_operations import workspace_lock
+    from ...file_operations import workspace_lock
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier))
         if not row:
@@ -262,7 +248,7 @@ def finalize_upload(identifier):
 
 
 def _finalize_upload(identifier):
-    from .tasks import process_document
+    from ...tasks import process_document
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
         if (not row or row.state != "verifying" or aware(row.expires_at) <= now()
@@ -274,7 +260,7 @@ def _finalize_upload(identifier):
             access = worker_access(db, row)
             access.library(db, row.knowledge_base_id, write=True)
             with storage.download(row.object_key) as stream:
-                from .document_ingestion import inspect_file
+                from .admission import inspect_file
                 size, digest = inspect_file(stream)
                 if size != row.size_bytes:
                     raise HTTPException(409, "文件实际大小不一致")
@@ -326,7 +312,7 @@ def _finalize_upload(identifier):
                     delay = delay_ms / 1000
                     row.verify_after = now() + timedelta(seconds=delay)
                     db.commit()
-                    from .tasks import verify_upload
+                    from ...tasks import verify_upload
                     try:
                         verify_upload.apply_async(args=[str(row.id)], countdown=delay)
                     except Exception:
@@ -419,11 +405,11 @@ def cleanup_uploads():
 
 
 def recover_uploads():
-    from .tasks import verify_upload, process_document
-    from .models import IngestionJob, JobState
+    from ...tasks import verify_upload, process_document
+    from ...models import IngestionJob, JobState
     with SessionLocal() as db:
         if db.get_bind().dialect.name == "postgresql":
-            from .ingestion_recovery import recover_interrupted_ingestion
+            from .recovery import recover_interrupted_ingestion
             recover_interrupted_ingestion(db)
         due = select(DocumentUpload).where(DocumentUpload.state == "verifying", DocumentUpload.expires_at > now(),
             DocumentUpload.verify_after.is_(None) | (DocumentUpload.verify_after <= now())
@@ -439,7 +425,7 @@ def recover_uploads():
         ).with_for_update(skip_locked=True)).all()
         for job in jobs:
             if job.phase == "indexing":
-                from .tasks import embed_document
+                from ...tasks import embed_document
                 embed_document.delay(str(job.document_id), str(job.id))
             else:
                 process_document.delay(str(job.id))
@@ -447,7 +433,7 @@ def recover_uploads():
 
 def cleanup_orphans():
     """Only platform-shaped objects older than the session lifetime are eligible."""
-    from .storage_backend import active_settings
+    from ...storage_backend import active_settings
     with SessionLocal() as db:
         settings = active_settings(db)
         if not settings or not settings.active:
@@ -473,7 +459,7 @@ def cleanup_orphans():
             if key.startswith(("_ocr/", "_checks/")):
                 storage.delete(key)
             elif re.fullmatch(r"_chat/[0-9a-f-]{36}/[0-9a-f-]{36}\.[a-z0-9]+", key):
-                from .models import ChatAttachment
+                from ...models import ChatAttachment
                 if not db.scalar(select(ChatAttachment.id).where(ChatAttachment.object_key == key)):
                     storage.delete(key)
             elif key.startswith("_knowledge_uploads/") and managed.fullmatch(key):

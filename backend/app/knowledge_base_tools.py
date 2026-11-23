@@ -11,7 +11,7 @@ from .audit_log import record_audit
 from .conversation_documents import definition
 from .models import (ChatMessage, Conversation, Document, DocumentStatus,
                      JobState, KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution)
-from .schemas import KnowledgeBaseCreate, KnowledgeBaseUpdate
+from .knowledge.schemas import KnowledgeBaseCreate, KnowledgeBaseUpdate
 
 LABELS = {"create_knowledge_base": "创建知识库", "update_knowledge_base": "修改知识库",
           "list_knowledge_bases": "查看知识库", "get_knowledge_base_document_status": "查看文档处理状态"}
@@ -74,8 +74,8 @@ def library_view(row):
 
 
 def document_view(db, library, document):
-    from .knowledge_originals import mount_path
-    from .document_ingestion import latest_document_job
+    from .knowledge.originals import mount_path
+    from .knowledge.ingestion.jobs import latest_document_job
     job = latest_document_job(db, document)
     searchable = (document.status == DocumentStatus.READY and document.is_active
                   and library.status != KnowledgeBaseStatus.ARCHIVED

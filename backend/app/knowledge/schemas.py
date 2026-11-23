@@ -1,9 +1,25 @@
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
+from .ingestion.admission import MAX_DOCUMENT_BYTES
+from .ingestion import failures as document_failures
+from ..models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
+
+
+def document_read(document, job):
+    detail = document_failures.safe_job_failure(job, document) if job else None
+    failure = DocumentFailureRead.model_validate(detail) if detail else None
+    return DocumentRead.model_validate(document).model_copy(update={
+        "error_detail": document_failures.safe_document_message(document, detail),
+        "failure": failure,
+        "searchable": document.is_active and document.status == DocumentStatus.READY and document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED,
+        "job": JobRead.model_validate(job).model_copy(update={
+            "failure": failure,
+            "error_detail": detail["message"] if detail else None,
+        }) if job else None,
+    })
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -232,3 +248,21 @@ class AnswerRead(BaseModel):
     refusal_reason: str | None
     citations: list[CitationRead]
 
+
+class UploadInput(BaseModel):
+    # FastAPI uses the module in this component name to disambiguate it from
+    # the Skill UploadInput. Keep the published OpenAPI reference stable.
+    __module__ = "app.document_uploads"
+
+    model_config = ConfigDict(extra="forbid")
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="application/octet-stream", max_length=150)
+    size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
+    replace_document_id: UUID | None = None
+    expected_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    request_key: UUID = Field(default_factory=uuid4)
+
+
+class PartInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

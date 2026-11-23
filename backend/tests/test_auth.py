@@ -37,7 +37,7 @@ def accounts(monkeypatch, tmp_path):
     db = Session(engine)
     main.app.dependency_overrides[main.get_db] = lambda: db
     monkeypatch.setattr(auth, "rate_limit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
+    monkeypatch.setattr("app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
         status=SimpleNamespace(configured=False, provider=None, model=None, dimension=1024),
     ))
     clients = [TestClient(main.app, headers={"X-RAG-Request": "1"}) for _ in range(3)]

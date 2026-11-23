@@ -5,7 +5,8 @@ from httpx_sse import EventSource
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import conversations, main
+from app import conversations
+from app.knowledge import routes as knowledge_routes
 from app.llm import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (BillingSnapshot, ChatMessage, UserCreditAccount, CreditLedgerEntry,
                         LLMProviderConfig, ModelCallUsage, ModelBillingSettings, SiteModelProvider,
@@ -175,7 +176,7 @@ def test_single_answer_uses_explicit_model(accounts, monkeypatch):
             self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
             return "confirmed answer"
 
-    monkeypatch.setattr(main, "OpenAICompatibleChatProvider", Model)
+    monkeypatch.setattr(knowledge_routes, "OpenAICompatibleChatProvider", Model)
     response = client.post(f"/knowledge-bases/{library['id']}/answer",
         json={"query": "needle", "provider_id": chosen["id"]})
     assert response.status_code == 200, response.text

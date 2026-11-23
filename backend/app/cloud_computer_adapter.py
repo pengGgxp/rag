@@ -207,7 +207,7 @@ class AlibabaSandbox:
         if mount:
             network["allow_out"] = [
                 f"{mount['bucket']}.oss-{mount['region']}.aliyuncs.com"]
-            from .knowledge_originals import MOUNT_ROOT
+            from .knowledge.originals import MOUNT_ROOT
             points = [{
                 "bucketName": mount["bucket"], "mountDir": directory,
                 "bucketPath": "/" + prefix.rstrip("/"),
@@ -255,7 +255,7 @@ class AlibabaSandbox:
     def prepare(self, sandbox):
         sandbox.commands.run(f"mkdir -p {ROOT} {STATE}/jobs {DEPENDENCIES}", user="user")
         if self.config.get("resource_mount", {}).get("knowledge_prefix"):
-            from .knowledge_originals import MOUNT_ROOT
+            from .knowledge.originals import MOUNT_ROOT
             sandbox.commands.run(f"test -r {MOUNT_ROOT}/.rag-directory", user="user")
         sandbox.files.write(f"{STATE}/launcher.py", LAUNCHER, user="user")
 

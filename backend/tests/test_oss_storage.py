@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app import migrate_storage, site_auth, storage_backend, storage_settings, tasks
+from app.knowledge.ingestion import pipeline
 from app.models import (
     ChatAttachment, DocumentStatus, KnowledgeBase, SiteAuditEvent, SiteStorageSettings,
     StorageMigration, StorageMigrationObject, User, WorkspaceFile, WorkspaceFileVersion,
@@ -195,9 +196,9 @@ def test_only_one_active_store_and_ocr_uses_oss(stores, monkeypatch):
         db.commit()
     db.rollback()
     monkeypatch.setattr(storage_backend, "configured_backend", factory)
-    assert tasks.ocr_storage(db) is source
+    assert pipeline.ocr_storage(db) is source
     migrate_storage.migrate(db, target_provider="oss", version=2, execute=True, offline=True, factory=factory)
-    assert tasks.ocr_storage(db) is target
+    assert pipeline.ocr_storage(db) is target
 
 
 def bare_oss(**methods):

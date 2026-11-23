@@ -12,7 +12,7 @@ from alibabacloud_docmind_api20220711.client import Client
 from alibabacloud_tea_openapi.models import Config
 from alibabacloud_tea_util.models import RuntimeOptions
 
-from .config import Settings, get_settings
+from ...config import Settings, get_settings
 from .parsed_document import ParsedDocument, assemble_pages
 from pypdf import PdfWriter
 
