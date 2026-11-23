@@ -66,9 +66,9 @@ class ReleasePackageTests(unittest.TestCase):
             (backend / "alembic" / "versions" / "head.py").write_text(
                 "# test\n", encoding="utf-8"
             )
-            for service in release_package.SERVICES:
-                (digests / f"{service}.digest").write_text(
-                    "sha256:" + "a" * 64 + "\n", encoding="utf-8"
+            for package, digit in (("backend", "a"), ("web", "c")):
+                (digests / f"{package}.digest").write_text(
+                    "sha256:" + digit * 64 + "\n", encoding="utf-8"
                 )
             archive = release_package.build(
                 deploy,
@@ -77,8 +77,7 @@ class ReleasePackageTests(unittest.TestCase):
                 output,
                 version="v1.2.3",
                 commit="b" * 40,
-                registry="registry.example.test",
-                organization="org",
+                image_prefix="ghcr.io/example/rag-",
                 alembic_head="0063_deployment_maintenance",
             )
             self.assertEqual(archive.name, "zhiku-v1.2.3.tar.gz")
@@ -95,9 +94,13 @@ class ReleasePackageTests(unittest.TestCase):
                 (output / "release" / "release.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["alembic_head"], "0063_deployment_maintenance")
-            self.assertIn(
-                "registry.example.test/org/zhiku-api@sha256:",
-                manifest["images"]["api"],
+            self.assertEqual(
+                manifest["images"],
+                {
+                    "api": "ghcr.io/example/rag-backend@sha256:" + "a" * 64,
+                    "worker": "ghcr.io/example/rag-backend@sha256:" + "a" * 64,
+                    "web": "ghcr.io/example/rag-web@sha256:" + "c" * 64,
+                },
             )
             sums = (output / "release" / "SHA256SUMS").read_text(encoding="utf-8")
             self.assertIn("release.json", sums)
@@ -116,11 +119,10 @@ class ReleasePackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "digests").mkdir()
-            for service in release_package.SERVICES:
-                (root / "digests" / f"{service}.digest").write_text(
-                    "not-a-digest\n", encoding="utf-8"
-                )
-            with self.assertRaises(ValueError):
+            (root / "digests" / "backend.digest").write_text(
+                "sha256:" + "z" * 64 + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "invalid backend digest"):
                 release_package.build(
                     root,
                     root,
@@ -128,8 +130,7 @@ class ReleasePackageTests(unittest.TestCase):
                     root,
                     version="v1.2.3",
                     commit="b" * 40,
-                    registry="registry.example.test",
-                    organization="org",
+                    image_prefix="ghcr.io/example/rag-",
                     alembic_head="head",
                 )
 

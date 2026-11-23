@@ -31,18 +31,10 @@ Current public endpoints:
 
 ## GitHub release settings
 
-The release workflow uses these repository settings to push to SWR.
-
-| Kind | Name | Value |
-| --- | --- | --- |
-| Variable | `SWR_REGISTRY` | Regional Huawei Cloud SWR hostname |
-| Variable | `SWR_ORGANIZATION` | SWR organization containing the three repositories |
-| Secret | `SWR_USERNAME` | SWR Docker login username |
-| Secret | `SWR_PASSWORD` | SWR Docker login password |
-
-The three SWR repositories are `zhiku-api`, `zhiku-worker` and `zhiku-web`.
-CI needs permission to push to those repositories. The production server
-uses its own registry login to pull the images. The Web build uses
+The release workflow pushes to `ghcr.io/pengggxp/rag-backend` and
+`ghcr.io/pengggxp/rag-web` using the repository's `GITHUB_TOKEN` with
+`packages: write`. Both packages are public, and the production server pulls
+them without a registry login. The Web build uses
 `https://syfc.moonlitstarway.top/api`.
 
 ## CI gates
@@ -61,8 +53,9 @@ value, `localhost`, `127.0.0.1` or a non-HTTPS production URL fails the build.
 
 ## Immutable release package
 
-The tag workflow publishes three images to SWR and records their immutable
-digests. A release archive then contains:
+The tag workflow builds and publishes two images to GHCR and verifies that
+their digests are accessible without logging in. API and Worker share the
+same backend image reference. A release archive then contains:
 
 - `release.json`: schema version, release version, commit, build time, three
   image digests, Alembic head, configuration contract and migration rollback
@@ -177,8 +170,8 @@ sources to trust. See [payment proxy checks and recovery](payment-client-ip.md).
 1. Merge the change to `main` with green CI.
 2. Create an annotated semver tag on that exact commit and push the tag.
 3. GitHub verifies the tag format, commit identity and `main` ancestry.
-4. CI tests must pass. The release workflow builds and pushes the API, Worker
-   and Web images, records digests and creates the release package.
+4. CI tests must pass. The release workflow pushes the shared backend and Web
+   images, records their digests and creates the release package.
 5. Download the release artifact, transfer it to the server and run the
    fixed server entrypoint.
 6. The server verifies the uploaded archive, obtains the deployment lock, turns
@@ -186,14 +179,15 @@ sources to trust. See [payment proxy checks and recovery](payment-client-ip.md).
    finite work, backs up and validates the database, rehearses migrations in an
    isolated database and then follows the migration path below.
 7. If the release is healthy, evidence is written and maintenance is cleared.
-8. After a successful deployment, the operator may clean up unused SWR tags
+8. After a successful deployment, the operator may clean up unused GHCR tags
    and local images while keeping the current and previous release images.
 
 Never manually edit a production Compose file, append a temporary override or
 replace a service image on the server. Fix the release and produce a new tag.
 
 Application image availability is checked before maintenance: cached immutable
-digests are reused, and only missing application images are pulled from SWR.
+digests are reused, and only missing application images are pulled from the
+registry specified in the manifest.
 Starting services uses `--pull never`, so an application rollout or rollback
 does not refresh unchanged database, Redis or object-storage images from Docker
 Hub. Keep the current and previous images, including their infrastructure images,
@@ -224,7 +218,7 @@ gh run download "$run_id" \
 Upload `release-$release_version/zhiku-$release_version.tar.gz` and its
 `.sha256` file to a new `/opt/zhiku/incoming/$release_version/` directory.
 Log into the server and run the release entrypoint. It reads the image
-digests from the verified package and pulls them directly from SWR.
+digests from the verified package and pulls the release images from GHCR.
 
 ```sh
 # Server preflight and controlled release.
@@ -451,14 +445,14 @@ Server release directories retain the current and previous immutable packages.
 Older directories may be archived only after a later release is verified and
 the rollback chain is no longer needed. Local Docker cleanup removes only
 dangling images and build cache; current and previous referenced images stay.
-SWR tag/digest retention is likewise conservative: never delete the current or
-previous digest, and never make deployment depend on the cleanup job.
+Retain the current and previous registry digests, including SWR digests used
+by releases before the GHCR switch. The SWR cleanup script only applies to SWR.
 
 ## Evidence to retain
 
 For each release retain:
 
-- Release tag, commit SHA, package SHA-256 and SWR image digests.
+- Release tag, commit SHA, package SHA-256 and registry image digests.
 - Current and previous Alembic revisions and migration rollback policy.
 - Database backup path, byte size and SHA-256.
 - Pre-change and canonical Nginx files.

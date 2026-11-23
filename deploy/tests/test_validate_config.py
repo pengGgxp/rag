@@ -88,14 +88,6 @@ class ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, service + ": protected question workbench"):
                     validate(target, ROOT / "app.env.example", ROOT / "deployment.env.example")
 
-    def test_release_images_use_swr_instead_of_legacy_registry(self):
-        release_package = (
-            Path(__file__).resolve().parents[1] / "release_package.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("aliyuncs.com", release_package)
-        self.assertNotIn("crpi-", release_package)
-        self.assertIn('f"{registry.rstrip', release_package)
-
     def test_repository_compose_is_not_production_contract(self):
         with self.assertRaises(ValueError):
             validate(

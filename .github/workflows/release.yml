@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  IMAGE_PREFIX: ghcr.io/pengggxp/rag-
+
 concurrency:
   group: production-publish-${{ github.ref }}
   cancel-in-progress: false
@@ -47,86 +50,74 @@ jobs:
     needs: [verify, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - service: api
+          - service: backend
             context: backend
             dockerfile: backend/Dockerfile
+            cache_scope: release-api
           - service: web
             context: frontend
             dockerfile: frontend/Dockerfile
+            cache_scope: release-web
             build_args: NEXT_PUBLIC_API_URL=https://syfc.moonlitstarway.top/api
     env:
-      IMAGE: ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/zhiku-${{ matrix.service }}
       VERSION: ${{ needs.verify.outputs.version }}
       SHA: ${{ needs.verify.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ${{ vars.SWR_REGISTRY }}
-          username: ${{ secrets.SWR_USERNAME }}
-          password: ${{ secrets.SWR_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
-        id: build
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           provenance: false
           sbom: false
-          outputs: type=registry,oci-mediatypes=false
+          load: true
           build-args: ${{ matrix.build_args }}
           tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:sha-${{ env.SHA }}
-          cache-from: type=gha,scope=release-${{ matrix.service }}
-          cache-to: type=gha,scope=release-${{ matrix.service }},mode=max,ignore-error=true
-      - name: Publish the same backend image as Worker
-        if: matrix.service == 'api'
-        timeout-minutes: 5
-        env:
-          WORKER_IMAGE: ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/zhiku-worker
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create --prefer-index=false \
-            --tag "$WORKER_IMAGE:$VERSION" --tag "$WORKER_IMAGE:sha-$SHA" \
-            "$IMAGE@$DIGEST"
-      - name: Verify published images and record digest
+            ${{ env.IMAGE_PREFIX }}${{ matrix.service }}:${{ env.VERSION }}
+            ${{ env.IMAGE_PREFIX }}${{ matrix.service }}:sha-${{ env.SHA }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+      - name: Push to GHCR and verify anonymous access by digest
+        timeout-minutes: 15
         env:
           SERVICE: ${{ matrix.service }}
-          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          for tag in "$VERSION" "sha-$SHA"; do
-            actual=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}')
-            test "$actual" = "$DIGEST"
+          IMAGE="$IMAGE_PREFIX$SERVICE"
+          start=$SECONDS
+          docker push "$IMAGE:$VERSION" | tee push.log
+          digest=$(awk '$2 == "digest:" { print $3 }' push.log)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker push "$IMAGE:sha-$SHA"
+          printf 'GHCR push completed in %s seconds\n' "$((SECONDS - start))"
+          config=$(mktemp -d)
+          trap 'rmdir "$config"' EXIT
+          for reference in "$IMAGE:$VERSION" "$IMAGE:sha-$SHA" "$IMAGE@$digest"; do
+            actual=$(docker --config "$config" manifest inspect --verbose "$reference" | jq -er '.Descriptor.digest')
+            test "$actual" = "$digest"
           done
-          docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw \
-            | jq -e '.mediaType == "application/vnd.docker.distribution.manifest.v2+json"'
           mkdir -p digests
-          printf '%s\n' "$DIGEST" > "digests/$SERVICE.digest"
-          printf -- '- %s@%s\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify Worker tags and record digest
-        if: matrix.service == 'api'
-        env:
-          WORKER_IMAGE: ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/zhiku-worker
-          DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          for tag in "$VERSION" "sha-$SHA"; do
-            actual=$(docker buildx imagetools inspect "$WORKER_IMAGE:$tag" --format '{{.Manifest.Digest}}')
-            test "$actual" = "$DIGEST"
-          done
-          printf '%s\n' "$DIGEST" > digests/worker.digest
-          printf -- '- %s@%s\n' "$WORKER_IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$digest" > "digests/$SERVICE.digest"
+          printf -- '- %s@%s\n' "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.service }}
@@ -142,8 +133,6 @@ jobs:
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       COMMIT_SHA: ${{ needs.verify.outputs.sha }}
-      REGISTRY: ${{ vars.SWR_REGISTRY }}
-      ORGANIZATION: ${{ vars.SWR_ORGANIZATION }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -162,8 +151,7 @@ jobs:
             --output . \
             --version "$VERSION" \
             --commit "$COMMIT_SHA" \
-            --registry "$REGISTRY" \
-            --organization "$ORGANIZATION" \
+            --image-prefix "$IMAGE_PREFIX" \
             --alembic-head "$(python deploy/alembic_head.py backend)"
           sha256sum -c "zhiku-$VERSION.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
