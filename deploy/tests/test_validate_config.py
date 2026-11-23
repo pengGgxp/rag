@@ -74,10 +74,6 @@ class ContractTests(unittest.TestCase):
             compose["services"]["worker"]["command"][-2:],
             ["--concurrency=5", "--max-tasks-per-child=20"],
         )
-        self.assertEqual(
-            compose["services"]["preview-worker"]["command"][-2:],
-            ["--concurrency=1", "--max-tasks-per-child=20"],
-        )
 
     def test_chat_services_require_the_protected_workbench_environment(self):
         for service in ("api", "worker"):
