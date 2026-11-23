@@ -99,7 +99,7 @@ def publish(db, access, library_id, filename, content_type, size, digest, key, *
             expected_hash=None, request=None, request_id=None, finish=None):
     from . import file_operations as ops
     from .knowledge_originals import copy_change, delete_change, original_key
-    from .main import stop_ingestion_job
+    from .knowledge.ingestion.jobs import stop_ingestion_job
     from .storage_billing import check_capacity
 
     signature = ops.fingerprint([library_id, filename, content_type, digest, replace_id, expected_hash])

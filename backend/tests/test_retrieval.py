@@ -33,8 +33,7 @@ def retrieval_client(monkeypatch):
     Base.metadata.create_all(engine)
     session = Session(engine)
     monkeypatch.setattr(
-        main,
-        "OpenAICompatibleEmbeddingProvider",
+        "app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
         lambda: SimpleNamespace(
             status=SimpleNamespace(
                 configured=False,
@@ -255,8 +254,7 @@ def test_vector_failure_is_visible_as_bm25_fallback(retrieval_client, monkeypatc
         raise EmbeddingProviderError("upstream unavailable")
 
     monkeypatch.setattr(
-        main,
-        "OpenAICompatibleEmbeddingProvider",
+        "app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
         lambda: SimpleNamespace(
             status=SimpleNamespace(
                 configured=True,

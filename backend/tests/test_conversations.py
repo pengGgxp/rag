@@ -50,7 +50,7 @@ def client(monkeypatch, tmp_path):
             return ToolResponse(content=text, tool_calls=[])
 
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
-    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
+    monkeypatch.setattr("app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
         status=SimpleNamespace(configured=False, provider=None, model=None, dimension=1024),
     ))
     main.app.dependency_overrides[main.get_db] = lambda: db

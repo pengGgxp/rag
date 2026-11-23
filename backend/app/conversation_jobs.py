@@ -204,7 +204,7 @@ def run(identifier, factory=SessionLocal, retrieve=None):
         access, hold, config, search = unpack(row)
         db.commit()
     if retrieve is None:
-        from .main import retrieve_knowledge_base
+        from .knowledge.retrieval import retrieve_knowledge_base
         retrieve = retrieve_knowledge_base
 
     async def execute():

@@ -180,7 +180,7 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
         return result
 
     monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(embed_texts=fake_embed))
-    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider",
+    monkeypatch.setattr("app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
                         lambda: SimpleNamespace(status=SimpleNamespace(configured=False, provider=None, model=None)))
     tasks.embed_document.run(*vectors[0])
     status = owner.get(f"/uploads/{identifier}").json()
