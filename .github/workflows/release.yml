@@ -54,9 +54,6 @@ jobs:
           - service: api
             context: backend
             dockerfile: backend/Dockerfile
-          - service: worker
-            context: backend
-            dockerfile: backend/Dockerfile
           - service: web
             context: frontend
             dockerfile: frontend/Dockerfile
@@ -90,6 +87,17 @@ jobs:
             ${{ env.IMAGE }}:sha-${{ env.SHA }}
           cache-from: type=gha,scope=release-${{ matrix.service }}
           cache-to: type=gha,scope=release-${{ matrix.service }},mode=max,ignore-error=true
+      - name: Publish the same backend image as Worker
+        if: matrix.service == 'api'
+        timeout-minutes: 5
+        env:
+          WORKER_IMAGE: ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/zhiku-worker
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --prefer-index=false \
+            --tag "$WORKER_IMAGE:$VERSION" --tag "$WORKER_IMAGE:sha-$SHA" \
+            "$IMAGE@$DIGEST"
       - name: Verify published images and record digest
         env:
           SERVICE: ${{ matrix.service }}
@@ -106,10 +114,23 @@ jobs:
           mkdir -p digests
           printf '%s\n' "$DIGEST" > "digests/$SERVICE.digest"
           printf -- '- %s@%s\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify Worker tags and record digest
+        if: matrix.service == 'api'
+        env:
+          WORKER_IMAGE: ${{ vars.SWR_REGISTRY }}/${{ vars.SWR_ORGANIZATION }}/zhiku-worker
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for tag in "$VERSION" "sha-$SHA"; do
+            actual=$(docker buildx imagetools inspect "$WORKER_IMAGE:$tag" --format '{{.Manifest.Digest}}')
+            test "$actual" = "$DIGEST"
+          done
+          printf '%s\n' "$DIGEST" > digests/worker.digest
+          printf -- '- %s@%s\n' "$WORKER_IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.service }}
-          path: digests/${{ matrix.service }}.digest
+          path: digests/*.digest
           overwrite: true
           if-no-files-found: error
           retention-days: 30
