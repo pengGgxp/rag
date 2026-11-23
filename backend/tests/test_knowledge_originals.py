@@ -6,8 +6,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import auth, file_preview_access, tasks
+from app.knowledge.ingestion import pipeline
 from app.knowledge import routes as knowledge_routes
-from app.knowledge_originals import original_key, prefix, resolve_citation
+from app.knowledge.originals import original_key, prefix, resolve_citation
 from app.migrate_knowledge_originals import migrate
 from app.models import ChatMessage, Chunk, Conversation, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBase
 from app.storage_billing import inventory
@@ -91,7 +92,7 @@ def test_upload_replace_delete_restore_and_historical_citation(accounts, monkeyp
     assert upload(b, identifier, sha(a)).status_code == 201
     assert len(queued) == 4
     with Session(db.get_bind()) as worker:
-        tasks._process_document(tasks.process_document, worker, stale_job, b)
+        pipeline._process_document(tasks.process_document, worker, stale_job, b)
     db.expire_all()
     assert db.get(IngestionJob, stale_job).state == JobState.CANCELLED
     assert owner.post(f"/jobs/{stale_job}/retry").status_code == 404

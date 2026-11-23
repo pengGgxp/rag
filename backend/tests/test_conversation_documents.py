@@ -8,7 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, conversation_documents as saves, document_ingestion, main, storage
+from app import auth, conversation_documents as saves, main, storage
+from app.knowledge.ingestion import admission as document_ingestion
 from app.extensions import ExtensionRuntime
 from app.models import (ChatMessage, ConversationDocumentSave, Document, DocumentStatus, IngestionJob,
     JobState, KnowledgeBase, KnowledgeBaseStatus, UsageEvent)
@@ -131,7 +132,7 @@ def test_verified_provenance_and_text_parser_do_not_invent_sources(saving):
     result=e.runtime.execute('save_to_knowledge_base',payload(e,markdown=f'结论 [{chunk.id}]'))
     receipt=e.db.get(ConversationDocumentSave,UUID(result['save_id']))
     assert receipt.source_citations==[{'chunk_id':str(chunk.id),'document_id':str(doc.id),'original_hash':doc.content_hash,'page_number':None}]
-    from app.tasks import parse_for_ingestion
+    from app.knowledge.ingestion.pipeline import parse_for_ingestion
     created=e.db.get(Document,UUID(result['document_id']))
     parsed=parse_for_ingestion(e.db,e.db.get(IngestionJob,receipt.job_id),created,next(iter(e.stored.values())))
     assert str(chunk.id) in parsed.text and created.parsing_metadata is None

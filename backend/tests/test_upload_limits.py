@@ -92,5 +92,5 @@ def test_upload_inspection_only_uses_bounded_reads():
             self.remaining -= 1
             return b"text" if self.remaining >= 0 else b""
 
-    from app.document_ingestion import inspect_file
+    from app.knowledge.ingestion.admission import inspect_file
     assert inspect_file(Stream()) == (12, hashlib.sha256(b"text" * 3).hexdigest())

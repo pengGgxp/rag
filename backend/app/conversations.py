@@ -266,7 +266,7 @@ def chat_router(get_db, retrieve):
     @router.get("/{conversation_id}/messages/{message_id}/citations/{chunk_id}")
     def read_citation(conversation_id: UUID, message_id: UUID, chunk_id: UUID,
                       db: Session = Depends(get_db), access: Access = Depends(get_access)):
-        from .knowledge_originals import resolve_citation
+        from .knowledge.originals import resolve_citation
 
         live_conversation(db, conversation_id, access)
         message = db.get(ChatMessage, message_id)

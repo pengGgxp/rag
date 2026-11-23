@@ -74,8 +74,8 @@ def library_view(row):
 
 
 def document_view(db, library, document):
-    from .knowledge_originals import mount_path
-    from .document_ingestion import latest_document_job
+    from .knowledge.originals import mount_path
+    from .knowledge.ingestion.jobs import latest_document_job
     job = latest_document_job(db, document)
     searchable = (document.status == DocumentStatus.READY and document.is_active
                   and library.status != KnowledgeBaseStatus.ARCHIVED

@@ -20,10 +20,10 @@ from .wechat_auth import router as wechat_auth_router
 from .site_auth import router as site_auth_router
 from .site_admin import router as site_admin_router
 from . import auth_logging  # noqa: F401
-from .embedding import OpenAICompatibleEmbeddingProvider
+from .knowledge.ingestion.embedding import OpenAICompatibleEmbeddingProvider
 from .storage_settings import router as storage_settings_router
-from .document_uploads import router as document_uploads_router
-from . import document_failures
+from .knowledge.ingestion.uploads import router as document_uploads_router
+from .knowledge.ingestion import failures as document_failures
 from .skill_uploads import router as skill_uploads_router
 from .conversations import chat_router, recover_interrupted_conversations
 from .feedback import router as feedback_router

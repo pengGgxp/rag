@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from .auth import get_access
 from .db import get_db
-from .document_ingestion import stage_upload, dispatch_ingestion
+from .knowledge.ingestion.admission import stage_upload, dispatch_ingestion
 from .models import (ChatMessage, Chunk, Conversation, ConversationDocumentSave, Document,
                      DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus)
 
@@ -50,7 +50,7 @@ def saved_view(db, access, row):
         raise HTTPException(404, "保存记录不存在")
     access.library(db, row.knowledge_base_id)
     document = db.get(Document, row.document_id, populate_existing=True)
-    from .document_ingestion import latest_document_job
+    from .knowledge.ingestion.jobs import latest_document_job
     latest = latest_document_job(db, document)
     state = document.status.value if document.is_active else "deleted"
     terminal = state in ("ready", "failed", "deleted") or bool(latest and latest.state == JobState.CANCELLED)
@@ -58,7 +58,7 @@ def saved_view(db, access, row):
         else "处理已取消，请在文档列表中重试" if latest and latest.state == JobState.CANCELLED
         else "处理未完成，请在文档列表中查看并重试" if state == "failed"
         else "已提交，正在处理")
-    from .knowledge_originals import mount_path
+    from .knowledge.originals import mount_path
     return {"original_path": mount_path(document, access.user_id), "searchable": state == "ready",
         "save_id": str(row.id), "document_id": str(document.id), "knowledge_base_id": str(row.knowledge_base_id),
         "filename": document.filename, "document_status": state, "terminal": terminal, "summary": summary,
@@ -77,7 +77,7 @@ def dispatch_save(db, row):
         return
     job = db.get(IngestionJob, row.job_id, populate_existing=True)
     document = db.get(Document, row.document_id, populate_existing=True)
-    from .document_ingestion import job_matches_original
+    from .knowledge.ingestion.jobs import job_matches_original
     if job.state == JobState.QUEUED and document.is_active and document.status != DocumentStatus.DELETED and job_matches_original(document, job):
         try:
             dispatch_ingestion(job.id)
@@ -176,7 +176,7 @@ def execute(runtime, name, arguments):
                         title if title.lower().endswith(".md") else title + ".md", "text/markdown", io.BytesIO(content),
                         finish=finish)
                 else:
-                    from .document_ingestion import latest_document_job
+                    from .knowledge.ingestion.jobs import latest_document_job
                     job = latest_document_job(db, document)
                     if job is None:
                         raise HTTPException(409, "已有同内容文档，请在知识库中查看")

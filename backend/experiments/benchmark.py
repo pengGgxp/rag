@@ -12,8 +12,8 @@ import sys
 import time
 
 import pdfplumber
-from app.docmind import AliyunDocMind
-from app.parsed_document import ParsedDocument
+from app.knowledge.ingestion.docmind import AliyunDocMind
+from app.knowledge.ingestion.parsed_document import ParsedDocument
 from .checkpoints import Checkpoints, BudgetError, UncertainCall
 from .fixtures import generate
 from .selective_parser import Policy, page_decision

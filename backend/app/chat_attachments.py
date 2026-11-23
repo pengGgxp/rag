@@ -90,7 +90,7 @@ def image_size(data, suffix):
 
 
 def extract_document(data, filename):
-    from .parsers import PdfParsingError, parse_document
+    from .knowledge.ingestion.parsers import PdfParsingError, parse_document
     def bounded(lines):
         parts, count = [], 0
         for line in lines:
@@ -107,7 +107,7 @@ def extract_document(data, filename):
                 if len(entries) > 2048 or sum(item.file_size for item in entries) > 50 * 1024 * 1024:
                     raise HTTPException(413, "文档内容过多，请拆分后上传")
         if suffix == ".pdf":
-            from .parsers import pdf_pages
+            from .knowledge.ingestion.parsers import pdf_pages
             pages = pdf_pages(data)
             if len(pages) > 200:
                 raise HTTPException(413, "对话附件最多支持 200 页 PDF，请拆分或添加到知识库")

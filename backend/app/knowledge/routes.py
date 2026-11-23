@@ -6,26 +6,28 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import document_failures, model_billing
+from .. import model_billing
 from ..audit_log import record_audit
 from ..auth import Access, get_access
 from ..config import get_settings
-from ..credits import authorization_hold, authorization_hold_amount, release_embedding_hold, settle_model_usage
+from ..credits import authorization_hold, authorization_hold_amount, settle_model_usage
 from ..db import get_db
-from ..document_ingestion import (
-    MAX_DOCUMENT_BYTES, dispatch_ingestion, job_matches_original, latest_document_job, stage_upload,
+from .ingestion.admission import (
+    MAX_DOCUMENT_BYTES, dispatch_ingestion, stage_upload,
 )
 from ..llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider, estimate_tokens
 from ..llm_providers import request_provider_config
 from ..models import Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus, QueryTrace
 from ..tasks import embed_document, process_document
 from . import libraries
-from .ingestion.jobs import stop_ingestion_job
+from .ingestion import failures as document_failures
+from .ingestion import jobs
+from .originals import change_original_availability
 from .retrieval import retrieve_knowledge_base
 from .schemas import (
     AnswerRead, AnswerRequest, ChunkRead, CitationRead, DocumentFailureRead, DocumentPreviewRead,
     DocumentRead, JobRead, KnowledgeBaseCreate, KnowledgeBaseRead, KnowledgeBaseUpdate, QueryTraceRead,
-    RetrievalRead, RetrievalRequest, SearchResult,
+    RetrievalRead, RetrievalRequest, SearchResult, document_read,
 )
 
 router = APIRouter()
@@ -132,26 +134,12 @@ def upload_document(
     return document_read(document, job)
 
 
-def document_read(document, job):
-    detail = document_failures.safe_job_failure(job, document) if job else None
-    failure = DocumentFailureRead.model_validate(detail) if detail else None
-    return DocumentRead.model_validate(document).model_copy(update={
-        "error_detail": document_failures.safe_document_message(document, detail),
-        "failure": failure,
-        "searchable": document.is_active and document.status == DocumentStatus.READY and document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED,
-        "job": JobRead.model_validate(job).model_copy(update={
-            "failure": failure,
-            "error_detail": detail["message"] if detail else None,
-        }) if job else None,
-    })
-
-
 @router.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=list[DocumentRead])
 def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.library(db, knowledge_base_id)
     documents = db.scalars(select(Document).where(Document.knowledge_base_id == knowledge_base_id, Document.is_active.is_(True))
                            .order_by(Document.created_at.desc())).all()
-    return [document_read(document, latest_document_job(db, document)) for document in documents]
+    return [document_read(document, jobs.latest_document_job(db, document)) for document in documents]
 
 
 @router.get("/documents/{document_id}/preview", response_model=DocumentPreviewRead)
@@ -164,7 +152,7 @@ def preview_document(
     if document is None or not document.is_active:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id)
-    job = latest_document_job(db, document)
+    job = jobs.latest_document_job(db, document)
     retrying = job and document.status == DocumentStatus.PROCESSING and (
         (job.state == JobState.QUEUED and job.retry_after is not None)
         or (job.state == JobState.RUNNING and job.retry_progress)
@@ -177,77 +165,6 @@ def preview_document(
             "failure": DocumentFailureRead.model_validate(job_failure) if job_failure else None,
         }
     )
-
-
-def change_original_availability(db, access, document_id, request, *, deleted):
-    from .. import file_operations as ops
-    from ..knowledge_originals import copy_change, delete_change, original_key
-
-    with ops.workspace_lock(db, access.user_id):
-        document = db.get(Document, document_id)
-        if document is None or not document.is_active:
-            raise HTTPException(404, "Document not found")
-        access.library(db, document.knowledge_base_id, write=True)
-        if (document.status == DocumentStatus.DELETED) == deleted:
-            return document_read(document, latest_document_job(db, document))
-        source = document.object_key
-        target = original_key(access.user_id, document.knowledge_base_id, document.id,
-                              document.filename, deleted=deleted)
-        store = ops.storage(db)
-        changes = [copy_change(store, source, target, document.content_type, digest=document.content_hash),
-                   delete_change(store, source)]
-        queued_job = None
-
-        def update_metadata():
-            nonlocal document, queued_job
-            document = db.get(Document, document_id, with_for_update=True, populate_existing=True)
-            library = access.library(db, document.knowledge_base_id, write=True)
-            previous = latest_document_job(db, document, prefer_ready=not deleted and all(
-                chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
-                for chunk in document.chunks) and bool(document.chunks))
-            document.object_key = target
-            if deleted:
-                for job in document.jobs:
-                    if job.state in (JobState.QUEUED, JobState.RUNNING):
-                        stop_ingestion_job(db, document, job, "原件已删除")
-                document.status = DocumentStatus.DELETED
-                document.error_detail = None
-                has_ready = db.scalar(select(Document.id).where(
-                    Document.knowledge_base_id == library.id, Document.id != document.id,
-                    Document.is_active.is_(True), Document.status == DocumentStatus.READY).limit(1))
-                library.status = KnowledgeBaseStatus.READY if has_ready else KnowledgeBaseStatus.DRAFT
-            else:
-                failure = document_failures.safe_job_failure(previous, document) if previous else None
-                ready = bool(document.chunks) and all(
-                    chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
-                    for chunk in document.chunks)
-                if failure and failure["code"] == "needs_reconciliation":
-                    document.status, document.error_detail = DocumentStatus.FAILED, failure["message"]
-                    library.status = KnowledgeBaseStatus.ERROR
-                else:
-                    document.error_detail = None
-                    ready = ready and previous is not None and previous.phase == "indexing" and previous.state == JobState.SUCCEEDED
-                    document.status = DocumentStatus.READY if ready else DocumentStatus.QUEUED
-                    library.status = KnowledgeBaseStatus.READY if ready else KnowledgeBaseStatus.PROCESSING
-                    if not ready:
-                        queued_job = IngestionJob(document_id=document.id, original_hash=document.content_hash,
-                            original_revision=document.original_revision,
-                            phase="indexing" if document.parsed_text and document.chunks else "parsing",
-                            metering_id=(previous.metering_id or previous.id) if previous else None,
-                            submission_pending=True)
-                        db.add(queued_job)
-            record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-                action="document.deleted" if deleted else "document.restored", resource_type="document",
-                resource_id=document.id, request=request,
-                metadata={"knowledge_base_id": str(library.id), "filename": document.filename})
-
-        ops.execute(db, access, changes, update_metadata)
-        if queued_job:
-            try:
-                _dispatch_retried_job(db, queued_job)
-            except Exception:
-                logging.getLogger(__name__).warning("Restored document dispatch deferred: %s", queued_job.id)
-        return document_read(document, latest_document_job(db, document))
 
 
 @router.delete("/documents/{document_id}", response_model=DocumentRead)
@@ -265,7 +182,7 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     job = db.get(IngestionJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if not job.document.is_active or not job_matches_original(job.document, job):
+    if not job.document.is_active or not jobs.job_matches_original(job.document, job):
         raise HTTPException(404, "Job not found")
     access.library(db, job.document.knowledge_base_id)
     failure_detail = document_failures.safe_job_failure(job, job.document)
@@ -277,33 +194,6 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     )
 
 
-def require_indexing_stopped(document):
-    if any(chunk.embedding_status == EmbeddingStatus.RUNNING for chunk in document.chunks):
-        raise HTTPException(status_code=409, detail="上一次文档处理尚未结束，请稍后重试")
-
-
-def reset_abandoned_indexing(db: Session, document, job: IngestionJob):
-    for chunk in document.chunks:
-        if chunk.embedding_status == EmbeddingStatus.RUNNING:
-            chunk.embedding_status = EmbeddingStatus.FAILED
-            chunk.embedding_error = "上一次索引任务未完成，请重试"
-    release_embedding_hold(db, document.knowledge_base.account_id, job.id)
-
-
-def lock_ingestion_job(db, job_id, access):
-    document_id = db.scalar(select(IngestionJob.document_id).where(IngestionJob.id == job_id))
-    if document_id is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    document = db.get(Document, document_id, with_for_update=True)
-    if document is None or not document.is_active:
-        raise HTTPException(status_code=404, detail="Document not found")
-    access.library(db, document.knowledge_base_id, write=True)
-    job = db.get(IngestionJob, job_id, with_for_update=True, populate_existing=True)
-    if job is None or not job_matches_original(document, job):
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job, document
-
-
 @router.post("/jobs/{job_id}/cancel", response_model=JobRead)
 def cancel_job(
     job_id: UUID,
@@ -311,22 +201,7 @@ def cancel_job(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    job, document = lock_ingestion_job(db, job_id, access)
-    if job.state not in (JobState.QUEUED, JobState.RUNNING):
-        raise HTTPException(status_code=409, detail="Only queued or running jobs can be cancelled")
-    stop_ingestion_job(db, document, job, "任务已取消")
-    if document.status in (DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
-        document.status = DocumentStatus.FAILED
-        document.error_detail = "任务已取消"
-        document.knowledge_base.status = KnowledgeBaseStatus.ERROR
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="job.cancelled", resource_type="ingestion_job", resource_id=job.id,
-        metadata={"document_id": str(job.document_id)}, request=request,
-    )
-    db.commit()
-    db.refresh(job)
-    return job
+    return jobs.cancel_job(job_id, request, db, access)
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
@@ -336,59 +211,7 @@ def retry_job(
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
-    old_job, document = lock_ingestion_job(db, job_id, access)
-    if document.status == DocumentStatus.DELETED:
-        raise HTTPException(status_code=409, detail="请先恢复文档，再重试处理")
-    existing = db.scalar(select(IngestionJob).where(IngestionJob.retry_of == old_job.id))
-    if existing is not None:
-        return existing
-    failure_detail = document_failures.safe_job_failure(old_job, document)
-    if failure_detail and failure_detail.get("code") == "needs_reconciliation":
-        old_job.failure = failure_detail
-        old_job.error_detail = failure_detail["message"]
-        db.commit()
-        raise document_failures.rejection(409, failure_detail["stage"], "needs_reconciliation",
-                                          failure_detail["message"])
-    if old_job.state not in (JobState.FAILED, JobState.CANCELLED):
-        raise HTTPException(status_code=409, detail="Only failed or cancelled jobs can be retried")
-    active = db.scalar(select(IngestionJob).where(
-        IngestionJob.document_id == document.id, IngestionJob.original_revision == document.original_revision,
-        IngestionJob.state.in_((JobState.QUEUED, JobState.RUNNING)),
-    ))
-    if active is not None:
-        raise HTTPException(status_code=409, detail="This document already has an active job")
-    reset_abandoned_indexing(db, document, old_job)
-    document.status = DocumentStatus.QUEUED
-    document.error_detail = None
-    document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    phase = "indexing" if document.parsed_text and document.chunks else "parsing"
-    new_job = IngestionJob(document_id=document.id, retry_of=old_job.id, original_hash=document.content_hash,
-                           original_revision=document.original_revision,
-                           phase=phase,
-                           metering_id=old_job.metering_id or old_job.id,
-                           submission_pending=True)
-    db.add(new_job)
-    db.flush()
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="job.retried", resource_type="ingestion_job", resource_id=new_job.id,
-        metadata={"document_id": str(document.id), "previous_job_id": str(old_job.id)}, request=request,
-    )
-    db.commit()
-    db.refresh(new_job)
-    try:
-        _dispatch_retried_job(db, new_job)
-    except Exception:
-        logging.getLogger(__name__).warning("Ingestion retry dispatch deferred: %s", new_job.id)
-    return new_job
-
-
-def _dispatch_retried_job(db: Session, job: IngestionJob):
-    document = db.get(Document, job.document_id)
-    if job.phase == "indexing" and document.parsed_text and document.chunks:
-        embed_document.delay(str(document.id), str(job.id))
-    else:
-        process_document.delay(str(job.id))
+    return jobs.retry_job(job_id, request, db, access)
 
 
 @router.get("/traces/{trace_id}", response_model=QueryTraceRead)
@@ -421,8 +244,8 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     access.library(db, document.knowledge_base_id, write=True)
     if document.status in (DocumentStatus.DELETED, DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
         raise HTTPException(status_code=409, detail="请在文档处理结束后重新索引，已删除的文档需先恢复")
-    require_indexing_stopped(document)
-    recent_job = latest_document_job(db, document)
+    jobs.require_indexing_stopped(document)
+    recent_job = jobs.latest_document_job(db, document)
     if recent_job:
         detail = document_failures.safe_job_failure(recent_job, document)
         if detail and detail["code"] == "needs_reconciliation":

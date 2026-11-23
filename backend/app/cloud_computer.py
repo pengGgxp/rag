@@ -402,7 +402,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
     from .shared_resources import materialize_legacy_mount, prefix
     check_capacity(db, access.user_id, 0)
     materialize_legacy_mount(db, access.user_id)
-    from .knowledge_originals import ensure_mount_root, prefix as knowledge_prefix
+    from .knowledge.originals import ensure_mount_root, prefix as knowledge_prefix
     from .shared_resources import backend as mounted_storage
     store = mounted_storage(db)
     if store is None:

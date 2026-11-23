@@ -20,9 +20,7 @@ def test_failed_job_can_be_retried_and_cancelled_job_stays_terminal(accounts, mo
     db.add(failed)
     db.commit()
     queued = []
-    monkeypatch.setattr("app.knowledge.routes.process_document", type("Task", (), {
-        "delay": lambda _self, job_id: queued.append(job_id),
-    })())
+    monkeypatch.setattr("app.tasks.process_document.delay", queued.append)
 
     retry = owner.post(f"/jobs/{failed.id}/retry")
     assert retry.status_code == 202, retry.text
@@ -60,9 +58,7 @@ def test_retry_recovers_abandoned_running_chunks(accounts, monkeypatch):
     db.add(failed)
     db.commit()
     dispatched = []
-    monkeypatch.setattr("app.knowledge.routes.embed_document", type("Task", (), {
-        "delay": lambda _self, *args: dispatched.append(args),
-    })())
+    monkeypatch.setattr("app.tasks.embed_document.delay", lambda *args: dispatched.append(args))
 
     response = owner.post(f"/jobs/{failed.id}/retry")
 

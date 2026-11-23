@@ -11,8 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app import auth, document_uploads, main, storage_billing, tasks
-from app.ingestion_recovery import recover_interrupted_ingestion, worker_claim
+from app import auth, main, storage_billing, tasks
+from app.knowledge.ingestion import uploads as document_uploads
+from app.knowledge.ingestion.recovery import recover_interrupted_ingestion, worker_claim
 from app.models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, KnowledgeBase, LoginSession, User
 from test_auth_postgres import auth_postgres
 from test_cos_uploads import FakeCos
@@ -23,6 +24,7 @@ def test_verifying_upload_does_not_lock_account_during_download(auth_postgres, m
     engine = auth_postgres
     storage = FakeCos()
     monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
+    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     processed = []
     monkeypatch.setattr(tasks.process_document, "delay", processed.append)
@@ -102,7 +104,23 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     engine = auth_postgres
     raw, csrf = secrets.token_urlsafe(48), secrets.token_urlsafe(32)
     storage = FakeCos()
+    published = []
+    read_keys = []
+    download = storage.download
+
+    def copy(source, target, *, etag=None):
+        storage.objects[target] = storage.objects[source]
+        if "/knowledge-originals/" in target:
+            published.append(target)
+
+    def record_download(key):
+        read_keys.append(key)
+        return download(key)
+
+    monkeypatch.setattr(storage, "copy", copy, raising=False)
+    monkeypatch.setattr(storage, "download", record_download)
     monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
+    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     monkeypatch.setattr(tasks.verify_upload, "delay", lambda _: None)
     processed = []
@@ -123,6 +141,7 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
         assert client.post(f"/uploads/{identifier}/parts/1", json={"sha256": hashlib.sha256(b"sample").hexdigest()}).status_code == 200
     with Session(engine) as db:
         row = db.get(DocumentUpload, UUID(identifier))
+        sealed_key = row.object_key
         storage.uploads[row.multipart_id]["parts"][1] = b"sample"
     barrier = Barrier(3)
     def seal(_):
@@ -136,7 +155,7 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     assert storage.seals == 1
     with ThreadPoolExecutor(max_workers=3) as pool:
         list(pool.map(lambda _: document_uploads.finalize_upload(identifier), range(3)))
-    assert len(processed) == storage.downloads == 1
+    assert len(processed) == read_keys.count(sealed_key) == len(published) == 1
     with Session(engine) as db:
         assert db.scalar(select(func.count()).select_from(Document).where(Document.knowledge_base_id == kb_id)) == 1
         assert db.scalar(select(func.count()).select_from(IngestionJob).join(

@@ -4,10 +4,10 @@ from contextlib import contextmanager
 
 from sqlalchemy import select, text
 
-from .auth import now
-from .document_ingestion import job_matches_original
-from .document_failures import failure, uncertain_submission
-from .models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
+from ...auth import now
+from .failures import failure, uncertain_submission
+from .jobs import job_matches_original
+from ...models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
 
 
 @contextmanager

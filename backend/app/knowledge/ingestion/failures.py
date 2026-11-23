@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("app.document_failures")
 
 
 def failure(stage, code, message, retryable=False, request_id=None):

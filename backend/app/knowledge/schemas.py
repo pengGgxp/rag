@@ -3,8 +3,23 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..document_ingestion import MAX_DOCUMENT_BYTES
+from .ingestion.admission import MAX_DOCUMENT_BYTES
+from .ingestion import failures as document_failures
 from ..models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
+
+
+def document_read(document, job):
+    detail = document_failures.safe_job_failure(job, document) if job else None
+    failure = DocumentFailureRead.model_validate(detail) if detail else None
+    return DocumentRead.model_validate(document).model_copy(update={
+        "error_detail": document_failures.safe_document_message(document, detail),
+        "failure": failure,
+        "searchable": document.is_active and document.status == DocumentStatus.READY and document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED,
+        "job": JobRead.model_validate(job).model_copy(update={
+            "failure": failure,
+            "error_detail": detail["message"] if detail else None,
+        }) if job else None,
+    })
 
 
 class KnowledgeBaseCreate(BaseModel):

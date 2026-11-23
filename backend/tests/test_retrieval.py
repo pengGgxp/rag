@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main
 from app.db import Base
-from app.embedding import EmbeddingProviderError
+from app.knowledge.ingestion.embedding import EmbeddingProviderError
 from app.models import (
     Chunk,
     Document,

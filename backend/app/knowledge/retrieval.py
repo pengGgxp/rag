@@ -7,7 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..auth import Access
-from ..embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
+from .ingestion.embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from ..models import Chunk, Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus, QueryTrace
 from .schemas import ChunkRead, QueryTraceRead, RetrievalRead, SearchResult
 
