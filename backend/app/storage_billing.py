@@ -100,7 +100,7 @@ def inventory(db, identifier, *, exclude_key=None):
     groups = {"documents": 0, "attachments": 0, "outputs": 0, "skills": 0, "reserved": 0}
     sources = [
         ("documents", db.execute(select(Document.object_key, Document.size_bytes).join(KnowledgeBase)
-            .where(KnowledgeBase.account_id == identifier))),
+            .where(KnowledgeBase.account_id == identifier, Document.is_active.is_(True)))),
         ("attachments", db.execute(select(ChatAttachment.object_key, ChatAttachment.size_bytes)
             .where(ChatAttachment.account_id == identifier, ChatAttachment.object_deleted_at.is_(None),
                 ChatAttachment.resource_file_id.is_(None)))),
@@ -144,11 +144,11 @@ def storage_limit(db, identifier, config=None):
     return (config or settings(db)).free_storage_bytes + sum(e.storage_bytes for e in active_entitlements(db, identifier))
 
 
-def check_capacity(db, identifier, additional, *, exclude_key=None, skill_replaced_bytes=0, output=False):
+def check_capacity(db, identifier, additional, *, exclude_key=None, skill_replaced_bytes=0, replaced_bytes=0, output=False):
     lock_workspace(db, identifier)
     config = settings(db)
     usage = inventory(db, identifier, exclude_key=exclude_key)
-    if usage["used_bytes"] - skill_replaced_bytes + additional > storage_limit(db, identifier, config):
+    if usage["used_bytes"] - skill_replaced_bytes - replaced_bytes + additional > storage_limit(db, identifier, config):
         raise HTTPException(413, "存储空间不足，请清理文件或购买额外空间")
     state = db.get(WorkspaceStorageState, identifier)
     if state is not None:

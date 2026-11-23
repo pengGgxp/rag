@@ -263,6 +263,21 @@ def event_text(payload):
 def chat_router(get_db, retrieve):
     router = APIRouter(prefix="/conversations", tags=["conversations"])
 
+    @router.get("/{conversation_id}/messages/{message_id}/citations/{chunk_id}")
+    def read_citation(conversation_id: UUID, message_id: UUID, chunk_id: UUID,
+                      db: Session = Depends(get_db), access: Access = Depends(get_access)):
+        from .knowledge_originals import resolve_citation
+
+        live_conversation(db, conversation_id, access)
+        message = db.get(ChatMessage, message_id)
+        if message is None or message.conversation_id != conversation_id or message.role != "assistant":
+            raise HTTPException(404, "回答不存在")
+        citation = next((item for item in (message.citations or [])
+                         if item.get("chunk_id") == str(chunk_id)), None)
+        if citation is None:
+            raise HTTPException(404, "引用不存在")
+        return resolve_citation(db, access, citation, chunk_id)
+
     @router.get("/{conversation_id}/messages/{message_id}/thinking")
     def read_thinking(conversation_id: UUID, message_id: UUID,
             db: Session = Depends(get_db), access: Access = Depends(get_access)):
@@ -535,7 +550,7 @@ def chat_router(get_db, retrieve):
                 for citation in message.citations:
                     lines.extend([
                         f"来源：{citation['filename']}（{citation['knowledge_base_name']}，"
-                        f"v{citation.get('version_number', 1)}，字符 {citation['char_start']}–{citation['char_end']}，"
+                        f"字符 {citation['char_start']}–{citation['char_end']}，"
                         f"{'第 ' + str(citation['page_number']) + ' 页，' if citation.get('page_number') else ''}"
                         f"{citation['chunk_id']}）",
                         "", citation["text"], "",

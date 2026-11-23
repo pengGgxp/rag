@@ -46,7 +46,9 @@ def seed(engine, monkeypatch):
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
     monkeypatch.setattr("app.storage_backend.current_storage", lambda _: SimpleNamespace(
         bucket="test-bucket", region="cn-hangzhou"))
-    monkeypatch.setattr("app.shared_resources.backend", lambda _: None)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.shared_resources.backend", lambda _: store)
     return access, conversation_id, fake
 
 

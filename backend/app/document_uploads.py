@@ -15,7 +15,7 @@ from sqlalchemy.exc import OperationalError
 from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
-from .document_ingestion import admit, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
+from .document_ingestion import publish, replacement_target, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
 from .models import Document, DocumentStatus, DocumentUpload, User
 from .storage_backend import current_storage
 from .upstream_retries import retry_after
@@ -29,7 +29,8 @@ class UploadInput(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = Field(default="application/octet-stream", max_length=150)
     size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
-    version_of: UUID | None = None
+    replace_document_id: UUID | None = None
+    expected_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     request_key: UUID = Field(default_factory=uuid4)
 
 
@@ -81,8 +82,9 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
         DocumentUpload.knowledge_base_id == library_id, DocumentUpload.request_key == request_key,
     ).with_for_update())
     if prior:
-        if (prior.filename, prior.content_type, prior.size_bytes, prior.version_of) != (
-                payload.filename, payload.content_type, payload.size_bytes, payload.version_of):
+        if (prior.filename, prior.content_type, prior.size_bytes, prior.version_of, prior.expected_content_hash) != (
+                payload.filename, payload.content_type, payload.size_bytes,
+                payload.replace_document_id, payload.expected_content_hash):
             raise rejection(409, "upload", "idempotency_conflict",
                             "此上传请求已用于其他文件，请重新选择文件")
         result = view(prior)
@@ -96,24 +98,26 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
         if result["state"] == "creating":
             return open_multipart(db, prior)
         return result
+    if bool(payload.replace_document_id) != bool(payload.expected_content_hash):
+        raise HTTPException(422, "替换原件需要当前文件摘要")
+    previous = replacement_target(db, library_id, payload.replace_document_id) if payload.replace_document_id else None
+    if previous and previous.content_hash != payload.expected_content_hash:
+        raise HTTPException(412, "原件已经更新，请刷新后重新选择文件")
     from .storage_billing import check_capacity
-    check_capacity(db, access.user_id, payload.size_bytes)
+    check_capacity(db, access.user_id, payload.size_bytes, replaced_bytes=previous.size_bytes if previous else 0)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
         raise rejection(415, "upload", "invalid_format", "不支持此文件格式，或文件名无效")
-    if payload.version_of:
-        previous = db.get(Document, payload.version_of)
-        if not previous or previous.knowledge_base_id != library_id or previous.status == DocumentStatus.DELETED:
-            raise rejection(404, "upload", "version_not_found", "原文档版本不存在，请刷新后重试")
     if db.scalar(select(func.count()).select_from(DocumentUpload).where(
             DocumentUpload.user_id == access.user_id, DocumentUpload.state.in_(["creating", "uploading", "completing", "verifying"]),
             DocumentUpload.expires_at > now())) >= 20:
         raise rejection(429, "upload", "upload_limit", "进行中的上传过多，请先完成或取消部分任务")
     identifier = uuid4()
-    key = f"{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
+    key = f"_knowledge_uploads/{library_id}/{identifier}{Path(payload.filename).suffix.lower()}"
     row = DocumentUpload(id=identifier, user_id=access.user_id, account_id=access.user_id,
         knowledge_base_id=library_id, filename=payload.filename, content_type=payload.content_type,
-        size_bytes=payload.size_bytes, version_of=payload.version_of, object_key=key,
+        size_bytes=payload.size_bytes, version_of=payload.replace_document_id, object_key=key,
+        expected_content_hash=payload.expected_content_hash,
         multipart_id="", request_key=request_key, state="creating",
         expires_at=now()+timedelta(hours=24))
     db.add(row)
@@ -246,7 +250,18 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
 
 
 def finalize_upload(identifier):
-    from .storage_billing import lock_workspace
+    from .file_operations import workspace_lock
+    with SessionLocal() as db:
+        row = db.get(DocumentUpload, UUID(identifier))
+        if not row:
+            return
+        account_id = row.account_id
+        db.rollback()
+        with workspace_lock(db, account_id):
+            _finalize_upload(identifier)
+
+
+def _finalize_upload(identifier):
     from .tasks import process_document
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
@@ -259,8 +274,8 @@ def finalize_upload(identifier):
             access = worker_access(db, row)
             access.library(db, row.knowledge_base_id, write=True)
             with storage.download(row.object_key) as stream:
-                from .main import inspect_upload
-                size, digest = inspect_upload(stream)
+                from .document_ingestion import inspect_file
+                size, digest = inspect_file(stream)
                 if size != row.size_bytes:
                     raise HTTPException(409, "文件实际大小不一致")
                 check_format(stream, row.filename)
@@ -270,14 +285,18 @@ def finalize_upload(identifier):
                 chunk = content[(number-1)*PART_SIZE:number*PART_SIZE]
                 if hashlib.sha256(chunk).hexdigest() != row.parts.get(str(number)):
                     raise HTTPException(409, "文件摘要校验失败，请重新上传")
-            lock_workspace(db, row.account_id)
-            access = worker_access(db, row)
-            document, job = admit(db, access, row.knowledge_base_id, row.filename, row.content_type,
-                size, digest, row.object_key, row.version_of)
-            row.document_id, row.state = document.id, "completed"
-            row.error, row.failure, row.verify_after = None, None, None
-            job_id = str(job.id)
-            db.commit()
+            def finish(document, job, queued):
+                db.refresh(row, with_for_update=True)
+                if row.state != "verifying" or aware(row.expires_at) <= now():
+                    raise HTTPException(409, "上传已经取消或过期")
+                worker_access(db, row)
+                row.document_id, row.state = document.id, "completed"
+                row.error, row.failure, row.verify_after = None, None, None
+
+            key = row.object_key
+            document, job, queued = publish(db, access, row.knowledge_base_id, row.filename, row.content_type,
+                size, digest, key, replace_id=row.version_of, expected_hash=row.expected_content_hash,
+                finish=finish)
         except Exception as error:
             db.rollback()
             row = db.get(DocumentUpload, UUID(identifier), with_for_update=True, populate_existing=True)
@@ -324,7 +343,17 @@ def finalize_upload(identifier):
                     except Exception:
                         pass
             return
-    process_document.delay(job_id)
+        try:
+            storage.delete(key)
+        except Exception:
+            # Completed staging objects are cleaned by the orphan sweep.
+            pass
+        if queued:
+            try:
+                process_document.delay(str(job.id))
+            except Exception:
+                # Recovery redispatches the job from its durable submission flag.
+                pass
 
 
 def worker_access(db, row):
@@ -342,6 +371,8 @@ def classify_verification_error(error, row):
         if status == 409 and any(word in str(error.detail) for word in ("大小", "摘要", "fingerprint", "size")):
             return failure("verification", "integrity_mismatch", "文件大小或摘要校验不符，请重新上传",
                            request_id=str(row.id))
+        if status == 412:
+            return failure("verification", "original_changed", str(error.detail), request_id=str(row.id))
         if status == 409 and any(word in str(error.detail) for word in ("已存在", "重复", "duplicate")):
             return failure("verification", "duplicate_document", "文档内容已存在，请查看文档列表",
                            request_id=str(row.id))
@@ -423,7 +454,7 @@ def cleanup_orphans():
             return
         storage = current_storage(db)
         cutoff = now() - timedelta(hours=24)
-        managed = re.compile(r"^[0-9a-f-]{36}/[0-9a-f-]{36}\.[a-z0-9]+$")
+        managed = re.compile(r"^(?:_knowledge_uploads/)?[0-9a-f-]{36}/[0-9a-f-]{36}\.[a-z0-9]+$")
         def old(value):
             try:
                 return aware(datetime.fromisoformat(value.replace("Z", "+00:00"))) < cutoff
@@ -445,8 +476,8 @@ def cleanup_orphans():
                 from .models import ChatAttachment
                 if not db.scalar(select(ChatAttachment.id).where(ChatAttachment.object_key == key)):
                     storage.delete(key)
-            elif managed.fullmatch(key):
-                # Include soft-deleted originals: restore and references must remain valid.
+            elif key.startswith("_knowledge_uploads/") and managed.fullmatch(key):
+                # The legacy document prefix contains rollback originals after cutover.
                 if not db.scalar(select(Document.id).where(Document.object_key == key)) and not db.scalar(
                         select(DocumentUpload.id).where(DocumentUpload.object_key == key,
                             DocumentUpload.expires_at > now(),

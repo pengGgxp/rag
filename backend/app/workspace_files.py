@@ -250,6 +250,11 @@ def tool_definitions():
     ]]
     for tool in definitions:
         function = tool["function"]
+        if function["name"] == "list_files":
+            function["parameters"]["properties"]["knowledge"] = {
+                "type": "boolean", "description": "列出云电脑只读挂载的知识库原件，可按原文件名筛选"}
+        if function["name"] == "read_file":
+            function["description"] += "知识库原件使用 /home/user/knowledge 下的绝对路径。"
         if function["name"] == "get_workspace_file_link":
             continue
         function["parameters"]["properties"]["computer_id"] = {"type": "string", "format": "uuid",
@@ -280,6 +285,11 @@ def execute_tool(name, arguments, db, access, account_id, conversation_id=None, 
         return execute(db, access, conversation_id, request_id, arguments, check_active, **execution)
     if name not in {"list_files", "read_file", "write_file", "apply_patch", "delete_file"}:
         return {"error": "未知文件工具"}
+    from .knowledge_originals import MOUNT_ROOT
+    path = arguments.get("path") or ""
+    if (name == "list_files" and arguments.get("knowledge")) or (
+            name == "read_file" and path.startswith(MOUNT_ROOT + "/") and not arguments.get("id")):
+        return execute_knowledge_read(name, arguments, db, access, conversation_id, request_id, check_active, **execution)
     from .shared_resources import refresh_index
     if name == "list_files" or (arguments.get("path") and not arguments.get("id")):
         refresh_index(db, access, arguments.get("path", arguments.get("query", "")), 0, 100)
@@ -365,3 +375,48 @@ def execute_tool(name, arguments, db, access, account_id, conversation_id=None, 
             value["files"] = [file_reference(metadata)]
     return {**metadata, **value, "computer_id": result["computer_id"],
         "cloud_computer": result["cloud_computer"], "command_id": result["command_id"]}
+
+
+def execute_knowledge_read(name, arguments, db, access, conversation_id, request_id, check_active, **execution):
+    from .cloud_computer import execute
+    from .knowledge_originals import MOUNT_ROOT, mount_path, prefix
+    from .models import Document, DocumentStatus, KnowledgeBase
+
+    root = prefix(access.user_id)
+    query = select(Document).join(KnowledgeBase).where(
+        KnowledgeBase.account_id == access.user_id, Document.is_active.is_(True),
+        Document.status != DocumentStatus.DELETED, Document.object_key.startswith(root, autoescape=True))
+    offset = max(0, arguments.get("offset", 0))
+    limit = arguments.get("limit")
+    operation = {"name": name, "knowledge": True}
+    if name == "list_files":
+        limit = min(max(1, limit or 100), 100)
+        if search := arguments.get("query"):
+            pattern = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            query = query.where(Document.filename.ilike(pattern, escape="\\"))
+        rows = db.scalars(query.order_by(Document.filename, Document.id).offset(offset).limit(limit + 1)).all()
+        paths = {row.object_key[len(root):]: row for row in rows[:limit]}
+        operation["paths"] = list(paths)
+    else:
+        relative = valid_path(arguments["path"][len(MOUNT_ROOT) + 1:])
+        row = db.scalar(query.where(Document.object_key == root + relative))
+        if row is None:
+            raise HTTPException(404, "知识库原件不可用")
+        operation.update(path=relative, offset=offset, limit=min(max(1, limit or 12000), 12000),
+                         binary=not (row.content_type.startswith("text/") or relative.endswith((".md", ".txt", ".csv"))))
+    result = execute(db, access, conversation_id, request_id, {
+        "command": name, "computer_id": arguments.get("computer_id"), "file_operation": operation},
+        check_active, **execution)
+    file_result = result.pop("file_result", {})
+    if file_result.get("error"):
+        raise HTTPException(file_result["status_code"], file_result["error"])
+    if result.get("status") != "completed":
+        return result
+    value = file_result.get("value", {})
+    if name == "list_files":
+        return {**result, "offset": offset, "limit": limit, "has_more": len(rows) > limit,
+                "items": [{"path": f"{MOUNT_ROOT}/{item['path']}", "filename": paths[item["path"]].filename,
+                           "document_id": str(paths[item["path"]].id), "size_bytes": item["size_bytes"]}
+                          for item in value.get("items", []) if item["path"] in paths]}
+    return {**result, **value, "file_path": mount_path(row, access.user_id), "filename": row.filename,
+            "document_id": str(row.id)}

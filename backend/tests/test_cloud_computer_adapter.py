@@ -156,6 +156,7 @@ def test_dependencies_use_runtime_tmp_volume_outside_outputs():
         commands=SimpleNamespace(run=lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(pid=42)),
         files=SimpleNamespace(write=lambda *args, **kwargs: None))
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
+    provider.config = {}
     provider.prepare(sandbox)
     assert DEPENDENCIES in calls[0][0]
     provider.start(sandbox, "test-command", "python3 -m pip install packaging")
@@ -164,13 +165,14 @@ def test_dependencies_use_runtime_tmp_volume_outside_outputs():
     assert DEPENDENCIES.startswith("/tmp/")
 
 
-def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
+def test_mount_separates_writable_resources_and_readonly_knowledge():
     calls = {}
     provider = AlibabaSandbox.__new__(AlibabaSandbox)
     provider.config = {"template": "fake", "max_seconds": 60, "blocked_hosts": ["blocked.example"],
         "oss_role_arn": "acs:ram::123:role/sandbox", "resource_mount": {
             "bucket": "test-bucket", "region": "cn-beijing",
-            "prefix": "workspaces/workspace-a/resource-directory/", "mode": "shared", "file_tools": True}}
+            "prefix": "accounts/account-a/resource-directory/",
+            "knowledge_prefix": "accounts/account-a/knowledge-originals/", "mode": "shared", "file_tools": True}}
     provider.options = {}
     def create(**kwargs):
         calls.update(kwargs)
@@ -179,14 +181,22 @@ def test_mount_uses_workspace_directory_and_does_not_expose_storage_secrets():
     provider.create("session-a")
     points = json.loads(calls["metadata"]["fc.sandbox.storage.oss"])["mountPoints"]
     assert points == [{"bucketName": "test-bucket", "mountDir": "/home/user/workspace",
-        "bucketPath": "/workspaces/workspace-a/resource-directory",
-        "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False}]
+        "bucketPath": "/accounts/account-a/resource-directory",
+        "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": False},
+        {"bucketName": "test-bucket", "mountDir": "/home/user/knowledge",
+         "bucketPath": "/accounts/account-a/knowledge-originals",
+         "endpoint": "https://oss-cn-beijing.aliyuncs.com", "readOnly": True}]
     assert calls["metadata"]["fc.sandbox.auth.role"] == "acs:ram::123:role/sandbox"
     assert calls["allow_internet_access"] is True
     assert calls["network"]["allow_out"] == ["test-bucket.oss-cn-beijing.aliyuncs.com"]
     assert calls["network"]["deny_out"] == PRIVATE_NETWORKS + ["blocked.example"]
     assert "10.0.0.0/8" in calls["network"]["deny_out"]
     assert "access_key" not in json.dumps(calls)
+    commands = []
+    provider.prepare(SimpleNamespace(
+        commands=SimpleNamespace(run=lambda command, **kwargs: commands.append(command)),
+        files=SimpleNamespace(write=lambda *args, **kwargs: None)))
+    assert commands[1] == "test -r /home/user/knowledge/.rag-directory"
 
 
 def test_missing_launcher_result_does_not_wait_until_session_expiry():

@@ -11,7 +11,7 @@ import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -58,9 +58,8 @@ from .schemas import (
     RetrievalRead,
     RetrievalRequest,
 )
-from .storage import upload_fileobj
 from .document_ingestion import (
-    MAX_DOCUMENT_BYTES, commit_upload, dispatch_ingestion, inspect_file as inspect_upload,
+    MAX_DOCUMENT_BYTES, dispatch_ingestion, job_matches_original,
     latest_document_job, stage_upload,
 )
 from .storage_settings import router as storage_settings_router
@@ -77,7 +76,6 @@ from .credits import (
     authorization_hold_amount,
     build_router as build_usage_router,
     release_embedding_hold,
-    release_hold,
     settle_model_usage,
 )
 from .extensions import router as extensions_router
@@ -248,7 +246,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Retry-After", "X-Request-ID"],
+    expose_headers=["Retry-After", "X-Request-ID", "ETag", "Content-Range"],
 )
 app.add_middleware(DeploymentMaintenanceMiddleware)
 
@@ -405,7 +403,7 @@ def restore_knowledge_base(
         return KnowledgeBaseRead.model_validate(knowledge_base)
     active_documents = db.scalars(select(Document).where(
         Document.knowledge_base_id == knowledge_base.id,
-        Document.status != DocumentStatus.DELETED,
+        Document.is_active.is_(True), Document.status != DocumentStatus.DELETED,
     )).all()
     knowledge_base.status = (
         KnowledgeBaseStatus.READY
@@ -429,7 +427,8 @@ def list_knowledge_bases(db: Session = Depends(get_db), access: Access = Depends
         .outerjoin(
             Document,
             (Document.knowledge_base_id == KnowledgeBase.id)
-            & (Document.status != DocumentStatus.DELETED),
+            & (Document.status != DocumentStatus.DELETED)
+            & Document.is_active.is_(True),
         )
         .where(access.visible_libraries())
         .group_by(KnowledgeBase.id)
@@ -450,7 +449,8 @@ def upload_document(
     knowledge_base_id: UUID,
     request: Request,
     file: UploadFile = File(...),
-    version_of: UUID | None = Form(None),
+    replace_document_id: UUID | None = Form(None),
+    expected_content_hash: str | None = Form(None, pattern=r"^[a-f0-9]{64}$"),
     db: Session = Depends(get_db),
     access: Access = Depends(get_access),
 ):
@@ -469,14 +469,23 @@ def upload_document(
     if file.content_type not in allowed and suffix not in allowed_suffixes:
         raise HTTPException(status_code=415, detail="Unsupported document type")
 
-    document, job = stage_upload(db, access, knowledge_base_id, file.filename or "untitled",
-        file.content_type, file.file, version_of, request, upload=upload_fileobj)
-    commit_upload(db, document)
-    db.refresh(document)
-    dispatch_ingestion(job.id, dispatch=process_document.delay)
-    return DocumentRead.model_validate(document).model_copy(
-        update={"job": JobRead.model_validate(job)}
-    )
+    if bool(replace_document_id) != bool(expected_content_hash):
+        raise HTTPException(422, "替换原件需要当前文件摘要")
+    request_key = request.headers.get("Idempotency-Key")
+    if request_key:
+        try:
+            request_key = f"knowledge:{UUID(request_key)}"
+        except ValueError:
+            raise HTTPException(422, "上传请求标识无效") from None
+    document, job, queued = stage_upload(db, access, knowledge_base_id, file.filename or "untitled",
+        file.content_type or "application/octet-stream", file.file, replace_id=replace_document_id,
+        expected_hash=expected_content_hash, request=request, request_id=request_key)
+    if queued:
+        try:
+            dispatch_ingestion(job.id, dispatch=process_document.delay)
+        except Exception:
+            logging.getLogger(__name__).warning("Ingestion dispatch deferred: %s", job.id)
+    return document_read(document, job)
 
 
 def document_read(document, job):
@@ -485,6 +494,7 @@ def document_read(document, job):
     return DocumentRead.model_validate(document).model_copy(update={
         "error_detail": document_failures.safe_document_message(document, detail),
         "failure": failure,
+        "searchable": document.is_active and document.status == DocumentStatus.READY and document.knowledge_base.status != KnowledgeBaseStatus.ARCHIVED,
         "job": JobRead.model_validate(job).model_copy(update={
             "failure": failure,
             "error_detail": detail["message"] if detail else None,
@@ -495,7 +505,7 @@ def document_read(document, job):
 @app.get("/knowledge-bases/{knowledge_base_id}/documents", response_model=list[DocumentRead])
 def list_documents(knowledge_base_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access.library(db, knowledge_base_id)
-    documents = db.scalars(select(Document).where(Document.knowledge_base_id == knowledge_base_id)
+    documents = db.scalars(select(Document).where(Document.knowledge_base_id == knowledge_base_id, Document.is_active.is_(True))
                            .order_by(Document.created_at.desc())).all()
     return [document_read(document, latest_document_job(db, document)) for document in documents]
 
@@ -507,7 +517,7 @@ def preview_document(
     access: Access = Depends(get_access),
 ):
     document = db.get(Document, document_id)
-    if document is None:
+    if document is None or not document.is_active:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id)
     job = latest_document_job(db, document)
@@ -525,158 +535,85 @@ def preview_document(
     )
 
 
-@app.get("/documents/{document_id}/versions", response_model=list[DocumentRead])
-def list_document_versions(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id)
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    access.library(db, document.knowledge_base_id)
-    documents = db.scalars(
-        select(Document)
-        .where(Document.version_group_id == document.version_group_id)
-        .order_by(Document.version_number.desc())
-    ).all()
-    return [document_read(item, latest_document_job(db, item)) for item in documents]
+def change_original_availability(db, access, document_id, request, *, deleted):
+    from . import file_operations as ops
+    from .knowledge_originals import copy_change, delete_change, original_key
 
+    with ops.workspace_lock(db, access.user_id):
+        document = db.get(Document, document_id)
+        if document is None or not document.is_active:
+            raise HTTPException(404, "Document not found")
+        access.library(db, document.knowledge_base_id, write=True)
+        if (document.status == DocumentStatus.DELETED) == deleted:
+            return document_read(document, latest_document_job(db, document))
+        source = document.object_key
+        target = original_key(access.user_id, document.knowledge_base_id, document.id,
+                              document.filename, deleted=deleted)
+        store = ops.storage(db)
+        changes = [copy_change(store, source, target, document.content_type, digest=document.content_hash),
+                   delete_change(store, source)]
+        queued_job = None
 
-@app.post("/documents/{document_id}/activate", response_model=DocumentRead)
-def activate_document_version(
-    document_id: UUID,
-    request: Request,
-    db: Session = Depends(get_db),
-    access: Access = Depends(get_access),
-):
-    document = db.scalar(select(Document).where(Document.id == document_id).with_for_update())
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    access.library(db, document.knowledge_base_id, write=True)
-    if document.status != DocumentStatus.READY:
-        raise HTTPException(status_code=409, detail="Only a ready document version can be activated")
-    db.execute(
-        update(Document)
-        .where(Document.version_group_id == document.version_group_id)
-        .values(is_active=False)
-    )
-    document.is_active = True
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="document.version_activated", resource_type="document", resource_id=document.id,
-        metadata={"version_number": document.version_number, "filename": document.filename[:255]},
-        request=request,
-    )
-    db.commit()
-    db.refresh(document)
-    return DocumentRead.model_validate(document)
+        def update_metadata():
+            nonlocal document, queued_job
+            document = db.get(Document, document_id, with_for_update=True, populate_existing=True)
+            library = access.library(db, document.knowledge_base_id, write=True)
+            previous = latest_document_job(db, document, prefer_ready=not deleted and all(
+                chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
+                for chunk in document.chunks) and bool(document.chunks))
+            document.object_key = target
+            if deleted:
+                for job in document.jobs:
+                    if job.state in (JobState.QUEUED, JobState.RUNNING):
+                        stop_ingestion_job(db, document, job, "原件已删除")
+                document.status = DocumentStatus.DELETED
+                document.error_detail = None
+                has_ready = db.scalar(select(Document.id).where(
+                    Document.knowledge_base_id == library.id, Document.id != document.id,
+                    Document.is_active.is_(True), Document.status == DocumentStatus.READY).limit(1))
+                library.status = KnowledgeBaseStatus.READY if has_ready else KnowledgeBaseStatus.DRAFT
+            else:
+                failure = document_failures.safe_job_failure(previous, document) if previous else None
+                ready = bool(document.chunks) and all(
+                    chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
+                    for chunk in document.chunks)
+                if failure and failure["code"] == "needs_reconciliation":
+                    document.status, document.error_detail = DocumentStatus.FAILED, failure["message"]
+                    library.status = KnowledgeBaseStatus.ERROR
+                else:
+                    document.error_detail = None
+                    ready = ready and previous is not None and previous.phase == "indexing" and previous.state == JobState.SUCCEEDED
+                    document.status = DocumentStatus.READY if ready else DocumentStatus.QUEUED
+                    library.status = KnowledgeBaseStatus.READY if ready else KnowledgeBaseStatus.PROCESSING
+                    if not ready:
+                        queued_job = IngestionJob(document_id=document.id, original_hash=document.content_hash,
+                            original_revision=document.original_revision,
+                            phase="indexing" if document.parsed_text and document.chunks else "parsing",
+                            metering_id=(previous.metering_id or previous.id) if previous else None,
+                            submission_pending=True)
+                        db.add(queued_job)
+            record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
+                action="document.deleted" if deleted else "document.restored", resource_type="document",
+                resource_id=document.id, request=request,
+                metadata={"knowledge_base_id": str(library.id), "filename": document.filename})
+
+        ops.execute(db, access, changes, update_metadata)
+        if queued_job:
+            try:
+                _dispatch_retried_job(db, queued_job)
+            except Exception:
+                logging.getLogger(__name__).warning("Restored document dispatch deferred: %s", queued_job.id)
+        return document_read(document, latest_document_job(db, document))
 
 
 @app.delete("/documents/{document_id}", response_model=DocumentRead)
 def delete_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id, with_for_update=True)
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    access.library(db, document.knowledge_base_id, write=True)
-    if document.status == DocumentStatus.DELETED:
-        return DocumentRead.model_validate(document)
-
-    was_active = document.is_active
-    document.status = DocumentStatus.DELETED
-    document.is_active = False
-    document.error_detail = None
-    for job in document.jobs:
-        if job.state in (JobState.QUEUED, JobState.RUNNING):
-            stop_ingestion_job(db, document, job, "Document deleted")
-    if was_active:
-        replacement = db.scalar(
-            select(Document)
-            .where(
-                Document.version_group_id == document.version_group_id,
-                Document.id != document.id,
-                Document.status == DocumentStatus.READY,
-            )
-            .order_by(Document.version_number.desc())
-            .with_for_update()
-        )
-        if replacement is not None:
-            replacement.is_active = True
-    remaining_ready = db.scalar(
-        select(func.count(Document.id)).where(
-            Document.knowledge_base_id == document.knowledge_base_id,
-            Document.id != document.id,
-            Document.status == DocumentStatus.READY,
-            Document.is_active.is_(True),
-        )
-    )
-    document.knowledge_base.status = (
-        KnowledgeBaseStatus.READY if remaining_ready else KnowledgeBaseStatus.DRAFT
-    )
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="document.deleted", resource_type="document", resource_id=document.id,
-        metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
-        request=request,
-    )
-    db.commit()
-    db.refresh(document)
-    return DocumentRead.model_validate(document)
+    return change_original_availability(db, access, document_id, request, deleted=True)
 
 
 @app.post("/documents/{document_id}/restore", response_model=DocumentRead)
 def restore_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
-    document = db.get(Document, document_id, with_for_update=True)
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    access.library(db, document.knowledge_base_id, write=True)
-    if document.status != DocumentStatus.DELETED:
-        return DocumentRead.model_validate(document)
-    require_indexing_stopped(document)
-
-    previous_job = latest_document_job(db, document)
-    previous_failure = document_failures.safe_job_failure(previous_job, document) if previous_job else None
-    needs_reconciliation = previous_failure and previous_failure["code"] == "needs_reconciliation"
-    if needs_reconciliation:
-        document.status = DocumentStatus.FAILED
-        document.error_detail = previous_failure["message"]
-        document.knowledge_base.status = KnowledgeBaseStatus.ERROR
-        db.commit()
-        return document_read(document, previous_job)
-
-    document.error_detail = None
-    document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    has_ready_embeddings = bool(document.chunks) and all(
-        chunk.embedding_status == EmbeddingStatus.READY and chunk.embedding is not None
-        for chunk in document.chunks
-    )
-    document.status = DocumentStatus.READY if has_ready_embeddings else DocumentStatus.PROCESSING
-    if not has_ready_embeddings:
-        for chunk in document.chunks:
-            chunk.embedding = None
-            chunk.embedding_status = EmbeddingStatus.PENDING
-            chunk.embedding_error = None
-    job = IngestionJob(
-        document_id=document.id,
-        phase="indexing" if not has_ready_embeddings else None,
-        submission_pending=not has_ready_embeddings,
-    )
-    if has_ready_embeddings:
-        job.state = JobState.SUCCEEDED
-    db.add(job)
-    record_audit(
-        db, owner_user_id=access.user_id, actor_user_id=access.user_id,
-        action="document.restored", resource_type="document", resource_id=document.id,
-        metadata={"knowledge_base_id": str(document.knowledge_base_id), "filename": document.filename[:255]},
-        request=request,
-    )
-    db.commit()
-    db.refresh(document)
-    db.refresh(job)
-    if has_ready_embeddings:
-        document.knowledge_base.status = KnowledgeBaseStatus.READY
-        db.commit()
-    else:
-        embed_document.delay(str(document.id), str(job.id))
-    return DocumentRead.model_validate(document).model_copy(
-        update={"job": JobRead.model_validate(job)}
-    )
+    return change_original_availability(db, access, document_id, request, deleted=False)
 
 
 @app.get("/jobs/{job_id}", response_model=JobRead)
@@ -684,6 +621,8 @@ def get_job(job_id: UUID, db: Session = Depends(get_db), access: Access = Depend
     job = db.get(IngestionJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    if not job.document.is_active or not job_matches_original(job.document, job):
+        raise HTTPException(404, "Job not found")
     access.library(db, job.document.knowledge_base_id)
     failure_detail = document_failures.safe_job_failure(job, job.document)
     return JobRead.model_validate(job).model_copy(
@@ -712,11 +651,11 @@ def lock_ingestion_job(db, job_id, access):
     if document_id is None:
         raise HTTPException(status_code=404, detail="Job not found")
     document = db.get(Document, document_id, with_for_update=True)
-    if document is None:
+    if document is None or not document.is_active:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id, write=True)
-    job = db.get(IngestionJob, job_id, with_for_update=True)
-    if job is None:
+    job = db.get(IngestionJob, job_id, with_for_update=True, populate_existing=True)
+    if job is None or not job_matches_original(document, job):
         raise HTTPException(status_code=404, detail="Job not found")
     return job, document
 
@@ -726,10 +665,15 @@ def stop_ingestion_job(db, document, job, reason):
         running_chunks = [chunk for chunk in document.chunks
                           if chunk.embedding_status == EmbeddingStatus.RUNNING]
         if running_chunks:
-            release_embedding_hold(db, document.knowledge_base.account_id, job.id)
+            if not job.embedding_submitting:
+                release_embedding_hold(db, document.knowledge_base.account_id, job.id)
             for chunk in running_chunks:
                 chunk.embedding_status, chunk.embedding_error = EmbeddingStatus.FAILED, reason
+        if job.phase == "parsing" and document_failures.uncertain_submission(document):
+            job.failure = document_failures.failure("parsing", "needs_reconciliation",
+                "付费解析请求结果需要核对，暂不能重复提交", request_id=str(job.metering_id or job.id))
     job.state, job.error_detail, job.retry_progress = JobState.CANCELLED, reason, None
+    job.submission_pending = False
 
 
 @app.post("/jobs/{job_id}/cancel", response_model=JobRead)
@@ -780,7 +724,7 @@ def retry_job(
     if old_job.state not in (JobState.FAILED, JobState.CANCELLED):
         raise HTTPException(status_code=409, detail="Only failed or cancelled jobs can be retried")
     active = db.scalar(select(IngestionJob).where(
-        IngestionJob.document_id == document.id,
+        IngestionJob.document_id == document.id, IngestionJob.original_revision == document.original_revision,
         IngestionJob.state.in_((JobState.QUEUED, JobState.RUNNING)),
     ))
     if active is not None:
@@ -790,7 +734,8 @@ def retry_job(
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
     phase = "indexing" if document.parsed_text and document.chunks else "parsing"
-    new_job = IngestionJob(document_id=document.id, retry_of=old_job.id,
+    new_job = IngestionJob(document_id=document.id, retry_of=old_job.id, original_hash=document.content_hash,
+                           original_revision=document.original_revision,
                            phase=phase,
                            metering_id=old_job.metering_id or old_job.id,
                            submission_pending=True)
@@ -803,7 +748,10 @@ def retry_job(
     )
     db.commit()
     db.refresh(new_job)
-    _dispatch_retried_job(db, new_job)
+    try:
+        _dispatch_retried_job(db, new_job)
+    except Exception:
+        logging.getLogger(__name__).warning("Ingestion retry dispatch deferred: %s", new_job.id)
     return new_job
 
 
@@ -827,7 +775,7 @@ def get_query_trace(trace_id: UUID, db: Session = Depends(get_db), access: Acces
 @app.get("/documents/{document_id}/chunks", response_model=list[ChunkRead])
 def list_chunks(document_id: UUID, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id)
-    if document is None:
+    if document is None or not document.is_active or document.status == DocumentStatus.DELETED:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id)
     return db.scalars(
@@ -840,7 +788,7 @@ def list_chunks(document_id: UUID, db: Session = Depends(get_db), access: Access
 @app.post("/documents/{document_id}/reindex", response_model=JobRead, status_code=status.HTTP_202_ACCEPTED)
 def reindex_document(document_id: UUID, request: Request, db: Session = Depends(get_db), access: Access = Depends(get_access)):
     document = db.get(Document, document_id, with_for_update=True)
-    if document is None:
+    if document is None or not document.is_active:
         raise HTTPException(status_code=404, detail="Document not found")
     access.library(db, document.knowledge_base_id, write=True)
     if document.status in (DocumentStatus.DELETED, DocumentStatus.QUEUED, DocumentStatus.PROCESSING):
@@ -858,7 +806,8 @@ def reindex_document(document_id: UUID, request: Request, db: Session = Depends(
     document.status = DocumentStatus.PROCESSING
     document.error_detail = None
     document.knowledge_base.status = KnowledgeBaseStatus.PROCESSING
-    job = IngestionJob(document_id=document.id, phase="indexing", submission_pending=True)
+    job = IngestionJob(document_id=document.id, original_hash=document.content_hash,
+                       original_revision=document.original_revision, phase="indexing", submission_pending=True)
     db.add(job)
     record_audit(
         db, owner_user_id=access.user_id, actor_user_id=access.user_id,
@@ -1060,6 +1009,10 @@ def retrieve_knowledge_base(
     db.expire_all()
     access.revalidate(db).library(db, knowledge_base_id)
 
+    current = dict(db.execute(select(Chunk.id, Document.content_hash).join(Document).where(
+        Chunk.id.in_([identifier for identifier, _ in ordered_results]),
+        Document.status == DocumentStatus.READY, Document.is_active.is_(True),
+    )).all())
     results = [
         SearchResult(
             trace_id=trace_id,
@@ -1067,11 +1020,12 @@ def retrieve_knowledge_base(
                 "version_group_id": entry["chunk"].document.version_group_id,
                 "version_number": entry["chunk"].document.version_number,
                 "content_origin": entry["chunk"].document.content_origin,
+                "original_hash": current[identifier],
             }),
             score=float(entry["score"]),
             filename=entry["filename"],
         )
-        for _, entry in ordered_results
+        for identifier, entry in ordered_results if identifier in current
     ]
     return RetrievalRead(trace=QueryTraceRead.model_validate(trace), results=results)
 
@@ -1124,6 +1078,8 @@ def answer_knowledge_base(
         citations = [
             CitationRead(
                 chunk_id=result.chunk.id,
+                document_id=result.chunk.document_id,
+                original_hash=result.chunk.original_hash,
                 filename=result.filename,
                 content_origin=result.chunk.content_origin,
                 text=result.chunk.text,

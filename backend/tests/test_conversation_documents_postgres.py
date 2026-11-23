@@ -29,8 +29,10 @@ def test_parallel_save_has_one_document_receipt_and_dispatch(auth_postgres, monk
         db.add(message); db.commit()
         runtime=SimpleNamespace(factory=factory,access=access,message_id=message.id,request_id=rid,verified_citations=[])
         library_id=library.id
-    stored, queued = [], []
-    monkeypatch.setattr(storage,'upload_fileobj',lambda **kw: stored.append(kw['object_key']))
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    stored, queued = store.objects, []
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
     monkeypatch.setattr(saves,'dispatch_ingestion',queued.append)
     barrier=Barrier(3)
     def save(_):

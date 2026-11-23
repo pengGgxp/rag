@@ -10,14 +10,17 @@ from test_retrieval import add_document
 from app.audit_log import record_audit
 
 
-def test_users_can_filter_their_own_audit_logs_without_workspace_members(accounts):
+def test_users_can_filter_their_own_audit_logs_without_workspace_members(accounts, monkeypatch):
     (owner, viewer, outsider), db = accounts
     register(owner)
     register(viewer, "viewer@example.com", "Viewer")
     register(outsider, "outsider@example.com", "Outsider")
 
     kb_id = library(owner)
-    document = add_document(db, db.get(KnowledgeBase, kb_id), "audit content")
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    document = add_document(db, db.get(KnowledgeBase, kb_id), "audit content", store=store)
     db.add(IngestionJob(document_id=document.id))
     db.commit()
     assert owner.delete(f"/documents/{document.id}").status_code == 200

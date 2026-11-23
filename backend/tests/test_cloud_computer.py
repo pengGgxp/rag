@@ -98,7 +98,9 @@ def setup(accounts, monkeypatch, rate="0.6"):
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
     monkeypatch.setattr(storage_backend, "current_storage", lambda _db: SimpleNamespace(
         bucket="test-bucket", region="cn-hangzhou"))
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: None)
+    from test_cloud_computer_mount import MemoryMount
+    store = MemoryMount()
+    monkeypatch.setattr("app.shared_resources.backend", lambda _db: store)
     body = {"version": 0, "enabled": True, "region": "cn-hangzhou", "template": "test-template", "specification": "test-only",
             "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}
     response = client.put("/site/admin/cloud-computer", json=body)

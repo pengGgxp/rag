@@ -94,7 +94,8 @@ def test_document_versions_have_distinct_grants_and_download_is_metered(accounts
         endpoint = f"/documents/{document.id}/preview-access"
         assert outsider.post(endpoint, json={}).status_code == 404
         assert owner.post(endpoint, json={}).json()["kind"] == "pdf"
-        assert signed[-1][0] == document.object_key
+        assert owner.post(endpoint, json={}).json()["url"].startswith(f"/documents/{document.id}/preview-content?")
+    assert not signed
     assert not list(db.scalars(select(StorageTransfer)))
     document = versions[0]
     endpoint = f"/documents/{document.id}/download"

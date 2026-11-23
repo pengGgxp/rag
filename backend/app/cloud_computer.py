@@ -249,6 +249,8 @@ def read(row, db=None):
         reason_text = "运行状态核对中断，云电脑已结束"
     return {"id": str(row.id), "computer_id": str(row.id), "name": row.name or f"云电脑 {row.id.hex[:8]}",
         "conversation_id": str(row.conversation_id), "status": row.status, "summary": labels[row.status],
+        "knowledge_mounted": bool(row.snapshot.get("resource_mount", {}).get("knowledge_prefix")
+                                  and row.status in ("ready", "running")),
         "stop_reason": row.stop_reason, "stop_reason_text": reason_text,
         "renewal_required_credits": str(renewal_reserve(row)) if row.stop_reason == "insufficient_balance" else None,
         "terminal": row.ended_at is not None, "credits": str(row.charged_credits if row.ended_at else min(estimated, row.charged_credits+row.held_credits)),
@@ -400,10 +402,17 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
     from .shared_resources import materialize_legacy_mount, prefix
     check_capacity(db, access.user_id, 0)
     materialize_legacy_mount(db, access.user_id)
+    from .knowledge_originals import ensure_mount_root, prefix as knowledge_prefix
+    from .shared_resources import backend as mounted_storage
+    store = mounted_storage(db)
+    if store is None:
+        raise HTTPException(503, "知识库挂载暂不可用，请稍后重试")
+    ensure_mount_root(store, access.user_id)
     identifier = uuid4()
     snapshot = {key: value for key, value in settings.config.items() if key != "concurrency"}
     snapshot.update(version=settings.version, resource_mount={"bucket": storage.bucket, "region": storage.region,
-        "prefix": prefix(access.user_id), "mode": "shared"})
+        "prefix": prefix(access.user_id), "mode": "shared",
+        "knowledge_prefix": knowledge_prefix(access.user_id)})
     reserve = amount(Decimal(str(snapshot["credits_per_minute"])) * snapshot["idle_seconds"] / 60)
     if reserve:
         authorization_hold(db, access.user_id, access.user_id, uuid5(identifier, "hold:0"), reserve)
@@ -470,6 +479,9 @@ def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_exe
         from .storage_billing import check_capacity
         check_capacity(db, access.user_id, 0)
     row = owned_computer(db, access, arguments.get("computer_id"), write=True)
+    if (file_operation and file_operation.get("knowledge")
+            and not row.snapshot.get("resource_mount", {}).get("knowledge_prefix")):
+        raise HTTPException(409, "此云电脑未挂载知识库，请启动新的云电脑")
     # Serialize only retransmissions of this invocation, never unrelated instances.
     invocation_lock(db, request_id)
     payload = {"command": arguments["command"], "inputs": [], "computer_id": str(row.id)}

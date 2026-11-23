@@ -1,3 +1,4 @@
+import hashlib
 from celery import Celery
 from celery.signals import worker_ready, worker_shutdown
 import redis
@@ -145,6 +146,19 @@ def cleanup_ocr_object(storage, key):
     return True
 
 
+def matches_original(document, job):
+    from .document_ingestion import job_matches_original
+
+    return document.is_active and document.status != DocumentStatus.DELETED and job_matches_original(document, job)
+
+
+def check_parsing(session, document, job, *, lock=False):
+    session.refresh(document, with_for_update=lock)
+    session.refresh(job, with_for_update=lock)
+    if job.state != JobState.RUNNING or not matches_original(document, job):
+        raise ParsingCancelled()
+
+
 def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocument:
     if not (document.filename.lower().endswith(".pdf") or document.content_type == "application/pdf"):
         text, name = parse_document(document.filename, document.content_type, content)
@@ -170,53 +184,57 @@ def parse_for_ingestion(session, job, document, content: bytes) -> ParsedDocumen
     account_id = document.knowledge_base.account_id
     metering_id = job.metering_id or job.id
     pricing_context = document_snapshot(session, account_id, metering_id, "ocr_pages", "ocr")
-    ocr_hold = False
     hold_amount = authorization_hold_amount()
 
     def check_active():
-        session.refresh(job)
-        session.refresh(document)
-        if job.state != JobState.RUNNING or document.status == DocumentStatus.DELETED:
-            raise ParsingCancelled()
+        check_parsing(session, document, job)
 
     check_active()
     source_url = None
     if not metadata.get("task_id"):
         storage = ocr_storage(session)
-        source_url = storage.read_url(document.object_key) if storage else None
+        source_url = storage.read_url(document.object_key) if storage and "/knowledge-originals/" not in document.object_key else None
+    needs_submission = not metadata.get("task_id")
+    check_parsing(session, document, job, lock=True)
     authorization_hold(session, account_id, None, job.id, hold_amount)
-    session.commit()
-    ocr_hold = True
-    if not metadata.get("task_id"):
+    if needs_submission:
         metadata = {
             "provider": PARSER_NAME, "status": "submitting", "page_count": page_count,
             "config": {"llm_enhancement": False, "formula_enhancement": False,
                        "output_format": ["markdown", "visualLayoutInfo"]},
         }
         document.parsing_metadata = metadata
-        session.commit()
+    session.commit()
+    if needs_submission:
         try:
             task_id = provider.submit_url(source_url, page_count) if source_url else provider.submit(content, page_count)
         except DocMindError as exc:
             if not exc.uncertain:
                 # An explicit rejection is safe to retry after configuration is fixed.
-                document.parsing_metadata = None
+                try:
+                    check_parsing(session, document, job, lock=True)
+                except ParsingCancelled:
+                    session.rollback()
+                else:
+                    document.parsing_metadata = None
                 release_hold(session, account_id, None, job.id, hold_amount)
                 session.commit()
             raise
         except Exception as exc:
             raise DocMindError("付费解析请求结果需要核对，暂不能重复提交", uncertain=True) from exc
-        document.parsing_metadata = {**metadata, "status": "processing", "task_id": task_id}
-        session.commit()
-        metadata = document.parsing_metadata
     try:
-        parsed = provider.collect(metadata["task_id"], page_count, check_active)
-    except Exception:
-        if ocr_hold:
-            release_hold(session, account_id, None, job.id, authorization_hold_amount())
+        if needs_submission:
+            check_parsing(session, document, job, lock=True)
+            document.parsing_metadata = {**metadata, "status": "processing", "task_id": task_id}
             session.commit()
+            metadata = document.parsing_metadata
+        parsed = provider.collect(metadata["task_id"], page_count, check_active)
+        check_parsing(session, document, job, lock=True)
+    except Exception:
+        session.rollback()
+        release_hold(session, account_id, None, job.id, hold_amount)
+        session.commit()
         raise
-    check_active()
     event = settle_usage(
         session, account_id, None, metering_id, "ocr_pages", page_count,
         event_key="ocr", metadata={"document_id": str(document.id), "provider": PARSER_NAME},
@@ -248,12 +266,11 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
     })
 
     def check_active():
-        session.refresh(job)
-        session.refresh(document)
-        if job.state != JobState.RUNNING or document.status == DocumentStatus.DELETED:
-            raise ParsingCancelled()
+        check_parsing(session, document, job)
 
-    def save():
+    def save(*, locked=False):
+        if not locked:
+            check_parsing(session, document, job, lock=True)
         document.parsing_metadata = copy.deepcopy(metadata)
         session.commit()
 
@@ -261,6 +278,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
     if any(part["status"] == "submitting" and not part.get("task_id") for part in metadata["parts"]):
         raise DocMindError("付费解析请求结果需要核对，暂不能重复提交", uncertain=True)
     hold_amount = authorization_hold_amount()
+    check_parsing(session, document, job, lock=True)
     authorization_hold(session, account_id, None, job.id, hold_amount)
     session.commit()
     combined = []
@@ -312,6 +330,7 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
         parsed = assemble_pages(combined, PARSER_NAME)
         if not parsed.text.strip():
             raise DocMindError("阿里云解析未返回可检索文字，请检查扫描清晰度或文档类型")
+        check_parsing(session, document, job, lock=True)
         event = settle_usage(
             session, account_id, None, metering_id, "ocr_pages", len(pages), event_key="ocr",
             metadata={"document_id": str(document.id), "provider": PARSER_NAME},
@@ -325,10 +344,11 @@ def parse_batched_pdf(session, job, document, pages, ranges, settings) -> Parsed
             part.pop("text", None)
             part.pop("pages", None)
         metadata.update(status="complete", pages=parsed.pages)
-        save()
+        save(locked=True)
         return parsed
     except Exception as exc:
         if not getattr(exc, "uncertain", False):
+            session.rollback()
             release_hold(session, account_id, None, job.id, hold_amount)
             session.commit()
         raise
@@ -376,7 +396,7 @@ def _process_document(task, session, job_id, prepared_content):
             return
         if job.retry_after is not None and aware(job.retry_after) > now():
             return
-        if document.status == DocumentStatus.DELETED:
+        if not matches_original(document, job):
             job.state = JobState.CANCELLED
             job.error_detail = "Document deleted"
             session.commit()
@@ -397,18 +417,13 @@ def _process_document(task, session, job_id, prepared_content):
                 content = source.read()
         else:
             content = prepared_content
+        check_parsing(session, document, job)
+        if job.original_hash is not None and hashlib.sha256(content).hexdigest() != job.original_hash:
+            raise ValueError("Original content checksum does not match the ingestion job")
         parsed = parse_for_ingestion(session, job, document, content)
         if not parsed.text.strip():
             raise ValueError("The document parser produced no text")
-        session.refresh(document)
-        session.refresh(job)
-        if job.state == JobState.CANCELLED:
-            return
-        if document.status == DocumentStatus.DELETED:
-            job.state = JobState.CANCELLED
-            job.error_detail = "Document deleted"
-            session.commit()
-            return
+        check_parsing(session, document, job, lock=True)
         document.parsed_text = parsed.text
         document.parser_name = parsed.parser_name
         document.chunks.clear()
@@ -434,19 +449,11 @@ def _process_document(task, session, job_id, prepared_content):
         job.phase = "parsing"
         job.state = JobState.SUCCEEDED
         embedding_job = IngestionJob(document_id=document.id, phase="indexing",
+                                     original_hash=job.original_hash, original_revision=document.original_revision,
                                      metering_id=job.metering_id or job.id,
                                      submission_pending=True)
         session.add(embedding_job)
         session.flush()
-        session.refresh(document)
-        if document.status == DocumentStatus.DELETED:
-            session.rollback()
-            job = session.get(IngestionJob, job_id)
-            if job is not None:
-                job.state = JobState.CANCELLED
-                job.error_detail = "Document deleted"
-                session.commit()
-            return
         session.commit()
         embed_document.delay(str(document.id), str(embedding_job.id))
     except ParsingCancelled:
@@ -458,11 +465,12 @@ def _process_document(task, session, job_id, prepared_content):
             session.commit()
     except Exception as exc:
         session.rollback()
-        job = session.get(IngestionJob, job_id)
+        document_id = session.scalar(select(IngestionJob.document_id).where(IngestionJob.id == job_id))
+        document = session.get(Document, document_id, with_for_update=True) if document_id else None
+        job = session.get(IngestionJob, job_id, with_for_update=True)
         retryable = False
         if job is not None:
-            document = session.get(Document, job.document_id)
-            if job.state == JobState.CANCELLED or (document and document.status == DocumentStatus.DELETED):
+            if job.state == JobState.CANCELLED or (document and not matches_original(document, job)):
                 if job.state != JobState.CANCELLED:
                     job.state = JobState.CANCELLED
                     session.commit()
@@ -574,7 +582,12 @@ def maintain_uploads() -> None:
         if storage:
             from .chat_attachments import cleanup
             cleanup(db, storage)
-            for document in db.scalars(select(Document).where(Document.parsing_metadata.is_not(None))):
+            document_ids = db.scalars(select(Document.id).where(Document.parsing_metadata.is_not(None))).all()
+            for document_id in document_ids:
+                document = db.get(Document, document_id, with_for_update=True, populate_existing=True)
+                if document is None:
+                    db.rollback()
+                    continue
                 metadata = document.parsing_metadata or {}
                 changed = False
                 for part in metadata.get("parts", []):
@@ -585,7 +598,7 @@ def maintain_uploads() -> None:
                 if changed:
                     from sqlalchemy.orm.attributes import flag_modified
                     flag_modified(document, "parsing_metadata")
-                    db.commit()
+                db.commit()
 
 
 def cleanup_workspace_files() -> None:
@@ -621,7 +634,7 @@ def _embed_document(session, document_id, job_id):
 
         def active(document, job):
             return (document is not None and document.status == DocumentStatus.PROCESSING
-                    and job is not None and job.state == JobState.RUNNING)
+                    and job is not None and job.state == JobState.RUNNING and matches_original(document, job))
 
         def require_active(*, lock=False):
             document, job = target(lock=lock)
@@ -670,7 +683,7 @@ def _embed_document(session, document_id, job_id):
             document, job = target(lock=True)
             if document is None or job is None or job.document_id != document_id or job.state != JobState.QUEUED:
                 return
-            if document.status == DocumentStatus.DELETED:
+            if not matches_original(document, job):
                 job.state, job.error_detail = JobState.CANCELLED, "Document deleted"
                 session.commit()
                 return

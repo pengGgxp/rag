@@ -411,7 +411,7 @@ def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinki
 
 
 def test_failed_compaction_preserves_original_and_releases_hold(client, monkeypatch):
-    http, db, conversation, provider = context_fixture(client, length=60)
+    http, db, conversation, provider = context_fixture(client, length=60, capacity=26000)
     calls = summary_provider(monkeypatch, fail=True)
     before = http.get("/usage").json()["balance"]
     events = compact(http, conversation, provider)

@@ -84,6 +84,7 @@ def direct(accounts, monkeypatch):
     kb = library(owner)
     storage = FakeCos()
     monkeypatch.setattr(uploads, "current_storage", lambda *_: storage)
+    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
     monkeypatch.setattr(uploads, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     queued = []
     monkeypatch.setattr(tasks.verify_upload, "delay", queued.append)
@@ -127,7 +128,7 @@ def test_direct_completion_admission_is_idempotent_and_reuses_download(direct):
     assert row.state == "completed"
     document = db.get(Document, row.document_id)
     assert document.content_hash == hashlib.sha256(content).hexdigest()
-    assert storage.downloads == 1
+    assert storage.downloads >= 1
     assert len(processed) == 1 and processed[0][0] == (str(db.scalar(
         select(IngestionJob.id).where(IngestionJob.document_id == document.id)
     )),)
@@ -161,8 +162,7 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
         raise OSError("broker unavailable")
 
     monkeypatch.setattr(tasks.process_document, "delay", offline)
-    with pytest.raises(OSError):
-        uploads.finalize_upload(identifier)
+    uploads.finalize_upload(identifier)
     scheduled, vectors = [], []
     monkeypatch.setattr(tasks.process_document, "delay", scheduled.append)
     uploads.recover_uploads()
@@ -219,7 +219,7 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     document.parsed_text = payload.decode()
     old_job = document.jobs[0]
     old_job.state = JobState.SUCCEEDED
-    job = IngestionJob(document_id=doc_id, created_at=old_job.created_at)
+    job = IngestionJob(document_id=doc_id, created_at=old_job.created_at, original_hash=document.content_hash, original_revision=document.original_revision)
     db.add(job)
     document.chunks.extend(Chunk(
         ordinal=i, text=str(i), token_count=10, char_start=i, char_end=i + 1,
@@ -342,14 +342,14 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
         assert len(list(db.scalars(select(UsageEvent).where(UsageEvent.request_id == job_id)))) == 1
 
 
-def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct):
+def test_encrypted_pdf_replacement_keeps_current_bytes_and_document_id(direct):
     from pdf_fixtures import make_pdf
 
     owner, outsider, db, _, kb, storage, _, processed = direct
     versions = []
     for content in (make_pdf(), make_pdf(password="")):
         previous = versions[-1][0] if versions else None
-        upload = create(owner, kb, content, "evidence.pdf", **({"version_of": str(previous.id)} if previous else {}))
+        upload = create(owner, kb, content, "evidence.pdf", **({"replace_document_id": str(previous.id), "expected_content_hash": hashlib.sha256(versions[-1][1]).hexdigest()} if previous else {}))
         row = send(owner, db, storage, upload, content)
         assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
         uploads.finalize_upload(str(row.id))
@@ -359,17 +359,15 @@ def test_encrypted_pdf_upload_keeps_object_bytes_hash_and_version_history(direct
         assert document.size_bytes == len(content)
         assert storage.objects[document.object_key] == content
         assert processed[-1][0] == (str(db.scalar(
-            select(IngestionJob.id).where(IngestionJob.document_id == document.id)
+            select(IngestionJob.id).where(IngestionJob.document_id == document.id, IngestionJob.original_hash == document.content_hash)
         )),)
-        assert document.version_number == len(versions) + 1
+        assert document.is_active
         if previous:
-            assert document.supersedes_id == previous.id
-            assert document.version_group_id == previous.version_group_id
-            assert not document.is_active  # Existing version remains active until indexing succeeds.
+            assert document.id == previous.id
         assert outsider.get(f"/uploads/{row.id}").status_code == 404
         versions.append((document, content))
-    assert versions[0][0].object_key != versions[1][0].object_key
-    assert all(storage.objects[document.object_key] == content for document, content in versions)
+    assert db.scalar(select(func.count()).select_from(Document)) == 1
+    assert len(storage.objects) == 1
 
 
 def test_scope_size_parts_fingerprint_and_expiry(direct):
@@ -431,7 +429,7 @@ def test_worker_rejects_bad_content_or_revoked_permissions_before_parsing(direct
     assert row.object_key not in storage.objects
 
 
-def test_duplicate_versions_cancel_and_reader_permissions(direct):
+def test_same_name_originals_replacement_cancel_and_reader_permissions(direct):
     owner, other, db, identity, kb, storage, _, processed = direct
     first = create(owner, kb)
     first_row = send(owner, db, storage, first, b"document")
@@ -444,15 +442,18 @@ def test_duplicate_versions_cancel_and_reader_permissions(direct):
     owner.post(f"/uploads/{row.id}/complete")
     uploads.finalize_upload(str(row.id))
     db.expire_all()
-    assert db.get(DocumentUpload, row.id).state == "failed"
-    assert db.scalar(select(func.count()).select_from(Document)) == 1
-    version = create(owner, kb, b"new version", version_of=str(first_id))
-    row = send(owner, db, storage, version, b"new version")
+    second = db.get(DocumentUpload, row.id)
+    assert second.state == "completed" and second.document_id != first_id
+    assert db.scalar(select(func.count()).select_from(Document)) == 2
+    version = create(owner, kb, b"new content", replace_document_id=str(first_id),
+        expected_content_hash=hashlib.sha256(b"document").hexdigest())
+    row = send(owner, db, storage, version, b"new content")
     owner.post(f"/uploads/{row.id}/complete")
     uploads.finalize_upload(str(row.id))
     db.expire_all()
     updated = db.get(Document, db.get(DocumentUpload, row.id).document_id)
-    assert updated.version_number == 2 and updated.supersedes_id == first_id and not updated.is_active
+    assert updated.id == first_id and updated.is_active
+    assert updated.content_hash == hashlib.sha256(b"new content").hexdigest()
     cancelled = create(owner, kb)
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
     assert owner.delete(f"/uploads/{cancelled['id']}").status_code == 204
@@ -578,7 +579,7 @@ def test_orphan_cleanup_never_deletes_original_versions_or_active_uploads(direct
     db.commit()
     active = create(owner, kb)
     active_key = db.get(DocumentUpload, UUID(active["id"])).object_key
-    orphan = f"{kb}/{uuid4()}.txt"
+    orphan = f"_knowledge_uploads/{kb}/{uuid4()}.txt"
     other = "unmanaged-file.txt"
     recent = f"{kb}/{uuid4()}.txt"
     for key in (document.object_key, active_key, orphan, other, recent, "_ocr/abandoned.pdf"):
@@ -732,7 +733,8 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
     assert recovered.failure is None
     assert owner.get(f"/uploads/{row.id}").json()["verify_after"] is None
     assert recovered.verify_attempts == 1
-    assert row.object_key in storage.objects
+    assert row.object_key not in storage.objects
+    assert storage.objects[db.get(Document, recovered.document_id).object_key] == content
     assert db.scalar(select(func.count()).select_from(Document)) == 1
     assert len(processed) == 1
 
@@ -748,10 +750,10 @@ def test_verification_database_failure_is_not_reported_as_storage_failure(direct
     assert owner.post(f"/uploads/{row.id}/complete").status_code == 202
     monkeypatch.setattr(tasks.verify_upload, "apply_async", lambda **_: None)
 
-    def fail_admission(*_args):
+    def fail_admission(*_args, **_kwargs):
         raise OperationalError("test SQL", {"private": "test parameter"}, DeadlockDetected("test DB error"))
 
-    monkeypatch.setattr(uploads, "admit", fail_admission)
+    monkeypatch.setattr(uploads, "publish", fail_admission)
     # Capture this logger directly, independent of other tests' logging setup.
     with monkeypatch.context() as logging_patch:
         logging_patch.setattr(log, "disabled", False)

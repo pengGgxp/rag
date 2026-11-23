@@ -378,7 +378,23 @@ export function ChatWorkspace({
     text: string;
     error?: boolean;
   } | null>(null);
-  const [preview, setPreview] = useState<Citation | null>(null);
+  const [preview, setPreview] = useState<{ citation: Citation; messageId: string } | null>(null);
+  const [citationState, setCitationState] = useState<{ state: string; url?: string } | null>(null);
+  const citedConversationId = conversationId;
+  useEffect(() => {
+    setCitationState(null);
+    if (!preview || !citedConversationId) return;
+    const controller = new AbortController();
+    void request<{ state: string; url?: string }>(
+      `/conversations/${citedConversationId}/messages/${preview.messageId}/citations/${preview.citation.chunk_id}`,
+      { signal: controller.signal },
+    ).then((result) => {
+      if (!controller.signal.aborted) setCitationState(result);
+    }).catch(() => {
+      if (!controller.signal.aborted) setCitationState({ state: "unknown" });
+    });
+    return () => controller.abort();
+  }, [preview, citedConversationId]);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [editing, setEditing] = useState(false);
   const [renameTarget, setRenameTarget] = useState<HistoryItem | null>(null);
@@ -1361,7 +1377,7 @@ export function ChatWorkspace({
                   ) : (
                     <MessageFileProvider key={message.id} scope={session?.user.id ?? ""}>
                       {message.display_blocks?.length ? processBlocks(message.display_blocks).map(block => {
-                        if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={setPreview} />;
+                        if (block.type === "text") return <AnswerMarkdown key={block.id} message={message} text={block.text} onCitation={(citation) => setPreview({ citation, messageId: message.id })} />;
                         if (block.type === "user") return <div key={block.id} className="turn-steering">
                           <span className="answer-label">你</span><MessageAttachments items={block.attachments} />
                           {questionText(block.text, storedMentions(block))}
@@ -1382,12 +1398,12 @@ export function ChatWorkspace({
                           steps={block.blocks.map(detail => detail.type === "activity"
                             ? { type: "activity", id: detail.call_id }
                             : { type: "detail", id: detail.id, content: detail.type === "thinking" ? thinking(detail)
-                              : <AnswerMarkdown message={message} text={detail.text} onCitation={setPreview} /> })}>
+                              : <AnswerMarkdown message={message} text={detail.text} onCitation={(citation) => setPreview({ citation, messageId: message.id })} /> })}>
                           {!!sources.length && <div className="source-list activity-sources" aria-label="网页来源">{sources.map(source => <a className="source-chip" key={source.source_id} href={source.url} target="_blank" rel="noopener noreferrer" title={`${source.url} · ${new Date(source.fetched_at).toLocaleString("zh-CN")}`}>
                             <Globe size={14} /><strong>{source.title}</strong><ChevronRight size={14} />
                           </a>)}</div>}
                         </ConversationActivity>;
-                      }) : <AnswerMarkdown message={message} onCitation={setPreview} />}
+                      }) : <AnswerMarkdown message={message} onCitation={(citation) => setPreview({ citation, messageId: message.id })} />}
                       {["failed", "cancelled", "interrupted"].includes(
                         message.status,
                       ) && (
@@ -1408,7 +1424,7 @@ export function ChatWorkspace({
                                 className="source-chip"
                                 key={citation.chunk_id}
                                 title={`${citation.knowledge_base_name} · ${citation.filename}`}
-                                onClick={() => setPreview(citation)}
+                                onClick={() => setPreview({ citation, messageId: message.id })}
                                 initial={{ opacity: 0, x: -6 }}
                                 animate={{ opacity: 1, x: 0 }}
                                 transition={{
@@ -1420,7 +1436,7 @@ export function ChatWorkspace({
                                 <span>{number + 1}</span>
                                 <FileText size={14} />
                                 <strong>
-                                  {citation.knowledge_base_name} · {citation.filename} · v{citation.version_number ?? 1}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
+                                  {citation.knowledge_base_name} · {citation.filename}{citation.content_origin === "ai_assisted" ? " · AI 辅助生成" : ""}
                                   {citation.page_number ? ` · 第 ${citation.page_number} 页` : ""}
                                 </strong>
                                 <ChevronRight size={14} />
@@ -1719,16 +1735,23 @@ export function ChatWorkspace({
               <FileText size={22} />
             </span>
             <div>
-              <h3>{preview.filename}</h3>
+              <h3>{preview.citation.filename}</h3>
               <p>
-                {preview.knowledge_base_name} · v{preview.version_number ?? 1} ·{" "}
-                {preview.page_number ? `第 ${preview.page_number} 页 · ` : ""}
-                {preview.heading_path ? `${preview.heading_path} · ` : ""}字符{" "}
-                {preview.char_start}–{preview.char_end}
+                {preview.citation.knowledge_base_name} ·{" "}
+                {preview.citation.page_number ? `第 ${preview.citation.page_number} 页 · ` : ""}
+                {preview.citation.heading_path ? `${preview.citation.heading_path} · ` : ""}字符{" "}
+                {preview.citation.char_start}–{preview.citation.char_end}
               </p>
             </div>
           </div>
-          <div className="preview-text">{preview.text}</div>
+          <p role="status">
+            {citationState?.state === "changed" ? "原文已变化"
+              : citationState?.state === "unavailable" ? "原文不可用"
+              : citationState?.state === "unknown" ? "无法确认原文状态"
+              : citationState?.url ? <a href={citationState.url}>查看当前原件</a>
+              : "正在核对原文"}
+          </p>
+          <div className="preview-text">{preview.citation.text}</div>
         </Modal>
       )}
       {trace && (

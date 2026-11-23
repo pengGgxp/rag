@@ -51,7 +51,8 @@ def workspace_lock(db, account_id):
 def storage(db):
     value = shared.backend(db)
     if value is None:
-        raise HTTPException(503, "工作区暂时无法读取或保存，请稍后重试")
+        from .storage_backend import current_storage
+        value = current_storage(db)
     return value
 
 
@@ -82,7 +83,13 @@ def copy_object(store, source, target, *, etag=None, create=False):
         return store.copy(source, target, etag=etag, create=create)
     if create and store.head(target):
         raise HTTPException(409, "目标已存在，请选择保留两份或重新加载")
-    return store.copy(source, target, etag=etag)
+    if hasattr(store, "copy"):
+        return store.copy(source, target, etag=etag)
+    metadata = store.head(source)
+    if not metadata or (etag and metadata.get("ETag") != etag):
+        raise HTTPException(409, "来源文件已变化")
+    with store.download(source) as body:
+        return store.put(target, body, metadata.get("Content-Type", "application/octet-stream"))
 
 
 def _cleanup(store, operation):
@@ -205,6 +212,8 @@ def execute(db, access, changes, update_metadata, *, request_id=None, signature=
                         raise HTTPException(409, "来源文件已变化，请刷新后重试")
                     copy_object(store, change["source"], step["staged"], etag=source.get("ETag"), create=True)
                     step["after_hash"] = digest_object(store, step["staged"])
+                    if change.get("digest") and step["after_hash"] != change["digest"]:
+                        raise HTTPException(409, "原件摘要校验失败")
                 step["staged_etag"] = store.head(step["staged"]).get("ETag")
             step["prepared"] = True
             operation.steps = [dict(item) for item in operation.steps[:-1]] + [step]
