@@ -1,0 +1,65 @@
+name: GHCR image trial
+
+on:
+  push:
+    branches: [codex/ghcr-publish-trial]
+    paths: [.github/workflows/ghcr-trial.yml]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.component }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            context: backend
+            cache_scope: release-api
+          - component: web
+            context: frontend
+            cache_scope: release-web
+            build_args: NEXT_PUBLIC_API_URL=https://syfc.moonlitstarway.top/api
+    env:
+      SOURCE_SHA: 981773d1c24f7befe23232f5d23010a5f52766d0
+      TAG: ghcr-trial-981773d
+      IMAGE: ghcr.io/pengggxp/rag-${{ matrix.component }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/Dockerfile
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: ${{ matrix.build_args }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+      - name: Time the GHCR upload and verify its digest
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          timeout 15m docker push "$IMAGE:$TAG"
+          elapsed=$((SECONDS - start))
+          digest=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s@%s pushed in %s s\n' "$IMAGE" "$digest" "$elapsed" | tee -a "$GITHUB_STEP_SUMMARY"
