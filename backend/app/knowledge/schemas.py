@@ -1,9 +1,10 @@
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
+from ..document_ingestion import MAX_DOCUMENT_BYTES
+from ..models import DocumentStatus, EmbeddingStatus, JobState, KnowledgeBaseStatus
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -232,3 +233,21 @@ class AnswerRead(BaseModel):
     refusal_reason: str | None
     citations: list[CitationRead]
 
+
+class UploadInput(BaseModel):
+    # FastAPI uses the module in this component name to disambiguate it from
+    # the Skill UploadInput. Keep the published OpenAPI reference stable.
+    __module__ = "app.document_uploads"
+
+    model_config = ConfigDict(extra="forbid")
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="application/octet-stream", max_length=150)
+    size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
+    replace_document_id: UUID | None = None
+    expected_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    request_key: UUID = Field(default_factory=uuid4)
+
+
+class PartInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

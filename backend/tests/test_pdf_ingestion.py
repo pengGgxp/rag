@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import tasks
+from app.knowledge import routes as knowledge_routes
 from app.docmind import DocMindError, normalize_layouts
 from app.models import (
     Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState,
@@ -53,7 +54,7 @@ def pdf_job(accounts, monkeypatch):
     monkeypatch.setattr(tasks, "get_settings", lambda: settings)
     embedded = []
     monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: embedded.append(args))
-    monkeypatch.setattr("app.main.process_document.delay", lambda *_: None)
+    monkeypatch.setattr("app.knowledge.routes.process_document.delay", lambda *_: None)
     return owner, outsider, db, kb, doc.id, job.id, embedded
 
 
@@ -457,8 +458,7 @@ def test_ingestion_options_are_authenticated_and_never_include_keys(accounts, mo
     (owner, _, anonymous), _ = accounts
     assert anonymous.get("/ingestion/options").status_code == 401
     register(owner)
-    from app import main
-    monkeypatch.setattr(main, "get_settings", lambda: tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"}))
+    monkeypatch.setattr(knowledge_routes, "get_settings", lambda: tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"}))
     data = owner.get("/ingestion/options").json()
     assert data == {
         "pdf_parser": "aliyun", "max_pdf_pages": None, "max_upload_bytes": 200 * 1024 * 1024,

@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from app import shared_providers
+from app.knowledge import routes as knowledge_routes
 from app.llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, _parse_usage
 from app.thinking import ThinkingConfig, public_capability, select_thinking
 from test_shared_providers import provider, setup_site
@@ -255,7 +256,7 @@ def test_invalid_request_choices_do_not_call_or_charge(accounts, monkeypatch):
 
 
 def test_single_answer_and_retry_use_current_thinking(accounts, monkeypatch):
-    from app import main, conversations
+    from app import conversations
     from app.models import SiteModelProvider, KnowledgeBase
     from app.llm import ToolResponse, LLMUsage, LLMProviderError
     from test_retrieval import add_document
@@ -280,7 +281,7 @@ def test_single_answer_and_retry_use_current_thinking(accounts, monkeypatch):
                 raise LLMProviderError("controlled failure")
             self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
             return ToolResponse("answer", [], self.last_usage)
-    monkeypatch.setattr(main, "OpenAICompatibleChatProvider", Model)
+    monkeypatch.setattr(knowledge_routes, "OpenAICompatibleChatProvider", Model)
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", Model)
     library = client.post("/knowledge-bases", json={"name": "Evidence"}).json()
     add_document(db, db.get(KnowledgeBase, UUID(library["id"])), "needle evidence")

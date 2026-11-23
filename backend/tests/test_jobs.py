@@ -20,7 +20,7 @@ def test_failed_job_can_be_retried_and_cancelled_job_stays_terminal(accounts, mo
     db.add(failed)
     db.commit()
     queued = []
-    monkeypatch.setattr("app.main.process_document", type("Task", (), {
+    monkeypatch.setattr("app.knowledge.routes.process_document", type("Task", (), {
         "delay": lambda _self, job_id: queued.append(job_id),
     })())
 
@@ -60,7 +60,7 @@ def test_retry_recovers_abandoned_running_chunks(accounts, monkeypatch):
     db.add(failed)
     db.commit()
     dispatched = []
-    monkeypatch.setattr("app.main.embed_document", type("Task", (), {
+    monkeypatch.setattr("app.knowledge.routes.embed_document", type("Task", (), {
         "delay": lambda _self, *args: dispatched.append(args),
     })())
 

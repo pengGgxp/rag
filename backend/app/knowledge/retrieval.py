@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..auth import Access
 from ..embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
 from ..models import Chunk, Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus, QueryTrace
-from ..schemas import ChunkRead, QueryTraceRead, RetrievalRead, SearchResult
+from .schemas import ChunkRead, QueryTraceRead, RetrievalRead, SearchResult
 
 
 def retrieve_knowledge_base(

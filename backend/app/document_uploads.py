@@ -8,7 +8,6 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import OperationalError
 
@@ -16,27 +15,13 @@ from .auth import Access, aware, now, get_access
 from .db import get_db, SessionLocal
 from .document_failures import classify, database_sqlstate, failure, log_worker_failure, rejection
 from .document_ingestion import publish, replacement_target, check_format, latest_document_job, MAX_DOCUMENT_BYTES, SUFFIXES
+from .knowledge.schemas import PartInput, UploadInput
 from .models import Document, DocumentStatus, DocumentUpload, User
 from .storage_backend import current_storage
 from .upstream_retries import retry_after
 
 router = APIRouter(tags=["document-uploads"])
 PART_SIZE = 8 * 1024 * 1024
-
-
-class UploadInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    filename: str = Field(min_length=1, max_length=255)
-    content_type: str = Field(default="application/octet-stream", max_length=150)
-    size_bytes: int = Field(gt=0, le=MAX_DOCUMENT_BYTES, strict=True)
-    replace_document_id: UUID | None = None
-    expected_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-    request_key: UUID = Field(default_factory=uuid4)
-
-
-class PartInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 def view(row, parts=None):
