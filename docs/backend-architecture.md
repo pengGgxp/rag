@@ -1,8 +1,7 @@
 # 后端目录与模块归属
 
-本文记录 Issue #146 第一期完成后的后端目录。按业务组织为模块化单体：
+本文记录 Issue #146 已迁移的后端目录。后端按业务组织为模块化单体。
 `app.main` 负责 FastAPI 装配，API、Celery Worker 和其他进程入口共用业务模块。
-本目录仅记录知识库一期的实际边界，不预先确定后续阶段的目录迁移。
 
 ## 知识库模块
 
@@ -27,7 +26,6 @@ app/
       embedding.py                 Embedding 服务适配
       docmind.py                   DocMind 服务适配
       parsed_document.py           解析结果类型
-  conversation_jobs.py             持久化会话任务实现
   tasks.py                         Celery 应用、稳定任务入口和分派
   file_operations.py               跨业务共用的对象操作日志
 ```
@@ -73,4 +71,22 @@ Worker 的业务代码也不再依赖 FastAPI 入口。
 `knowledge.ingestion.recovery` 负责领取任务及恢复中断的任务。
 
 各层保持直接、可见的调用关系，不额外引入 service 或 repository 层。
-后续阶段开始时应重新讨论并汇报目录结构，不把本文或 Issue 中的目标树视为预先批准的迁移合同。
+
+## 会话模块
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.conversations.routes` | 会话、消息、上下文操作和事件订阅的 HTTP 路由 |
+| `app.conversations.schemas` | 会话 API 的请求模型 |
+| `app.conversations.messages` | 会话归属检查、输入引用解析和消息序列化 |
+| `app.conversations.execution` | 执行回答并保存消息、工具结果和用量 |
+| `app.conversations.jobs` | 持久化请求状态、自动命名、任务派发和中断恢复 |
+| `app.conversations.stream` | SSE 编码与事件订阅 |
+| `app.conversations.management` | 会话元数据和项目管理 |
+| `app.conversations.attachments` | 会话附件的 HTTP 路由、校验和模型输入 |
+| `app.conversations.feedback` | 消息反馈和问题报告 |
+
+FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
+`app.tasks.execute_conversation(identifier)` 和 `app.tasks.name_conversation(identifier)`
+进入 `conversations.jobs`。回答任务直接调用 `conversations.execution`，HTTP 和 Worker
+通过 `conversations.messages` 共用归属检查与序列化。

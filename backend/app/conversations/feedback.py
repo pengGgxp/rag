@@ -1,37 +1,17 @@
-from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from .auth import Access, get_access
-from .db import get_db
-from .models import AnswerFeedback, ChatMessage, Conversation
-from .audit_log import record_audit
+from ..auth import Access, get_access
+from ..db import get_db
+from ..models import AnswerFeedback, ChatMessage, Conversation
+from ..audit_log import record_audit
 
-Category = Literal["missing_source", "retrieval_error", "answer_error", "citation_error"]
-
-
-class FeedbackWrite(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    message_id: UUID
-    rating: Literal["up", "down"]
-    categories: list[Category] = Field(default_factory=list, max_length=4)
-    comment: str | None = Field(default=None, max_length=2000)
-
-    @model_validator(mode="after")
-    def validate_details(self):
-        if len(set(self.categories)) != len(self.categories):
-            raise ValueError("问题类型不能重复")
-        if self.rating == "down" and not self.categories:
-            raise ValueError("点踩时请选择至少一个问题类型")
-        if self.rating == "up" and (self.categories or self.comment):
-            raise ValueError("点赞不需要问题类型或说明")
-        return self
+from .schemas import FeedbackWrite
 
 
 def feedback_read(row: AnswerFeedback | None):
@@ -71,7 +51,7 @@ def write_feedback(
     message = feedback_message(db, access, payload.message_id, lock=True)
     if message.status != "completed":
         raise HTTPException(409, "回答尚未完成，暂不能反馈")
-    # Both production and test databases use an atomic upsert for repeat requests.
+    # 生产和测试数据库均用原子 upsert 处理重复请求。
     insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
     values = {
         "rating": payload.rating, "categories": payload.categories,

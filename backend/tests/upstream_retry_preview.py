@@ -19,7 +19,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 import uvicorn
 
-from app import auth, conversation_jobs, llm_providers, main
+from app import auth, llm_providers, main
+from app.conversations import jobs as conversation_jobs
 from app.db import Base, engine, SessionLocal
 from app.models import (ChatMessage, Conversation, ConversationExecution, ModelBillingSettings,
     ModelConnection, SiteModelProvider)

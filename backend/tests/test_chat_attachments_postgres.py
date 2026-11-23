@@ -7,7 +7,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app import auth
-from app.chat_attachments import select_attachments
+from app.conversations.attachments import select_attachments
 from app.llm import ChatProviderConfig
 from app.models import ChatAttachment, ChatMessage, Conversation, User
 from test_auth_postgres import auth_postgres

@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -5,7 +8,8 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversation_jobs, conversations
+from app.conversations.jobs import recover_interrupted_conversations
+from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.models import (ChatMessage, Conversation, ConversationEvent, ConversationExecution,
     ConversationTitleTask, UserCreditAccount)
 from test_conversations import client, create, turn
@@ -64,10 +68,9 @@ def test_submission_is_durable_and_worker_is_idempotent(client):
     assert first.json()["status"] == "queued" and not captured
     assert http.post(f"/conversations/{item['id']}/messages", json=body).json() == first.json()
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    from app.main import retrieve_knowledge_base
-    conversation_jobs.run(body["request_id"], factory, retrieve_knowledge_base)
+    conversation_jobs.run(body["request_id"], factory)
     count = len(captured)
-    conversation_jobs.run(body["request_id"], factory, retrieve_knowledge_base)
+    conversation_jobs.run(body["request_id"], factory)
     assert len(captured) == count
     identifier = UUID(body["request_id"])
     with factory() as session:
@@ -78,6 +81,54 @@ def test_submission_is_durable_and_worker_is_idempotent(client):
         assert len(events) > 1
     response = http.get(f"/conversations/{item['id']}/requests/{identifier}/events", params={"after": len(events) - 1})
     assert response.text.count("event: done") == 1 and "event: message" not in response.text
+
+
+def test_worker_executes_conversation_without_http_routes(client):
+    from app.mcp_client import get_settings
+
+    http, db, _ = client
+    item = create(http)
+    identifier = uuid4()
+    response = http.post(f"/conversations/{item['id']}/messages", json={
+        "request_id": str(identifier), "provider_id": model_id(http), "query": "你好",
+    })
+    assert response.status_code == 200
+    settings = get_settings()
+    key = settings.mcp_credential_key or settings.site_config_encryption_key
+    subprocess.run(
+        [sys.executable, "-c", """
+import sys
+
+from app import llm
+from app.conversations import execution
+from app.tasks import execute_conversation, name_conversation
+
+class Provider:
+    def __init__(self, **kwargs):
+        self.config = kwargs["config"]
+
+    last_usage = None
+
+    def complete_with_tools(self, messages, tools, *, tool_choice):
+        return llm.ToolResponse(content="你好", tool_calls=[])
+
+    def complete(self, messages):
+        return "测试会话标题"
+
+execution.OpenAICompatibleChatProvider = Provider
+llm.OpenAICompatibleChatProvider = Provider
+name_conversation.delay = lambda identifier: None
+execute_conversation.run(sys.argv[1])
+name_conversation.run(sys.argv[2])
+assert "app.main" not in sys.modules
+assert "app.conversations.routes" not in sys.modules
+""", str(identifier), item["id"]],
+        env={**os.environ, "DATABASE_URL": str(db.get_bind().url), "MCP_CREDENTIAL_KEY": key.get_secret_value()},
+        check=True, timeout=30,
+    )
+    db.expire_all()
+    assert db.get(ConversationExecution, identifier).status == "completed"
+    assert db.get(ConversationTitleTask, UUID(item["id"])).status == "completed"
 
 
 @pytest.mark.parametrize("name", ["generate_image", "edit_image", "start_preview"])
@@ -122,7 +173,7 @@ def test_api_restart_preserves_worker_owned_generation(client):
     item = create(http, [])
     identifier = uuid4()
     http.post(f"/conversations/{item['id']}/messages", json={"request_id": str(identifier), "provider_id": model_id(http), "query": "hello"})
-    conversations.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     db.expire_all()
     assert db.get(ConversationExecution, identifier).status == "queued"
     assert db.get(Conversation, UUID(item["id"])).active_request_id == identifier

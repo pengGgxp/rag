@@ -233,7 +233,7 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
         encrypted_secret_id=protect(access_id), encrypted_secret_key=protect(secret)))
     configure_mount(db, monkeypatch, storage)
     # All production paths point at the same actual store for this opt-in probe.
-    monkeypatch.setattr("app.chat_attachments.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
+    monkeypatch.setattr("app.conversations.attachments.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
     monkeypatch.setattr("app.workspace_files.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
     monkeypatch.setattr("app.storage_downloads.download_range_fileobj", storage.download_range)
     monkeypatch.setattr("app.storage.delete_object", storage.delete)

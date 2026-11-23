@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud, conversations, image_adapters, image_tasks, image_tools
+from app import auth, cloud_computer as cloud, image_adapters, image_tasks, image_tools
+from app.conversations import execution as conversations
 from app.agent import AgentCancelled
 from app.credits import ensure_account
 from app.extensions import ExtensionRuntime
@@ -336,7 +337,8 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
         from celery import Celery
         from celery.contrib.testing.app import setup_default_app
         from celery.contrib.testing.worker import start_worker
-        from app import conversation_jobs, main, tasks
+        from app import main, tasks
+        from app.conversations import jobs as conversation_jobs
         import test_conversations
         # Use the production task body in an actual single-slot worker, while
         # keeping its broker/results isolated from every developer service.
@@ -347,7 +349,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
         run = conversation_jobs.run
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         monkeypatch.setattr(conversation_jobs, "run", lambda identifier:
-            run(identifier, factory=factory, retrieve=main.retrieve_knowledge_base))
+            run(identifier, factory=factory))
         executed = []
         def worker_response(response):
             identifier = response.json()["request_id"]

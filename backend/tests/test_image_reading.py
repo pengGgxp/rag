@@ -14,7 +14,7 @@ import pytest
 from app import cloud_computer as cloud
 from app import image_reading
 from app.agent import stream_retrieval_agent
-from app.chat_attachments import model_messages, summary_content
+from app.conversations.attachments import model_messages, summary_content
 from app.cloud_file_operation import inspect_image, perform
 from app.extensions import ExtensionRuntime
 from app.llm import ChatProviderConfig

@@ -63,12 +63,12 @@ def generation_response(response):
     if "request_id" not in data:
         return response
     from app import main
-    from app.conversation_jobs import run
+    from app.conversations.jobs import run
     from sqlalchemy.orm import sessionmaker
     from fastapi.testclient import TestClient
     db = main.app.dependency_overrides[main.get_db]()
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    run(data["request_id"], factory=factory, retrieve=main.retrieve_knowledge_base)
+    run(data["request_id"], factory=factory)
     path = response.request.url.path.rsplit("/", 1)[0]
     headers = {key: value for key, value in response.request.headers.items()
         if key.lower() not in ("content-length", "content-type")}

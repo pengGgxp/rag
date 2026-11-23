@@ -42,7 +42,7 @@ def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto"
         raise LLMConfigurationError(str(exc)) from None
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用，请选择其他模型")
-    from .chat_attachments import model_messages
+    from .conversations.attachments import model_messages
     messages = model_messages(messages, config, resource_context)
     items = []
     for message in messages:

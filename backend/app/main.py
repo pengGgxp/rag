@@ -10,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import text
 
-from .knowledge.retrieval import retrieve_knowledge_base
 from .knowledge.routes import router as knowledge_router
 from .config import get_settings
 from .db import SessionLocal, engine, get_db, init_db
@@ -25,8 +24,9 @@ from .storage_settings import router as storage_settings_router
 from .knowledge.ingestion.uploads import router as document_uploads_router
 from .knowledge.ingestion import failures as document_failures
 from .skill_uploads import router as skill_uploads_router
-from .conversations import chat_router, recover_interrupted_conversations
-from .feedback import router as feedback_router
+from .conversations.jobs import recover_interrupted_conversations
+from .conversations.routes import router as conversations_router
+from .conversations.feedback import router as feedback_router
 from .audit import router as audit_router
 from .credits import build_router as build_usage_router
 from .extensions import router as extensions_router
@@ -92,7 +92,7 @@ async def lifespan(_: FastAPI):
             await asyncio.sleep(15)
     computer_recovery = asyncio.create_task(cloud_maintenance())
     async def conversation_maintenance():
-        from .conversation_jobs import recover
+        from .conversations.jobs import recover
         while True:
             try:
                 await asyncio.to_thread(recover)
@@ -265,7 +265,7 @@ app.include_router(site_admin_router)
 app.include_router(storage_settings_router)
 app.include_router(document_uploads_router)
 app.include_router(skill_uploads_router)
-from .chat_attachments import router as chat_attachments_router
+from .conversations.attachments import router as chat_attachments_router
 app.include_router(chat_attachments_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
@@ -282,7 +282,7 @@ app.include_router(file_preview_access_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
 app.include_router(payment_settings_router)
-app.include_router(chat_router(get_db, retrieve_knowledge_base))
+app.include_router(conversations_router)
 app.include_router(extensions_router)
 from .site_skills import router as site_skills_router
 app.include_router(site_skills_router)

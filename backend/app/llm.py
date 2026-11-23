@@ -96,7 +96,7 @@ def measured_usage(usage, messages, output, tools=None, *, success=True):
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Conservative provider-neutral fallback when usage is omitted."""
-    from .chat_attachments import estimate_content
+    from .conversations.attachments import estimate_content
     text = json.dumps(estimate_content(messages), ensure_ascii=False)
     return max(1, (len(text) + 3) // 4)
 
@@ -199,7 +199,7 @@ class OpenAICompatibleChatProvider:
         thinking = self.config.thinking
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
-        from .chat_attachments import model_messages
+        from .conversations.attachments import model_messages
         payload = {"model": self.model, "messages": model_messages(messages, self.config,
             getattr(self, "resource_context", None))}
         # Older encrypted continuations also contain empty call arrays. Normalize

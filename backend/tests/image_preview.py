@@ -85,7 +85,8 @@ if __name__ == "__main__":
     image_tasks.dispatch = dispatch
     # One outer execution slot; inline Agent images must not queue a child here.
     from concurrent.futures import ThreadPoolExecutor
-    from app import conversation_jobs, tasks
+    from app import tasks
+    from app.conversations import jobs as conversation_jobs
     executor = ThreadPoolExecutor(max_workers=1)
     conversation_jobs.dispatch = lambda identifier: executor.submit(
         conversation_jobs.run, identifier, factory=fixture.SessionLocal)

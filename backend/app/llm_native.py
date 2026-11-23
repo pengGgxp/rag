@@ -14,7 +14,7 @@ from .upstream_retries import model_post, model_astream
 
 
 def _tool_result_image(image, native):
-    from .chat_attachments import MAX_IMAGE_BYTES
+    from .conversations.attachments import MAX_IMAGE_BYTES
 
     if not isinstance(image, dict) or image.get("type") != "model_image":
         return None
@@ -32,7 +32,7 @@ def _tool_result_image(image, native):
 
 
 def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0, streaming=False):
-    from .chat_attachments import model_messages
+    from .conversations.attachments import model_messages
     config = provider.config
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用")

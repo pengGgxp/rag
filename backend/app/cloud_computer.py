@@ -756,7 +756,7 @@ def execute(db, access, conversation_id, request_id, arguments, check_active=Non
 def execute_image(db, access, conversation_id, request_id, path, check_active, *, computer_id,
                   agent_tool_execution_id=None, on_progress=None):
     """Inspect a mounted image durably, then read its bytes outside command results."""
-    from .chat_attachments import MAX_IMAGE_BYTES
+    from .conversations.attachments import MAX_IMAGE_BYTES
     from .image_reading import local_path, workspace_image
     import hashlib
 

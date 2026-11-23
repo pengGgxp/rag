@@ -71,9 +71,9 @@ class ContextManager:
 
     def steer(self, message_id):
         from fastapi import HTTPException
-        from .chat_attachments import attachment_read, select_attachments, user_content
-        from .conversation_jobs import finish_steering, lock_steering
-        from .conversations import live_conversation, resolve_input_mentions
+        from .conversations.attachments import attachment_read, select_attachments, user_content
+        from .conversations.jobs import finish_steering, lock_steering
+        from .conversations.messages import live_conversation, resolve_input_mentions
 
         with self.factory() as db:
             locked = lock_steering(db, self.conversation_id, self.request_id, message_id)
@@ -382,7 +382,7 @@ class ContextManager:
         return protected
 
     def _summary_input(self, tools, budget):
-        from .chat_attachments import summary_content
+        from .conversations.attachments import summary_content
         complete, pending = groups(self.bounded_items())
         protected = self.protected_ids()
         selected = list(complete) + ([pending] if pending else [])

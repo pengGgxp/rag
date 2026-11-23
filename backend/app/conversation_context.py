@@ -35,7 +35,7 @@ def digest(value):
 
 def estimate_input(messages, tools=()):
     # Conservative budget estimator only. Commercial usage estimation remains unchanged.
-    from .chat_attachments import estimate_content
+    from .conversations.attachments import estimate_content
     text = json.dumps(estimate_content({"messages": messages, "tools": tools}), ensure_ascii=False, separators=(",", ":"))
     wide = sum(ord(char) > 127 for char in text)
     return math.ceil((len(text) - wide) / 3) + wide * 2 + 12 * len(messages) + 32
@@ -51,7 +51,7 @@ def input_budget(config):
 def estimate_request(config, messages, tools=()):
     """Budget the actual protocol projection without fetching image resources."""
     from copy import deepcopy
-    from .chat_attachments import estimate_content
+    from .conversations.attachments import estimate_content
     from .llm import OpenAICompatibleChatProvider
     projected = deepcopy(messages)
     for message in projected:

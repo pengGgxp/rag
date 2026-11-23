@@ -6,7 +6,8 @@ from uuid import uuid4
 
 import pytest
 
-from app import chat_sampling as sampling, conversation_jobs
+from app import chat_sampling as sampling
+from app.conversations import jobs as conversation_jobs
 from app.agent import AgentCancelled
 from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider, ToolResponse
 from app.responses_socket import ResponsesSocket
@@ -294,7 +295,7 @@ def test_responses_websocket_continues_and_falls_back_with_same_route(monkeypatc
 
 
 def test_steering_is_idempotent_and_keeps_the_original_turn(client, monkeypatch):
-    from app import conversations
+    from app.conversations import execution as conversations
     http, db, _ = client
     chat = create(http, [])
     chat_id, turn, message_id = chat["id"], uuid4(), uuid4()

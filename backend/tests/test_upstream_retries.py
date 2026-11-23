@@ -424,7 +424,7 @@ def test_durable_agent_retries_only_failed_model_round_and_reconnect_does_not_ex
     from uuid import UUID, uuid4
     from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs, conversations
+    from app.conversations import jobs as conversation_jobs, execution as conversations
     from app.models import BillingSnapshot, ChatMessage, ModelCallUsage, ModelBillingSettings
     http, db, _ = client
     conversation = create(http, [])
@@ -501,7 +501,7 @@ def test_restart_interrupts_waiting_activity_without_dispatch_or_charging_twice(
     from uuid import UUID, uuid4
     from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs
+    from app.conversations import jobs as conversation_jobs
     from app.models import ChatMessage, ConversationExecution, Conversation
     http, db, _ = client
     conversation = create(http, [])

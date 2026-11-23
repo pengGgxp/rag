@@ -6,7 +6,8 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_conversation_queue(monkeypatch):
     """Tests run durable jobs explicitly; never send jobs to a developer's broker."""
-    from app import conversation_jobs, mcp_client, tasks
+    from app import mcp_client, tasks
+    from app.conversations import jobs as conversation_jobs
     from cryptography.fernet import Fernet
     from pydantic import SecretStr
     settings = mcp_client.get_settings()

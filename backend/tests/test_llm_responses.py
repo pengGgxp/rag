@@ -174,7 +174,8 @@ def test_protocol_validation_usage_and_endpoint():
 @pytest.mark.parametrize("metered", [False, True])
 def test_conversation_tools_billing_and_history_use_responses(client, monkeypatch, metered):
     from sqlalchemy import select
-    from app import conversations, mcp_client
+    from app import mcp_client
+    from app.conversations import execution as conversations
     from app.models import BillingSnapshot, ChatMessage, ModelBillingSettings, ModelCallUsage, ModelConnection, SiteModelProvider
     from auth_helpers import model_id
     http, db, _ = client

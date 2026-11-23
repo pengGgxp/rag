@@ -175,7 +175,7 @@ def test_zero_price_and_maximum_remainder_tie_are_deterministic(metered):
 
 @pytest.mark.parametrize("ending", ["success", "fail", "stop"])
 def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, ending):
-    from app import conversations
+    from app.conversations import execution as conversations
     from app.llm import ToolCall
     from app.models import Conversation
     owner, db, workspace, user = metered
@@ -219,7 +219,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
 
 
 def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatch):
-    from app import conversations
+    from app.conversations import execution as conversations
     from app.llm import ToolCall
     owner, db, workspace, user = metered
     seen = []
@@ -267,7 +267,8 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     import asyncio
     import json
     from threading import Event
-    from app import auth, conversations, main
+    from app import auth, main
+    from app.conversations import execution as conversations
     owner, db, workspace, user = metered
     entered, release = Event(), Event()
     class Provider:
@@ -281,13 +282,13 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     conversation = owner.post("/conversations", json={}).json()
     identifier = uuid4()
     from concurrent.futures import ThreadPoolExecutor
-    from app.conversation_jobs import run
+    from app.conversations.jobs import run
     response = owner.post(f"/conversations/{conversation['id']}/messages", json={
         "provider_id": model_id(owner), "query": "Hello", "request_id": str(identifier)})
     assert response.status_code == 200
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        execution = pool.submit(run, identifier, factory, main.retrieve_knowledge_base)
+        execution = pool.submit(run, identifier, factory)
         assert entered.wait(5)
         # There is no HTTP stream or subscriber, but the billable request continues.
         release.set()

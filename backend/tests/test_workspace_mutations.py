@@ -127,7 +127,7 @@ def test_file_rename_noop_is_replayable_without_moving_bytes(accounts, resource_
 @pytest.mark.parametrize("directory,neighbor", [("a_b", "axb"), ("a%b", "axxb")])
 def test_attachment_directory_existence_uses_literal_prefix(accounts, resource_store, directory, neighbor):
     from fastapi import HTTPException, UploadFile
-    from app.chat_attachments import create_upload
+    from app.conversations.attachments import create_upload
     client, db, actor = setup(accounts)
     assert write(client, actor, f"{neighbor}/inside.txt", "neighbor").status_code == 200
     with pytest.raises(HTTPException) as error:

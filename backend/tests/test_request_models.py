@@ -5,7 +5,7 @@ from httpx_sse import EventSource
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import conversations
+from app.conversations import execution as conversations
 from app.knowledge import routes as knowledge_routes
 from app.llm import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (BillingSnapshot, ChatMessage, UserCreditAccount, CreditLedgerEntry,

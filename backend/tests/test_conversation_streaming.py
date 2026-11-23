@@ -14,7 +14,9 @@ from httpx_sse import EventSource
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversations as chat, main
+from app import main
+from app.conversations.jobs import recover_interrupted_conversations
+from app.conversations import execution as chat
 from app.llm import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
 from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, SiteModelProvider
 from auth_helpers import model_id, generation_response
@@ -205,11 +207,11 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
             sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 4}})
         ended.set()
     factory = sessionmaker(bind=db.get_bind())
-    from app import conversation_jobs
+    from app.conversations import jobs as conversation_jobs
     workers = []
     def dispatch(identifier):
         worker = Thread(target=conversation_jobs.run, args=(identifier,),
-            kwargs={"factory": factory, "retrieve": main.retrieve_knowledge_base}, daemon=True)
+            kwargs={"factory": factory}, daemon=True)
         workers.append(worker)
         worker.start()
     monkeypatch.setattr(conversation_jobs, "dispatch", dispatch)
@@ -477,8 +479,8 @@ def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(
     payload = {"request_id": request_id, "provider_id": model_id(http), "query": "hello"}
     assert http.post(f"/conversations/{conversation['id']}/messages", json=payload).status_code == 200
     with ThreadPoolExecutor(max_workers=1) as pool:
-        from app.conversation_jobs import run
-        response = pool.submit(run, request_id, factory, main.retrieve_knowledge_base)
+        from app.conversations.jobs import run
+        response = pool.submit(run, request_id, factory)
         assert entered.wait(5)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -736,7 +738,7 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     provider = SimpleNamespace(status=SimpleNamespace(provider_id=str(binding.id), provider_key=binding.key))
     meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), session.user_id, request_id)
     meter.invoke(provider, lambda: ToolResponse("confirmed", [], LLMUsage(prompt_tokens=100, completion_tokens=20)), [])
-    chat.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     assert db.get(ContextOperation, request_id).status == "interrupted"
     assert not db.get(Conversation, UUID(conversation["id"])).active_request_id
     db.refresh(message)
@@ -745,7 +747,7 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     assert message.display_blocks[0]["call_id"] == "second"
     balance = http.get("/usage").json()["balance"]
     assert db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
-    chat.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     assert http.get("/usage").json()["balance"] == balance
 
 

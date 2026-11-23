@@ -109,7 +109,8 @@ def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_pos
 def test_postgres_steering_admission_and_stop_are_atomic(auth_postgres):
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs, main
+    from app import main
+    from app.conversations import jobs as conversation_jobs
     from app.effective_context import ContextManager
     from app.models import ChatMessage
 
