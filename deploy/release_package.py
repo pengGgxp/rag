@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-SERVICES = ("api", "worker", "web")
+IMAGE_PACKAGES = ("backend", "web")
 COPIES = {
     "compose.production.yml": "compose.yml",
     "check_health.py": "check_health.py",
@@ -63,22 +63,24 @@ def build(
     *,
     version: str,
     commit: str,
-    registry: str,
-    organization: str,
+    image_prefix: str,
     alembic_head: str,
 ) -> Path:
     if not VERSION_RE.fullmatch(version):
         raise ValueError("invalid release version")
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
         raise ValueError("invalid release commit")
-    images = {}
-    for service in SERVICES:
-        digest = (digests / f"{service}.digest").read_text(encoding="utf-8").strip()
-        if not digest.startswith("sha256:") or len(digest) != 71:
-            raise ValueError(f"invalid {service} digest")
-        images[service] = (
-            f"{registry.rstrip('/')}/{organization}/zhiku-{service}@{digest}"
-        )
+    references = {}
+    for package in IMAGE_PACKAGES:
+        digest = (digests / f"{package}.digest").read_text(encoding="utf-8").strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ValueError(f"invalid {package} digest")
+        references[package] = f"{image_prefix}{package}@{digest}"
+    images = {
+        "api": references["backend"],
+        "worker": references["backend"],
+        "web": references["web"],
+    }
     staging = output / "release"
     if staging.exists():
         shutil.rmtree(staging)
@@ -164,8 +166,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--registry", required=True)
-    parser.add_argument("--organization", required=True)
+    parser.add_argument("--image-prefix", required=True)
     parser.add_argument("--alembic-head", required=True)
     args = parser.parse_args()
     try:
@@ -176,8 +177,7 @@ def main() -> int:
             args.output.resolve(),
             version=args.version,
             commit=args.commit,
-            registry=args.registry,
-            organization=args.organization,
+            image_prefix=args.image_prefix,
             alembic_head=args.alembic_head,
         )
     except (OSError, ValueError) as exc:
