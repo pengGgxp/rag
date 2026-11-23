@@ -148,7 +148,7 @@ def recover_steered_blocks(db, request_id, blocks):
 
 
 def unpack(row):
-    from ..llm import ChatProviderConfig
+    from ..model_runtime.client import ChatProviderConfig
     from ..thinking import ThinkingSelection
     from ..web_search import SearchConfig
     payload = json.loads(decrypt_headers(row.encrypted_payload)["payload"])
@@ -220,7 +220,7 @@ def run(identifier, factory=SessionLocal, retrieve=None):
 
 
 def title_run(identifier, factory=SessionLocal):
-    from ..llm import OpenAICompatibleChatProvider, measured_usage
+    from ..model_runtime.client import OpenAICompatibleChatProvider, measured_usage
     identifier = UUID(str(identifier))
     with factory() as db:
         task = db.get(ConversationTitleTask, identifier, with_for_update=True)

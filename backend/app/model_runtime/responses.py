@@ -1,6 +1,6 @@
 """Stateless Responses adaptation for the existing provider-neutral Agent contract."""
 import json
-from .upstream_retries import model_post, model_astream
+from ..upstream_retries import model_post, model_astream
 from copy import deepcopy
 
 from fastapi import HTTPException
@@ -35,14 +35,14 @@ def validate_thinking(protocol, thinking):
 
 
 def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False, resource_context=None):
-    from .llm import LLMConfigurationError
+    from .client import LLMConfigurationError
     try:
         validate_thinking(config.api_protocol, config.thinking)
     except ValueError as exc:
         raise LLMConfigurationError(str(exc)) from None
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用，请选择其他模型")
-    from .conversations.attachments import model_messages
+    from ..conversations.attachments import model_messages
     messages = model_messages(messages, config, resource_context)
     items = []
     for message in messages:
@@ -86,7 +86,7 @@ def payload(config, messages, temperature=0.0, *, tools=None, tool_choice="auto"
 
 
 def usage(raw):
-    from .llm import _parse_usage
+    from .client import _parse_usage
     if not isinstance(raw, dict):
         return None
     return _parse_usage({"prompt_tokens": raw.get("input_tokens"),
@@ -96,7 +96,7 @@ def usage(raw):
 
 
 def result(provider, body):
-    from .llm import LLMProviderError, ToolCall, ToolResponse
+    from .client import LLMProviderError, ToolCall, ToolResponse
     provider.last_usage = usage(body.get("usage")) or provider.last_usage
     if body.get("status") != "completed" or not isinstance(body.get("output"), list):
         raise LLMProviderError("模型响应未完整生成，请重试")
@@ -150,8 +150,8 @@ class ResponseStream:
         return {"commentary": "commentary", "final_answer": "intermediate"}.get(item.get("phase"))
 
     def feed(self, body):
-        from .llm import LLMProviderError
-        from .chat_sampling import incomplete_response, upstream_error
+        from .client import LLMProviderError
+        from .sampling import incomplete_response, upstream_error
         kind = body.get("type")
         if self.finished:
             raise LLMProviderError("模型在完成后返回了额外事件")
@@ -206,7 +206,7 @@ class ResponseStream:
         return []
 
     def check(self):
-        from .chat_sampling import stream_closed
+        from .sampling import stream_closed
         if not self.finished:
             raise stream_closed()
 
@@ -214,8 +214,8 @@ class ResponseStream:
 def stream(provider, messages, tools, tool_choice):
     import httpx
     from httpx_sse import SSEError
-    from .llm import LLMProviderError
-    from .chat_sampling import active_check, model_stream, stream_events, stream_error
+    from .client import LLMProviderError
+    from .sampling import active_check, model_stream, stream_events, stream_error
     state = ResponseStream(provider)
     provider.stream_diagnostic = "sse"
     url = endpoint(provider.base_url, "responses")
@@ -268,7 +268,7 @@ def stream(provider, messages, tools, tool_choice):
 
 def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0):
     import httpx
-    from .llm import LLMProviderError
+    from .client import LLMProviderError
     try:
         response = model_post(provider, endpoint(provider.base_url, "responses"),
             headers={"Authorization": f"Bearer {provider.api_key}"},
@@ -286,7 +286,7 @@ def complete(provider, messages, tools=None, tool_choice="auto", temperature=0.0
 async def stream_text(provider, messages):
     import httpx
     from httpx_sse import SSEError
-    from .llm import LLMProviderError
+    from .client import LLMProviderError
     state = ResponseStream(provider)
     provider.stream_diagnostic = "sse"
     try:

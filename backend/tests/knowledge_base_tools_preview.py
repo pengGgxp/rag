@@ -23,7 +23,7 @@ from sqlalchemy import select
 from app import auth, llm_providers, main, tasks
 from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.db import Base, engine, SessionLocal
-from app.llm import ToolCall, ToolResponse
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import (ChatMessage, Document, DocumentStatus, IngestionJob, JobState,
                         KnowledgeBase, KnowledgeBaseToolExecution, ModelBillingSettings)
 from auth_helpers import authenticate, configured_model

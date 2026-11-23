@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.agent.loop import AgentCancelled
 from app.context_windows import ContextWindowError, make_item
 from app.agent.effective_context import ContextManager
-from app.llm import OpenAICompatibleChatProvider, ToolResponse
+from app.model_runtime.client import OpenAICompatibleChatProvider, ToolResponse
 from app.models import ChatMessage, ContextCheckpoint, ContextOperation, Conversation
 from test_context_windows import client, setup_store
 from test_conversation_streaming import upstream

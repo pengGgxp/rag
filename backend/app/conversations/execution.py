@@ -18,7 +18,7 @@ from ..agent.loop import AgentCancelled, stream_retrieval_agent
 from ..conversation_context import HISTORY_TOOL, build_messages
 from ..credits import settle_model_usage
 from ..extensions import ExtensionRuntime
-from ..llm import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
+from ..model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from ..models import ChatMessage, ContextOperation, Conversation, Document, DocumentStatus, KnowledgeBaseStatus, ModelUsageRequest
 from ..thinking import encrypt_continuation, encrypt_display_thinking
 from .attachments import user_content
@@ -190,7 +190,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
 
             provider.refresh_credentials = refresh_credentials
         if not manual and provider_config.responses_websocket:
-            from ..responses_socket import ResponsesSocket
+            from ..model_runtime.responses_socket import ResponsesSocket
             provider.responses_socket = ResponsesSocket()
         if not hasattr(provider, "complete_with_tools"):
             raise LLMProviderError("当前模型不支持工具调用，请配置支持工具调用的模型")

@@ -310,7 +310,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     encoded = base64.b64encode(png()).decode()
     document = f'<!doctype html><html lang="zh"><title>配图报告</title><h1>配图报告</h1><img alt="配图" src="data:image/png;base64,{encoded}"></html>'
     from auth_helpers import StreamingTestProvider
-    from app.llm import ToolCall, ToolResponse
+    from app.model_runtime.client import ToolCall, ToolResponse
     class Provider(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, **kwargs):
             calls.append(messages)
@@ -391,7 +391,7 @@ def test_durable_turn_stop_keeps_late_result_without_another_model_call(accounts
     actor = access_for(http, db)
     configured_model(db, actor.user_id)
     from auth_helpers import StreamingTestProvider
-    from app.llm import ToolCall, ToolResponse
+    from app.model_runtime.client import ToolCall, ToolResponse
     calls = []
     class Provider(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, **kwargs):

@@ -41,7 +41,7 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     assert config.base_url == "https://provider.example/v1" and config.api_key == "secret"
     assert config.connection_version == 1
     from app import shared_providers
-    from app.llm import LLMConfigurationError
+    from app.model_runtime.client import LLMConfigurationError
     from sqlalchemy.orm import sessionmaker
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=db.get_bind()))
     current = llm_providers.request_provider_config(db, UUID(identity["user"]["id"]), UUID(second["id"]))

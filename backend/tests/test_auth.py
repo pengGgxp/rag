@@ -21,7 +21,7 @@ from pydantic import SecretStr
 from app import auth, main
 from app.conversations import execution as chat
 from app.db import Base
-from app.llm import ToolResponse
+from app.model_runtime.client import ToolResponse
 from app.models import (
     AuthToken, Conversation, ExternalIdentity, IngestionJob,
     KnowledgeBase, LoginSession, User, UserCreditAccount,

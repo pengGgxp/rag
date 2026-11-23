@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from . import mcp_client
-from .llm import ChatProviderConfig
+from .model_runtime.client import ChatProviderConfig
 
 
 def validate_base_url(value):
@@ -54,7 +54,7 @@ def request_provider_config(db, account_id, site_provider_id, thinking_option_id
     connection = lock_connection(db, shared.connection_id)
     thinking = select_thinking(shared.thinking_config, shared.thinking_version,
                               thinking_option_id, thinking_config_version)
-    from .llm_responses import validate_thinking
+    from .model_runtime.responses import validate_thinking
     try:
         validate_thinking(shared.chat_protocol, thinking)
     except ValueError as exc:

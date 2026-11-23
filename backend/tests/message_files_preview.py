@@ -57,7 +57,7 @@ from app import cloud_computer as cloud, deployment
 from app.conversations import jobs as conversation_jobs
 from app import shared_resources, storage_downloads, tasks, workspace_files
 from app.config import get_settings
-from app.llm import ToolCall, ToolResponse, LLMUsage
+from app.model_runtime.client import ToolCall, ToolResponse, LLMUsage
 from app.llm_providers import _encrypt_api_key
 from app.models import ModelConnection, CloudComputerSettings
 from fastapi.responses import Response

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from sqlalchemy import text
 
 from app.db import SessionLocal
-from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from app.llm_providers import _decrypt_api_key
 from app.thinking import select_thinking
 

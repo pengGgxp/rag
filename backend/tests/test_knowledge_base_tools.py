@@ -12,7 +12,7 @@ from app import auth
 from app.agent import loop as agent
 from app.extensions import ExtensionRuntime
 from app.knowledge_base_tools import LABELS, TOOLS
-from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider, ToolCall, ToolResponse
+from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (AuditLog, ChatMessage, DocumentStatus, IngestionJob, JobState,
                         KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution, User)
 from test_auth import library, register

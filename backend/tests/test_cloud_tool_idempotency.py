@@ -11,7 +11,7 @@ from app import auth, cloud_computer as cloud
 from app.agent.loop import AgentCancelled, run_retrieval_agent
 from app.credits import ensure_account
 from app.extensions import ExtensionRuntime
-from app.llm import ChatProviderConfig, ToolCall, ToolResponse
+from app.model_runtime.client import ChatProviderConfig, ToolCall, ToolResponse
 from app.models import ChatMessage, UserCreditAccount, CreditLedgerEntry, LoginSession, UsageEvent
 from cloud_command_fixtures import LocalFileCloud
 from test_cloud_computer import setup

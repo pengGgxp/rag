@@ -18,7 +18,7 @@ import uvicorn
 from app import auth, main
 from app.conversations import attachments as chat_attachments, execution as conversations
 from app.db import Base, SessionLocal, engine
-from app.llm import LLMUsage, ToolResponse
+from app.model_runtime.client import LLMUsage, ToolResponse
 from app.models import KnowledgeBase, SiteModelProvider
 from auth_helpers import authenticate, configured_model
 

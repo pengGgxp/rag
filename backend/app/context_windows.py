@@ -12,7 +12,7 @@ from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select
 
-from .llm import LLMConfigurationError
+from .model_runtime.client import LLMConfigurationError
 from .models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext
 
 

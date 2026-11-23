@@ -102,3 +102,17 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 
 `conversations.execution` 保存用户可见的回答与用量，并调用 `agent.loop`。
 文件操作、云电脑、图片和知识库工具仍在其业务模块内执行。
+
+## 文本模型协议
+
+| 原模块 | 当前模块与职责 |
+| --- | --- |
+| `app.llm` | `app.model_runtime.client`，文本客户端、OpenAI Chat Completions 和用量解析 |
+| `app.llm_native` | `app.model_runtime.native`，Anthropic 和 Gemini 原生协议 |
+| `app.llm_responses` | `app.model_runtime.responses`，Responses 请求、流式响应与续接 |
+| `app.chat_sampling` | `app.model_runtime.sampling`，单轮采样和流式传输恢复 |
+| `app.responses_socket` | `app.model_runtime.responses_socket`，Responses WebSocket 传输 |
+
+`llm_providers` 从站点模型和连接配置构造 `model_runtime.client.ChatProviderConfig`。
+计费模块继续读取客户端测得的用量。`upstream_retries` 同时服务文本、Embedding
+和其他外部能力，归属共享基础设施。

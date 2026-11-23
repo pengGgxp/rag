@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app import auth, workspace_files
 from app.conversations import execution as chat
-from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (ChatAttachment, ChatMessage, CloudComputerCommand, CloudComputerSession,
     CreditLedgerEntry, ModelUsageRequest, User, WorkspaceFile, WorkspaceFileVersion)
 from auth_helpers import model_id

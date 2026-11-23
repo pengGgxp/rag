@@ -17,7 +17,7 @@ from .models import (
     UserModelPolicy,
     User,
 )
-from .llm import measured_usage
+from .model_runtime.client import measured_usage
 from .credit_amounts import allocate
 
 MODEL_CAPABILITIES = ("llm_input_tokens", "llm_cached_input_tokens", "llm_output_tokens")

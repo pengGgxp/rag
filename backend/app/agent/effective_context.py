@@ -10,7 +10,7 @@ from ..context_windows import ContextWindowError, WindowStore, groups, make_item
 from ..conversation_context import (
     HISTORY_TOOL, SUMMARY_INSTRUCTION, SUMMARY_PREFIX, estimate_input, estimate_request, input_budget,
 )
-from ..llm import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
+from ..model_runtime.client import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
 
 
 class ContextManager:

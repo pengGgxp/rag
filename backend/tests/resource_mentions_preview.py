@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app import auth, llm_providers, main, shared_resources, workspace_files
 from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.db import Base, engine, SessionLocal
-from app.llm import ToolResponse
+from app.model_runtime.client import ToolResponse
 from app.models import ModelBillingSettings
 from auth_helpers import authenticate, configured_model
 from test_cloud_computer_mount import MemoryMount

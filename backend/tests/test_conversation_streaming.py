@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from app import main
 from app.conversations.jobs import recover_interrupted_conversations
 from app.conversations import execution as chat
-from app.llm import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
 from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, SiteModelProvider
 from auth_helpers import model_id, generation_response
 from test_conversations import client, create, turn
@@ -283,7 +283,7 @@ def test_each_tool_is_interleaved_persisted_and_has_a_unique_public_id(client, m
         def complete_with_tools(self, *_args, **_kwargs):
             raise AssertionError("must stream")
         def stream_with_tools(self, messages, tools, **_kwargs):
-            from app.llm import ToolCall
+            from app.model_runtime.client import ToolCall
             captured.append(messages)
             round = len(captured)
             text = ["先查第一处。", "再核对第二处。", "核对完成。"][round - 1]
@@ -451,7 +451,7 @@ def test_missing_capacity_is_honest_and_no_history_compaction_is_free(client, mo
 def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(client, monkeypatch, settlement):
     from concurrent.futures import ThreadPoolExecutor
     from app.models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent
-    from app.llm import ToolCall
+    from app.model_runtime.client import ToolCall
     http, db, _ = client
     db.add(ModelBillingSettings(id=1, enabled=settlement)); db.commit()
     conversation = create(http, [])
@@ -624,7 +624,7 @@ def test_compaction_retains_current_multimodal_input_and_atomic_latest_group(cli
 
 
 def test_failed_compaction_does_not_retry_unchanged_window(client):
-    from app.llm import LLMConfigurationError
+    from app.model_runtime.client import LLMConfigurationError
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
     messages += tool_group("old", "内容。" * 2100)
     messages += tool_group("recent", "recent result")
@@ -649,7 +649,7 @@ def test_failed_compaction_does_not_retry_unchanged_window(client):
 
 
 def test_over_budget_summary_never_persists_or_emits_completed(client):
-    from app.llm import LLMConfigurationError
+    from app.model_runtime.client import LLMConfigurationError
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "current task " * 600}]
     messages += tool_group("old", "原始结果。" * 850)
     messages += tool_group("recent", "recent result")

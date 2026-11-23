@@ -52,7 +52,7 @@ def estimate_request(config, messages, tools=()):
     """Budget the actual protocol projection without fetching image resources."""
     from copy import deepcopy
     from .conversations.attachments import estimate_content
-    from .llm import OpenAICompatibleChatProvider
+    from .model_runtime.client import OpenAICompatibleChatProvider
     projected = deepcopy(messages)
     for message in projected:
         content = message.get("content")

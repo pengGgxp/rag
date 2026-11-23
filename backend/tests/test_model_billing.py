@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import model_billing as billing
 from app.credits import CreditError, ensure_policies, recharge
-from app.llm import LLMProviderError, LLMUsage, ToolResponse
+from app.model_runtime.client import LLMProviderError, LLMUsage, ToolResponse
 from app.models import (UserCreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelCallUsage,
                         ModelUsageRequest, UsageEvent, UsagePolicy)
 from test_auth import register
@@ -176,7 +176,7 @@ def test_zero_price_and_maximum_remainder_tie_are_deterministic(metered):
 @pytest.mark.parametrize("ending", ["success", "fail", "stop"])
 def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, ending):
     from app.conversations import execution as conversations
-    from app.llm import ToolCall
+    from app.model_runtime.client import ToolCall
     from app.models import Conversation
     owner, db, workspace, user = metered
     class Provider:
@@ -220,7 +220,7 @@ def test_agent_captures_each_round_before_failure_or_stop(metered, monkeypatch, 
 
 def test_skill_and_mcp_results_only_count_when_sent_to_model(metered, monkeypatch):
     from app.conversations import execution as conversations
-    from app.llm import ToolCall
+    from app.model_runtime.client import ToolCall
     owner, db, workspace, user = metered
     seen = []
     class Extensions:

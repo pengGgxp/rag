@@ -331,7 +331,7 @@ def context(conversation_id: UUID, provider_id: UUID, thinking_option_id: str | 
             db: Session = Depends(get_db), access: Access = Depends(get_access)):
     conversation = live_conversation(db, conversation_id, access)
     from ..shared_providers import unavailable_reason
-    from ..llm import ChatProviderConfig
+    from ..model_runtime.client import ChatProviderConfig
     from ..thinking import select_thinking
     shared = db.get(SiteModelProvider, provider_id)
     if shared is None or unavailable_reason(db, shared, None, True):

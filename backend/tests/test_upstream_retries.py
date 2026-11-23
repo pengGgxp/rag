@@ -17,7 +17,7 @@ from app import upstream_retries as retry
 from app.agent.loop import AgentCancelled
 from app.cloud_computer_adapter import AlibabaSandbox
 from app.image_reading import ImageReadError, read_image
-from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from test_cloud_computer_adapter import FileDownload
 from test_chat_attachments import PNG
 from test_conversation_streaming import upstream, sse

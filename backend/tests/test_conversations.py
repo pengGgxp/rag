@@ -13,7 +13,7 @@ from app.conversations.jobs import recover_interrupted_conversations
 from app.conversations import execution as chat
 from app.db import Base
 from app.knowledge import retrieval
-from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
     ChatMessage, Conversation, ConversationLibrary, UserCreditAccount, DocumentStatus,
     Document, KnowledgeBase, KnowledgeBaseStatus, QueryTrace, User,

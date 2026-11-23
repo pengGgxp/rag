@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent.loop import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
-from app.llm import ToolCall, ToolResponse
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import DocumentStatus, KnowledgeBaseStatus
 
 

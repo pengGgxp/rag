@@ -147,7 +147,7 @@ def test_durable_command_link_delivery_and_replay(accounts, resource_store, monk
     """The real Agent gets a link for a command-created file, then persists it."""
     import json
     from app.conversations import execution as conversations
-    from app.llm import ToolCall, ToolResponse
+    from app.model_runtime.client import ToolCall, ToolResponse
     from auth_helpers import configured_model, StreamingTestProvider
     from test_cloud_computer import enable_execution
     from test_conversations import create, turn

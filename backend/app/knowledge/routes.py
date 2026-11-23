@@ -15,7 +15,7 @@ from ..db import get_db
 from .ingestion.admission import (
     MAX_DOCUMENT_BYTES, dispatch_ingestion, stage_upload,
 )
-from ..llm import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider, estimate_tokens
+from ..model_runtime.client import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider, estimate_tokens
 from ..llm_providers import request_provider_config
 from ..models import Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus, QueryTrace
 from ..tasks import embed_document, process_document

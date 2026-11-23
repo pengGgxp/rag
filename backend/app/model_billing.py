@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from .credits import CreditError, _entry, authorization_hold, ensure_account, release_hold
-from .llm import measured_usage
+from .model_runtime.client import measured_usage
 from .models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, SearchToolCall, UsageEvent
 from .workspace_billing import context_for_workspace, resolve_prices, multiplier, allocate, finish_operation
 from .credit_amounts import exact_charge

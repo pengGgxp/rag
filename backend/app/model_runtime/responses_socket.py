@@ -1,4 +1,4 @@
-"""One Responses WebSocket, response cursor and routing token per chat turn."""
+"""管理单轮对话的 Responses WebSocket、响应游标和路由令牌。"""
 import asyncio
 import json
 from urllib.parse import urlsplit, urlunsplit
@@ -6,7 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from . import chat_sampling
+from . import sampling as chat_sampling
 
 ROUTE_HEADER = "x-codex-turn-state"
 
@@ -47,7 +47,7 @@ class ResponsesSocket:
                      [*request["input"], *output], response_id) if response_id else None
 
     def events(self, url, api_key, body):
-        from .upstream_retries import retry_after
+        from ..upstream_retries import retry_after
         check = chat_sampling.active_check()
         if self.runner is None:
             self.runner = asyncio.Runner()

@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from app import shared_providers
 from app.knowledge import routes as knowledge_routes
-from app.llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, _parse_usage
+from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, _parse_usage
 from app.thinking import ThinkingConfig, public_capability, select_thinking
 from test_shared_providers import provider, setup_site
 
@@ -259,7 +259,7 @@ def test_invalid_request_choices_do_not_call_or_charge(accounts, monkeypatch):
 def test_single_answer_and_retry_use_current_thinking(accounts, monkeypatch):
     from app.conversations import execution as conversations
     from app.models import SiteModelProvider, KnowledgeBase
-    from app.llm import ToolResponse, LLMUsage, LLMProviderError
+    from app.model_runtime.client import ToolResponse, LLMUsage, LLMProviderError
     from test_retrieval import add_document
     from test_request_models import send
     client, db, _ = setup_site(accounts, monkeypatch)

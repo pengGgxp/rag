@@ -119,7 +119,7 @@ def test_encrypted_image_snapshot_recovers_and_projects_to_every_protocol(client
     import base64
     import hashlib
     from app.context_windows import encrypt_items
-    from app.llm import OpenAICompatibleChatProvider
+    from app.model_runtime.client import OpenAICompatibleChatProvider
     from test_chat_attachments import PNG
     db, store, request = setup_store(client)
     store.config = replace(store.config, supports_images=True, max_output_tokens=2048)

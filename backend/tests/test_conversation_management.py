@@ -99,7 +99,7 @@ def test_worker_executes_conversation_without_http_routes(client):
         [sys.executable, "-c", """
 import sys
 
-from app import llm
+from app.model_runtime import client as llm
 from app.conversations import execution
 from app.tasks import execute_conversation, name_conversation
 
@@ -203,8 +203,8 @@ def test_platform_title_usage_and_manual_rename_race(client, monkeypatch):
     _, body = turn(http, item["id"], "请帮我整理季度项目计划")
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
     before = db.scalar(select(func.sum(UserCreditAccount.balance)))
-    from app import llm
-    from app.llm import LLMUsage
+    from app.model_runtime import client as llm
+    from app.model_runtime.client import LLMUsage
     class TitleProvider:
         last_usage = LLMUsage(prompt_tokens=20, completion_tokens=8)
         def __init__(self, config):
@@ -227,7 +227,7 @@ def test_platform_title_usage_and_manual_rename_race(client, monkeypatch):
 def test_title_failure_is_not_retried_and_manual_edit_wins(client, monkeypatch):
     http, db, _ = client
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    from app import llm
+    from app.model_runtime import client as llm
     calls = []
     class RacingProvider:
         last_usage = None

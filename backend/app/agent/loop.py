@@ -13,7 +13,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.config import get_stream_writer
 from sqlalchemy import or_, select
 
-from ..llm import LLMProviderError, LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
+from ..model_runtime.client import LLMProviderError, LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
 from ..models import Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus
 from ..workspace_files import FILE_TOOL_ERRORS
 from ..image_reading import model_image_message
@@ -391,7 +391,7 @@ def stream_retrieval_agent(
                         write((name, {**data, "round": round_number,
                             "block_id": thinking_id if name.startswith("thinking_") else block_id}))
                 if response is None:
-                    from ..chat_sampling import stream_closed
+                    from ..model_runtime.sampling import stream_closed
                     raise stream_closed()
                 return response
             response = provider.complete_with_tools(messages, tools, tool_choice="auto")
@@ -399,7 +399,7 @@ def stream_retrieval_agent(
                 text_stages[text_id] = None
                 write(("delta", {"text": response.content, "block_id": text_id}))
             return response
-        from ..chat_sampling import sample
+        from ..model_runtime.sampling import sample
         def notify(info):
             write(("model_recovering", info))
         def run_sample(attempt):

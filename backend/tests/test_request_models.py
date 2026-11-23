@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.conversations import execution as conversations
 from app.knowledge import routes as knowledge_routes
-from app.llm import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
+from app.model_runtime.client import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (BillingSnapshot, ChatMessage, UserCreditAccount, CreditLedgerEntry,
                         LLMProviderConfig, ModelCallUsage, ModelBillingSettings, SiteModelProvider,
                         UsageEvent, UsagePolicy)

@@ -365,7 +365,7 @@ def user_content(text, attachments):
 
 
 def model_messages(messages, config, resource_context=None):
-    from ..llm import LLMConfigurationError
+    from ..model_runtime.client import LLMConfigurationError
     result = deepcopy(messages)
     for message in result:
         if not isinstance(message.get("content"), list):

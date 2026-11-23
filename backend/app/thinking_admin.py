@@ -12,7 +12,7 @@ from . import model_billing
 from .auth import Access, get_access
 from .credits import authorization_hold, authorization_hold_amount, settle_model_usage
 from .db import get_db
-from .llm import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
+from .model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from .llm_providers import request_provider_config
 from .models import ModelUsageRequest, ThinkingTest, User
 from .shared_providers import lock_provider
@@ -47,7 +47,7 @@ def parameter_preview(config):
     try:
         provider = OpenAICompatibleChatProvider(config=config)
         if config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import request as native_request
+            from .model_runtime.native import request as native_request
             payload = native_request(provider, [], streaming=True)[2]
         else:
             payload = provider._payload([], stream=True)

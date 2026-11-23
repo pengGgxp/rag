@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.llm_providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection
 from PIL import Image
-from app.llm import LLMUsage, ToolCall, ToolResponse
+from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from fastapi.responses import Response
 from test_cloud_computer_mount import MemoryMount
 

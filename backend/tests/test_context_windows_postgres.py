@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app import auth
 from app.auth import Access
 from app.context_windows import ContextWindowError, WindowStore, make_item
-from app.llm import ChatProviderConfig
+from app.model_runtime.client import ChatProviderConfig
 from app.models import Conversation, LoginSession, LLMProviderConfig, SiteModelProvider
 from auth_helpers import connection_id
 from test_auth_postgres import auth_postgres
@@ -62,7 +62,7 @@ def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_pos
     from sqlalchemy.orm import sessionmaker
     from app.agent.loop import AgentCancelled
     from app.agent.effective_context import ContextManager
-    from app.llm import ToolCall
+    from app.model_runtime.client import ToolCall
     from app.models import AgentToolExecution
     import pytest
     engine = auth_postgres
