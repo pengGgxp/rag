@@ -18,8 +18,8 @@ Current public endpoints:
 - Production configuration is server-owned. The authoritative files are
   `/opt/zhiku/config/app.env`, the protected question-workbench env file and
   the generated release `.env.release`.
-- GitHub is an optional image-build/release automation layer, not a production
-  configuration store and not the source of truth for running services.
+- GitHub Actions builds and publishes production images and assembles the
+  release package. The operator starts deployment on the production server.
 - Every production service runs a `linux/amd64` image pinned by
   `image@sha256:...`. The server never builds application images and never
   bind-mounts source code.
@@ -27,45 +27,23 @@ Current public endpoints:
   `deploy/app.env.example`, `deploy/deployment.env.example` and
   `deploy/production.env.reference.md`. CI runs
   `python deploy/validate_config.py` before packaging.
-- Branch protection on `main` should require CI checks. If GitHub Actions is
-  enabled for publishing, use its production environment only as an optional
-  approval gate for that automation; no running service reads its variables.
+- Branch protection on `main` should require CI checks.
 
-## Optional GitHub automation settings
+## GitHub release settings
 
-These values are needed only when GitHub Actions is used to publish images and
-upload a release. They are not application runtime configuration:
+The release workflow uses these repository settings to push to SWR.
 
 | Kind | Name | Value |
 | --- | --- | --- |
 | Variable | `SWR_REGISTRY` | Regional Huawei Cloud SWR hostname |
 | Variable | `SWR_ORGANIZATION` | SWR organization containing the three repositories |
-| Variable | `SWR_REGION` | SWR region used by the cleanup API, for example `cn-south-1` |
-| Variable | `NEXT_PUBLIC_API_URL` | Public production API URL, normally `https://syfc.moonlitstarway.top/api` |
 | Secret | `SWR_USERNAME` | SWR Docker login username |
 | Secret | `SWR_PASSWORD` | SWR Docker login password |
-| Secret | `SWR_ACCESS_KEY` | Huawei Cloud AccessKey ID used only by the SWR cleanup API |
-| Secret | `SWR_SECRET_KEY` | Huawei Cloud AccessKey secret used only by the SWR cleanup API |
-| Secret | `SWR_PROJECT_ID` | Huawei Cloud project ID for the SWR region |
-
-If the GitHub release workflow is enabled, its optional `production`
-environment can additionally provide:
-
-| Kind | Name | Value |
-| --- | --- | --- |
-| Variable | `PRODUCTION_HOST` | Production SSH hostname |
-| Variable | `PRODUCTION_PORT` | Production SSH port |
-| Variable | `PRODUCTION_USER` | Dedicated deployment account |
-| Variable | `FIRST_TAKEOVER` | `true` only for the single first controlled cutover; return to `false` immediately after |
-| Secret | `PRODUCTION_SSH_KEY` | Dedicated private deployment key |
-| Secret | `PRODUCTION_SSH_KNOWN_HOSTS` | Pinned host key entry for the production host |
 
 The three SWR repositories are `zhiku-api`, `zhiku-worker` and `zhiku-web`.
-Repository permissions should allow CI to push but not delete. If server
-deployment is automated, the deployment account needs permission only to run
-the fixed `sudo` entrypoints and read the incoming release directory. Do not
-reuse an administrator's personal SSH key. Manual local build/upload remains a
-supported release path and does not require GitHub Environment configuration.
+CI needs permission to push to those repositories. The production server
+uses its own registry login to pull the images. The Web build uses
+`https://syfc.moonlitstarway.top/api`.
 
 ## CI gates
 
@@ -173,15 +151,12 @@ Do not treat a deployed release as a completed takeover. Follow these stages:
    network, Nginx files, environment-file mode and current Alembic revision.
 2. Confirm both protected environment files exist. Do not seed from an empty
    database, alternate network or newly created volume.
-3. Push the approved semver tag with `FIRST_TAKEOVER=true`.
-4. The workflow verifies and uploads the archive, then installs the fixed
-   server entrypoints and protected configuration copies. This bootstrap step
-   does not start containers, alter Nginx or change the database.
+3. Push the approved semver tag.
+4. Download the Actions artifact, upload it to the server and verify its
+   checksum. Run the packaged bootstrap script to install the server entrypoints.
 5. The shadow stage verifies package checksums, renders Compose and checks the
    packaged migration heads without switching `current`.
-6. If GitHub release automation is used, approve its optional production gate;
-   otherwise invoke the checksum-verified fixed server entrypoint directly.
-   Perform one controlled `takeover` action.
+6. Invoke the server entrypoint with the `takeover` action.
 7. A temporary Nginx gate blocks new writes before legacy producers are
    stopped. The script backs up the database, verifies the backup copy, restores
    it into an isolated rehearsal database and runs the migration there.
@@ -189,7 +164,6 @@ Do not treat a deployed release as a completed takeover. Follow these stages:
    release, run health checks, install canonical Nginx and remove the temporary
    maintenance gate.
 
-Set `FIRST_TAKEOVER=false` immediately after the first successful cutover.
 Subsequent releases use the normal managed-release path.
 
 ## Normal tag release
@@ -202,23 +176,18 @@ sources to trust. See [payment proxy checks and recovery](payment-client-ip.md).
 
 1. Merge the change to `main` with green CI.
 2. Create an annotated semver tag on that exact commit and push the tag.
-3. GitHub verifies the tag regex, commit identity, `main` ancestry and clean
-   checkout.
+3. GitHub verifies the tag format, commit identity and `main` ancestry.
 4. CI tests must pass. The release workflow builds and pushes the API, Worker
    and Web images, records digests and creates the release package.
-5. If GitHub publishing is enabled, approve its optional `production`
-   deployment gate. Otherwise run the fixed server entrypoint from the local
-   manual release path.
+5. Download the release artifact, transfer it to the server and run the
+   fixed server entrypoint.
 6. The server verifies the uploaded archive, obtains the deployment lock, turns
    maintenance on through the currently running API, stops Workers, drains
    finite work, backs up and validates the database, rehearses migrations in an
    isolated database and then follows the migration path below.
 7. If the release is healthy, evidence is written and maintenance is cleared.
-8. Only after a successful release may cleanup remove unneeded SWR tags and
-   local images. If GitHub automation owns cleanup, its optional approval gate
-   must pass first. During first takeover, the archived legacy `previous`
-   directory may not contain a `release.json`; only the current release
-   manifest is mandatory.
+8. After a successful deployment, the operator may clean up unused SWR tags
+   and local images while keeping the current and previous release images.
 
 Never manually edit a production Compose file, append a temporary override or
 replace a service image on the server. Fix the release and produce a new tag.
@@ -230,137 +199,37 @@ does not refresh unchanged database, Redis or object-storage images from Docker
 Hub. Keep the current and previous images, including their infrastructure images,
 on the host; a missing infrastructure image must be prepared before rollout.
 
-## Manual release runbook
+## Publish and deploy a release
 
-This runbook is the controlled fallback while GitHub Actions is not used for
-production builds. It does not turn an unverified working tree into a release
-and it does not replace the tag-based release contract. A manually built
-release must still use a clean commit from `main`, pinned image digests,
-checksums, a protected backup and the same health and rollback gates.
-
-### Roles and boundaries
-
-- The local workstation may run tests, build images, push immutable tags to
-  SWR, assemble the release package and upload it.
-- The production server may verify and extract that package, pull the pinned
-  images, run the one-off migration job and execute fixed release entrypoints.
-- Do not build application images on the production server. Do not place
-  source-code bind mounts, credentials or database dumps in Git.
-- Do not deploy from an uncommitted working tree. Record the commit SHA even
-  when the image tag contains a human-readable release name.
-
-### Before building
-
-1. Fetch and fast-forward `main`; verify the commit that will be released.
-2. Confirm there are no repository-local images, Compose overrides or
-   environment files that would silently change the build.
-3. Run the backend, PostgreSQL, frontend and deployment-contract checks that
-   apply to the change. Record skipped checks and the reason.
-4. Confirm the target SWR registry, organization and three repositories.
-5. Create a release version that cannot be reused and record it together with
-   the commit SHA.
-
-The release version must identify one immutable attempt. Never move or reuse a
-version after upload. If a build or upload fails, use a new version.
-
-### Images and registry evidence
-
-Build API, Worker and Web as `linux/amd64` images. Web must receive the public
-API URL at build time; do not rely on a server-side default. Tag each image
-with both the release version and the commit SHA, push them, then inspect the
-registry manifests.
-
-- Verify the registry media type is Docker schema 2.
-- Verify the platform is `linux/amd64`.
-- Resolve each pushed tag to its immutable digest.
-- Record the three digests in `release.json` and use only
-  `image@sha256:...` in the production Compose file.
-
-The image tags are convenient pointers; the digests are the release identity.
-A failed or interrupted push can leave a tag, so do not treat tag existence as
-proof of a complete image.
-
-### Release package
-
-Use `deploy/release_package.py` to assemble the production package from the
-selected commit, the three digests, the deployment files and the current
-Alembic head. The package must contain:
-
-- `release.json` with version, commit, build time, digests, Alembic head,
-  configuration contract and database rollback policy.
-- The digest-pinned production Compose file and fixed release entrypoints.
-- Health, maintenance, migration, Nginx and rollback helpers.
-- `SHA256SUMS` covering every packaged file except itself.
-
-Validate the manifest, migration head and Compose rendering before upload.
-Generate an outer SHA-256 checksum for the archive and retain both checksums.
-Upload the archive into a new `/opt/zhiku/incoming/<version>/` directory.
-
-### Command templates
-
-Run these locally from the repository root. Substitute the release version,
-commit, registry and digests explicitly. Never substitute a `latest` tag in
-the release manifest.
+Choose an unused version and the exact commit from `main` to release.
 
 ```sh
-# Verify the exact source revision.
-git fetch origin
-git switch main
-git merge --ff-only origin/main
-test -z "$(git status --porcelain)"
-release_commit=$(git rev-parse HEAD)
+git fetch origin main
+release_commit=$(git rev-parse origin/main)
 release_version=vX.Y.Z
-
-# Build linux/amd64 images locally.
-docker buildx build --platform linux/amd64 --file backend/Dockerfile \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-api:$release_version" \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-api:sha-$release_commit" \
-  --push backend
-docker buildx build --platform linux/amd64 --file backend/Dockerfile \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-worker:$release_version" \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-worker:sha-$release_commit" \
-  --push backend
-docker buildx build --platform linux/amd64 --file frontend/Dockerfile \
-  --build-arg NEXT_PUBLIC_API_URL=https://syfc.moonlitstarway.top/api \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:$release_version" \
-  --tag "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-web:sha-$release_commit" \
-  --push frontend
+git tag -a "$release_version" "$release_commit" -m "Release $release_version"
+git push origin "refs/tags/$release_version"
 ```
 
-API and Worker currently share `backend/Dockerfile`; their difference is the
-Compose `command`, which starts Uvicorn for API and Celery for Worker. Do not
-add a server-only override to make one image behave as the other. Verify each
-container's actual command and require both API readiness and a fresh Worker
-heartbeat.
+Wait for the `release` workflow for that tag to succeed. Download its
+`production-release-<version>` artifact using the run ID shown in Actions.
 
 ```sh
-# Record the immutable digests.
-mkdir -p digests
-for service in api worker web; do
-  docker buildx imagetools inspect \
-    "$SWR_REGISTRY/$SWR_ORGANIZATION/zhiku-$service:$release_version" \
-    --format '{{json .Manifest.Digest}}' | tr -d '"' \
-    > "digests/$service.digest"
-  test -s "digests/$service.digest"
-done
-
-# Build the release package and its outer checksum.
-alembic_head=$(python deploy/alembic_head.py backend)
-python deploy/release_package.py \
-  --deploy-root deploy --backend-root backend --digests digests \
-  --output "release-$release_version" --version "$release_version" \
-  --commit "$release_commit" --registry "$SWR_REGISTRY" \
-  --organization "$SWR_ORGANIZATION" --alembic-head "$alembic_head"
+gh run watch "$run_id" --exit-status
+gh run download "$run_id" \
+  --name "production-release-$release_version" \
+  --dir "release-$release_version"
 ```
 
 Upload `release-$release_version/zhiku-$release_version.tar.gz` and its
 `.sha256` file to a new `/opt/zhiku/incoming/$release_version/` directory.
-The incoming directory is single-use.
+Log into the server and run the release entrypoint. It reads the image
+digests from the verified package and pulls them directly from SWR.
 
 ```sh
 # Server preflight and controlled release.
-sudo mkdir -p "/opt/zhiku/incoming/$release_version"
-sudo sha256sum -c "/opt/zhiku/incoming/$release_version/zhiku-$release_version.tar.gz.sha256"
+cd "/opt/zhiku/incoming/$release_version"
+sudo sha256sum -c "zhiku-$release_version.tar.gz.sha256"
 sudo /opt/zhiku/bin/deploy-release \
   "/opt/zhiku/incoming/$release_version" deploy
 ```
@@ -468,11 +337,8 @@ its Web digest is distinct. The release manifest is the authority for the
 digests; any later document or dashboard must not infer them from a container
 name.
 
-GitHub Actions tag-based deployment is optional automation, not the production
-configuration contract. This environment currently uses the manual release
-path. A manual release must follow this runbook and be recorded with the same
-evidence. Code push, a tag push or a successful image build alone is not
-deployment acceptance.
+The Actions run records publication. The server release directory records
+deployment, including the health and backup evidence.
 
 ## Migration rules
 

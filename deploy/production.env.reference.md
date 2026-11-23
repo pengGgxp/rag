@@ -42,6 +42,8 @@
 | `AUTH_COOKIE_SECURE` | 必需 | HTTPS 站点设为 `true`，登录 Cookie 仅通过安全连接发送。 |
 | `PREVIEW_ENABLED` | 必需 | 明确决定是否开启云电脑 HTTP 预览，填写 `true` 或 `false`。 |
 | `PREVIEW_DOMAIN` | 必需 | 预览子域名后缀，例如 `preview.str1ct.top`。 |
+| `PREVIEW_CACHE_MAX_BYTES` | 可选 | 预览缓存容量上限，默认 5 GiB。 |
+| `PREVIEW_CACHE_IDLE_SECONDS` | 可选 | 预览缓存闲置清理时间，默认 7 天。 |
 | `NEXT_PUBLIC_API_URL` | 构建校验 | Web 镜像构建输入，必须指向生产 API；部署校验也检查它与发布包是否一致。它不会让后端自动切换 API 地址。 |
 | `DEPLOY_CONTROL_TOKEN` | 发布器生成 | API loopback 部署维护接口使用。发布器会在服务器生成并跨 release 保留，不要手动发给浏览器或写入 GitHub。 |
 | `APP_VERSION` | 发布器生成 | 当前发布版本，来自 `release.json`。 |

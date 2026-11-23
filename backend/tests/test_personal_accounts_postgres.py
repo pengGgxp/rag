@@ -47,7 +47,8 @@ def legacy_database():
             upgrade("0079_document_recovery")
             with Session(connection) as db:
                 def migrate():
-                    upgrade("0079_personal_account_ownership", "0080_user_resources", "0081_direct_account_ownership")
+                    upgrade("0079_personal_account_ownership", "0080_user_resources",
+                            "0081_direct_account_ownership", "0082_knowledge_originals")
                 try:
                     yield db, migrate
                 finally:
