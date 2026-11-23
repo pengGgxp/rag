@@ -133,7 +133,7 @@ assert "app.conversations.routes" not in sys.modules
 
 @pytest.mark.parametrize("name", ["generate_image", "edit_image", "start_preview"])
 def test_background_tool_results_survive_reconnect_without_reexecution(client, monkeypatch, name):
-    from app.agent import AgentRun
+    from app.agent.loop import AgentRun
     http, db, _ = client
     item = create(http, [])
     identifier, linked = uuid4(), str(uuid4())

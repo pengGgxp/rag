@@ -90,3 +90,15 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 `app.tasks.execute_conversation(identifier)` 和 `app.tasks.name_conversation(identifier)`
 进入 `conversations.jobs`。回答任务直接调用 `conversations.execution`，HTTP 和 Worker
 通过 `conversations.messages` 共用归属检查与序列化。
+
+## Agent
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.agent.loop` | 模型轮次、工具选择与调度 |
+| `app.agent.effective_context` | 有效上下文管理、滚动窗口与结果恢复 |
+| `app.agent.tools` | 计划及工具结果读取所用的协议与分页 |
+| `app.agent.tool_jobs` | 工具任务归属、活动状态与取消 |
+
+`conversations.execution` 保存用户可见的回答与用量，并调用 `agent.loop`。
+文件操作、云电脑、图片和知识库工具仍在其业务模块内执行。

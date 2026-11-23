@@ -1,16 +1,16 @@
-"""Local compact orchestration over the authoritative replacement window."""
+"""管理当前上下文窗口、历史压缩和工具结果恢复。"""
 import math
 import json
 from contextlib import nullcontext
 from copy import deepcopy
 from uuid import UUID, uuid5
 
-from .agent import AgentCancelled
-from .context_windows import ContextWindowError, WindowStore, groups, make_item, project
-from .conversation_context import (
+from .loop import AgentCancelled
+from ..context_windows import ContextWindowError, WindowStore, groups, make_item, project
+from ..conversation_context import (
     HISTORY_TOOL, SUMMARY_INSTRUCTION, SUMMARY_PREFIX, estimate_input, estimate_request, input_budget,
 )
-from .llm import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
+from ..llm import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
 
 
 class ContextManager:
@@ -71,9 +71,9 @@ class ContextManager:
 
     def steer(self, message_id):
         from fastapi import HTTPException
-        from .conversations.attachments import attachment_read, select_attachments, user_content
-        from .conversations.jobs import finish_steering, lock_steering
-        from .conversations.messages import live_conversation, resolve_input_mentions
+        from ..conversations.attachments import attachment_read, select_attachments, user_content
+        from ..conversations.jobs import finish_steering, lock_steering
+        from ..conversations.messages import live_conversation, resolve_input_mentions
 
         with self.factory() as db:
             locked = lock_steering(db, self.conversation_id, self.request_id, message_id)
@@ -114,7 +114,7 @@ class ContextManager:
         return max(300, min(4000, (input_budget(self.config) or 24000) // 4 // max(1, calls)))
 
     def result_projections(self):
-        from .agent_tools import bounded_message
+        from .tools import bounded_message
         complete, pending = groups(self.items)
         for group in [*complete, *([pending] if pending else [])]:
             model = group[0]
@@ -130,8 +130,8 @@ class ContextManager:
 
     def archive_large_results(self):
         """Give legacy oversized observations the same readable receipt as new calls."""
-        from .context_windows import encrypt_items
-        from .models import AgentToolExecution
+        from ..context_windows import encrypt_items
+        from ..models import AgentToolExecution
         oversized = [(item, identifier, model_id) for item, identifier, visible, model_id in self.result_projections()
             if visible != item["message"]]
         if not oversized:
@@ -148,8 +148,8 @@ class ContextManager:
             db.commit()
 
     def begin_tool(self, call):
-        from .models import AgentToolExecution
-        from .mcp_client import encrypt_headers
+        from ..models import AgentToolExecution
+        from ..mcp_client import encrypt_headers
         _, pending = groups(self.items)
         if not pending or call.id not in pending[0]["pair_ids"]:
             raise ContextWindowError("context_suffix_incompatible", "工具调用缺少对应模型记录")
@@ -167,9 +167,9 @@ class ContextManager:
         return identifier
 
     def finish_tool(self, identifier, message, budget):
-        from .context_windows import encrypt_items
-        from .models import AgentToolExecution
-        from .agent_tools import bounded_message
+        from ..context_windows import encrypt_items
+        from ..models import AgentToolExecution
+        from .tools import bounded_message
         raw = make_item(uuid5(identifier, "full-result"), message, "tool", self.request_id)
         with self.factory() as db:
             # Save known truth even if stop changed active_request_id while the
@@ -186,8 +186,8 @@ class ContextManager:
         return visible
 
     def recover_tools(self, pending):
-        from .context_windows import decrypt_items, encrypt_items
-        from .models import AgentToolExecution
+        from ..context_windows import decrypt_items, encrypt_items
+        from ..models import AgentToolExecution
         model = pending[0]
         returned = {i["message"].get("tool_call_id") for i in pending[1:]}
         missing = [c for c in model["message"]["tool_calls"] if c["id"] not in returned]
@@ -218,7 +218,7 @@ class ContextManager:
                     row.encrypted_result = encrypt_items([make_item(uuid5(identifier, "recovered-result"),
                         message, "tool", self.request_id)])
                 db.commit()
-            from .agent_tools import bounded_message
+            from .tools import bounded_message
             if message.get("name") == "update_plan":
                 value = json.loads(message["content"])
                 if value.get("plan") and not value.get("error"):
@@ -232,14 +232,14 @@ class ContextManager:
         """Read existing local receipts only; never poll/replay an external tool."""
         from sqlalchemy import select
         from hashlib import sha256
-        from .models import KnowledgeBaseToolExecution, RemoteToolExecution
-        from .mcp_client import decrypt_headers
+        from ..models import KnowledgeBaseToolExecution, RemoteToolExecution
+        from ..mcp_client import decrypt_headers
         if not model.get("request_id"):
             return None
         name, request = call["function"]["name"], UUID(model["request_id"])
         if name in ("generate_image", "edit_image"):
-            from .models import ImageTask
-            from .image_tasks import TERMINAL, tool_read
+            from ..models import ImageTask
+            from ..image_tasks import TERMINAL, tool_read
             task = db.scalar(select(ImageTask).where(
                 ImageTask.agent_tool_execution_id == uuid5(UUID(model["id"]), call["id"]),
                 ImageTask.account_id == self.access.user_id,
@@ -252,8 +252,8 @@ class ContextManager:
             receipt = db.get(KnowledgeBaseToolExecution, uuid5(request, "knowledge-base-tool:" + activity))
             if receipt and receipt.account_id == self.access.user_id and receipt.user_id == self.access.user_id:
                 return receipt.result
-            from .models import CloudComputerCommand, CloudComputerSession
-            from .cloud_computer import tool_request_id
+            from ..models import CloudComputerCommand, CloudComputerSession
+            from ..cloud_computer import tool_request_id
             command = db.scalar(select(CloudComputerCommand).join(CloudComputerSession).where(
                 CloudComputerCommand.request_id == tool_request_id(request, activity),
                 CloudComputerSession.conversation_id == self.conversation_id,
@@ -266,7 +266,7 @@ class ContextManager:
                     return ({"error": file_result["error"], "status_code": file_result.get("status_code")}
                         if file_result.get("error") else file_result.get("value") or result)
                 return result
-        from .question_workbench import LABELS as WORKBENCH_NAMES
+        from ..question_workbench import LABELS as WORKBENCH_NAMES
         if name.startswith("mcp_") or name in WORKBENCH_NAMES:
             try:
                 args = json.loads(call["function"]["arguments"])
@@ -282,7 +282,7 @@ class ContextManager:
             receipt = db.scalar(select(RemoteToolExecution).where(*scope,
                 RemoteToolExecution.invocation_id == identifier))
             if receipt is None:
-                from .models import AgentToolExecution
+                from ..models import AgentToolExecution
                 executions = db.scalars(select(AgentToolExecution.id).where(
                     AgentToolExecution.request_id == request, AgentToolExecution.name == name)).all()
                 legacy = db.scalars(select(RemoteToolExecution).where(*scope,
@@ -295,8 +295,8 @@ class ContextManager:
         return None
 
     def read_result(self, arguments):
-        from .context_windows import decrypt_items
-        from .models import AgentToolExecution
+        from ..context_windows import decrypt_items
+        from ..models import AgentToolExecution
         try:
             identifier = UUID(arguments["result_id"])
             offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
@@ -316,7 +316,7 @@ class ContextManager:
                 return {"error": "该工具结果不存在或尚未确认"}
             message = decrypt_items(row.encrypted_result)[0]["message"]
             content = message.get("content") or ""
-            from .tool_result_reads import authorize, metadata, read
+            from ..tool_result_reads import authorize, metadata, read
             data = metadata(content)
             from fastapi import HTTPException
             try:
@@ -382,7 +382,7 @@ class ContextManager:
         return protected
 
     def _summary_input(self, tools, budget):
-        from .conversations.attachments import summary_content
+        from ..conversations.attachments import summary_content
         complete, pending = groups(self.bounded_items())
         protected = self.protected_ids()
         selected = list(complete) + ([pending] if pending else [])
@@ -451,7 +451,7 @@ class ContextManager:
                 if result is None or not result.content or not result.content.strip() or result.tool_calls:
                     raise LLMProviderError("整理未返回有效摘要")
                 return result
-            from .upstream_retries import retry_activity
+            from ..upstream_retries import retry_activity
             with retry_activity(check_active, emit, {"call_id": call_id, "name": "compact_context",
                     "label": "整理早期上下文", "kind": "compaction"}, finish=False):
                 try:
@@ -493,7 +493,7 @@ class ContextManager:
         except (LLMProviderError, LLMConfigurationError) as exc:
             self.attempted_revision = parent_revision
             with self.factory() as db:
-                from .models import ConversationContext
+                from ..models import ConversationContext
                 state = db.get(ConversationContext, self.conversation_id)
                 if state and state.revision == parent_revision and state.window_id == parent_window:
                     state.attempted_revision = parent_revision
@@ -521,7 +521,7 @@ class ContextManager:
 
     def read_original(self, arguments):
         from sqlalchemy import select
-        from .models import ChatMessage
+        from ..models import ChatMessage
         start, end = arguments.get("start_sequence"), arguments.get("end_sequence")
         offset, limit = arguments.get("offset", 0), arguments.get("limit", 4000)
         if (set(arguments) - {"start_sequence", "end_sequence", "offset", "limit"} or type(start) is not int

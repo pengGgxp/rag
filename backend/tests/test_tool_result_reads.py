@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.agent import run_retrieval_agent
-from app.agent_tools import bounded_message
+from app.agent.loop import run_retrieval_agent
+from app.agent.tools import bounded_message
 from app.llm import ToolCall, ToolResponse
 from app.models import Chunk, Document, DocumentStatus, KnowledgeBase, MCPServer, User, WorkspaceFile, WorkspaceFileVersion
 from test_agent_continuation import assistant, client, fresh_manager, tool_message

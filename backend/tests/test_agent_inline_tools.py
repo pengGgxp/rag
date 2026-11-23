@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth, cloud_computer as cloud, image_adapters, image_tasks, image_tools
 from app.conversations import execution as conversations
-from app.agent import AgentCancelled
+from app.agent.loop import AgentCancelled
 from app.credits import ensure_account
 from app.extensions import ExtensionRuntime
 from app.models import (AgentToolExecution, ChatMessage, Conversation, ImageTask,
@@ -190,7 +190,7 @@ def test_edit_uses_saved_reference_and_receipt_recovery_does_not_generate(inline
         {"prompt": "调整配图", "references": [{"id": reference["id"], "version": reference["version"]}]},
         agent_tool_execution_id=edit.id)
     assert edited["status"] == "completed" and len(attempts[1][-1]) == 1
-    from app.effective_context import ContextManager
+    from app.agent.effective_context import ContextManager
     receipt = ContextManager._business_receipt(SimpleNamespace(access=actor, conversation_id=conversation.id),
         db, {"id": str(edit.model_item_id), "request_id": str(runtime.request_id)},
         {"id": edit.call_id, "function": {"name": "edit_image"}})

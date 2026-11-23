@@ -88,7 +88,7 @@ def test_read_file_transfer_failure_is_safe_and_closes(error):
 
 
 def test_read_file_cancel_propagates_and_closes():
-    from app.agent import AgentCancelled
+    from app.agent.loop import AgentCancelled
 
     sandbox, download, response, _ = streamed_file([b"first", b"second"])
     provider = AlibabaSandbox.__new__(AlibabaSandbox)

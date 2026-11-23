@@ -40,7 +40,7 @@ def execute(runtime, name, arguments, *, agent_tool_execution_id=None, check_act
             payload = ImageInput.model_validate({**arguments, "operation": "edit" if name == "edit_image" else "generate"})
             if "operation" in arguments or not runtime.request_id or agent_tool_execution_id is None:
                 raise ValueError()
-            from .agent_tool_jobs import validate_owner
+            from .agent.tool_jobs import validate_owner
             validate_owner(db, agent_tool_execution_id, access, request_id=runtime.request_id)
             task = create(db, access, payload, str(agent_tool_execution_id),
                 agent_tool_execution_id=agent_tool_execution_id)

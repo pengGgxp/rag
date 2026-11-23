@@ -106,7 +106,7 @@ def steering_batch(factory, conversation_id, request_id, *, seal=False):
     with factory() as db:
         row, active = _steering_execution(db, conversation_id, request_id)
         if not active:
-            from ..agent import AgentCancelled
+            from ..agent.loop import AgentCancelled
             raise AgentCancelled()
         payload = _execution_payload(row)
         pending = [key for key, value in payload.get("steering", {}).items() if value["status"] == "pending"]
@@ -299,7 +299,7 @@ def queue_title(factory, conversation_id, request_id):
 
 def interrupt_execution(db, row):
     row.status, row.finished_at = "interrupted", datetime.now(timezone.utc)
-    from ..agent_tool_jobs import cancel_request
+    from ..agent.tool_jobs import cancel_request
     cancel_request(db, row.request_id)
     message = db.get(ChatMessage, row.message_id) if row.message_id else None
     if message and message.request_id == row.request_id and message.status == "streaming":

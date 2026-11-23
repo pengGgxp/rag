@@ -382,7 +382,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
     access = owner(db, access, conversation_id)
     if check_active:
         check_active()
-    from .agent_tool_jobs import validate_owner
+    from .agent.tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access, conversation_id)
     invocation_lock(db, request_id)
     digest = hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
@@ -444,7 +444,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
                 row.next_reconcile_at = None
                 db.commit()
             except Exception as error:
-                from .agent import AgentCancelled
+                from .agent.loop import AgentCancelled
                 if isinstance(error, AgentCancelled) and row.provider_id is None:
                     db.rollback()
                     db.refresh(row)
@@ -472,7 +472,7 @@ def create_computer(db, access, conversation_id, request_id, arguments, *,
 
 def submit(db, access, conversation_id, request_id, arguments, *, agent_tool_execution_id=None, dispatch_job=True):
     access = owner(db, access, conversation_id)
-    from .agent_tool_jobs import validate_owner
+    from .agent.tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access, conversation_id)
     file_operation = arguments.get("file_operation")
     if not file_operation or file_operation.get("name") not in {"list_files", "read_file", "inspect_image", "delete_file"}:
@@ -591,7 +591,7 @@ def _run(identifier, factory=SessionLocal, *, agent_tool_execution_id=None, chec
         def cancelled():
             db.refresh(command)
             if command.agent_tool_execution_id:
-                from .agent_tool_jobs import owner_active
+                from .agent.tool_jobs import owner_active
                 if not owner_active(db, command.agent_tool_execution_id):
                     command.cancel_requested = True
                     db.commit()
@@ -874,7 +874,7 @@ def _maintain(db, identifier):
             if command.agent_tool_execution_id is None:
                 dispatch(command.id)
             else:
-                from .agent_tool_jobs import owner_active
+                from .agent.tool_jobs import owner_active
                 if not owner_active(db, command.agent_tool_execution_id):
                     command.status, command.finished_at, command.cancel_requested = "cancelled", now(), True
                     command.result = {"status": "cancelled", "error": "执行已中断，命令尚未提交"}

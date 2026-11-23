@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .. import model_billing
 from .. import resource_mentions as resource_references
+from ..agent.effective_context import ContextManager
 from ..audit_log import record_audit
 from ..auth import Access, get_access
-from ..conversation_context import ContextManager, HISTORY_TOOL, build_messages
+from ..conversation_context import HISTORY_TOOL, build_messages
 from ..credits import CreditError, authorization_hold, authorization_hold_amount
 from ..db import get_db
 from ..extensions import ExtensionRuntime, defaults as extension_defaults, validate_selection
@@ -283,7 +284,7 @@ def stop(conversation_id: UUID, payload: StopRequest, db: Session = Depends(get_
     db.execute(update(Conversation).where(
         Conversation.id == conversation.id, Conversation.active_request_id == payload.request_id,
     ).values(active_request_id=None))
-    from ..agent_tool_jobs import cancel_request
+    from ..agent.tool_jobs import cancel_request
     cancel_request(db, payload.request_id)
     try:
         db.commit()

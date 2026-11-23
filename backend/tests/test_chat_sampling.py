@@ -8,7 +8,7 @@ import pytest
 
 from app import chat_sampling as sampling
 from app.conversations import jobs as conversation_jobs
-from app.agent import AgentCancelled
+from app.agent.loop import AgentCancelled
 from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider, ToolResponse
 from app.responses_socket import ResponsesSocket
 from auth_helpers import generation_response, model_id

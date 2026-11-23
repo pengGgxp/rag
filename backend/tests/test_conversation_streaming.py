@@ -522,7 +522,8 @@ def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app import auth
     from app.auth import Access
     from app.llm_providers import request_provider_config
-    from app.conversation_context import ContextManager, SUMMARY_PREFIX
+    from app.agent.effective_context import ContextManager
+    from app.conversation_context import SUMMARY_PREFIX
     from app.context_windows import encrypt_items, make_item
     from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)

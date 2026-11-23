@@ -14,7 +14,7 @@ from e2b.sandbox_sync.filesystem.filesystem import Filesystem
 from packaging.version import Version
 
 from app import upstream_retries as retry
-from app.agent import AgentCancelled
+from app.agent.loop import AgentCancelled
 from app.cloud_computer_adapter import AlibabaSandbox
 from app.image_reading import ImageReadError, read_image
 from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider

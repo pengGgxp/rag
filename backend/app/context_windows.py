@@ -146,7 +146,7 @@ class WindowStore:
         from .conversation_context import scope_digest
         scope = scope_digest(db, conversation, self.access)
         if request_id is not None and conversation.active_request_id != request_id:
-            from .agent import AgentCancelled
+            from .agent.loop import AgentCancelled
             raise AgentCancelled()
         return conversation, scope
 

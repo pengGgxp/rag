@@ -13,8 +13,9 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import model_billing
 from .. import resource_mentions as resource_references
-from ..agent import AgentCancelled, stream_retrieval_agent
-from ..conversation_context import ContextManager, HISTORY_TOOL, build_messages
+from ..agent.effective_context import ContextManager
+from ..agent.loop import AgentCancelled, stream_retrieval_agent
+from ..conversation_context import HISTORY_TOOL, build_messages
 from ..credits import settle_model_usage
 from ..extensions import ExtensionRuntime
 from ..llm import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider

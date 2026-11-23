@@ -150,7 +150,7 @@ def retry_activity(check_active, emit, activity, *, finish=True):
     except BaseException as error:
         if seen and finish:
             from .llm import LLMProviderError
-            from .agent import AgentCancelled
+            from .agent.loop import AgentCancelled
             cancelled = isinstance(error, AgentCancelled)
             emit(("tool_result", {**activity,
                 "status": "cancelled" if cancelled else "error" if isinstance(error, LLMProviderError) else "interrupted",

@@ -3,7 +3,8 @@ from uuid import uuid4
 
 import pytest
 
-from app.conversation_context import ContextManager, digest, scope_digest
+from app.agent.effective_context import ContextManager
+from app.conversation_context import digest, scope_digest
 from app.context_windows import ContextWindowError, make_item
 from app.models import AgentSkill, ContextCheckpoint, Conversation, ConversationContext, MCPServer, SiteSkill
 from test_context_windows import client, install, setup_store
@@ -30,7 +31,7 @@ def checkpoint(scope_case):
 
 
 def test_public_manager_is_main_replacement_manager():
-    from app.effective_context import ContextManager as EffectiveContextManager
+    from app.agent.effective_context import ContextManager as EffectiveContextManager
     assert ContextManager is EffectiveContextManager
 
 

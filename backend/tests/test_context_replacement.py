@@ -6,9 +6,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from app.agent import AgentCancelled
+from app.agent.loop import AgentCancelled
 from app.context_windows import ContextWindowError, make_item
-from app.conversation_context import ContextManager
+from app.agent.effective_context import ContextManager
 from app.llm import OpenAICompatibleChatProvider, ToolResponse
 from app.models import ChatMessage, ContextCheckpoint, ContextOperation, Conversation
 from test_context_windows import client, setup_store

@@ -13,7 +13,7 @@ import pytest
 
 from app import cloud_computer as cloud
 from app import image_reading
-from app.agent import stream_retrieval_agent
+from app.agent.loop import stream_retrieval_agent
 from app.conversations.attachments import model_messages, summary_content
 from app.cloud_file_operation import inspect_image, perform
 from app.extensions import ExtensionRuntime
@@ -446,7 +446,7 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
 @pytest.mark.parametrize("failure", ["cancel", "permission", "unauthorized", "forbidden", "bug"])
 def test_read_image_does_not_swallow_cancel_permission_or_programming_errors(failure):
     from fastapi import HTTPException
-    from app.agent import AgentCancelled
+    from app.agent.loop import AgentCancelled
 
     errors = {"cancel": AgentCancelled(), "permission": PermissionError("denied"),
         "unauthorized": HTTPException(401, "denied"), "forbidden": HTTPException(403, "denied"),
