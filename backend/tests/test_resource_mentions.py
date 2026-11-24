@@ -4,7 +4,9 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import auth, workspace_files
+from app import workspace_files
+
+from app.identity import auth
 from app.conversations import execution as chat
 from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (ChatAttachment, ChatMessage, CloudComputerCommand, CloudComputerSession,

@@ -11,7 +11,7 @@ import httpx
 from httpx_sse import EventSource
 from sqlalchemy import delete, select
 
-from app import auth
+from app.identity import auth
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import (CreditAccount, CreditLedgerEntry, LoginSession, ModelBillingSettings,

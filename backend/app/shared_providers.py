@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 
-from .auth import Access, get_access
+from .identity.auth import Access, get_access
 from .db import get_db
 from .llm_providers import _encrypt_api_key, _decrypt_api_key, validate_base_url
 from .model_connections import connection_for, lock_connection, router as connection_router
@@ -20,7 +20,7 @@ from .models import (
     UserModelPolicy,
     User,
 )
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 from .thinking import ThinkingConfig, public_capability
 from .model_capabilities import ChatProtocol, ImageConfig

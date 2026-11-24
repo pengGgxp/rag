@@ -11,7 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app import auth, main, storage_billing, tasks
+from app import main, storage_billing, tasks
+
+from app.identity import auth
 from app.knowledge.ingestion import uploads as document_uploads
 from app.knowledge.ingestion.recovery import recover_interrupted_ingestion, worker_claim
 from app.models import Document, DocumentStatus, DocumentUpload, IngestionJob, JobState, KnowledgeBase, LoginSession, User

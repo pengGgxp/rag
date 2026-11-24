@@ -48,7 +48,8 @@ def main():
         get_settings.cache_clear()
         subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=Path(__file__).resolve().parents[1], check=True, stdout=subprocess.DEVNULL)
-        from app import auth, main as application, storage_downloads
+        from app import main as application, storage_downloads
+        from app.identity import auth
         from app.models import UserCreditAccount, LoginSession, User, WorkspaceFile, WorkspaceFileVersion
         from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer
         from app.db import get_db

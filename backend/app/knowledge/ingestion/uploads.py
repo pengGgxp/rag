@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import OperationalError
 
-from ...auth import Access, aware, now, get_access
+from ...identity.auth import Access, aware, now, get_access
 from ...db import get_db, SessionLocal
 from .failures import classify, database_sqlstate, failure, log_worker_failure, rejection
 from .admission import publish, replacement_target, check_format, MAX_DOCUMENT_BYTES, SUFFIXES

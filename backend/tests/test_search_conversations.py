@@ -5,7 +5,9 @@ from uuid import UUID
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
-from app import site_auth, web_search
+from app import web_search
+
+from app.identity import site_auth
 from app.conversations import execution as chat
 from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import ModelBillingSettings, ModelUsageRequest, SearchToolCall, SiteSearchSettings

@@ -7,7 +7,9 @@ from fastapi import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, file_preview_access as preview
+from app import file_preview_access as preview
+
+from app.identity import auth
 from app.models import UserCreditAccount, CreditLedgerEntry, User, WorkspaceFile, WorkspaceFileVersion
 from app.shared_resources import object_key
 from app.storage_models import StorageTransfer

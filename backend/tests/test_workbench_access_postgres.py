@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, site_admin
+from app.identity import auth, site_admin
 from app.models import QuestionWorkbenchGrant, User
 from test_auth_postgres import auth_postgres
 

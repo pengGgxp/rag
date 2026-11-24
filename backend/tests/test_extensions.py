@@ -8,7 +8,7 @@ from httpx_sse import EventSource
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app.identity import auth
 from app.conversations import execution as conversations
 from app.conversation_context import scope_digest
 from app.extensions import ExtensionRuntime

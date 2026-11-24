@@ -8,7 +8,9 @@ from cryptography.hazmat.primitives import serialization
 from pydantic import SecretStr
 import pytest
 
-from app import payments, site_auth
+from app import payments
+
+from app.identity import site_auth
 from app.config import Settings
 from app.models import SiteAuditEvent, SitePaymentConfig, User
 from test_auth import PASSWORD, register

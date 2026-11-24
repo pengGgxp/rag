@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import llm_providers, workspace_billing, workspace_files
 from app.images import adapters as image_adapters, tasks as image_tasks
-from app.auth import Access, digest, now
+from app.identity.auth import Access, digest, now
 from app.credits import ensure_account
 from app.images.schemas import ImageInput
 from app.model_capabilities import ImageConfig

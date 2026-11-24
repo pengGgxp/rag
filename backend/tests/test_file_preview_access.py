@@ -3,7 +3,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app import auth, file_preview_access as preview
+from app import file_preview_access as preview
+
+from app.identity import auth
 from app.models import ChatAttachment, Document, DocumentStatus, KnowledgeBase, UsageEvent
 from app.storage_models import StorageTransfer
 from test_auth import library, register

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from .auth import Access, get_access, now, aware
+from .identity.auth import Access, get_access, now, aware
 from .db import get_db
 from .models import WorkspaceFile, WorkspaceFileVersion, WorkspaceExecutionJob
 from .storage import download_fileobj, upload_fileobj

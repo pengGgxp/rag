@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app import auth
+from app.identity import auth
 from app.conversations.attachments import select_attachments
 from app.model_runtime.client import ChatProviderConfig
 from app.models import ChatAttachment, ChatMessage, Conversation, User

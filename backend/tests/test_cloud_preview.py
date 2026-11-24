@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import cloud_computer as cloud, cloud_preview as preview, preview_gateway as gateway
-from app.auth import aware
+from app.identity.auth import aware
 from app.config import get_settings
 from app.models import CloudPreview, CloudPreviewGrant, LoginSession
 from test_auth import accounts, register

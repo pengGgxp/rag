@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from sqlalchemy import delete, select
 
-from .auth import digest, now
+from .identity.auth import digest, now
 from .config import get_settings
 from .db import SessionLocal
 from .models import AuthToken, User, SiteAuthAudit

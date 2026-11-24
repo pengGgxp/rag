@@ -21,13 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app import auth, cloud_computer as cloud, llm_providers, main
+from app import cloud_computer as cloud, llm_providers, main
+from app.identity import auth
 from app.conversations import jobs as conversation_jobs, execution as conversations
 from app import shared_resources, storage_backend, storage_downloads, workspace_files
 from app.db import Base, engine, SessionLocal
 from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import CloudComputerSettings, ModelBillingSettings, SiteStorageSettings
-from app.site_auth import protect
+from app.identity.site_auth import protect
 from auth_helpers import authenticate, configured_model
 from cloud_command_fixtures import LocalFileCloud
 from test_cloud_computer_mount import MemoryMount

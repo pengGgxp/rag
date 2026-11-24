@@ -8,7 +8,9 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, conversation_documents as saves, main, storage
+from app import conversation_documents as saves, main, storage
+
+from app.identity import auth
 from app.knowledge.ingestion import admission as document_ingestion
 from app.extensions import ExtensionRuntime
 from app.models import (ChatMessage, ConversationDocumentSave, Document, DocumentStatus, IngestionJob,

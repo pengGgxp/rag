@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, model_billing, search_billing, search_settings, web_search
+from app import model_billing, search_billing, search_settings, web_search
+
+from app.identity import auth
 from app.models import UserCreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelUsageRequest, SearchToolCall, SiteSearchSettings, UsageEvent, UserModelPolicy
 from test_model_billing import metered, call
 from test_web_search import configuration, search_admin

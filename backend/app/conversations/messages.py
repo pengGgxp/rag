@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
 from .. import resource_mentions as resource_references
-from ..auth import Access
+from ..identity.auth import Access
 from ..models import ChatMessage, ContextCheckpoint, Conversation, Document, DocumentStatus, KnowledgeBaseStatus
 from .attachments import attachment_read
 from .feedback import feedback_read

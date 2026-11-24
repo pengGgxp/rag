@@ -10,7 +10,9 @@ from alembic.operations import Operations
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+
+from app.identity import auth
 from app.credits import authorization_hold, ensure_account
 from app.models import (
     CloudComputerSession as Computer, Conversation, UserCreditAccount, CreditLedgerEntry,

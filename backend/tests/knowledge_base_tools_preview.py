@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app import auth, llm_providers, main, tasks
+from app import llm_providers, main, tasks
+from app.identity import auth
 from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.db import Base, engine, SessionLocal
 from app.model_runtime.client import ToolCall, ToolResponse

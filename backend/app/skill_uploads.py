@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from .auth import Access, aware, get_access, now
+from .identity.auth import Access, aware, get_access, now
 from .db import SessionLocal, get_db
 from .models import SkillUpload
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .storage_backend import current_storage
 
 router = APIRouter(tags=["skill-uploads"])

@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import text
 
-from .auth import get_access
+from .identity.auth import get_access
 from .credit_amounts import CreditRate
 from .db import get_db
 from .models import SiteSearchSettings
-from .site_auth import protect, reveal, site_admin
+from .identity.site_auth import protect, reveal, site_admin
 from .site_audit import record
 from .web_search import CAPABILITIES, SearchConfig
 
@@ -133,7 +133,7 @@ def test_settings(payload: SearchTestInput, request: Request, db=Depends(get_db)
     from . import model_billing
     from .models import ModelUsageRequest
     from .search_billing import SearchRuntime
-    from .auth import rate_limit
+    from .identity.auth import rate_limit
     config = runtime_config(db)
     if not config or not model_billing.enabled(db):
         raise HTTPException(422, "请先保存并启用完整的联网搜索配置")

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from .auth import get_access
+from .identity.auth import get_access
 from .db import get_db
 from .knowledge.ingestion.admission import stage_upload, dispatch_ingestion
 from .models import (ChatMessage, Chunk, Conversation, ConversationDocumentSave, Document,

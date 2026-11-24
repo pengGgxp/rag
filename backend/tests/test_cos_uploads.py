@@ -10,7 +10,9 @@ from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, site_auth, storage_settings, tasks
+from app import storage_settings, tasks
+
+from app.identity import auth, site_auth
 from app.knowledge.ingestion import pipeline
 from app.knowledge.ingestion import uploads as uploads
 from app.cos_storage import CosStorage

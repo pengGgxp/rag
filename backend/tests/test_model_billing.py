@@ -267,7 +267,8 @@ def test_disconnect_waits_for_inflight_model_usage_then_settles(metered, monkeyp
     import asyncio
     import json
     from threading import Event
-    from app import auth, main
+    from app import main
+    from app.identity import auth
     from app.conversations import execution as conversations
     owner, db, workspace, user = metered
     entered, release = Event(), Event()

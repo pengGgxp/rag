@@ -430,5 +430,5 @@ class AlibabaSandbox:
             sandbox.commands.kill(process_id)
 
 def adapter(config, encrypted_key):
-    from .site_auth import reveal
+    from .identity.site_auth import reveal
     return AlibabaSandbox(config, reveal(encrypted_key))

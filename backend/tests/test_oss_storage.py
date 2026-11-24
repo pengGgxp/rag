@@ -13,7 +13,9 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import migrate_storage, site_auth, storage_backend, storage_settings, tasks
+from app import migrate_storage, storage_backend, storage_settings, tasks
+
+from app.identity import site_auth
 from app.knowledge.ingestion import pipeline
 from app.models import (
     ChatAttachment, DocumentStatus, KnowledgeBase, SiteAuditEvent, SiteStorageSettings,

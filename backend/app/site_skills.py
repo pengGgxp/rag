@@ -14,12 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
 from .db import get_db
-from .auth import get_access
+from .identity.auth import get_access
 from .models import SiteSkill, SiteSkillFile
 from .site_skill_packages import decode_files, encode_files, review
 from . import skill_files
 from .skill_files import text_content, unzip
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 
 router = APIRouter(prefix="/site/admin/skills", tags=["site-skills"])

@@ -5,7 +5,8 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+from app.identity import auth
 from app.db import SessionLocal
 from app.models import CloudComputerSession, Conversation, LoginSession
 import acceptance_runtime

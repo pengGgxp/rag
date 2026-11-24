@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
-from .auth import Access, get_access
+from .identity.auth import Access, get_access
 from .db import get_db
 from .models import AuditLog, User
 

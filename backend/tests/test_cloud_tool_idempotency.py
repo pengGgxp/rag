@@ -7,7 +7,9 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+
+from app.identity import auth
 from app.agent.loop import AgentCancelled, run_retrieval_agent
 from app.credits import ensure_account
 from app.extensions import ExtensionRuntime

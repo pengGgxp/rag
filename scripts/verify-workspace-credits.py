@@ -5,7 +5,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import delete, func, select
 
-from app import auth
+from app.identity import auth
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import CreditLedgerEntry, LoginSession, ModelBillingSettings, SiteAuditEvent, User

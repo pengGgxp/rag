@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from sqlalchemy import select
 
 from . import mcp_client
-from .auth import get_access
+from .identity.auth import get_access
 from .db import get_db
 from .models import MCPServer
 from .personal_skills import owned, audit

@@ -7,7 +7,9 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, shared_resources, workspace_mutations as mutations
+from app import shared_resources, workspace_mutations as mutations
+
+from app.identity import auth
 from app.models import WorkspaceFileOperation
 from test_auth_postgres import auth_postgres
 from test_cloud_computer_mount import MemoryMount

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .auth import Access, get_access
+from .identity.auth import Access, get_access
 from .config import get_settings
 from .models import (
     CreditLedgerEntry,

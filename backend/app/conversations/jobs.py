@@ -12,7 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import model_billing
-from ..auth import Access
+from ..identity.auth import Access
 from ..credits import settle_model_usage
 from ..db import SessionLocal
 from ..mcp_client import decrypt_headers, encrypt_headers

@@ -1,7 +1,7 @@
 import secrets
 from datetime import timedelta
 
-from app.auth import COOKIE, digest, now
+from app.identity.auth import COOKIE, digest, now
 from app.models import LoginSession, User
 from app.model_runtime.client import OpenAICompatibleChatProvider
 

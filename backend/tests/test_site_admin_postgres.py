@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app import auth
+from app.identity import auth
 from app.models import LoginSession, User
 from test_auth_postgres import auth_postgres
 

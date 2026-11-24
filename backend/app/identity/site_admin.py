@@ -2,42 +2,25 @@
 from datetime import datetime, timedelta, timezone
 import secrets
 from uuid import UUID
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import String, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from . import auth
-from .db import get_db
-from .email_auth import email_rate_limit
-from .models import (
+from ..db import get_db
+from ..models import (
     CreditLedgerEntry, ExternalIdentity, LoginSession,
     SiteAuditEvent, User, UserCreditAccount, UserModelPolicy, QuestionWorkbenchGrant,
 )
-from .site_auth import site_admin, send_mail
-from .site_audit import record, RETENTION_DAYS
-from .credit_amounts import CreditRate
+from ..model_billing import pending_credits
+from ..site_audit import record, RETENTION_DAYS
+from ..credits import adjust_balance
+from . import auth
+from .email_auth import email_rate_limit
+from .schemas import CreditAdjustment, UserModelPolicyUpdate, UserStatus, WorkbenchAccess
+from .site_auth import send_mail, site_admin
 
 router = APIRouter(prefix="/site/admin", tags=["site-admin"])
-
-
-class CreditAdjustment(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    request_id: UUID
-    direction: Literal["add", "deduct"]
-    amount: CreditRate = Field(gt=0)
-    expected_balance: CreditRate
-    reason: str = Field(min_length=1, max_length=200)
-
-    @field_validator("reason")
-    @classmethod
-    def nonempty_reason(cls, value):
-        value = value.strip()
-        if not value:
-            raise ValueError("请填写调整原因")
-        return value
 
 
 def credit_values(account):
@@ -131,7 +114,6 @@ def get_user(user_id: UUID, db: Session = Depends(get_db), actor: User = Depends
 
 @router.get("/users/{user_id}/credits")
 def user_credits(user_id: UUID, db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    from .model_billing import pending_credits
     if db.get(User, user_id) is None:
         raise HTTPException(404, "用户不存在")
     entries = db.execute(select(CreditLedgerEntry, User.name)
@@ -147,7 +129,6 @@ def user_credits(user_id: UUID, db: Session = Depends(get_db), actor: User = Dep
 @router.post("/users/{user_id}/credits/adjustments")
 def adjust_user_credits(user_id: UUID, payload: CreditAdjustment, request: Request,
                         db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    from .credits import adjust_balance
     account, entry, created = adjust_balance(db, user_id, actor.id, payload.request_id,
         payload.amount if payload.direction == "add" else -payload.amount,
         payload.reason, payload.expected_balance)
@@ -159,26 +140,6 @@ def adjust_user_credits(user_id: UUID, payload: CreditAdjustment, request: Reque
     return response
 
 
-class UserStatus(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    suspended: bool
-    reason_code: str = Field(default="support_review", pattern=r"^(support_review|abuse|security|resolved)$")
-
-
-class WorkbenchAccess(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool
-    version: int = Field(ge=0)
-
-
-class UserModelPolicyUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    available_models: list[UUID] = Field(max_length=100)
-    default_model: UUID | None = None
-    billing_multiplier_percent: int = Field(ge=1, le=10000, strict=True)
-    version: int = Field(ge=0, strict=True)
-
-
 @router.put("/users/{user_id}/model-policy")
 def set_user_model_policy(
     user_id: UUID,
@@ -187,7 +148,7 @@ def set_user_model_policy(
     db: Session = Depends(get_db),
     actor: User = Depends(site_admin),
 ):
-    from .models import SiteModelProvider
+    from ..models import SiteModelProvider
 
     user = db.scalar(select(User).where(User.id == user_id).with_for_update())
     if user is None:
@@ -284,7 +245,7 @@ def resend_verification(user_id: UUID, request: Request, db: Session = Depends(g
         email_rate_limit(request, db, user.email, f"site-admin-verify:{user.id}")
         auth.rate_limit(request, "admin-verification", str(user.id), limit=3)
         raw = secrets.token_urlsafe(48)
-        from .models import AuthToken
+        from ..models import AuthToken
         previous = db.scalar(select(AuthToken).where(AuthToken.user_id == user.id, AuthToken.purpose == "site_verify"))
         if previous and auth.aware(previous.expires_at) > auth.now()+timedelta(minutes=29):
             raise HTTPException(429, "请等待 60 秒后重新发送")

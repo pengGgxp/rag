@@ -18,7 +18,9 @@ from cryptography.fernet import Fernet
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import auth, main, storage_settings, tasks
+from app import main, storage_settings, tasks
+
+from app.identity import auth
 from app.knowledge.ingestion import uploads as document_uploads
 from app.db import Base, SessionLocal, engine
 from app.models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, User

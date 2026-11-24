@@ -6,7 +6,7 @@ from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from starlette.datastructures import Headers
 
-from app import auth
+from app.identity import auth
 from app.knowledge import routes as knowledge_routes
 from app.models import Document, IngestionJob, KnowledgeBase, LoginSession
 from test_auth import library, register

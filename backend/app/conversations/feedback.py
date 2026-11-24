@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from ..auth import Access, get_access
+from ..identity.auth import Access, get_access
 from ..db import get_db
 from ..models import AnswerFeedback, ChatMessage, Conversation
 from ..audit_log import record_audit

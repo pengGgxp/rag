@@ -6,7 +6,9 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud, cloud_preview as preview
+from app import cloud_computer as cloud, cloud_preview as preview
+
+from app.identity import auth
 from app.models import CloudComputerCommand, CloudPreview, UserCreditAccount, CreditLedgerEntry, UsageEvent
 from test_auth_postgres import auth_postgres
 from test_cloud_computer import FakeCloud

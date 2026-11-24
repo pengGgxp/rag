@@ -4,7 +4,7 @@ from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy import select, update
 
-from ..auth import aware, now
+from ..identity.auth import aware, now
 from ..models import AgentToolExecution, CloudComputerCommand, Conversation, ConversationExecution, ImageTask
 
 

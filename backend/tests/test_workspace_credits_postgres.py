@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, main
+from app import main
+
+from app.identity import auth
 from app.credits import adjust_balance
 from app.models import UserCreditAccount, CreditLedgerEntry, SiteAuditEvent
 from app.site_audit import record

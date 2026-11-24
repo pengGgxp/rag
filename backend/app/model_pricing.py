@@ -8,7 +8,7 @@ from .db import get_db
 from .model_billing import CAPABILITIES
 from .models import (ContextOperation, Conversation, LLMProviderConfig, ModelBillingSettings,
                      ModelConnection, ModelUsageRequest, SiteModelProvider, UsagePolicy, User)
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 from .credit_amounts import CreditRate
 

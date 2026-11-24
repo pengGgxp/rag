@@ -24,9 +24,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from . import auth
+from .identity import auth
 from .audit_log import record_audit
-from .auth import Access, aware, get_access, now
+from .identity.auth import Access, aware, get_access, now
 from .config import Settings, get_settings
 from .client_ip import payment_client_ip
 from .credits import recharge
@@ -76,7 +76,7 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
         raise HTTPException(503, "支付渠道配置版本不存在")
     if row is None:
         return settings, None
-    from .site_auth import reveal
+    from .identity.site_auth import reveal
     secret = reveal(row.encrypted_secret) if row.encrypted_secret else ""
     if provider_key == EZFP_PROVIDER_KEY:
         credentials = {}
@@ -111,7 +111,7 @@ def effective_settings(db, *, base=None, version=None, provider_key=PROVIDER_KEY
 
 def payment_admin_view(db, provider_key=PROVIDER_KEY):
     settings, version = effective_settings(db, provider_key=provider_key)
-    from .site_auth import cipher, reveal
+    from .identity.site_auth import cipher, reveal
     try:
         cipher()
         encryption_ready = True

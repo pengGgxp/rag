@@ -222,7 +222,7 @@ def test_legacy_mount_mode_cannot_read_resource_bodies(accounts, monkeypatch):
 def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatch, resource_store):
     from app import oss_storage
     from app.cloud_computer_adapter import AlibabaSandbox
-    from app.site_auth import protect, reveal
+    from app.identity.site_auth import protect, reveal
     client, db, conversation, access, _, factory = setup(accounts, monkeypatch, rate="1")
     raw = Path(os.environ["RAG_MOUNT_CREDENTIAL_FILE"]).read_text(encoding="utf-8-sig")
     cloud_key = re.search(r"(?im)^\s*apikey\s*[:：=]\s*(\S+)", raw).group(1)

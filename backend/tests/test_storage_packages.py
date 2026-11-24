@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from app import storage_billing as billing
-from app.auth import Access, now
+from app.identity.auth import Access, now
 from app.models import AgentSkill, UserCreditAccount, CreditLedgerEntry, WorkspaceFile, WorkspaceFileVersion
 from app.storage_downloads import MeteredResponse, byte_range
 from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer

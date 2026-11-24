@@ -6,7 +6,7 @@ from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from ...audit_log import record_audit
-from ...auth import Access
+from ...identity.auth import Access
 from ...credits import release_embedding_hold
 from ...models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
 from . import failures as document_failures

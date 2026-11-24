@@ -19,7 +19,7 @@
 
 ## Access：从登录记录得到身份
 
-实现入口：`backend/app/auth.py`。
+实现入口：`backend/app/identity/auth.py`。
 
 1. 浏览器请求携带登录 Cookie。
 2. FastAPI 的 `Depends(get_access)` 先执行依赖 `current_session`。
@@ -207,7 +207,7 @@ Issue #102 将环境观察、记忆和工具执行进一步分开。文件增删
 
 | 文件 | 关注入口 |
 | --- | --- |
-| `backend/app/auth.py` | `current_session`、`Access`、`get_access` |
+| `backend/app/identity/auth.py` | `current_session`、`Access`、`get_access` |
 | `backend/app/conversations.py` | 聊天接口的 `Depends(get_access)`、生成函数创建 `ExtensionRuntime` |
 | `backend/app/extensions.py` | `ExtensionRuntime.__init__`、`execute` |
 | `backend/app/agent.py` | 工具调用循环与运行时分派 |

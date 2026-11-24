@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import cloud_experience_fixture as fixture
 from app import cloud_computer as cloud
-from app.auth import Access, digest
+from app.identity.auth import Access, digest
 from app.models import CloudPreview, UserCreditAccount
 
 app = fixture.app

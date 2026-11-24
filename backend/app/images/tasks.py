@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from ..auth import Access
+from ..identity.auth import Access
 from ..credit_amounts import amount
 from ..credits import authorization_hold, ensure_account, release_hold, _entry
 from ..db import SessionLocal
@@ -79,7 +79,7 @@ def dispatch(identifier):
 
 def recover(factory=None, *, agent_only=False):
     """恢复文件交付或排队任务，不重放结果未确认的上游调用。"""
-    from ..auth import aware
+    from ..identity.auth import aware
     with (factory or SessionLocal)() as db:
         query = select(ImageTask).where(ImageTask.status.in_(("queued", "saving", "running")))
         if agent_only:

@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from PIL import Image
 
-from app import auth
+from app.identity import auth
 from app.models import WorkspaceFile, WorkspaceFileVersion
 from app.shared_resources import object_key
 from test_auth import register

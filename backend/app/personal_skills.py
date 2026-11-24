@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from . import skill_files
-from .auth import get_access
+from .identity.auth import get_access
 from .audit_log import record_audit
 from .db import get_db
 from .models import WorkspaceFile, WorkspaceFileVersion

@@ -7,7 +7,9 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app import auth, workspace_files
+from app import workspace_files
+
+from app.identity import auth
 from app.models import SiteSkill, SiteSkillFile, WorkspaceSkillInstall
 from test_auth import register, share, switch
 from test_shared_providers import setup_site

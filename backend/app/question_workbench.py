@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from .auth import Access, aware, digest, get_access, now
+from .identity.auth import Access, aware, digest, get_access, now
 from .audit_log import record_audit
 from .config import get_settings
 from .db import get_db

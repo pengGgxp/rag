@@ -11,7 +11,9 @@ from alembic.operations import Operations
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+
+from app.identity import auth
 from app.models import CloudComputerSettings, Conversation, LoginSession, UserCreditAccount
 from test_auth_postgres import auth_postgres
 from test_cloud_computer import FakeCloud

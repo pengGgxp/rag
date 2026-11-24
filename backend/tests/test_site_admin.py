@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import auth, site_admin
+from app.identity import auth, site_admin
 from app.models import (
     AuthToken, ExternalIdentity, LoginSession, SiteAuditEvent, SiteAuthSettings,
     SiteModelProvider, User, UserCreditAccount, UserModelPolicy,

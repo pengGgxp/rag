@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, file_preview_access, tasks
+from app import file_preview_access, tasks
+
+from app.identity import auth
 from app.knowledge.ingestion import pipeline
 from app.knowledge import routes as knowledge_routes
 from app.knowledge.originals import original_key, prefix, resolve_citation

@@ -5,11 +5,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from ..auth import aware, get_access
+from ..identity.auth import aware, get_access
 from ..db import get_db
 from ..model_capabilities import ImageConfig
 from ..models import ImageModelSettings, ImageTask, ModelConnection, SiteModelProvider
-from ..site_auth import site_admin
+from ..identity.site_auth import site_admin
 from .schemas import CreateInput, ImageInput, Resolution, SettingsInput
 from .tasks import create, dispatch, owned, read, save_outputs, settle
 

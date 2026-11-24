@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, select, update
 
 from . import cloud_computer as cloud
-from .auth import Access, aware, get_access, now
+from .identity.auth import Access, aware, get_access, now
 from .config import get_settings
 from .db import get_db
 from .models import CloudPreview as Preview, CloudPreviewGrant as Grant, ChatMessage
@@ -137,7 +137,7 @@ def finish_command(db, command, computer, provider, sandbox):
         command.result = {**command.result, "preview": read(row)}
         return
     if command.status == "completed":
-        from .site_auth import protect
+        from .identity.site_auth import protect
         host, token = provider.preview_target(sandbox, row.port, row.command_id)
         if not token:
             raise RuntimeError("provider did not supply authenticated HTTP traffic")

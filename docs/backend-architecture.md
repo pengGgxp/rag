@@ -3,6 +3,34 @@
 本文记录 Issue #146 已迁移的后端目录。后端按业务组织为模块化单体。
 `app.main` 负责 FastAPI 装配，API、Celery Worker 和其他进程入口共用业务模块。
 
+## 身份与账号模块
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.identity.auth` | 账号注册、登录、会话、访问身份、权限检查和 OIDC |
+| `app.identity.email_auth` | 邮箱验证、邮件登录和注册流程 |
+| `app.identity.wechat_auth` | 微信登录、身份绑定与解绑 |
+| `app.identity.site_auth` | 站点认证配置、邮件服务、凭据加解密和管理员鉴权 |
+| `app.identity.site_admin` | 站点用户、账号状态、会话撤销及账号相关管理路由 |
+| `app.identity.schemas` | 身份、认证设置和账号管理 API 的 Pydantic 请求模型 |
+| `app.identity.auth_logging` | 认证回调与供应商凭据的日志过滤 |
+
+`app.main` 注册身份路由，保留 FastAPI 应用入口。其他业务模块直接从 `app.identity.auth`
+导入 `Access`、会话和鉴权能力。用户创建仍在原事务中初始化积分账户；站点账号管理路由
+继续调用现有账务能力处理积分调整和待结算余额，不改变事务边界与账务规则。
+
+| 原模块 | 当前模块 |
+| --- | --- |
+| `app.auth` | `app.identity.auth` |
+| `app.email_auth` | `app.identity.email_auth` |
+| `app.wechat_auth` | `app.identity.wechat_auth` |
+| `app.site_auth` | `app.identity.site_auth` |
+| `app.site_admin` | `app.identity.site_admin` |
+| `app.auth_logging` | `app.identity.auth_logging` |
+
+所有仓库内调用方使用新模块路径，不保留旧顶层兼容层。全局 SQLAlchemy 模型、站点审计、
+配置和数据库连接仍留在原位置，由后续相应业务批次再评审其归属。
+
 ## 知识库模块
 
 ```text

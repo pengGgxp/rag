@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app import auth
-from app.auth import Access
+from app.identity import auth
+from app.identity.auth import Access
 from app.context_windows import ContextWindowError, WindowStore, make_item
 from app.model_runtime.client import ChatProviderConfig
 from app.models import Conversation, LoginSession, LLMProviderConfig, SiteModelProvider

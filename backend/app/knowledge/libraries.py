@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..audit_log import record_audit
-from ..auth import Access
+from ..identity.auth import Access
 from ..models import Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus
 from .schemas import KnowledgeBaseCreate, KnowledgeBaseRead, KnowledgeBaseUpdate
 

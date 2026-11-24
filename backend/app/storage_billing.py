@@ -8,13 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select, text
 
-from .auth import Access, aware, get_access, now
+from .identity.auth import Access, aware, get_access, now
 from .audit_log import record_audit
 from .credit_amounts import CreditRate
 from .credits import _entry, ensure_account
 from .db import get_db
 from .models import AgentSkill, ChatAttachment, Document, DocumentUpload, KnowledgeBase, User, WorkspaceFile, WorkspaceFileVersion
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 from .storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
 

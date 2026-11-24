@@ -62,7 +62,7 @@ def test_document_template_is_live_and_never_copies_workspace_policies(accounts)
 def test_template_and_signup_rollback_together(accounts):
     owner, db, _ = administrator(accounts)
     owner.put("/site/admin/pricing-template", json=template())
-    from app.auth import create_user
+    from app.identity.auth import create_user
     user = create_user(db, "rollback@example.com", "Rollback")
     workspace = user.id
     assert db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace)).all() == []

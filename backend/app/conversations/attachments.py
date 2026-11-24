@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from ..auth import Access, aware, get_access, now
+from ..identity.auth import Access, aware, get_access, now
 from ..db import get_db
 from ..models import ChatAttachment, ChatMessage, Conversation, Document, WorkspaceFile, WorkspaceFileVersion
 from ..storage import download_fileobj, upload_fileobj
