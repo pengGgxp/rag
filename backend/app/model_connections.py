@@ -102,7 +102,7 @@ def model_presets(actor=Depends(site_admin)):
 
 @router.get("/image-presets")
 def image_presets(actor=Depends(site_admin)):
-    from .image_presets import catalog
+    from .images.presets import catalog
     return catalog()
 
 

@@ -24,6 +24,7 @@
 - 开始修改前先阅读相关代码、配置和现有约定。
 - 优先遵循仓库已有的框架、模块边界、命名和测试模式。
 - 新增或修改代码的注释与 docstring 使用中文；Python docstring 按 Google Python Style Guide 组织，按需包含 Args、Returns、Raises 和 Examples。
+- 图片生成、编辑、任务和供应商适配归 `backend/app/images/`；图像理解与会话附件仍由共享调用方模块维护，调整其边界前先单独讨论。
 - 前端创建或修改组件前，必须先检索 `frontend/components/ui` 和现有业务组件，优先复用或扩展已有入口；具体规则以 `docs/design-system.md` 的“组件复用与扩展规范”为准。
 - 变更应保持范围清晰，避免无关重构。
 - 对涉及权限、索引、文档版本、删除、异步任务和引用的改动，补充针对性测试或验证。

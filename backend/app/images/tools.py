@@ -1,11 +1,12 @@
-"""Server-bound image tools; model arguments never select an owner or supplier."""
+"""绑定服务端身份的图片工具，不允许模型参数选择用户或供应商。"""
 import json
 from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from .image_tasks import ImageInput, create, owned, run, selected_model, tool_read
+from .schemas import ImageInput
+from .tasks import create, owned, run, selected_model, tool_read
 
 LABELS = {"generate_image": "生成图片", "edit_image": "编辑图片"}
 
@@ -40,14 +41,14 @@ def execute(runtime, name, arguments, *, agent_tool_execution_id=None, check_act
             payload = ImageInput.model_validate({**arguments, "operation": "edit" if name == "edit_image" else "generate"})
             if "operation" in arguments or not runtime.request_id or agent_tool_execution_id is None:
                 raise ValueError()
-            from .agent.tool_jobs import validate_owner
+            from ..agent.tool_jobs import validate_owner
             validate_owner(db, agent_tool_execution_id, access, request_id=runtime.request_id)
             task = create(db, access, payload, str(agent_tool_execution_id),
                 agent_tool_execution_id=agent_tool_execution_id)
             def progress(value):
                 if on_progress:
                     on_progress({"image_task": value, "summary": value["summary"]})
-            from .image_tasks import notify
+            from .tasks import notify
             notify(owned(db, access, UUID(task["task_id"])), progress)
             db.commit()
             run(task["task_id"], runtime.factory, agent_tool_execution_id=agent_tool_execution_id,
@@ -57,5 +58,5 @@ def execute(runtime, name, arguments, *, agent_tool_execution_id=None, check_act
         except (ValidationError, ValueError, TypeError):
             return {"error": "图片参数不完整，请检查提示词、规格和参考资源", "error_code": "image_arguments"}
         except HTTPException as exc:
-            from .tool_errors import public_error
+            from ..tool_errors import public_error
             return {"error": public_error(exc.detail), "status_code": exc.status_code}

@@ -5,7 +5,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from app import image_adapters as adapter
+from app.images import adapters as adapter
 
 
 def encoded_image():

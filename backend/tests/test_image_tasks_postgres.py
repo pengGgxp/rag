@@ -9,10 +9,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import image_adapters, image_tasks, llm_providers, workspace_billing, workspace_files
+from app import llm_providers, workspace_billing, workspace_files
+from app.images import adapters as image_adapters, tasks as image_tasks
 from app.auth import Access, digest, now
 from app.credits import ensure_account
-from app.image_tasks import ImageInput
+from app.images.schemas import ImageInput
 from app.model_capabilities import ImageConfig
 from app.models import AgentToolExecution, Conversation, UserCreditAccount, ImageTask, LoginSession, ModelConnection, SiteModelProvider, UsageEvent, User, WorkspaceFile
 from test_auth_postgres import auth_postgres

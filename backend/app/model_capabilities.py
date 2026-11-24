@@ -43,7 +43,7 @@ class ImageConfig(BaseModel):
                 raise ValueError("请为每项启用能力配置默认规格及价格，免费须明确填写 0")
         if self.protocol in ("responses", "gemini") and self.max_count != 1:
             raise ValueError("原生图片任务每次生成一张图片")
-        from .image_presets import validate
+        from .images.presets import validate
         validate(self)
         return self
 
