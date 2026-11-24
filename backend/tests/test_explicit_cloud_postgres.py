@@ -11,7 +11,7 @@ from alembic.operations import Operations
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 
 from app.identity import auth
 from app.models import CloudComputerSettings, Conversation, LoginSession, UserCreditAccount
@@ -44,13 +44,13 @@ def seed(engine, monkeypatch):
     fake = FakeCloud()
     monkeypatch.setattr(cloud, "adapter", lambda *_: fake)
     monkeypatch.setattr(cloud, "dispatch", lambda *_: None)
-    monkeypatch.setattr("app.storage_backend.active_settings", lambda _: SimpleNamespace(
+    monkeypatch.setattr("app.infra.storage_backend.active_settings", lambda _: SimpleNamespace(
         provider="oss", bucket="test-bucket", region="cn-hangzhou"))
-    monkeypatch.setattr("app.storage_backend.current_storage", lambda _: SimpleNamespace(
+    monkeypatch.setattr("app.infra.storage_backend.current_storage", lambda _: SimpleNamespace(
         bucket="test-bucket", region="cn-hangzhou"))
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.shared_resources.backend", lambda _: store)
+    monkeypatch.setattr("app.files.shared.backend", lambda _: store)
     return access, conversation_id, fake
 
 

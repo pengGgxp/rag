@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import model_billing as billing
-from app.credits import CreditError, ensure_policies, recharge
+from app.billing import model_usage as billing
+from app.billing.credits import CreditError, ensure_policies, recharge
 from app.model_runtime.client import LLMProviderError, LLMUsage, ToolResponse
 from app.models import (UserCreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelCallUsage,
                         ModelUsageRequest, UsageEvent, UsagePolicy)
@@ -23,7 +23,7 @@ def metered(accounts, monkeypatch):
     session = register(owner)
     workspace, user = UUID(session["user"]["id"]), UUID(session["user"]["id"])
     from app.models import LLMProviderConfig, SiteModelProvider
-    from app import llm_providers
+    from app.model_catalog import providers as llm_providers
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: "test-only")
     shared = SiteModelProvider(key="meter-test", name="Test", connection_id=connection_id(db), model="test",
         enabled=True, prices={key: {"capability": key, "unit": "tokens",

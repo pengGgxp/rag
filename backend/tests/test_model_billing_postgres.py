@@ -8,8 +8,8 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import model_billing as billing
-from app.credits import CreditError, ensure_policies
+from app.billing import model_usage as billing
+from app.billing.credits import CreditError, ensure_policies
 from app.models import UserCreditAccount, CreditLedgerEntry, ModelCallUsage, ModelUsageRequest, ModelBillingSettings, UsagePolicy, User
 from test_auth_postgres import auth_postgres
 

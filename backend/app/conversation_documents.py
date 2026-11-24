@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .identity.auth import get_access
-from .db import get_db
+from app.infra.db import get_db
 from .knowledge.ingestion.admission import stage_upload, dispatch_ingestion
 from .models import (ChatMessage, Chunk, Conversation, ConversationDocumentSave, Document,
                      DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus)
@@ -147,7 +147,7 @@ def execute(runtime, name, arguments):
         if not conversation or conversation.deleted_at is not None or conversation.owner_id != access.user_id or conversation.account_id != access.user_id or message.role != "assistant" or message.request_id != UUID(str(runtime.request_id)):
             raise HTTPException(404, "对话不存在或无权访问")
         access.library(db, payload.knowledge_base_id, write=True)
-        from .file_operations import workspace_lock
+        from app.files.operations import workspace_lock
         content = payload.markdown.encode("utf-8")
         digest = hashlib.sha256(content).hexdigest()
         with workspace_lock(db, access.user_id):

@@ -4,8 +4,9 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 
-from app import cloud_computer as cloud, workspace_files
-from app.cloud_file_operation import perform
+from app.cloud_computer import runtime as cloud
+from app.files import workspace as workspace_files
+from app.cloud_computer.cloud_file_operation import perform
 from test_resources import resource_store, upload, access_for
 from test_auth import register
 
@@ -43,8 +44,8 @@ def test_file_tool_dispatch_never_downloads_body(accounts, resource_store, monke
     access = access_for(client, db)
     calls = []
     def forbidden(*args, **kwargs): pytest.fail("server body/cache read")
-    monkeypatch.setattr("app.resource_cache.read_bytes", forbidden)
-    monkeypatch.setattr("app.storage.download_fileobj", forbidden)
+    monkeypatch.setattr("app.files.cache.read_bytes", forbidden)
+    monkeypatch.setattr("app.infra.storage.download_fileobj", forbidden)
     def execute(db, actor, conversation, request, arguments, check):
         calls.append(arguments["file_operation"])
         return {"status": "completed", "file_result": {"value": {"content": "resource facts"}},
@@ -90,7 +91,7 @@ def test_file_delete_invalidates_resource(accounts, resource_store, monkeypatch)
     item = upload(client)
     access = access_for(client, db)
     def execute(db, actor, conversation, request, args, check):
-        from app.shared_resources import object_key
+        from app.files.shared import object_key
         resource_store[0].pop(object_key(actor.user_id, item["path"]))
         return {"status": "completed", "file_result": {"value": {"deleted": True}},
             "computer_id": "computer", "cloud_computer": {"id": "computer"}, "command_id": "command"}

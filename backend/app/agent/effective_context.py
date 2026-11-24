@@ -149,7 +149,7 @@ class ContextManager:
 
     def begin_tool(self, call):
         from ..models import AgentToolExecution
-        from ..mcp_client import encrypt_headers
+        from app.integrations.mcp_client import encrypt_headers
         _, pending = groups(self.items)
         if not pending or call.id not in pending[0]["pair_ids"]:
             raise ContextWindowError("context_suffix_incompatible", "工具调用缺少对应模型记录")
@@ -233,7 +233,7 @@ class ContextManager:
         from sqlalchemy import select
         from hashlib import sha256
         from ..models import KnowledgeBaseToolExecution, RemoteToolExecution
-        from ..mcp_client import decrypt_headers
+        from app.integrations.mcp_client import decrypt_headers
         if not model.get("request_id"):
             return None
         name, request = call["function"]["name"], UUID(model["request_id"])
@@ -253,7 +253,7 @@ class ContextManager:
             if receipt and receipt.account_id == self.access.user_id and receipt.user_id == self.access.user_id:
                 return receipt.result
             from ..models import CloudComputerCommand, CloudComputerSession
-            from ..cloud_computer import tool_request_id
+            from app.cloud_computer.runtime import tool_request_id
             command = db.scalar(select(CloudComputerCommand).join(CloudComputerSession).where(
                 CloudComputerCommand.request_id == tool_request_id(request, activity),
                 CloudComputerSession.conversation_id == self.conversation_id,
@@ -266,7 +266,7 @@ class ContextManager:
                     return ({"error": file_result["error"], "status_code": file_result.get("status_code")}
                         if file_result.get("error") else file_result.get("value") or result)
                 return result
-        from ..question_workbench import LABELS as WORKBENCH_NAMES
+        from app.integrations.question_workbench import LABELS as WORKBENCH_NAMES
         if name.startswith("mcp_") or name in WORKBENCH_NAMES:
             try:
                 args = json.loads(call["function"]["arguments"])
@@ -451,7 +451,7 @@ class ContextManager:
                 if result is None or not result.content or not result.content.strip() or result.tool_calls:
                     raise LLMProviderError("整理未返回有效摘要")
                 return result
-            from ..upstream_retries import retry_activity
+            from app.infra.upstream_retries import retry_activity
             with retry_activity(check_active, emit, {"call_id": call_id, "name": "compact_context",
                     "label": "整理早期上下文", "kind": "compaction"}, finish=False):
                 try:

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.cloud_environment import VERIFIED_TEMPLATE, environment_description
+from app.cloud_computer.environment import VERIFIED_TEMPLATE, environment_description
 from app.conversation_context import build_messages
 
 

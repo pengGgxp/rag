@@ -3,11 +3,11 @@ import argparse
 
 from sqlalchemy import select
 
-from .db import SessionLocal
+from app.infra.db import SessionLocal
 from .migrate_cos import fingerprint
 from .models import ChatAttachment, Document, WorkspaceFile, WorkspaceFileVersion
-from .shared_resources import object_key
-from . import storage_backend
+from app.files.shared import object_key
+from app.infra import storage_backend
 
 
 def plan(db):

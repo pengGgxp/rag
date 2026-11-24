@@ -22,7 +22,7 @@ from app import main
 
 from app.identity import auth
 from app.conversations import execution as chat
-from app.db import Base
+from app.infra.db import Base
 from app.model_runtime.client import ToolResponse
 from app.models import (
     AuthToken, Conversation, ExternalIdentity, IngestionJob,

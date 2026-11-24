@@ -11,16 +11,16 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from starlette.concurrency import run_in_threadpool
 
-from .. import model_billing
-from .. import resource_mentions as resource_references
+from app.billing import model_usage as model_billing
+from app.files import mentions as resource_references
 from ..agent.effective_context import ContextManager
 from ..agent.loop import AgentCancelled, stream_retrieval_agent
 from ..conversation_context import HISTORY_TOOL, build_messages
-from ..credits import settle_model_usage
-from ..extensions import ExtensionRuntime
+from app.billing.credits import settle_model_usage
+from app.integrations.runtime import ExtensionRuntime
 from ..model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from ..models import ChatMessage, ContextOperation, Conversation, Document, DocumentStatus, KnowledgeBaseStatus, ModelUsageRequest
-from ..thinking import encrypt_continuation, encrypt_display_thinking
+from app.model_catalog.thinking import encrypt_continuation, encrypt_display_thinking
 from .attachments import user_content
 from .messages import live_conversation, message_read
 from .stream import event, event_text, events as stream_events
@@ -50,7 +50,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
     last_text_save = 0.0
     with factory() as metering_db:
         metered = metering_db.get(ModelUsageRequest, request_id) is not None
-        from ..workspace_billing import LegacyPriceMeter
+        from app.billing.workspace import LegacyPriceMeter
         meter = (model_billing.ModelMeter(factory, request_id) if metered else
                  LegacyPriceMeter(factory, access.user_id, request_id))
 
@@ -177,7 +177,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
         provider = OpenAICompatibleChatProvider(config=provider_config)
         provider.resource_context = (factory, access)
         if not manual and isinstance(getattr(provider, "config", None), ChatProviderConfig):
-            from ..llm_providers import refresh_chat_credentials
+            from app.model_catalog.providers import refresh_chat_credentials
 
             def refresh_credentials():
                 with factory() as db:
@@ -236,7 +236,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
                     [HISTORY_TOOL] if provider_config.thinking.supports_tools else []))
             execution = manual_execution()
         else:
-            from ..search_billing import SearchRuntime
+            from app.search.billing import SearchRuntime
             from .jobs import steering_batch
             def read_steering(seal=False):
                 return steering_batch(factory, conversation_id, request_id, seal=seal)
@@ -406,7 +406,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
             if not metered:
                 with factory() as credit_db:
                     try:
-                        from ..workspace_billing import finish_operation, legacy_call_usage
+                        from app.billing.workspace import finish_operation, legacy_call_usage
                         partition = access.user_id
                         settle_model_usage(credit_db, partition, access.user_id, request_id,
                             legacy_call_usage(credit_db, partition, request_id), hold_amount)

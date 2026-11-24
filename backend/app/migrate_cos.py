@@ -5,17 +5,17 @@ from tempfile import TemporaryFile
 
 from sqlalchemy import func, select
 
-from .config import get_settings
-from .cos_storage import CosStorage
-from .db import SessionLocal
+from app.infra.config import get_settings
+from app.infra.cos_storage import CosStorage
+from app.infra.db import SessionLocal
 from .models import Document, DocumentUpload, SkillUpload, IngestionJob, JobState
-from .storage import client
-from .storage_settings import locked
-from .site_audit import record
+from app.infra.storage import client
+from app.files.settings import locked
+from app.operations.site_audit import record
 
 
 def migrate(db, *, execute=False, version=None, legacy=None):
-    from .storage_backend import active_settings
+    from app.infra.storage_backend import active_settings
     active = active_settings(db)
     if active and active.provider != "cos":
         raise ValueError("当前使用其他供应商，请使用 migrate_storage 进行校验迁移")

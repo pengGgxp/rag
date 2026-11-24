@@ -5,7 +5,7 @@ import json
 import anyio
 from sqlalchemy import select
 
-from ..mcp_client import decrypt_headers
+from app.integrations.mcp_client import decrypt_headers
 from ..models import ChatMessage, ContextOperation, ConversationEvent, ConversationExecution
 from .messages import live_conversation, message_read
 

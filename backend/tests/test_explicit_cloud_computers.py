@@ -9,9 +9,9 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 from app.models import ChatMessage, Conversation, CreditLedgerEntry, UserCreditAccount
-from app.extensions import ExtensionRuntime
+from app.integrations.runtime import ExtensionRuntime
 from test_cloud_computer import setup
 from test_resources import resource_store
 

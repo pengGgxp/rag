@@ -45,7 +45,7 @@ def pdf_job(accounts, monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     store.objects[doc.object_key] = content.getvalue()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     doc.size_bytes = len(content.getvalue())
     doc.content_hash = hashlib.sha256(content.getvalue()).hexdigest()
     db.commit()
@@ -90,7 +90,7 @@ def fake_provider(monkeypatch, *, collect=None, submit=None, original=None):
 @pytest.mark.parametrize("interrupt", [None, "rejected", "commit_failed", "response_lost"])
 def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pdf_job, monkeypatch, interrupt):
     import httpx
-    from app.config import Settings
+    from app.infra.config import Settings
     from app.knowledge.ingestion.embedding import OpenAICompatibleEmbeddingProvider
 
     owner, _, db, kb_id, doc_id, old_job_id, embedded = pdf_job
@@ -420,7 +420,7 @@ def test_completed_parse_cache_is_reused_on_retry(pdf_job, monkeypatch):
 
 def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
     _, _, db, _, doc_id, job_id, _ = pdf_job
-    from app.credits import ensure_account
+    from app.billing.credits import ensure_account
     account = ensure_account(db, db.get(Document, doc_id).knowledge_base.account_id)
     account.balance += 10000
     account.lifetime_granted += 10000

@@ -7,11 +7,11 @@ from fastapi import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import file_preview_access as preview
+from app.files import preview_access as preview
 
 from app.identity import auth
 from app.models import UserCreditAccount, CreditLedgerEntry, User, WorkspaceFile, WorkspaceFileVersion
-from app.shared_resources import object_key
+from app.files.shared import object_key
 from app.storage_models import StorageTransfer
 from test_auth_postgres import auth_postgres
 from test_cloud_computer_mount import MemoryMount

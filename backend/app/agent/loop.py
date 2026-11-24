@@ -15,9 +15,9 @@ from sqlalchemy import or_, select
 
 from ..model_runtime.client import LLMProviderError, LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
 from ..models import Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus
-from ..workspace_files import FILE_TOOL_ERRORS
-from ..image_reading import model_image_message
-from ..upstream_retries import retry_activity
+from app.files.workspace import FILE_TOOL_ERRORS
+from app.files.image_reading import model_image_message
+from app.infra.upstream_retries import retry_activity
 from ..knowledge_base_tools import LABELS as KNOWLEDGE_TOOL_LABELS
 from ..tool_errors import tool_outcome
 
@@ -293,7 +293,7 @@ def stream_retrieval_agent(
     read_steering=None,
 ) -> Iterator[tuple[str, Any]]:
     """Run model/tool rounds until the model answers, the user stops, or a request fails."""
-    from ..skill_discovery import prompt as skill_prompt
+    from app.skills.discovery import prompt as skill_prompt
     knowledge_base_mentions = knowledge_base_mentions or []
     document_mentions = document_mentions or []
     with factory() as db:
@@ -669,7 +669,7 @@ def stream_retrieval_agent(
                     candidates = result.get("files", []) or (result.get("generated_files", [])
                         if call.name == "run_command" else [result]
                         if call.name in ("write_file", "apply_patch", "read_file", "get_workspace_file_link") else [])
-                    from ..workspace_file_links import file_reference
+                    from app.files.links import file_reference
                     output_files = [file_reference(file)
                         for file in candidates if isinstance(file, dict) and file.get("id") and file.get("path")]
                     saved_file_summary = (f"已生成 {len(output_files)} 个文件"

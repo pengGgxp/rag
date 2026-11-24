@@ -20,10 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app import llm_providers, main, tasks
+from app.model_catalog import providers as llm_providers
+from app import main, tasks
 from app.identity import auth
 from app.conversations import jobs as conversation_jobs, execution as conversations
-from app.db import Base, engine, SessionLocal
+from app.infra.db import Base, engine, SessionLocal
 from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import (ChatMessage, Document, DocumentStatus, IngestionJob, JobState,
                         KnowledgeBase, KnowledgeBaseToolExecution, ModelBillingSettings)

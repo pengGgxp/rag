@@ -7,7 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app import workspace_files
+from app.files import workspace as workspace_files
 
 from app.identity import auth
 from app.models import SiteSkill, SiteSkillFile, WorkspaceSkillInstall

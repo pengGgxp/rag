@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from . import auth
 from .schemas import CompleteRegistration, ConfirmEmail, SendCode, VerifyCode
-from ..config import get_settings
-from ..db import get_db
+from app.infra.config import get_settings
+from app.infra.db import get_db
 from ..models import AuthToken, AuthenticationFlow, ExternalIdentity, LoginSession, User
 from .site_auth import configuration, email_enabled, send_code_mail
 
@@ -181,7 +181,7 @@ def send_code(payload: SendCode, request: Request, db: Session = Depends(get_db)
     except HTTPException:
         row.code_hash = None
         row.sent_at = None
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, None, "auth.email_delivery_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         response = JSONResponse({"detail": "邮件发送失败，请稍后重试"}, status_code=503)
@@ -204,7 +204,7 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     row = find_flow(request, db)
     email_rate_limit(request, db, row.email or "", row.token_hash, sending=False)
     if row.data.get("stage") != "code" or not row.code_hash or not row.code_expires_at or auth.aware(row.code_expires_at) <= auth.now() or row.attempts >= 5:
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         raise HTTPException(400, "验证码已失效，请重新发送")
@@ -212,7 +212,7 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     if not secrets.compare_digest(row.code_hash, code_digest(row, payload.code)):
         if row.attempts >= 5:
             row.code_hash = None
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         raise HTTPException(400, "验证码不正确")
@@ -236,14 +236,14 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
             user.password_hash = None
         db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
         user.email_verified_at = auth.now()
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, user, "auth.email_verified", "user", user.id, request=request)
     return finish_login(request, db, row, user)
 
 
 @router.post("/email/confirm-link")
 def confirm_link(payload: ConfirmEmail, request: Request, db: Session = Depends(get_db)):
-    from ..site_audit import record
+    from app.operations.site_audit import record
     auth.rate_limit(request, "confirm-email", limit=15)
     candidate = db.get(AuthToken, auth.digest(payload.token))
     if not candidate or candidate.purpose != "site_verify" or auth.aware(candidate.expires_at) <= auth.now():

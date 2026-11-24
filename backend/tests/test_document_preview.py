@@ -10,7 +10,7 @@ from app.models import Document, DocumentStatus
 def local_upload_io(monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     monkeypatch.setattr(knowledge_routes.process_document, "delay", lambda *_: None)
 
 

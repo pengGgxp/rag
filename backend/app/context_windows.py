@@ -39,12 +39,12 @@ def _decode(value):
 
 
 def encrypt_items(items):
-    from .mcp_client import encrypt_headers
+    from app.integrations.mcp_client import encrypt_headers
     return encrypt_headers({"window": json.dumps(items, ensure_ascii=True, default=_encode)})
 
 
 def decrypt_items(value):
-    from .mcp_client import decrypt_headers, MCPError
+    from app.integrations.mcp_client import decrypt_headers, MCPError
     try:
         items = json.loads(decrypt_headers(value)["window"], object_hook=_decode)
         if not isinstance(items, list) or any(not isinstance(i, dict) or not i.get("id")
@@ -176,7 +176,7 @@ class WindowStore:
 
     def initialize(self, db, conversation, scope, rows):
         from .conversation_context import SUMMARY_PREFIX, source_digest
-        from .thinking import history_message
+        from app.model_catalog.thinking import history_message
         rows = list(rows) if rows is not None else list(db.scalars(select(ChatMessage).where(
             ChatMessage.conversation_id == conversation.id, ChatMessage.status == "completed")
             .order_by(ChatMessage.sequence)))

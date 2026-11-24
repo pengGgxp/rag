@@ -35,7 +35,7 @@ class ContractTests(unittest.TestCase):
 
     def test_catalog_matches_backend_settings(self):
         tree = ast.parse(
-            (ROOT.parent / "backend/app/config.py").read_text(encoding="utf-8")
+            (ROOT.parent / "backend/app/infra/config.py").read_text(encoding="utf-8")
         )
         settings = next(
             node for node in tree.body

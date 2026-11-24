@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 
-from .audit_log import record_audit
+from app.operations.audit_log import record_audit
 from .conversation_documents import definition
 from .models import (ChatMessage, Conversation, Document, DocumentStatus,
                      JobState, KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution)

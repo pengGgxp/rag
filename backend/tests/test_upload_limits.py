@@ -49,7 +49,7 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
 
     storage = DiskStore()
 
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
     monkeypatch.setattr(knowledge_routes.process_document, "delay", queued.append)
     if previous:
         storage.path(previous.object_key).write_bytes(b"previous version")

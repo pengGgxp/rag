@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.config import Settings
+from app.infra.config import Settings
 from app.knowledge.ingestion.embedding import (
     EmbeddingConfigurationError,
     EmbeddingProviderError,
@@ -127,7 +127,7 @@ def test_batch_rejects_invalid_or_duplicate_indexes(monkeypatch, indexes):
 @pytest.fixture
 def retry_clock(monkeypatch):
     from types import SimpleNamespace
-    from app import upstream_retries
+    from app.infra import upstream_retries
     from app.knowledge.ingestion import embedding
 
     clock = SimpleNamespace(now=0.0)

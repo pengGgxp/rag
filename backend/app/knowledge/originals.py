@@ -5,8 +5,8 @@ from pathlib import PurePosixPath
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from .. import file_operations as operations
-from ..audit_log import record_audit
+from app.files import operations
+from app.operations.audit_log import record_audit
 from ..models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
 from .ingestion import failures as document_failures
 

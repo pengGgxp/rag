@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import main
-from app.db import Base
+from app.infra.db import Base
 from app.knowledge.ingestion.embedding import EmbeddingProviderError
 from app.models import (
     Chunk,

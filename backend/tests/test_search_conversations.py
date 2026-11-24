@@ -5,7 +5,7 @@ from uuid import UUID
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
-from app import web_search
+from app.search import web as web_search
 
 from app.identity import site_auth
 from app.conversations import execution as chat

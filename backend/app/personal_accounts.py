@@ -87,9 +87,9 @@ def _queue_objects(db, prefixes, tables, predicates, list_objects):
 
 def cleanup_external_resources(db, user_ids):
     """Revoke resources that cannot be removed by deleting an object key."""
-    from .cloud_computer_adapter import adapter
-    from .resource_cache import purge_account_cache
-    from .storage_backend import current_storage
+    from app.cloud_computer.adapter import adapter
+    from app.files.cache import purge_account_cache
+    from app.infra.storage_backend import current_storage
 
     for row in db.scalars(select(CloudComputerSession).where(
         CloudComputerSession.account_id.in_(user_ids), CloudComputerSession.ended_at.is_(None)
@@ -147,7 +147,7 @@ def cleanup_suspended_accounts(
     db.commit()
 
     if delete_object is None:
-        from .storage import delete_object
+        from app.infra.storage import delete_object
     pending = db.scalars(
         select(AccountCleanupObject).order_by(AccountCleanupObject.attempts,
             AccountCleanupObject.created_at, AccountCleanupObject.object_key)

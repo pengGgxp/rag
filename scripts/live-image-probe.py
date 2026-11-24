@@ -8,9 +8,9 @@ import json
 import os
 from uuid import UUID
 
-from app.db import SessionLocal
+from app.infra.db import SessionLocal
 from app.images import adapters as adapter
-from app.llm_providers import _decrypt_api_key
+from app.model_catalog.providers import _decrypt_api_key
 from app.models import ModelConnection
 
 

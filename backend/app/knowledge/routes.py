@@ -6,17 +6,17 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import model_billing
-from ..audit_log import record_audit
+from app.billing import model_usage as model_billing
+from app.operations.audit_log import record_audit
 from ..identity.auth import Access, get_access
-from ..config import get_settings
-from ..credits import authorization_hold, authorization_hold_amount, settle_model_usage
-from ..db import get_db
+from app.infra.config import get_settings
+from app.billing.credits import authorization_hold, authorization_hold_amount, settle_model_usage
+from app.infra.db import get_db
 from .ingestion.admission import (
     MAX_DOCUMENT_BYTES, dispatch_ingestion, stage_upload,
 )
 from ..model_runtime.client import LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider, estimate_tokens
-from ..llm_providers import request_provider_config
+from app.model_catalog.providers import request_provider_config
 from ..models import Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus, QueryTrace
 from ..tasks import embed_document, process_document
 from . import libraries
@@ -400,7 +400,7 @@ def answer_knowledge_base(
         model_billing.start_request(db, access.user_id, access.user_id, reservation_id,
             UUID(provider_config.provider_id), hold)
     else:
-        from ..workspace_billing import operation_snapshot
+        from app.billing.workspace import operation_snapshot
         model_billing.settle_pending(db, access.user_id, hold)
         operation_snapshot(db, access.user_id, reservation_id, "model",
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))
@@ -410,7 +410,7 @@ def answer_knowledge_base(
         if metered:
             model_billing.finalize_request(db, reservation_id, outcome)
         else:
-            from ..workspace_billing import finish_operation, legacy_call_usage
+            from app.billing.workspace import finish_operation, legacy_call_usage
             settle_model_usage(db, access.user_id, access.user_id, reservation_id,
                 legacy_call_usage(db, access.user_id, reservation_id), hold)
             finish_operation(db, access.user_id, reservation_id)
@@ -421,7 +421,7 @@ def answer_knowledge_base(
             meter = model_billing.ModelMeter(sessionmaker(bind=db.get_bind()), reservation_id)
             answer = meter.invoke(provider, lambda: provider.complete(messages), messages)
         else:
-            from ..workspace_billing import LegacyPriceMeter
+            from app.billing.workspace import LegacyPriceMeter
             from sqlalchemy.orm import sessionmaker
             legacy_meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), access.user_id, reservation_id)
             answer = legacy_meter.invoke(provider, lambda: provider.complete(messages), messages)
@@ -457,7 +457,7 @@ def answer_knowledge_base(
         if legacy_meter:
             usage_event["billing_snapshot_id"] = legacy_meter.last_snapshot_id
         settle_model_usage(db, access.user_id, access.user_id, reservation_id, [usage_event], hold)
-        from ..workspace_billing import finish_operation
+        from app.billing.workspace import finish_operation
         finish_operation(db, access.user_id, reservation_id)
         db.commit()
 

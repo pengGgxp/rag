@@ -53,12 +53,14 @@ if len(sys.argv) > 1 and sys.argv[1] == "--create":
     sys.exit(0)
 
 import chat_attachment_preview as fixture
-from app import cloud_computer as cloud, deployment
+from app.cloud_computer import runtime as cloud
+from app.operations import deployment
 from app.conversations import jobs as conversation_jobs
-from app import shared_resources, storage_downloads, tasks, workspace_files
-from app.config import get_settings
+from app.files import shared as shared_resources, downloads as storage_downloads, workspace as workspace_files
+from app import tasks
+from app.infra.config import get_settings
 from app.model_runtime.client import ToolCall, ToolResponse, LLMUsage
-from app.llm_providers import _encrypt_api_key
+from app.model_catalog.providers import _encrypt_api_key
 from app.models import ModelConnection, CloudComputerSettings
 from fastapi.responses import Response
 from PIL import Image

@@ -9,10 +9,10 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import storage_billing as billing
+from app.files import quotas as billing
 from app.identity.auth import Access, now
 from app.models import AgentSkill, UserCreditAccount, CreditLedgerEntry, WorkspaceFile, WorkspaceFileVersion
-from app.storage_downloads import MeteredResponse, byte_range
+from app.files.downloads import MeteredResponse, byte_range
 from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer
 from test_site_admin import setup
 
@@ -180,7 +180,8 @@ def test_capacity_counts_only_current_file_and_never_expires_by_age(accounts):
 
 
 def test_cleanup_rechecks_expiry_after_lock_and_releases_only_deleted_objects(accounts, monkeypatch):
-    from app import tasks, storage
+    from app import tasks
+    from app.infra import storage
     from sqlalchemy import update
     admin, _, _, db, a, _ = setup(accounts)
     access = actor(a)
@@ -259,7 +260,7 @@ def test_asgi_send_only_counts_successful_body(accounts):
 
 
 def test_authenticated_range_head_and_storage_failure(accounts, monkeypatch):
-    from app import storage_downloads
+    from app.files import downloads as storage_downloads
     from app.conversations import attachments as chat_attachments
     from test_auth import register
     (client, _, _), db = accounts

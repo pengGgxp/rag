@@ -43,13 +43,13 @@ def authorize(db, access, row, message, data):
         if (not server or server.owner_id != access.user_id or server.account_id != access.user_id
                 or not server.enabled or extension.get("version") != server.authorization_version):
             raise HTTPException(403, "连接或授权已变化，不能读取此结果")
-        from .mcp_client import tool_digest
+        from app.integrations.mcp_client import tool_digest
         names = {f"mcp_{server.id.hex}_{tool_digest({'name': name})[:20]}" for name in server.allowed_tools}
         if row.name not in names:
             raise HTTPException(403, "该工具的授权已撤销")
-    from .question_workbench import LABELS
+    from app.integrations.question_workbench import LABELS
     if row.name in LABELS:
-        from .question_workbench import require_access
+        from app.integrations.question_workbench import require_access
         from .models import QuestionWorkbenchGrant
         require_access(db, access)
         grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.user_id), populate_existing=True)

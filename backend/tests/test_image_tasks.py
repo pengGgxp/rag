@@ -49,7 +49,7 @@ def configure(accounts, monkeypatch):
     saved = client.put("/site/admin/image-models", json={"version": 0, "generate_model_id": identifier, "edit_model_id": identifier})
     assert saved.status_code == 200, saved.text
     monkeypatch.setattr(image_tasks, "dispatch", lambda identifier: None)
-    from app import llm_providers
+    from app.model_catalog import providers as llm_providers
     monkeypatch.setattr(llm_providers, "_encrypt_api_key", lambda value: f"enc:{value}")
     return client, db, identity
 
@@ -141,7 +141,8 @@ def test_image_format_rejection_and_metadata_strip():
 
 def test_successful_generation_can_retry_storage_without_regeneration(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app import workspace_files, storage
+    from app.files import workspace as workspace_files
+    from app.infra import storage
     from app.images import adapters as image_adapters
     from app.models import WorkspaceFile, UsageEvent
     client, db, identity = configure(accounts, monkeypatch)
@@ -226,7 +227,7 @@ def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypa
 
 def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app import llm_providers
+    from app.model_catalog import providers as llm_providers
     from app.images import adapters as image_adapters
     client, db, identity = configure(accounts, monkeypatch)
     before = db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance
@@ -249,7 +250,7 @@ def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, mo
 @pytest.mark.parametrize("cancel_running", [False, True])
 def test_partial_results_charge_actual_count_even_after_cancel(accounts, monkeypatch, cancel_running):
     from sqlalchemy.orm import sessionmaker
-    from app import workspace_files
+    from app.files import workspace as workspace_files
     from app.images import adapters as image_adapters
     client, db, identity = configure(accounts, monkeypatch)
     settings = db.scalar(select(SiteModelProvider).where(SiteModelProvider.supports_chat.is_(False)))

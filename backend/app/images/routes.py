@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
 from ..identity.auth import aware, get_access
-from ..db import get_db
-from ..model_capabilities import ImageConfig
+from app.infra.db import get_db
+from app.model_catalog.capabilities import ImageConfig
 from ..models import ImageModelSettings, ImageTask, ModelConnection, SiteModelProvider
 from ..identity.site_auth import site_admin
 from .schemas import CreateInput, ImageInput, Resolution, SettingsInput
@@ -88,7 +88,7 @@ def settings(db=Depends(get_db), actor=Depends(site_admin)):
 
 @admin_router.put("")
 def update_settings(payload: SettingsInput, db=Depends(get_db), actor=Depends(site_admin)):
-    from ..model_pricing import settings_locked
+    from app.billing.pricing import settings_locked
     settings_locked(db)
     row = db.get(ImageModelSettings, 1, with_for_update=True)
     if payload.version != (row.version if row else 0):
@@ -107,7 +107,7 @@ def update_settings(payload: SettingsInput, db=Depends(get_db), actor=Depends(si
                 raise HTTPException(422, "请选择已启用并配置价格的图片模型")
         setattr(row, f"{operation}_model_id", identifier)
     row.version += 1
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, actor, "image_models.updated", "image_model_settings", 1,
         details={"fields": ["generate_model_id", "edit_model_id"]})
     db.commit()
@@ -133,7 +133,7 @@ def resolve_task(identifier: UUID, payload: Resolution, db=Depends(get_db), acto
     settle(db, row, payload.confirmed_images)
     row.status = "save_failed" if row.outputs else "failed"
     row.error = "生成费用已核对；如仍需图片，请先核对已交付结果"
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, actor, "image_task.resolved", "image_task", identifier,
         details={"confirmed_images": payload.confirmed_images, "reason": payload.reason})
     db.commit()

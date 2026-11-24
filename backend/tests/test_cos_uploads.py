@@ -10,12 +10,13 @@ from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import storage_settings, tasks
+from app.files import settings as storage_settings
+from app import tasks
 
 from app.identity import auth, site_auth
 from app.knowledge.ingestion import pipeline
 from app.knowledge.ingestion import uploads as uploads
-from app.cos_storage import CosStorage
+from app.infra.cos_storage import CosStorage
 from app.models import (
     Chunk, UserCreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
     IngestionJob, JobState, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
@@ -88,7 +89,7 @@ def direct(accounts, monkeypatch):
     kb = library(owner)
     storage = FakeCos()
     monkeypatch.setattr(uploads, "current_storage", lambda *_: storage)
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
     monkeypatch.setattr(uploads, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     queued = []
     monkeypatch.setattr(tasks.verify_upload, "delay", queued.append)
@@ -206,9 +207,9 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
 def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcome):
     from decimal import Decimal
     import httpx
-    from app.config import Settings
+    from app.infra.config import Settings
     from app.knowledge.ingestion.embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
-    from app.upstream_retries import RetryBudget
+    from app.infra.upstream_retries import RetryBudget
 
     owner, outsider, db, identity, kb, storage, _, _ = direct
     account_id = UUID(identity["user"]["id"])
@@ -549,7 +550,7 @@ def test_download_reads_real_sdk_stream_body_and_closes_connection(size):
 
 def test_download_failure_closes_files_and_hides_provider_details(monkeypatch):
     from types import SimpleNamespace
-    from app import cos_storage
+    from app.infra import cos_storage
     from requests import Response
     from qcloud_cos.streambody import StreamBody
 

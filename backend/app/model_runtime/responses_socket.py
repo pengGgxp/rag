@@ -47,7 +47,7 @@ class ResponsesSocket:
                      [*request["input"], *output], response_id) if response_id else None
 
     def events(self, url, api_key, body):
-        from ..upstream_retries import retry_after
+        from app.infra.upstream_retries import retry_after
         check = chat_sampling.active_check()
         if self.runner is None:
             self.runner = asyncio.Runner()

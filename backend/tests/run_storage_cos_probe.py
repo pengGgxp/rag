@@ -24,9 +24,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--confirm-live-probe", action="store_true", required=True)
     parser.parse_args()
-    from app.config import get_settings
+    from app.infra.config import get_settings
     from app.models import SiteStorageSettings
-    from app.cos_storage import CosStorage
+    from app.infra.cos_storage import CosStorage
     original = make_url(os.environ["DATABASE_URL"])
     production = create_engine(original)
     with Session(production) as db:
@@ -48,11 +48,12 @@ def main():
         get_settings.cache_clear()
         subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=Path(__file__).resolve().parents[1], check=True, stdout=subprocess.DEVNULL)
-        from app import main as application, storage_downloads
+        from app import main as application
+        from app.files import downloads as storage_downloads
         from app.identity import auth
         from app.models import UserCreditAccount, LoginSession, User, WorkspaceFile, WorkspaceFileVersion
         from app.storage_models import StorageEntitlement, StorageQuotaSettings, StorageTransfer
-        from app.db import get_db
+        from app.infra.db import get_db
         engine = create_engine(url)
         body = b"storage72-real-transfer\n" * 131072
         storage.put(key, io.BytesIO(body), "application/octet-stream")

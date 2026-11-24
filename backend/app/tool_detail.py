@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from .context_windows import decrypt_items
-from .mcp_client import decrypt_headers
+from app.integrations.mcp_client import decrypt_headers
 from .models import AgentToolExecution, KnowledgeBaseStatus, WorkspaceFile, WorkspaceFileVersion
 from .tool_result_reads import authorize, metadata
 

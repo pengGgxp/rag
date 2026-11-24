@@ -13,10 +13,10 @@ from e2b.connection_config import ConnectionConfig
 from e2b.sandbox_sync.filesystem.filesystem import Filesystem
 from packaging.version import Version
 
-from app import upstream_retries as retry
+from app.infra import upstream_retries as retry
 from app.agent.loop import AgentCancelled
-from app.cloud_computer_adapter import AlibabaSandbox
-from app.image_reading import ImageReadError, read_image
+from app.cloud_computer.adapter import AlibabaSandbox
+from app.files.image_reading import ImageReadError, read_image
 from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from test_cloud_computer_adapter import FileDownload
 from test_chat_attachments import PNG
@@ -151,7 +151,7 @@ def sdk_files(respond):
     files = Filesystem("https://sandbox.test", Version("0.4.0"), ConnectionConfig())
     client = httpx.Client(base_url="https://sandbox.test", transport=httpx.MockTransport(respond))
     try:
-        with patch("app.cloud_computer_adapter.image_file_client", return_value=client):
+        with patch("app.cloud_computer.adapter.image_file_client", return_value=client):
             yield SimpleNamespace(files=files)
         assert client.event_hooks["response"] == []
     finally:
@@ -394,7 +394,7 @@ def test_explicit_task_deadline_still_bounds_model_timeout(clock, monkeypatch, m
 
 
 def test_retry_transport_disables_sdk_inner_connection_retries(monkeypatch):
-    from app import cloud_computer_adapter as adapter
+    from app.cloud_computer import adapter
     captured = []
     monkeypatch.setattr(httpx, "HTTPTransport", lambda **kwargs: captured.append(kwargs) or httpx.MockTransport(
         lambda request: httpx.Response(200)))

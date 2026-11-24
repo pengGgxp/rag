@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.identity import auth
-from app.extensions import ExtensionRuntime
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (AuditLog, ChatMessage, Conversation, KnowledgeBase,
                         KnowledgeBaseToolExecution, LoginSession, User)
 from test_auth_postgres import auth_postgres

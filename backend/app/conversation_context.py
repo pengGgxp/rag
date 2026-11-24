@@ -97,7 +97,7 @@ def scope_digest(db, conversation, access):
 
 
 def build_messages(db, conversation, rows, config, extensions, query=None, *, history=()):
-    from .skill_discovery import prompt as skill_prompt
+    from app.skills.discovery import prompt as skill_prompt
     messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT
         + "\n云电脑环境能力：" + getattr(extensions, "environment_description", "未提供；不要假定具体预装软件或版本。")
         + skill_prompt(extensions.skills)

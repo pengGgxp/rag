@@ -6,15 +6,15 @@ from uuid import UUID
 
 from sqlalchemy import select, text
 
-from .db import SessionLocal
+from app.infra.db import SessionLocal
 from .models import (
     ChatAttachment, CloudComputerCommand, CloudComputerSession, Conversation, Document,
     DocumentUpload, SkillUpload, ImageTask, IngestionJob, JobState, SiteStorageSettings,
     StorageMigration, StorageMigrationObject, WorkspaceExecutionJob, WorkspaceFileVersion, WorkspaceFile,
 )
 from .migrate_cos import fingerprint
-from .site_audit import record
-from .storage_backend import PROVIDER_IDS, active_settings, configured_backend
+from app.operations.site_audit import record
+from app.infra.storage_backend import PROVIDER_IDS, active_settings, configured_backend
 
 
 def manifest(db):
@@ -36,7 +36,7 @@ def manifest(db):
         add(row)
     for row in db.scalars(select(ChatAttachment).where(ChatAttachment.object_deleted_at.is_(None))):
         add(row)
-    from .shared_resources import prefix
+    from app.files.shared import prefix
     from types import SimpleNamespace
     for row in db.scalars(select(WorkspaceFile).where(WorkspaceFile.deleted_at.is_(None),
             WorkspaceFile.live_etag.is_not(None))):
@@ -185,7 +185,7 @@ def main():
     args = parser.parse_args()
     # Keep a dedicated connection checked out across per-object commits, so the
     # PostgreSQL session advisory lock cannot be returned to the pool early.
-    from .db import engine
+    from app.infra.db import engine
     from sqlalchemy.orm import Session
     try:
         with engine.connect() as connection, Session(bind=connection) as db, migration_lock(db):

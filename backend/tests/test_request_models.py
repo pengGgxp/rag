@@ -81,7 +81,7 @@ def test_user_can_choose_a_model_allowed_by_site_policy(accounts, monkeypatch):
     data = member.get("/models/available")
     assert public["id"] in data.text and private["id"] in data.text
     assert all(key not in data.text for key in ("secret", "base_url", "prices", "api_key"))
-    from app import shared_providers
+    from app.model_catalog import shared_providers
     binding, _ = shared_providers.request_binding(db, UUID(identity["user"]["id"]), UUID(private["id"]))
     assert binding.site_provider_id == UUID(private["id"])
     db.commit()

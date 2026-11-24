@@ -2,7 +2,8 @@ import pytest
 from uuid import UUID
 from sqlalchemy import select
 
-from app import cloud_computer as cloud, shared_resources as shared, workspace_files
+from app.cloud_computer import runtime as cloud
+from app.files import shared, workspace as workspace_files
 from app.models import WorkspaceFileVersion
 from test_cloud_computer import setup, submit
 from test_cloud_computer_mount import MemoryMount, configure_mount
@@ -25,7 +26,7 @@ def test_shell_edit_is_current_file_without_copy_or_body_read(accounts, monkeypa
     computer = db.get(cloud.Computer, submit(db, access, conversation).session_id)
     storage.objects[key] = b"cloud modification"
     monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("body downloaded"))
-    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_: pytest.fail("cache used"))
+    monkeypatch.setattr("app.files.cache.read_bytes", lambda *_: pytest.fail("cache used"))
     assert cloud.synchronize(db, computer, None, None) == []
     result = client.get("/resources").json()["items"]
     assert result[0]["size_bytes"] == len(b"cloud modification")

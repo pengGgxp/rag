@@ -13,9 +13,9 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, StreamingResp
 from sqlalchemy import select
 
 from .identity.auth import Access, aware, now
-from .cloud_preview import Grant, Preview, digest, origin, owned
-from .config import get_settings
-from .db import SessionLocal
+from app.cloud_computer.preview import Grant, Preview, digest, origin, owned
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal
 from .identity.site_auth import reveal
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -59,7 +59,7 @@ def check_grant(identifier, token, kind, exchange=False):
             raise HTTPException(503, "预览尚未就绪，请稍后刷新")
         # Defense in depth: the database cannot turn this gateway into a generic proxy.
         expected_suffix = f".{computer.snapshot['region']}.sandbox.aliyuncs.com"
-        from .cloud_computer_adapter import preview_ingress_port
+        from app.cloud_computer.adapter import preview_ingress_port
         if (not row.upstream_host.endswith(expected_suffix)
                 or not re.fullmatch(r"[a-zA-Z0-9.-]+", row.upstream_host)
                 or not row.upstream_host.startswith(f"{preview_ingress_port(row.command_id)}-")):

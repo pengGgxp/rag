@@ -11,10 +11,10 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from ..identity.auth import Access
-from ..credit_amounts import amount
-from ..credits import authorization_hold, ensure_account, release_hold, _entry
-from ..db import SessionLocal
-from ..model_capabilities import ImageConfig
+from app.billing.amounts import amount
+from app.billing.credits import authorization_hold, ensure_account, release_hold, _entry
+from app.infra.db import SessionLocal
+from app.model_catalog.capabilities import ImageConfig
 from ..models import ImageModelSettings, ImageTask, ModelConnection, SiteModelProvider, UsageEvent
 from .schemas import ImageInput
 
@@ -136,14 +136,14 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
     spec = next((s for s in config.specs if (s.operation, s.size, s.quality) == (payload.operation, size, quality)), None)
     if spec is None:
         raise HTTPException(422, "当前图片规格不可用，请选择已配置的尺寸与质量")
-    from ..storage_billing import check_capacity
-    from ..workspace_files import resolve_input
+    from app.files.quotas import check_capacity
+    from app.files.workspace import resolve_input
     check_capacity(db, access.user_id, 1)
     for reference in payload.references:
         resource, version = resolve_input(db, access, reference.model_dump(mode="json"))
         if version.content_type not in ("image/png", "image/jpeg", "image/webp"):
             raise HTTPException(422, "参考资源必须为 PNG、JPEG 或 WebP 图片")
-    from ..workspace_billing import context_for_workspace
+    from app.billing.workspace import context_for_workspace
     context = context_for_workspace(db, access.user_id)
     rate = spec.credits_per_image * Decimal(context["multiplier_percent"]) / 100
     held = amount(rate * payload.count)
@@ -165,7 +165,7 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
         snapshot=snapshot, encrypted_credentials=connection.encrypted_api_key, held_credits=held,
         charged_credits=0, settled=False, cancel_requested=False, usage={}, outputs=[])
     db.add(row)
-    from ..audit_log import record_audit
+    from app.operations.audit_log import record_audit
     record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
                  action="image.created", resource_type="image_task", resource_id=identifier)
     db.commit()
@@ -196,9 +196,9 @@ def task_access(db, row):
 
 def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
     from .adapters import generate, validate_image, ImageRejected, ImageUncertain
-    from ..llm_providers import _decrypt_api_key, _encrypt_api_key
-    from ..workspace_files import resolve_input
-    from ..resource_cache import read_bytes
+    from app.model_catalog.providers import _decrypt_api_key, _encrypt_api_key
+    from app.files.workspace import resolve_input
+    from app.files.cache import read_bytes
     factory = factory or SessionLocal
     identifier = UUID(str(identifier))
     with factory() as db:
@@ -318,7 +318,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
 
 
 def save_outputs(identifier, factory=None):
-    from ..file_operations import workspace_lock
+    from app.files.operations import workspace_lock
     factory = factory or SessionLocal
     with factory() as db:
         row = db.get(ImageTask, identifier)
@@ -329,9 +329,9 @@ def save_outputs(identifier, factory=None):
 
 
 def _save_outputs(identifier, factory):
-    from ..workspace_files import _stage_bytes, read_file
-    from ..storage import delete_object
-    from ..llm_providers import _decrypt_api_key
+    from app.files.workspace import _stage_bytes, read_file
+    from app.infra.storage import delete_object
+    from app.model_catalog.providers import _decrypt_api_key
     factory = factory or SessionLocal
     with factory() as db:
         row = db.get(ImageTask, identifier, with_for_update=True, populate_existing=True)

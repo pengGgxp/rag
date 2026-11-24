@@ -7,14 +7,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import String, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from ..db import get_db
+from app.infra.db import get_db
 from ..models import (
     CreditLedgerEntry, ExternalIdentity, LoginSession,
-    SiteAuditEvent, User, UserCreditAccount, UserModelPolicy, QuestionWorkbenchGrant,
+    User, UserCreditAccount, UserModelPolicy, QuestionWorkbenchGrant,
 )
-from ..model_billing import pending_credits
-from ..site_audit import record, RETENTION_DAYS
-from ..credits import adjust_balance
+from app.billing.model_usage import pending_credits
+from app.operations.site_audit import record
+from app.billing.credits import adjust_balance
 from . import auth
 from .email_auth import email_rate_limit
 from .schemas import CreditAdjustment, UserModelPolicyUpdate, UserStatus, WorkbenchAccess
@@ -264,29 +264,3 @@ def resend_verification(user_id: UUID, request: Request, db: Session = Depends(g
         db.commit()
         raise
     return {"message": "验证邮件已提交发送，请用户检查收件箱及垃圾邮件"}
-
-
-@router.get("/audit")
-def list_site_audit(page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100),
-                    action: str | None = Query(default=None, max_length=80),
-                    target_type: str | None = Query(default=None, max_length=40),
-                    actor_id: UUID | None = None, result: str | None = Query(default=None, pattern="^(success|failed|blocked)$"),
-                    from_date: datetime | None = None, to_date: datetime | None = None,
-                    db: Session = Depends(get_db), actor: User = Depends(site_admin)):
-    filters = [SiteAuditEvent.created_at >= datetime.now(timezone.utc)-timedelta(days=RETENTION_DAYS)]
-    if from_date: from_date = auth.aware(from_date)
-    if to_date: to_date = auth.aware(to_date)
-    if actor_id: filters.append(SiteAuditEvent.actor_user_id == actor_id)
-    if result: filters.append(SiteAuditEvent.result == result)
-    if from_date and to_date and from_date >= to_date: raise HTTPException(422, "开始时间必须早于结束时间")
-    if action: filters.append(SiteAuditEvent.action == action)
-    if target_type: filters.append(SiteAuditEvent.target_type == target_type)
-    if from_date: filters.append(SiteAuditEvent.created_at >= from_date)
-    if to_date: filters.append(SiteAuditEvent.created_at < to_date)
-    total = db.scalar(select(func.count()).select_from(SiteAuditEvent).where(*filters)) or 0
-    rows = db.scalars(select(SiteAuditEvent).where(*filters).order_by(SiteAuditEvent.created_at.desc(), SiteAuditEvent.id.desc())
-        .offset((page-1)*page_size).limit(page_size)).all()
-    return {"items": [{"id": str(row.id), "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
-        "action": row.action, "target_type": row.target_type, "target_id": row.target_id,
-        "result": row.result, "details": row.details or {}, "created_at": row.created_at.isoformat()} for row in rows],
-        "total": total, "page": page, "page_size": page_size, "retention_days": RETENTION_DAYS}

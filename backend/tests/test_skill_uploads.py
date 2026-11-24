@@ -2,7 +2,7 @@ import hashlib
 import io
 from uuid import uuid4
 
-from app import skill_uploads
+from app.skills import uploads as skill_uploads
 from app.models import SiteSkill, SkillUpload, WorkspaceFile
 from test_shared_providers import setup_site
 from test_skill_resources import zipped

@@ -4,53 +4,65 @@ import logging
 from contextlib import asynccontextmanager, suppress
 from uuid import uuid4
 
-import redis
 from fastapi import FastAPI, HTTPException
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import text
 
-from .knowledge.routes import router as knowledge_router
-from .config import get_settings
-from .db import SessionLocal, engine, get_db, init_db
+from app.admin.router import router as admin_router
+from app.billing.credits import build_router as build_usage_router
+from app.cloud_computer.preview import router as cloud_preview_router
+from app.cloud_computer.runtime import router as cloud_computer_router
+from app.files.preview_access import router as file_preview_access_router
+from app.files.quotas import router as storage_billing_router
+from app.files.resources import router as resources_router
+from app.files.workspace import router as workspace_files_router
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal, get_db, init_db
+from app.integrations.personal_mcp import router as personal_mcp_router
+from app.integrations.question_workbench import router as question_workbench_router
+from app.model_catalog.shared_providers import selection_router
+from app.operations.audit_routes import router as audit_router
+from app.operations.deployment import DeploymentMaintenanceMiddleware, router as deployment_router
+from app.operations.health import router as health_router
+from app.operations.openapi import keep_schema_names
+from app.payments.orders import build_router as build_payment_router
+from app.search.settings import router as search_settings_router
+from app.site.settings import router as site_settings_router
+from app.site.suggestions import router as suggestions_router
+from app.skills.catalog import catalog_router as platform_skills_router
+from app.skills.personal import router as personal_skills_router
+from app.skills.uploads import router as skill_uploads_router
+
+from .context_windows import ContextWindowError
+from .conversation_documents import router as conversation_documents_router
+from .conversations.attachments import router as chat_attachments_router
+from .conversations.feedback import router as feedback_router
+from .conversations.jobs import recover_interrupted_conversations
+from .conversations.routes import router as conversations_router
+from .identity import auth_logging  # noqa: F401
 from .identity.auth import BrowserRequestGuard, router as auth_router
 from .identity.email_auth import router as email_auth_router
 from .identity.wechat_auth import router as wechat_auth_router
-from .identity.site_auth import router as site_auth_router
-from .identity.site_admin import router as site_admin_router
-from .identity import auth_logging  # noqa: F401
-from .knowledge.ingestion.embedding import OpenAICompatibleEmbeddingProvider
-from .storage_settings import router as storage_settings_router
-from .knowledge.ingestion.uploads import router as document_uploads_router
+from .images.routes import router as image_tasks_router
 from .knowledge.ingestion import failures as document_failures
-from .skill_uploads import router as skill_uploads_router
-from .conversations.jobs import recover_interrupted_conversations
-from .conversations.routes import router as conversations_router
-from .conversations.feedback import router as feedback_router
-from .audit import router as audit_router
-from .credits import build_router as build_usage_router
-from .extensions import router as extensions_router
-from .payments import build_router as build_payment_router
-from .payment_settings import router as payment_settings_router
-from .model_pricing import router as model_pricing_router
-from .pricing_calculator import router as pricing_calculator_router
-from .site_settings import router as site_settings_router
-from .search_settings import router as search_settings_router
-from .workspace_files import router as workspace_files_router
-from .storage_billing import router as storage_billing_router
-from .deployment import DeploymentMaintenanceMiddleware, router as deployment_router
+from .knowledge.ingestion.uploads import router as document_uploads_router
+from .knowledge.routes import router as knowledge_router
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     with SessionLocal() as db:
-        from .site_audit import prune
+        from app.operations.site_audit import prune
         prune(db)
         db.commit()
         recover_interrupted_conversations(db)
     async def audit_retention():
         def cleanup():
-            from .site_audit import prune
+            from app.operations.site_audit import prune
             with SessionLocal() as db:
                 prune(db)
                 db.commit()
@@ -83,7 +95,7 @@ async def lifespan(_: FastAPI):
     retention = asyncio.create_task(audit_retention())
     document_recovery = asyncio.create_task(recover_document_saves())
     async def cloud_maintenance():
-        from .cloud_computer import maintenance
+        from app.cloud_computer.runtime import maintenance
         while True:
             try:
                 await asyncio.to_thread(maintenance, wait=False)
@@ -118,10 +130,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="RAG Platform API", version="0.1.0", lifespan=lifespan)
-
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+keep_schema_names(app)
 
 
 @app.middleware("http")
@@ -175,9 +184,6 @@ async def document_validation_error(request, error):
     return await request_validation_exception_handler(request, error)
 
 
-from .context_windows import ContextWindowError
-
-
 @app.exception_handler(ContextWindowError)
 async def context_window_error(_request, exc):
     from fastapi.responses import JSONResponse
@@ -201,106 +207,35 @@ app.add_middleware(
 app.add_middleware(DeploymentMaintenanceMiddleware)
 
 
-def _service_health(require_worker: bool = False):
-    settings = get_settings()
-    db_ok = False
-    redis_ok = False
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        db_ok = True
-    except Exception:
-        pass
-    try:
-        redis_ok = bool(redis.Redis.from_url(settings.redis_url).ping())
-    except Exception:
-        pass
-    worker_ok = False
-    try:
-        worker_ok = bool(redis.Redis.from_url(settings.redis_url).exists("deploy:worker-heartbeat"))
-    except Exception:
-        pass
-    overall = db_ok and redis_ok and (worker_ok or not require_worker)
-    return {
-        "status": "ok" if overall else "degraded",
-        "database": "ok" if db_ok else "error",
-        "redis": "ok" if redis_ok else "error",
-        "worker": "ok" if worker_ok else "error",
-        "embedding": OpenAICompatibleEmbeddingProvider().status.__dict__,
-        "llm": {"configuration_source": "database"},
-    }
-
-
-@app.get("/health")
-def health():
-    return _service_health()
-
-
-@app.get("/ready")
-def ready():
-    return _service_health(require_worker=True)
-
-
-@app.get("/version")
-def version():
-    settings = get_settings()
-    return {
-        "version": settings.app_version,
-        "commit": settings.git_commit,
-        "config_contract": settings.config_contract,
-        "database_rollback": settings.deployment_rollback,
-    }
-
-
+app.include_router(health_router)
 app.include_router(knowledge_router)
 app.include_router(auth_router)
-from .conversation_documents import router as conversation_documents_router
 app.include_router(conversation_documents_router)
-from .question_workbench import router as question_workbench_router
 app.include_router(question_workbench_router)
 app.include_router(email_auth_router)
 app.include_router(wechat_auth_router)
-app.include_router(site_auth_router)
-app.include_router(site_admin_router)
-app.include_router(storage_settings_router)
 app.include_router(document_uploads_router)
 app.include_router(skill_uploads_router)
-from .conversations.attachments import router as chat_attachments_router
 app.include_router(chat_attachments_router)
 app.include_router(feedback_router)
 app.include_router(audit_router)
 app.include_router(build_usage_router(get_db))
-app.include_router(model_pricing_router)
-app.include_router(pricing_calculator_router)
 app.include_router(site_settings_router)
 app.include_router(search_settings_router)
 app.include_router(workspace_files_router)
-from .resources import router as resources_router
 app.include_router(resources_router)
-from .file_preview_access import router as file_preview_access_router
 app.include_router(file_preview_access_router)
 app.include_router(storage_billing_router)
 app.include_router(build_payment_router(get_db))
-app.include_router(payment_settings_router)
 app.include_router(conversations_router)
-app.include_router(extensions_router)
-from .site_skills import router as site_skills_router
-app.include_router(site_skills_router)
-from .suggestions import router as suggestions_router
+app.include_router(platform_skills_router)
+app.include_router(personal_skills_router)
+app.include_router(personal_mcp_router)
 app.include_router(suggestions_router)
-from .shared_providers import router as shared_providers_router, selection_router
-app.include_router(shared_providers_router)
-from .model_connections import router as model_connections_router
-app.include_router(model_connections_router)
-from .images.routes import router as image_tasks_router, admin_router as image_models_router
 app.include_router(image_tasks_router)
-app.include_router(image_models_router)
-from .cloud_computer import router as cloud_computer_router
 app.include_router(cloud_computer_router)
-from .cloud_preview import router as cloud_preview_router
 app.include_router(cloud_preview_router)
-from .thinking_admin import router as thinking_admin_router
-app.include_router(thinking_admin_router)
+app.include_router(admin_router)
 app.include_router(selection_router)
 app.include_router(deployment_router)
 

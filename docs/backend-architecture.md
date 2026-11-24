@@ -3,7 +3,7 @@
 本文记录 Issue #146 已迁移的后端目录。后端按业务组织为模块化单体。
 `app.main` 负责 FastAPI 装配，API、Celery Worker 和其他进程入口共用业务模块。
 
-## 第五期目标目录
+## 第五期最终目录
 
 第五期收齐 #146 的剩余模块。已迁移的知识库、会话、Agent、文本协议、图片和身份模块不重做；仅调整它们与本期模块的接线，以及全站审计路由的归属。
 
@@ -35,6 +35,22 @@ backend/app/
 
 验收以迁移前后的完整 OpenAPI、路由匹配顺序、权限、Celery 任务名/参数/队列、Alembic 元数据与既有启动命令为基线。针对支付回调幂等、账务结算、文件权限、云电脑预览与恢复跑回归；真实验收走 `test`，不在本次 PR 自行合并或部署。
 
+| 模块 | 第五期主要入口 |
+| --- | --- |
+| 后台 | `admin/router.py` 登记各域的管理路由，`admin/audit_routes.py` 查询全站审计 |
+| 文件 | `files/workspace.py`、`resources.py`、`shared.py` 管理工作区文件和共享对象，`quotas.py` 管理额度 |
+| 云电脑 | `cloud_computer/runtime.py` 管理会话与命令，`adapter.py` 接入供应商，`preview.py` 管理预览授权 |
+| Skill | `skills/catalog.py`、`personal.py`、`uploads.py` 管理平台目录、个人 Skill 和直传 |
+| 外部接入 | `integrations/runtime.py` 装配会话可用工具，`mcp_client.py` 和 `question_workbench.py` 接入外部服务 |
+| 模型目录 | `model_catalog/connections.py`、`shared_providers.py` 和 `providers.py` 管理连接、模型配置和选择 |
+| 搜索 | `search/settings.py`、`web.py` 和 `billing.py` 管理配置、搜索和用量计量 |
+| 积分与支付 | `billing/credits.py` 和 `workspace.py` 管理账本与计价，`payments/orders.py` 处理订单和签名回调 |
+| 站点 | `site/settings.py` 和 `suggestions.py` 管理公告、联系信息与建议 |
+| 运维 | `operations/health.py` 和 `deployment.py` 管理健康检查和维护，`site_audit.py` 记录审计事件 |
+| 基础设施 | `infra/config.py`、`db.py`、`storage_backend.py` 管理配置、会话工厂和对象存储选择 |
+
+新增管理端点时，在业务域中复用原有依赖和事务，随后把域的路由登记到 `admin/router.py`。新增模型连接或对象存储供应商时，分别从 `model_catalog/` 或 `infra/storage_backend.py` 接入，协议实现和调用方可独立演进。跨域调用直接依赖业务接口。保留现有进程和迁移命令，部署拓扑与集中 ORM 注册保持一致。
+
 ## 身份与账号模块
 
 | 模块 | 职责 |
@@ -60,14 +76,13 @@ backend/app/
 | `app.site_admin` | `app.identity.site_admin` |
 | `app.auth_logging` | `app.identity.auth_logging` |
 
-所有仓库内调用方使用新模块路径，不保留旧顶层兼容层。全局 SQLAlchemy 模型、站点审计、
-配置和数据库连接仍留在原位置，由后续相应业务批次再评审其归属。
+所有仓库内调用方使用新模块路径。全局 SQLAlchemy 模型保持集中注册，站点审计记录归 `operations/site_audit.py`，配置与数据库连接归 `infra/`。
 
 ## 知识库模块
 
 ```text
 app/
-  main.py                         FastAPI 装配、中间件、健康检查和路由注册
+  main.py                         FastAPI 装配、中间件和路由注册
   knowledge/
     routes.py                      知识库 HTTP 路由与请求编排
     schemas.py                     请求/响应契约与文档响应序列化
@@ -87,15 +102,14 @@ app/
       docmind.py                   DocMind 服务适配
       parsed_document.py           解析结果类型
   tasks.py                         Celery 应用、稳定任务入口和分派
-  file_operations.py               跨业务共用的对象操作日志
+  files/operations.py              跨业务共用的对象操作日志
 ```
 
 知识库 HTTP 契约和请求编排放在 `knowledge/routes.py`。知识库状态操作按职责放入
 `libraries.py`、`originals.py` 或 `knowledge/ingestion/` 下的具体模块。
 请求/响应模型及文档序列化放在 `knowledge/schemas.py`。入库 Worker 的业务实现放在
 `knowledge/ingestion/pipeline.py`；当已有队列消息依赖 `app.tasks` 中的任务名和参数时，
-保留该入口并在执行时分派到业务实现。`file_operations.py` 仍属共享基础设施，
-因为知识库以外的业务也使用它。
+保留该入口并在执行时分派到业务实现。`files/operations.py` 提供多个业务域共用的对象操作日志。
 
 ## 旧路径映射
 
@@ -177,8 +191,7 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 `app.main` 注册 `images.routes`。原有 `app.tasks.process_image_task` 和
 `app.tasks.recover_image_tasks` 保持任务名及参数不变，并在执行时调用
 `images.tasks`，因此已投递的 Celery 消息仍使用原入口。会话恢复与 Agent
-结果续接直接读取 `images.tasks`。图像理解和附件读取仍留在原模块，因为它们
-横跨对话模型输入和云电脑预览；本批只迁移图片生成与编辑。
+结果续接直接读取 `images.tasks`。`files/image_reading.py` 提供对话模型输入与云电脑预览共用的图像读取。
 
 ## 文本模型协议
 
@@ -190,8 +203,8 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 | `app.chat_sampling` | `app.model_runtime.sampling`，单轮采样和流式传输恢复 |
 | `app.responses_socket` | `app.model_runtime.responses_socket`，Responses WebSocket 传输 |
 
-`llm_providers` 从站点模型和连接配置构造 `model_runtime.client.ChatProviderConfig`。
-计费模块继续读取客户端测得的用量。`upstream_retries` 同时服务文本、Embedding
+`model_catalog/providers.py` 从站点模型和连接配置构造 `model_runtime.client.ChatProviderConfig`。
+计费模块继续读取客户端测得的用量。`infra/upstream_retries.py` 同时服务文本、Embedding
 和其他外部能力，归属共享基础设施。
 
 ## 第三期旧路径映射

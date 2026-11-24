@@ -225,9 +225,9 @@ def test_catalog_changes_keep_existing_tool_results_images_and_checkpoint(client
 
 
 def test_unrelated_pending_file_operation_does_not_gate_observation_or_new_file(client, resource_store, monkeypatch):
-    from app import file_operations as ops, shared_resources as shared
-    from app.skill_discovery import summary
-    from app.workspace_mutations import save_files, snapshot
+    from app.files import operations as ops, shared
+    from app.skills.discovery import summary
+    from app.files.mutations import save_files, snapshot
     from app.models import WorkspaceFileOperation
     from fastapi import HTTPException
     db, manager = fresh_manager(client)
@@ -250,8 +250,8 @@ def test_unrelated_pending_file_operation_does_not_gate_observation_or_new_file(
 
 
 def test_optional_skill_hints_do_not_refresh_storage_or_take_write_locks(client, monkeypatch):
-    from app import shared_resources
-    from app.skill_discovery import summary
+    from app.files import shared as shared_resources
+    from app.skills.discovery import summary
     db, manager = fresh_manager(client)
     monkeypatch.setattr(shared_resources, "refresh_index", lambda *_a, **_k: pytest.fail("model admission refreshed storage"))
     assert summary(db, manager.access) == []
@@ -260,7 +260,7 @@ def test_optional_skill_hints_do_not_refresh_storage_or_take_write_locks(client,
 @pytest.mark.parametrize("code", ["context_length_exceeded", "context_window_exceeded", "prompt_too_long"])
 def test_structured_capacity_error_is_classified_without_guessing_ordinary_400(code):
     import httpx
-    from app.upstream_retries import context_capacity_failure
+    from app.infra.upstream_retries import context_capacity_failure
     assert isinstance(context_capacity_failure(httpx.Response(400, json={"error": {"code": code}})), LLMContextCapacityError)
     assert context_capacity_failure(httpx.Response(400, json={"error": {"message": "bad request"}})) is None
     assert context_capacity_failure(httpx.Response(503, json={"error": {"code": code}})) is None

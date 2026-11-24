@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.identity import auth
 from app.identity.auth import Access
 from app.context_windows import ContextWindowError, WindowStore, decrypt_items, make_item, project
-from app.llm_providers import request_provider_config
+from app.model_catalog.providers import request_provider_config
 from app.models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext, LoginSession
 from test_conversations import client, create
 from auth_helpers import model_id

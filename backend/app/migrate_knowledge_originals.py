@@ -7,13 +7,13 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
-from .db import SessionLocal
-from .file_operations import copy_object
+from app.infra.db import SessionLocal
+from app.files.operations import copy_object
 from .knowledge.originals import original_key
 from .migrate_shared_resources import _fingerprint
 from .models import (ChatMessage, Chunk, Conversation, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
                      IngestionJob, JobState, KnowledgeBase, User)
-from .storage_backend import current_storage
+from app.infra.storage_backend import current_storage
 
 
 class MigrationIssue(Exception):

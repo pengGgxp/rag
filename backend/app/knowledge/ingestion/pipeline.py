@@ -7,16 +7,16 @@ from uuid import UUID
 from sqlalchemy import select
 
 from ...identity.auth import aware, now
-from ...config import get_settings
-from ...credits import (
+from app.infra.config import get_settings
+from app.billing.credits import (
     CreditError, authorization_hold, authorization_hold_amount, release_hold, release_embedding_hold,
     settle_usage, reconcile_hold,
 )
-from ...db import SessionLocal
+from app.infra.db import SessionLocal
 from ...models import Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus
-from ...storage import download_fileobj
-from ...upstream_retries import TRANSIENT_STATUS, retry_scope
-from ...workspace_billing import document_snapshot
+from app.infra.storage import download_fileobj
+from app.infra.upstream_retries import TRANSIENT_STATUS, retry_scope
+from app.billing.workspace import document_snapshot
 from .docmind import (
     AliyunDocMind, DocMindError, PARSER_NAME, ParsingCancelled,
     MAX_SUBMISSION_BYTES, pdf_part, submission_ranges,
@@ -29,7 +29,7 @@ from .recovery import worker_claim
 
 
 def ocr_storage(session):
-    from ...storage_backend import current_storage
+    from app.infra.storage_backend import current_storage
     return current_storage(session, require_active=False)
 
 

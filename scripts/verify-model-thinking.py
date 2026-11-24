@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 from sqlalchemy import text
 
-from app.db import SessionLocal
+from app.infra.db import SessionLocal
 from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
-from app.llm_providers import _decrypt_api_key
-from app.thinking import select_thinking
+from app.model_catalog.providers import _decrypt_api_key
+from app.model_catalog.thinking import select_thinking
 
 
 def check(row, raw, *, tools=False):

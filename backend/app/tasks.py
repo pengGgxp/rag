@@ -5,8 +5,8 @@ import redis
 from celery import Celery
 from celery.signals import worker_ready, worker_shutdown
 
-from .config import get_settings
-from .db import SessionLocal
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal
 
 celery_app = Celery("rag", broker=get_settings().redis_url, backend=get_settings().redis_url)
 celery_app.conf.update(task_track_started=True, task_serializer="json", result_serializer="json")
@@ -30,7 +30,7 @@ def name_conversation(identifier):
 
 @celery_app.task
 def run_cloud_command(identifier):
-    from .cloud_computer import run
+    from app.cloud_computer.runtime import run
     run(identifier)
 
 
@@ -120,28 +120,28 @@ def recover_document_ingestion() -> None:
 
 @celery_app.task
 def maintain_uploads() -> None:
-    from .resource_cache import prune_cache
+    from app.files.cache import prune_cache
     prune_cache()
     from .knowledge.ingestion.uploads import cleanup_uploads, cleanup_orphans, recover_uploads
     cleanup_uploads()
-    from .skill_uploads import cleanup_expired
+    from app.skills.uploads import cleanup_expired
     cleanup_expired()
     recover_uploads()
     cleanup_orphans()
     cleanup_workspace_files()
     with SessionLocal() as db:
-        from .storage_billing import maintenance
+        from app.files.quotas import maintenance
         maintenance(db)
     with SessionLocal() as db:
-        from .resources import verify_pending_objects
-        from .storage import head_object
+        from app.files.resources import verify_pending_objects
+        from app.infra.storage import head_object
         verify_pending_objects(db, head_object)
     from .knowledge.ingestion.pipeline import cleanup_parsing_objects
     cleanup_parsing_objects(SessionLocal)
 
 
 def cleanup_workspace_files() -> None:
-    from .file_operations import recover_pending
+    from app.files.operations import recover_pending
     with SessionLocal() as db:
         recover_pending(db)
 

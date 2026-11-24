@@ -11,9 +11,11 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 
-from app import extensions, executor_service, workspace_files
-from app.config import get_settings
-from app.extensions import ExtensionRuntime
+from app.integrations import runtime as extensions
+from app import executor_service
+from app.files import workspace as workspace_files
+from app.infra.config import get_settings
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (AgentSkill, AgentSkillFile, ChatMessage, Conversation, SiteSkill,
     User, WorkspaceExecutionJob, WorkspaceFile, WorkspaceFileVersion)
 from test_extensions import access_for
@@ -31,7 +33,7 @@ def test_output_tools_require_cloud_and_recheck_suspension(accounts, monkeypatch
     stored = {}
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: io.BytesIO(stored[key]))
-    monkeypatch.setattr("app.resource_cache.download_range_fileobj", lambda key, start, end: io.BytesIO(stored[key][start:end+1]))
+    monkeypatch.setattr("app.files.cache.download_range_fileobj", lambda key, start, end: io.BytesIO(stored[key][start:end+1]))
     access = access_for(admin, db)
     runtime = ExtensionRuntime(lambda: nullcontext(db), access, [], request_id=uuid4())
     assert "write_file" not in {item["function"]["name"] for item in runtime.tools}
@@ -79,7 +81,7 @@ def test_command_never_scans_reads_or_archives_outputs(accounts, monkeypatch):
     assert admin.get("/resources").json()["items"][0]["path"] == "report.txt"
     assert fake.starts == 1
     row = db.query(WorkspaceFile).one()
-    from app.shared_resources import backend
+    from app.files.shared import backend
     monkeypatch.setattr(backend(db), "put", unavailable)
     with pytest.raises(HTTPException):
         workspace_files._save_bytes(access.user_id, access, db, row.path, b"changed", expected_version=1)

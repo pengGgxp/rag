@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from threading import Lock, Thread
 
 import chat_attachment_preview as fixture
-from app import shared_resources, storage_downloads, workspace_files
+from app.files import shared as shared_resources, downloads as storage_downloads, workspace as workspace_files
 from app.images import adapters as image_adapters, tasks as image_tasks
-from app.config import get_settings
-from app.llm_providers import _encrypt_api_key
+from app.infra.config import get_settings
+from app.model_catalog.providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection
 from PIL import Image
 from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse

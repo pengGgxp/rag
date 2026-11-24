@@ -10,7 +10,7 @@ import httpx
 from httpx_sse import EventSource
 
 from .client import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
-from ..upstream_retries import model_post, model_astream
+from app.infra.upstream_retries import model_post, model_astream
 
 
 def _tool_result_image(image, native):

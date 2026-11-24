@@ -1,7 +1,7 @@
 import base64, io, os, subprocess, tarfile, uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from .skill_files import safe_path
+from app.skills.files import safe_path
 
 app=FastAPI(title="workspace-executor")
 RUNNER_NETWORK = "rag-workspace-runners"

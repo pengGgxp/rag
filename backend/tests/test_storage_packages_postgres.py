@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import storage_billing as billing
+from app.files import quotas as billing
 from app.identity.auth import Access, now
 from app.models import UserCreditAccount, CreditLedgerEntry, User, UserModelPolicy, WorkspaceFile, WorkspaceFileVersion
 from app.storage_models import StorageEntitlement, StorageQuotaSettings

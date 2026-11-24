@@ -7,7 +7,7 @@ from app.models import (
 )
 from test_auth import accounts, library, register
 from test_retrieval import add_document
-from app.audit_log import record_audit
+from app.operations.audit_log import record_audit
 
 
 def test_users_can_filter_their_own_audit_logs_without_workspace_members(accounts, monkeypatch):
@@ -19,7 +19,7 @@ def test_users_can_filter_their_own_audit_logs_without_workspace_members(account
     kb_id = library(owner)
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     document = add_document(db, db.get(KnowledgeBase, kb_id), "audit content", store=store)
     db.add(IngestionJob(document_id=document.id))
     db.commit()

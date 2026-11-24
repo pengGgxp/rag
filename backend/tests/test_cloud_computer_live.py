@@ -10,8 +10,8 @@ import zipfile
 import pytest
 from sqlalchemy import select
 
-from app import cloud_computer as cloud
-from app.cloud_computer_adapter import AlibabaSandbox
+from app.cloud_computer import runtime as cloud
+from app.cloud_computer.adapter import AlibabaSandbox
 from app.models import CloudComputerSettings, UserCreditAccount, UsageEvent
 from app.identity.site_auth import protect, reveal
 from test_chat_attachments import PNG

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
 from app.model_runtime.responses import OUTPUT_FIELD, ResponseStream, api_root, endpoint, result, usage
-from app.thinking import encrypt_continuation, history_message, select_thinking
+from app.model_catalog.thinking import encrypt_continuation, history_message, select_thinking
 from test_conversation_streaming import upstream, sse
 from test_thinking import effort
 from test_conversations import client, create, turn
@@ -144,7 +144,7 @@ def test_async_stream_and_json_fallback(monkeypatch, json_fallback):
 
 
 def test_private_continuation_is_encrypted_and_not_replayed_across_protocols(monkeypatch):
-    from app import mcp_client
+    from app.integrations import mcp_client
     monkeypatch.setattr(mcp_client, "encrypt_headers", lambda values: json.dumps(values))
     monkeypatch.setattr(mcp_client, "decrypt_headers", json.loads)
     selected = config()
@@ -174,7 +174,7 @@ def test_protocol_validation_usage_and_endpoint():
 @pytest.mark.parametrize("metered", [False, True])
 def test_conversation_tools_billing_and_history_use_responses(client, monkeypatch, metered):
     from sqlalchemy import select
-    from app import mcp_client
+    from app.integrations import mcp_client
     from app.conversations import execution as conversations
     from app.models import BillingSnapshot, ChatMessage, ModelBillingSettings, ModelCallUsage, ModelConnection, SiteModelProvider
     from auth_helpers import model_id

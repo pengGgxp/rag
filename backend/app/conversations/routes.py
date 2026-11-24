@@ -7,18 +7,18 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from .. import model_billing
-from .. import resource_mentions as resource_references
+from app.billing import model_usage as model_billing
+from app.files import mentions as resource_references
 from ..agent.effective_context import ContextManager
-from ..audit_log import record_audit
+from app.operations.audit_log import record_audit
 from ..identity.auth import Access, get_access
 from ..conversation_context import HISTORY_TOOL, build_messages
-from ..credits import CreditError, authorization_hold, authorization_hold_amount
-from ..db import get_db
-from ..extensions import ExtensionRuntime, defaults as extension_defaults, validate_selection
-from ..llm_providers import request_provider_config
+from app.billing.credits import CreditError, authorization_hold, authorization_hold_amount
+from app.infra.db import get_db
+from app.integrations.runtime import ExtensionRuntime, defaults as extension_defaults, validate_selection
+from app.model_catalog.providers import request_provider_config
 from ..models import ChatMessage, ContextOperation, Conversation, Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus, SiteModelProvider, ThinkingTest
-from ..thinking import decrypt_display_thinking
+from app.model_catalog.thinking import decrypt_display_thinking
 from .attachments import select_attachments
 from .messages import conversation_read, live_conversation, message_read, resolve_input_mentions
 from .schemas import ContextRequest, ConversationCreate, ConversationRename, ExtensionSelection, SteerRequest, StopRequest, TurnRequest
@@ -62,7 +62,7 @@ def create(payload: ConversationCreate, request: Request,
         payload.skill_ids, payload.mcp_server_ids = list(map(UUID, skill_ids)), list(map(UUID, server_ids))
     validate_selection(db, access, payload.skill_ids, payload.mcp_server_ids)
     if payload.question_workbench:
-        from ..question_workbench import status as workbench_status
+        from app.integrations.question_workbench import status as workbench_status
         workbench = workbench_status(db, access)
         if not (workbench["available"] and workbench["enabled"]):
             raise HTTPException(403, "请先授权题目工作台")
@@ -177,7 +177,7 @@ def extensions(conversation_id: UUID, payload: ExtensionSelection,
     conversation.skill_ids = list(dict.fromkeys(map(str, payload.skill_ids)))
     conversation.mcp_server_ids = list(dict.fromkeys(map(str, payload.mcp_server_ids)))
     if payload.question_workbench:
-        from ..question_workbench import status as workbench_status
+        from app.integrations.question_workbench import status as workbench_status
         workbench = workbench_status(db, access)
         if not (workbench["available"] and workbench["enabled"]):
             raise HTTPException(403, "请先授权题目工作台")
@@ -330,13 +330,13 @@ def context(conversation_id: UUID, provider_id: UUID, thinking_option_id: str | 
             thinking_config_version: int | None = None, web_search: bool = True,
             db: Session = Depends(get_db), access: Access = Depends(get_access)):
     conversation = live_conversation(db, conversation_id, access)
-    from ..shared_providers import unavailable_reason
+    from app.model_catalog.shared_providers import unavailable_reason
     from ..model_runtime.client import ChatProviderConfig
-    from ..thinking import select_thinking
+    from app.model_catalog.thinking import select_thinking
     shared = db.get(SiteModelProvider, provider_id)
     if shared is None or unavailable_reason(db, shared, None, True):
         raise HTTPException(409, "当前模型不可用，请重新选择")
-    from ..model_connections import connection_for
+    from app.model_catalog.connections import connection_for
     connection = connection_for(db, shared)
     config = ChatProviderConfig("", "", shared.model, site_provider_id=str(shared.id),
         connection_id=str(connection.id), api_protocol=shared.chat_protocol,
@@ -358,8 +358,8 @@ def context(conversation_id: UUID, provider_id: UUID, thinking_option_id: str | 
     messages, tools = build_messages(db, conversation, [], config, runtime, history=history)
     messages.extend(history)
     if web_search and config.thinking.supports_tools and model_billing.enabled(db):
-        from ..search_settings import runtime_config
-        from ..web_search import tools as search_tools
+        from app.search.settings import runtime_config
+        from app.search.web import tools as search_tools
         if runtime_config(db):
             tools += search_tools()
     return manager.state(messages, tools + ([HISTORY_TOOL] if config.thinking.supports_tools else []))
@@ -412,7 +412,7 @@ def compact(conversation_id: UUID, payload: ContextRequest,
         model_billing.start_request(db, access.user_id, access.user_id, payload.request_id,
             UUID(config.provider_id), hold)
     else:
-        from ..workspace_billing import operation_snapshot
+        from app.billing.workspace import operation_snapshot
         model_billing.settle_pending(db, access.user_id, hold)
         operation_snapshot(db, access.user_id, payload.request_id, "model",
             capabilities=model_billing.CAPABILITIES, provider_id=UUID(config.provider_id))
@@ -504,12 +504,12 @@ def send(conversation_id: UUID, payload: TurnRequest, db: Session = Depends(get_
         validate_messages(manager.history(db, conversation), provider_config)
         if metered:
             if payload.web_search and provider_config.thinking.supports_tools:
-                from ..search_settings import runtime_config
+                from app.search.settings import runtime_config
                 search_config = runtime_config(db)
             model_billing.start_request(db, access.user_id, access.user_id,
                 payload.request_id, UUID(provider_config.provider_id), hold_amount, search_config=search_config)
         else:
-            from ..workspace_billing import operation_snapshot
+            from app.billing.workspace import operation_snapshot
             model_billing.settle_pending(db, access.user_id, hold_amount)
             operation_snapshot(db, access.user_id, payload.request_id, "model",
                 capabilities=model_billing.CAPABILITIES, provider_id=UUID(provider_config.provider_id))

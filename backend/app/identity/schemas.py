@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, field_validator
 
-from ..credit_amounts import CreditRate
+from app.billing.amounts import CreditRate
 
 
 class Credentials(BaseModel):
