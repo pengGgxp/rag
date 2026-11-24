@@ -239,7 +239,7 @@ class ContextManager:
         name, request = call["function"]["name"], UUID(model["request_id"])
         if name in ("generate_image", "edit_image"):
             from ..models import ImageTask
-            from ..image_tasks import TERMINAL, tool_read
+            from ..images.tasks import TERMINAL, tool_read
             task = db.scalar(select(ImageTask).where(
                 ImageTask.agent_tool_execution_id == uuid5(UUID(model["id"]), call["id"]),
                 ImageTask.account_id == self.access.user_id,

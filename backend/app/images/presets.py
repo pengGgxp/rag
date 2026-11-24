@@ -1,4 +1,4 @@
-"""Reviewed image parameter catalog; contains no commercial prices or credentials."""
+"""经过审核的图片参数目录，不包含商业价格或凭据。"""
 from copy import deepcopy
 
 REVISION = 1
@@ -74,5 +74,5 @@ def validate(config):
 
 
 def resolution_options(snapshot, quality):
-    """Gemini 2.5 has a fixed native resolution; never send a fake imageSize."""
+    """Gemini 2.5 使用固定原生分辨率，不发送无效的 imageSize。"""
     return {} if snapshot.get("omit_resolution") else {"imageSize": quality}

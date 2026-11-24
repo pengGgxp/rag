@@ -10,7 +10,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud, image_adapters, image_tasks, image_tools
+from app import auth, cloud_computer as cloud
+from app.images import adapters as image_adapters, tasks as image_tasks, tools as image_tools
 from app.conversations import execution as conversations
 from app.agent.loop import AgentCancelled
 from app.credits import ensure_account

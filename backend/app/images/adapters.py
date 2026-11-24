@@ -1,4 +1,4 @@
-"""Bounded image transports. Never retry a potentially billable upstream call."""
+"""受限的图片传输适配，不重试可能产生费用的上游调用。"""
 import base64
 import http.client
 import io
@@ -49,7 +49,7 @@ def validate_image(raw):
 
 
 def public_image(url):
-    """Pin validated public DNS to the TLS connection; no redirects or proxy env."""
+    """将已校验的公网 DNS 地址固定到 TLS 连接，不跟随重定向或读取代理环境变量。"""
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None, 443):
         raise ImageRejected("上游图片下载地址不受支持")
@@ -98,7 +98,7 @@ def generate(snapshot, secret, payload, references):
         url = f"{root}/models/{quote(model.removeprefix('models/'), safe='')}:generateContent"
         headers = {"x-goog-api-key": secret}
         parts = [{"text": payload["prompt"]}] + [{"inlineData": {"mimeType": mime, "data": base64.b64encode(raw).decode()}} for raw, mime in references]
-        from .image_presets import resolution_options
+        from .presets import resolution_options
         parameters = {"contents": [{"role": "user", "parts": parts}], "generationConfig": {
             "responseModalities": ["TEXT", "IMAGE"], "imageConfig": {
                 "aspectRatio": payload["size"], **resolution_options(snapshot, payload["quality"])}}}

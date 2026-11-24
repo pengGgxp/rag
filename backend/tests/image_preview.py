@@ -8,7 +8,8 @@ from contextlib import asynccontextmanager
 from threading import Lock, Thread
 
 import chat_attachment_preview as fixture
-from app import image_adapters, image_tasks, shared_resources, storage_downloads, workspace_files
+from app import shared_resources, storage_downloads, workspace_files
+from app.images import adapters as image_adapters, tasks as image_tasks
 from app.config import get_settings
 from app.llm_providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection

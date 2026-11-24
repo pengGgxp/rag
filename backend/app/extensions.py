@@ -98,7 +98,7 @@ class ExtensionRuntime:
         self.tools = workspace_tools + (MCP_DISCOVERY_TOOLS if self.bindings else [])
         self.mcp_catalog = Catalog(self)
         self.versions = sorted(self.mcp_tokens.items())
-        from .image_tools import tools as image_tools
+        from .images.tools import tools as image_tools
         with factory() as db:
             self.tools.extend(image_tools(db, access))
         from .conversation_documents import TOOLS as DOCUMENT_TOOLS
@@ -145,7 +145,7 @@ class ExtensionRuntime:
         from .knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
         if name in KNOWLEDGE_LABELS:
             return KNOWLEDGE_LABELS[name]
-        from .image_tools import LABELS as IMAGE_LABELS
+        from .images.tools import LABELS as IMAGE_LABELS
         if name in IMAGE_LABELS:
             return IMAGE_LABELS[name]
         from .conversation_documents import LABELS as DOCUMENT_LABELS
@@ -208,7 +208,7 @@ class ExtensionRuntime:
                 return {"error": "请检查启动命令、网页端口和预览名称", "error_code": "preview_arguments"}
             except HTTPException as error:
                 return {"error": public_error(error.detail), "error_code": "preview_unavailable", "status_code": error.status_code}
-        from .image_tools import LABELS as IMAGE_LABELS, execute as image_tool
+        from .images.tools import LABELS as IMAGE_LABELS, execute as image_tool
         if name in IMAGE_LABELS:
             return image_tool(self, name, arguments, check_active=check_active, **execution)
         from .conversation_documents import LABELS as DOCUMENT_LABELS, execute as document_tool

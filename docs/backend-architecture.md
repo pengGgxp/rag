@@ -103,6 +103,23 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 `conversations.execution` 保存用户可见的回答与用量，并调用 `agent.loop`。
 文件操作、云电脑、图片和知识库工具仍在其业务模块内执行。
 
+## 图片生成与编辑
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.images.routes` | 图片任务与站点图片模型管理 HTTP 路由 |
+| `app.images.schemas` | 图片任务、模型设置与结果核对请求模型 |
+| `app.images.tasks` | 任务准入、幂等、状态恢复、供应商调用编排、积分结算与文件交付 |
+| `app.images.adapters` | OpenAI Images、Responses 与 Gemini 图片协议和图片校验 |
+| `app.images.presets` | 图片模型参数预设目录与规格校验 |
+| `app.images.tools` | Agent 生图/编辑工具声明、参数适配与结果回传 |
+
+`app.main` 注册 `images.routes`。原有 `app.tasks.process_image_task` 和
+`app.tasks.recover_image_tasks` 保持任务名及参数不变，并在执行时调用
+`images.tasks`，因此已投递的 Celery 消息仍使用原入口。会话恢复与 Agent
+结果续接直接读取 `images.tasks`。图像理解和附件读取仍留在原模块，因为它们
+横跨对话模型输入和云电脑预览；本批只迁移图片生成与编辑。
+
 ## 文本模型协议
 
 | 原模块 | 当前模块与职责 |
@@ -116,3 +133,15 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 `llm_providers` 从站点模型和连接配置构造 `model_runtime.client.ChatProviderConfig`。
 计费模块继续读取客户端测得的用量。`upstream_retries` 同时服务文本、Embedding
 和其他外部能力，归属共享基础设施。
+
+## 第三期旧路径映射
+
+| 原模块 | 当前模块 |
+| --- | --- |
+| `app.image_tasks` | `app.images.routes`、`app.images.schemas`、`app.images.tasks` |
+| `app.image_adapters` | `app.images.adapters` |
+| `app.image_presets` | `app.images.presets` |
+| `app.image_tools` | `app.images.tools` |
+
+结构化图片任务日志继续使用 logger 名 `app.image_tasks`。图片生成和编辑的 HTTP
+路径、请求/响应结构及 Celery 任务清单保持不变。

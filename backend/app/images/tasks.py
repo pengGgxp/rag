@@ -1,4 +1,4 @@
-"""Durable, idempotent image work with one upstream submission and exact settlement."""
+"""管理可恢复的图片任务、供应商提交与精确结算。"""
 import hashlib
 import base64
 import json
@@ -7,55 +7,19 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from fastapi import HTTPException
 from sqlalchemy import select
 
-from .auth import Access, get_access
-from .credit_amounts import amount
-from .credits import authorization_hold, ensure_account, release_hold, _entry
-from .db import get_db
-from .model_capabilities import ImageConfig
-from .models import ImageModelSettings, ImageTask, ModelConnection, SiteModelProvider, UsageEvent
-from .site_auth import site_admin
+from ..auth import Access
+from ..credit_amounts import amount
+from ..credits import authorization_hold, ensure_account, release_hold, _entry
+from ..db import SessionLocal
+from ..model_capabilities import ImageConfig
+from ..models import ImageModelSettings, ImageTask, ModelConnection, SiteModelProvider, UsageEvent
+from .schemas import ImageInput
 
-router = APIRouter(prefix="/image-tasks", tags=["images"])
-admin_router = APIRouter(prefix="/site/admin/image-models", tags=["site-admin"])
 TERMINAL = {"completed", "partial", "failed", "cancelled", "uncertain", "save_failed"}
-logger = logging.getLogger(__name__)
-
-
-class Reference(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    id: UUID
-    version: int = Field(ge=1, strict=True)
-
-
-class ImageInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    operation: str = Field(pattern="^(generate|edit)$", default="generate")
-    prompt: str = Field(min_length=1, max_length=12000)
-    size: str | None = Field(default=None, max_length=40)
-    quality: str | None = Field(default=None, max_length=40)
-    count: int = Field(default=1, ge=1, le=4, strict=True)
-    references: list[Reference] = Field(default_factory=list, max_length=8)
-
-    @model_validator(mode="after")
-    def valid_operation(self):
-        if not self.prompt.strip() or (self.operation == "edit") != bool(self.references):
-            raise ValueError("编辑图片需要参考资源，生成图片不能携带参考资源")
-        return self
-
-
-class CreateInput(ImageInput):
-    idempotency_key: UUID
-
-
-class SettingsInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    version: int = Field(ge=0)
-    generate_model_id: UUID | None = None
-    edit_model_id: UUID | None = None
+logger = logging.getLogger("app.image_tasks")
 
 
 def selected_model(db, operation):
@@ -105,18 +69,17 @@ def owned(db, access, identifier, lock=False):
 
 
 def dispatch(identifier):
-    from .tasks import process_image_task
+    from ..tasks import process_image_task
     try:
         process_image_task.delay(str(identifier))
     except Exception:
-        # A durable queued task can be safely dispatched again; worker claims it once.
+        # 已持久化的排队任务可以安全地再次派发，Worker 只会领取一次。
         pass
 
 
 def recover(factory=None, *, agent_only=False):
-    """Recover delivery or queued work, never replay an uncertain upstream call."""
-    from .db import SessionLocal
-    from .auth import aware
+    """恢复文件交付或排队任务，不重放结果未确认的上游调用。"""
+    from ..auth import aware
     with (factory or SessionLocal)() as db:
         query = select(ImageTask).where(ImageTask.status.in_(("queued", "saving", "running")))
         if agent_only:
@@ -126,7 +89,7 @@ def recover(factory=None, *, agent_only=False):
         saving = []
         for row in rows:
             if row.agent_tool_execution_id:
-                from .agent.tool_jobs import owner_active
+                from ..agent.tool_jobs import owner_active
                 active = owner_active(db, row.agent_tool_execution_id)
                 if row.status == "queued" and not active:
                     settle(db, row, 0)
@@ -151,9 +114,9 @@ def recover(factory=None, *, agent_only=False):
 
 def create(db, access, payload, key, *, agent_tool_execution_id=None):
     access = access.revalidate(db)
-    from .agent.tool_jobs import validate_owner
+    from ..agent.tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access)
-    # Serialize admission and idempotency through the existing workspace account.
+    # 通过现有工作区账户串行化准入和幂等检查。
     ensure_account(db, access.user_id)
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
     existing = db.scalar(select(ImageTask).where(ImageTask.account_id == access.user_id,
@@ -173,14 +136,14 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
     spec = next((s for s in config.specs if (s.operation, s.size, s.quality) == (payload.operation, size, quality)), None)
     if spec is None:
         raise HTTPException(422, "当前图片规格不可用，请选择已配置的尺寸与质量")
-    from .storage_billing import check_capacity
-    from .workspace_files import resolve_input
+    from ..storage_billing import check_capacity
+    from ..workspace_files import resolve_input
     check_capacity(db, access.user_id, 1)
     for reference in payload.references:
         resource, version = resolve_input(db, access, reference.model_dump(mode="json"))
         if version.content_type not in ("image/png", "image/jpeg", "image/webp"):
             raise HTTPException(422, "参考资源必须为 PNG、JPEG 或 WebP 图片")
-    from .workspace_billing import context_for_workspace
+    from ..workspace_billing import context_for_workspace
     context = context_for_workspace(db, access.user_id)
     rate = spec.credits_per_image * Decimal(context["multiplier_percent"]) / 100
     held = amount(rate * payload.count)
@@ -190,7 +153,7 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
         "connection_version": connection.version, "base_url": connection.base_url, "timeout": connection.timeout_seconds,
         "protocol": config.protocol, "image_model": config.image_model, "rate": str(rate), "cost_per_image": str(spec.cost_per_image) if spec.cost_per_image is not None else None,
         "billing_context": context, "spec": spec.model_dump(mode="json")}
-    from .image_presets import find
+    from .presets import find
     preset = find(config.preset_id)
     snapshot["omit_resolution"] = bool(preset and preset["omit_resolution"])
     snapshot["preset_id"] = config.preset_id
@@ -202,7 +165,7 @@ def create(db, access, payload, key, *, agent_tool_execution_id=None):
         snapshot=snapshot, encrypted_credentials=connection.encrypted_api_key, held_credits=held,
         charged_credits=0, settled=False, cancel_requested=False, usage={}, outputs=[])
     db.add(row)
-    from .audit_log import record_audit
+    from ..audit_log import record_audit
     record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
                  action="image.created", resource_type="image_task", resource_id=identifier)
     db.commit()
@@ -232,11 +195,10 @@ def task_access(db, row):
 
 
 def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=None, on_progress=None):
-    from .db import SessionLocal
-    from .image_adapters import generate, validate_image, ImageRejected, ImageUncertain
-    from .llm_providers import _decrypt_api_key, _encrypt_api_key
-    from .workspace_files import resolve_input
-    from .resource_cache import read_bytes
+    from .adapters import generate, validate_image, ImageRejected, ImageUncertain
+    from ..llm_providers import _decrypt_api_key, _encrypt_api_key
+    from ..workspace_files import resolve_input
+    from ..resource_cache import read_bytes
     factory = factory or SessionLocal
     identifier = UUID(str(identifier))
     with factory() as db:
@@ -252,7 +214,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
         preparation_stage = "authorization"
         try:
             if row.agent_tool_execution_id:
-                from .agent.tool_jobs import owner_active
+                from ..agent.tool_jobs import owner_active
                 if not owner_active(db, row.agent_tool_execution_id):
                     row.cancel_requested = True
             if check_active:
@@ -276,7 +238,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
                 resource, version = resolve_input(db, access, reference)
                 raw = read_bytes(db, access, resource, version)
                 references.append(validate_image(raw))
-            # read_bytes commits; claim again under a fresh lock before submission.
+            # read_bytes 会提交事务，因此提交上游请求前需要重新加锁领取任务。
             row = db.get(ImageTask, identifier, with_for_update=True, populate_existing=True)
             if row.status != "queued":
                 return
@@ -285,7 +247,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
                 row.status = "cancelled"
                 db.commit()
                 return
-            # Resolve local credentials before crossing the billable submission boundary.
+            # 在进入可能计费的提交阶段前先解密本地凭据。
             preparation_stage = "credentials"
             secret = _decrypt_api_key(row.encrypted_credentials)
             preparation_stage = "authorization"
@@ -323,11 +285,11 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
             return
         try:
             images, request_id, usage = generate(row.snapshot, secret, row.payload, references)
-            # Settlement and cancellation take the task lock before the account lock.
+            # 结算和取消都先锁定任务，再锁定账户。
             row = db.get(ImageTask, identifier, with_for_update=True, populate_existing=True)
             row.upstream_request_id, row.usage = request_id or None, usage
-            # Keep verified bytes durable before attempting delivery to object storage.
-            # This private encrypted staging is removed in the resource commit.
+            # 先持久化已校验图片，再尝试交付到对象存储。
+            # 私有加密暂存会在资源提交时移除。
             row.outputs = [{"encrypted_data": _encrypt_api_key(base64.b64encode(raw).decode()),
                             "mime": mime, "size": len(raw)} for raw, mime in images]
             row.status = "saving"
@@ -356,8 +318,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
 
 
 def save_outputs(identifier, factory=None):
-    from .db import SessionLocal
-    from .file_operations import workspace_lock
+    from ..file_operations import workspace_lock
     factory = factory or SessionLocal
     with factory() as db:
         row = db.get(ImageTask, identifier)
@@ -368,10 +329,9 @@ def save_outputs(identifier, factory=None):
 
 
 def _save_outputs(identifier, factory):
-    from .db import SessionLocal
-    from .workspace_files import _stage_bytes, read_file
-    from .storage import delete_object
-    from .llm_providers import _decrypt_api_key
+    from ..workspace_files import _stage_bytes, read_file
+    from ..storage import delete_object
+    from ..llm_providers import _decrypt_api_key
     factory = factory or SessionLocal
     with factory() as db:
         row = db.get(ImageTask, identifier, with_for_update=True, populate_existing=True)
@@ -406,129 +366,3 @@ def _save_outputs(identifier, factory):
                 row.status, row.error = "save_failed", "图片已生成但尚未保存，请恢复权限或空间后重试保存，无需再次生成"
             db.commit()
             return
-
-
-@router.post("", status_code=202)
-def submit(payload: CreateInput, db=Depends(get_db), access=Depends(get_access)):
-    return create(db, access, ImageInput.model_validate(payload.model_dump(exclude={"idempotency_key"})), str(payload.idempotency_key))
-
-
-@router.get("/by-request/{key}")
-def by_request(key: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = db.scalar(select(ImageTask).where(ImageTask.account_id == access.user_id,
-        ImageTask.actor_user_id == access.user_id, ImageTask.idempotency_key == str(key)))
-    if row is None:
-        raise HTTPException(404, "图片请求尚未提交")
-    if row.status in ("queued", "saving") and row.agent_tool_execution_id is None:
-        dispatch(row.id)
-    return read(row)
-
-
-@router.get("/{identifier}")
-def status(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, access, identifier)
-    if row.status == "running":
-        from .auth import aware
-        from .agent.tool_jobs import owner_active
-        live = row.agent_tool_execution_id and owner_active(db, row.agent_tool_execution_id)
-        if not live and aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
-            row = owned(db, access, identifier, True)
-            if row.status == "running" and aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
-                row.status, row.error = "uncertain", "图片生成结果尚未确认，请联系管理员核对，勿重复生成"
-            db.commit()
-    if row.status in ("queued", "saving") and row.agent_tool_execution_id is None:
-        dispatch(identifier)
-    return read(row)
-
-
-@router.post("/{identifier}/cancel")
-def cancel(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, access, identifier, True)
-    row.cancel_requested = True
-    if row.status == "queued":
-        settle(db, row, 0)
-        row.status = "cancelled"
-    db.commit()
-    return read(row)
-
-
-@router.post("/{identifier}/retry-save")
-def retry_save(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
-    row = owned(db, access, identifier, True)
-    if row.status != "save_failed":
-        raise HTTPException(409, "此任务无需重试保存")
-    row.status, row.error = "saving", None
-    db.commit()
-    if row.agent_tool_execution_id:
-        # Delivery recovery never resubmits the billable generation.
-        from sqlalchemy.orm import sessionmaker
-        save_outputs(identifier, sessionmaker(bind=db.get_bind()))
-        db.refresh(row)
-    else:
-        dispatch(identifier)
-    return read(row)
-
-
-@admin_router.get("")
-def settings(db=Depends(get_db), actor=Depends(site_admin)):
-    row = db.get(ImageModelSettings, 1)
-    return {"version": row.version if row else 0, "generate_model_id": str(row.generate_model_id) if row and row.generate_model_id else None,
-            "edit_model_id": str(row.edit_model_id) if row and row.edit_model_id else None}
-
-
-@admin_router.put("")
-def update_settings(payload: SettingsInput, db=Depends(get_db), actor=Depends(site_admin)):
-    from .model_pricing import settings_locked
-    settings_locked(db)
-    row = db.get(ImageModelSettings, 1, with_for_update=True)
-    if payload.version != (row.version if row else 0):
-        raise HTTPException(409, "图片默认模型已更新，请重新加载")
-    if row is None:
-        row = ImageModelSettings(id=1, version=0)
-        db.add(row)
-    for operation in ("generate", "edit"):
-        identifier = getattr(payload, f"{operation}_model_id")
-        if identifier:
-            model = db.get(SiteModelProvider, identifier)
-            config = ImageConfig.model_validate(model.image_config) if model else None
-            connection = db.get(ModelConnection, model.connection_id) if model else None
-            if not model or not model.enabled or not config or not getattr(config, operation) or not connection or not connection.enabled or not connection.encrypted_api_key:
-                raise HTTPException(422, "请选择已启用并配置价格的图片模型")
-        setattr(row, f"{operation}_model_id", identifier)
-    row.version += 1
-    from .site_audit import record
-    record(db, actor, "image_models.updated", "image_model_settings", 1, details={"fields": ["generate_model_id", "edit_model_id"]})
-    db.commit()
-    return settings(db, actor)
-
-
-class Resolution(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    confirmed_images: int = Field(ge=0, le=4, strict=True)
-    reason: str = Field(min_length=5, max_length=300)
-
-
-@admin_router.get("/tasks")
-def admin_tasks(db=Depends(get_db), actor=Depends(site_admin)):
-    rows = db.scalars(select(ImageTask).where(ImageTask.status.in_(("uncertain", "save_failed")))
-                      .order_by(ImageTask.created_at.desc()).limit(100))
-    return [{**read(row), "account_id": str(row.account_id), "actor_user_id": str(row.actor_user_id),
-             "upstream_request_id": row.upstream_request_id, "held_credits": str(row.held_credits),
-             "requested_images": row.payload["count"]} for row in rows]
-
-
-@admin_router.post("/tasks/{identifier}/resolve")
-def resolve_task(identifier: UUID, payload: Resolution, db=Depends(get_db), actor=Depends(site_admin)):
-    row = db.get(ImageTask, identifier, with_for_update=True, populate_existing=True)
-    if not row or row.status != "uncertain" or row.settled:
-        raise HTTPException(409, "此任务已处理或无需核对")
-    if payload.confirmed_images > row.payload["count"]:
-        raise HTTPException(422, "确认图片数不能超过请求张数")
-    settle(db, row, payload.confirmed_images)
-    row.status = "save_failed" if row.outputs else "failed"
-    row.error = "生成费用已核对；如仍需图片，请先核对已交付结果"
-    from .site_audit import record
-    record(db, actor, "image_task.resolved", "image_task", identifier,
-           details={"confirmed_images": payload.confirmed_images, "reason": payload.reason})
-    db.commit()
-    return read(row)

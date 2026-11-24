@@ -24,7 +24,7 @@ GPT 预设提供像素尺寸与质量；Gemini 提供宽高比与分辨率。规
 - Google：<https://ai.google.dev/gemini-api/docs/image-generation>
 - Google GenerateContent 参数：<https://ai.google.dev/api/generate-content>
 
-预设目录为 `backend/app/image_presets.py`，是前后端唯一参数来源。当前提供 GPT Image 1/1.5/Mini、GPT Image 2、GPT Image 2.5 Sunburst/Flare、Gemini 2.5 Flash Image、Gemini 3 Pro Image、Gemini 3.1 Flash Image。
+预设目录为 `backend/app/images/presets.py`，是前后端唯一参数来源。当前提供 GPT Image 1/1.5/Mini、GPT Image 2、GPT Image 2.5 Sunburst/Flare、Gemini 2.5 Flash Image、Gemini 3 Pro Image、Gemini 3.1 Flash Image。
 
 GPT 2/2.5 仅预选常用及非实验性高清尺寸，自定义尺寸可切换高级配置。2.5 提供 low/medium/high/xhigh/max/auto，较早系列不提供 xhigh/max。Gemini 2.5 不发送分辨率参数；3 Pro 提供 1K/2K/4K；3.1 Flash 另提供 512 和扩展比例。平台仍限制一次最多 4 张（原生协议 1 张）、最多 8 张参考图、最多 100 个定价组合；这是本平台支持范围，并非供应商全部上限。
 

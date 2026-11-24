@@ -36,13 +36,13 @@ def run_cloud_command(identifier):
 
 @celery_app.task
 def process_image_task(identifier):
-    from .image_tasks import run
+    from .images.tasks import run
     run(identifier)
 
 
 @celery_app.task
 def recover_image_tasks():
-    from .image_tasks import recover
+    from .images.tasks import recover
     recover()
 
 

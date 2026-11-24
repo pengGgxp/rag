@@ -360,7 +360,7 @@ def recover(factory=SessionLocal):
             name_conversation.delay(str(identifier))
         except Exception:
             logger.warning("Automatic title remains queued: %s", identifier)
-    from ..image_tasks import recover as recover_images
+    from ..images.tasks import recover as recover_images
     recover_images(factory, agent_only=True)
 
 

@@ -6,11 +6,36 @@ import pytest
 from PIL import Image
 from sqlalchemy import select
 
-from app import image_tasks
-from app.image_adapters import validate_image, ImageUncertain
+from app.images import tasks as image_tasks, adapters as image_adapters
+from app.images.adapters import validate_image, ImageUncertain
 from app.models import UserCreditAccount, CreditLedgerEntry, ImageTask, SiteModelProvider
 from test_shared_providers import setup_site
 from test_model_connections import connection, model
+
+
+def test_image_api_and_worker_contract_is_stable():
+    from app.main import app
+    from app.tasks import process_image_task, recover_image_tasks
+
+    expected_routes = {
+        "/image-tasks": {"post"},
+        "/image-tasks/by-request/{key}": {"get"},
+        "/image-tasks/{identifier}": {"get"},
+        "/image-tasks/{identifier}/cancel": {"post"},
+        "/image-tasks/{identifier}/retry-save": {"post"},
+        "/site/admin/image-models": {"get", "put"},
+        "/site/admin/image-models/tasks": {"get"},
+        "/site/admin/image-models/tasks/{identifier}/resolve": {"post"},
+    }
+    paths = app.openapi()["paths"]
+    actual_routes = {
+        path: {method for method in operations if method in {"get", "post", "put", "patch", "delete"}}
+        for path, operations in paths.items()
+        if path.startswith("/image-tasks") or path.startswith("/site/admin/image-models")
+    }
+    assert actual_routes == expected_routes
+    assert process_image_task.name == "app.tasks.process_image_task"
+    assert recover_image_tasks.name == "app.tasks.recover_image_tasks"
 
 
 def configure(accounts, monkeypatch):
@@ -84,7 +109,7 @@ def test_insufficient_balance_and_disabled_default_do_not_submit(accounts, monke
 
 def test_uncertain_result_keeps_hold_and_never_replays(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app import image_adapters
+    from app.images import adapters as image_adapters
     client, db, identity = configure(accounts, monkeypatch)
     result = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())})
     identifier = result.json()["task_id"]
@@ -116,7 +141,8 @@ def test_image_format_rejection_and_metadata_strip():
 
 def test_successful_generation_can_retry_storage_without_regeneration(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app import image_adapters, workspace_files, storage
+    from app import workspace_files, storage
+    from app.images import adapters as image_adapters
     from app.models import WorkspaceFile, UsageEvent
     client, db, identity = configure(accounts, monkeypatch)
     attempts = []
@@ -174,7 +200,7 @@ def test_task_is_private_to_its_account(accounts, monkeypatch):
 @pytest.mark.parametrize("revocation", ["session", "suspension"])
 def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypatch, revocation):
     from sqlalchemy.orm import sessionmaker
-    from app import image_adapters
+    from app.images import adapters as image_adapters
     from app.models import LoginSession, User
     client, db, identity = configure(accounts, monkeypatch)
     wid, uid = UUID(identity["user"]["id"]), UUID(identity["user"]["id"])
@@ -200,7 +226,8 @@ def test_queued_task_rechecks_authorization_and_releases_hold(accounts, monkeypa
 
 def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, monkeypatch):
     from sqlalchemy.orm import sessionmaker
-    from app import llm_providers, image_adapters
+    from app import llm_providers
+    from app.images import adapters as image_adapters
     client, db, identity = configure(accounts, monkeypatch)
     before = db.get(UserCreditAccount, UUID(identity["user"]["id"])).balance
     identifier = client.post("/image-tasks", json={"prompt": "draw", "idempotency_key": str(uuid4())}).json()["task_id"]
@@ -222,7 +249,8 @@ def test_preparation_credentials_failure_is_actionable_and_redacted(accounts, mo
 @pytest.mark.parametrize("cancel_running", [False, True])
 def test_partial_results_charge_actual_count_even_after_cancel(accounts, monkeypatch, cancel_running):
     from sqlalchemy.orm import sessionmaker
-    from app import image_adapters, workspace_files
+    from app import workspace_files
+    from app.images import adapters as image_adapters
     client, db, identity = configure(accounts, monkeypatch)
     settings = db.scalar(select(SiteModelProvider).where(SiteModelProvider.supports_chat.is_(False)))
     settings.image_config = {**settings.image_config, "max_count": 3}
