@@ -5,7 +5,9 @@ from cryptography.fernet import Fernet
 import httpx
 import pytest
 
-from app import search_settings, site_auth, web_search
+from app.search import settings as search_settings, web as web_search
+
+from app.identity import site_auth
 from app.models import SiteSearchSettings, User
 from test_auth import register
 

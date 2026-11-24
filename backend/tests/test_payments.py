@@ -10,11 +10,11 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from pydantic import SecretStr
 from sqlalchemy import select
 
-from app import payments
-from app.auth import now
-from app.config import Settings
+from app.payments import orders as payments
+from app.identity.auth import now
+from app.infra.config import Settings
 from app.models import AuditLog, UserCreditAccount, CreditLedgerEntry, RechargeOrder
-from app.payments import CALLBACK_PATH, Checkout, GatewayError, accept_payment, md5_sign
+from app.payments.orders import CALLBACK_PATH, Checkout, GatewayError, accept_payment, md5_sign
 from test_auth import accounts, register, share, switch
 
 

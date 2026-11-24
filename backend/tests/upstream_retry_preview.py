@@ -19,11 +19,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 import uvicorn
 
-from app import auth, conversation_jobs, llm_providers, main
-from app.db import Base, engine, SessionLocal
+from app.model_catalog import providers as llm_providers
+from app import main
+
+from app.identity import auth
+from app.conversations import jobs as conversation_jobs
+from app.infra.db import Base, engine, SessionLocal
 from app.models import (ChatMessage, Conversation, ConversationExecution, ModelBillingSettings,
     ModelConnection, SiteModelProvider)
-from app.credits import ensure_account
+from app.billing.credits import ensure_account
 from auth_helpers import authenticate, configured_model
 from test_conversation_streaming import upstream, sse
 

@@ -1,26 +1,22 @@
-"""Paid, explicit server-side transport probe; does not change platform settings.
+"""付费且显式的服务端图片传输探针，不修改平台设置。
 
-Run inside an API container with IMAGE_PROBE_CONNECTION and IMAGE_PROBE_MODEL.
-The adapter file is loaded alongside this script so a candidate can be verified
-before deploying migrations. Never print credentials, prompt bodies, or images.
+在 API 容器内设置 IMAGE_PROBE_CONNECTION 和 IMAGE_PROBE_MODEL 后运行。
+探针直接使用应用图片适配器，部署前可验证当前候选实现。
+绝不输出凭据、提示词正文或图片内容。
 """
-import importlib.util
 import json
 import os
-from pathlib import Path
 from uuid import UUID
 
-from app.db import SessionLocal
-from app.llm_providers import _decrypt_api_key
+from app.infra.db import SessionLocal
+from app.images import adapters as adapter
+from app.model_catalog.providers import _decrypt_api_key
 from app.models import ModelConnection
 
 
 def main():
     if os.environ.get("IMAGE_PROBE_PAID") != "yes":
-        raise SystemExit("Set IMAGE_PROBE_PAID=yes to confirm billable generation and editing")
-    spec = importlib.util.spec_from_file_location("candidate_image_adapters", Path(__file__).with_name("image_adapters.py"))
-    adapter = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(adapter)
+        raise SystemExit("请设置 IMAGE_PROBE_PAID=yes，以确认允许执行计费的生成和编辑")
     with SessionLocal() as db:
         connection = db.get(ModelConnection, UUID(os.environ["IMAGE_PROBE_CONNECTION"]))
         if not connection or not connection.enabled:

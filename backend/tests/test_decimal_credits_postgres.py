@@ -11,8 +11,8 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app import model_billing
-from app.credits import _entry, adjust_balance, authorization_hold, ensure_account, recharge, release_hold
+from app.billing import model_usage as model_billing
+from app.billing.credits import _entry, adjust_balance, authorization_hold, ensure_account, recharge, release_hold
 from app.models import UserCreditAccount, CreditLedgerEntry, ModelUsageRequest, User
 from test_auth_postgres import auth_postgres
 from test_personal_accounts_postgres import insert, legacy_database, account as old_account, workspace as old_workspace
@@ -42,7 +42,7 @@ def test_numeric_schema_and_integer_history_preserved(auth_postgres, monkeypatch
             CreditLedgerEntry.account_id == identifier))
         assert before == Decimal("1000.0000")
     monkeypatch.setenv("DATABASE_URL", str(auth_postgres.url.render_as_string(hide_password=False)))
-    from app.config import get_settings
+    from app.infra.config import get_settings
     get_settings.cache_clear()
     try:
         command.upgrade(Config("alembic.ini"), "head")

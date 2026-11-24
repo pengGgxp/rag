@@ -6,9 +6,9 @@ from uuid import UUID
 import pytest
 from PIL import Image
 
-from app import auth
+from app.identity import auth
 from app.models import WorkspaceFile, WorkspaceFileVersion
-from app.shared_resources import object_key
+from app.files.shared import object_key
 from test_auth import register
 from test_cloud_computer_mount import MemoryMount
 
@@ -16,9 +16,9 @@ from test_cloud_computer_mount import MemoryMount
 @pytest.fixture
 def store(monkeypatch):
     storage = MemoryMount()
-    monkeypatch.setattr("app.file_preview_access.current_storage", lambda *_args, **_kwargs: storage)
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: storage)
-    monkeypatch.setattr("app.storage_downloads.download_range_fileobj",
+    monkeypatch.setattr("app.files.preview_access.current_storage", lambda *_args, **_kwargs: storage)
+    monkeypatch.setattr("app.files.shared.backend", lambda _db: storage)
+    monkeypatch.setattr("app.files.downloads.download_range_fileobj",
                         lambda key, start, end: io.BytesIO(storage.objects[key][start:end + 1]))
     return storage
 

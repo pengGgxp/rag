@@ -8,10 +8,11 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import agent, auth
-from app.extensions import ExtensionRuntime
-from app.knowledge_base_tools import LABELS, TOOLS
-from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider, ToolCall, ToolResponse
+from app.identity import auth
+from app.agent import loop as agent
+from app.integrations.runtime import ExtensionRuntime
+from app.knowledge.tools import LABELS, TOOLS
+from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (AuditLog, ChatMessage, DocumentStatus, IngestionJob, JobState,
                         KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution, User)
 from test_auth import library, register
@@ -264,7 +265,7 @@ def test_agent_real_tool_activity_and_prompt_trust_boundary(saving):
 
 
 def test_failed_write_rolls_back_library_audit_and_receipt(saving, monkeypatch):
-    import app.knowledge_base_tools as module
+    import app.knowledge.tools as module
     def fail(*args, **kwargs):
         raise RuntimeError("synthetic transaction failure")
     monkeypatch.setattr(module, "record_audit", fail)

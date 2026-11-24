@@ -96,6 +96,7 @@ MCP 默认禁止连接内网和回环地址。管理员需要接入可信内网�
 ## 相关文档
 
 - [产品功能基线](./RAG_PLATFORM_FEATURE_BASELINE.md)
+- [后端目录与模块归属](./docs/backend-architecture.md)
 - [项目执行规则](./AGENTS.md)
 - [技术决策记录](./docs/adr/0001-technology-baseline.md)
 - [CI/CD 与生产发布唯一流程](./docs/ci-cd.md)

@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 from uuid import UUID, uuid4
 from sqlalchemy import select
-from app import auth, cloud_computer as cloud
-from app.db import SessionLocal
+from app.cloud_computer import runtime as cloud
+from app.identity import auth
+from app.infra.db import SessionLocal
 from app.models import CloudComputerSession, LoginSession
 import acceptance_runtime
 

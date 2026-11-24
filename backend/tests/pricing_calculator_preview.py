@@ -11,11 +11,14 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='rag-pric
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = "local-fixture-only"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import auth, main, payments
-from app.config import Settings
-from app.db import Base, SessionLocal, engine
+from app import main
+from app.payments import orders as payments
+
+from app.identity import auth
+from app.infra.config import Settings
+from app.infra.db import Base, SessionLocal, engine
 from app.models import ModelBillingSettings, SiteModelProvider
-from app.model_pricing import TEMPLATE_CAPABILITIES
+from app.billing.pricing import TEMPLATE_CAPABILITIES
 from auth_helpers import authenticate, configured_model
 from fastapi.testclient import TestClient
 from pydantic import SecretStr

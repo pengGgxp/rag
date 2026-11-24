@@ -1,6 +1,6 @@
 import pytest
 
-from app.tool_errors import tool_outcome
+from app.agent.tool_errors import tool_outcome
 
 
 @pytest.mark.parametrize("result,expected", [

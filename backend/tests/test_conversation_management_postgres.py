@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import conversation_jobs, conversations
+from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.models import (ChatMessage, Conversation, ConversationEvent, ConversationExecution,
     ConversationTitleTask, UserCreditAccount, CreditLedgerEntry, User)
 from legacy_migration_helpers import legacy_tables, seed_workspace

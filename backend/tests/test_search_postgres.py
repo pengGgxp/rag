@@ -6,9 +6,10 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import model_billing, search_billing
+from app.billing import model_usage as model_billing
+from app.search import billing as search_billing
 from app.models import UserCreditAccount, CreditLedgerEntry, SearchToolCall, SiteSearchSettings, UsageEvent
-from app.web_search import SearchConfig
+from app.search.web import SearchConfig
 from test_auth_postgres import auth_postgres
 from test_model_billing_postgres import setup
 

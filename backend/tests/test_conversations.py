@@ -8,9 +8,12 @@ from httpx_sse import EventSource
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
-from app import main, conversations as chat
-from app.db import Base
-from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app import main
+from app.conversations.jobs import recover_interrupted_conversations
+from app.conversations import execution as chat
+from app.infra.db import Base
+from app.knowledge import retrieval
+from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
     ChatMessage, Conversation, ConversationLibrary, UserCreditAccount, DocumentStatus,
     Document, KnowledgeBase, KnowledgeBaseStatus, QueryTrace, User,
@@ -50,7 +53,7 @@ def client(monkeypatch, tmp_path):
             return ToolResponse(content=text, tool_calls=[])
 
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: Provider())
-    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
+    monkeypatch.setattr("app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(
         status=SimpleNamespace(configured=False, provider=None, model=None, dimension=1024),
     ))
     main.app.dependency_overrides[main.get_db] = lambda: db
@@ -511,7 +514,7 @@ def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, 
     library_id, document_id = library.id, document.id
     other_id = other_library.id
     foreign_library_id, foreign_document_id = foreign_library.id, foreign_document.id
-    original_retrieve = main.retrieve_knowledge_base
+    original_retrieve = retrieval.retrieve_knowledge_base
     retrieval_calls = []
 
     def retrieve(*args, **kwargs):
@@ -553,7 +556,7 @@ def test_discovered_document_search_rechecks_current_scope(client, monkeypatch, 
             assert "error" in result and "evidence" not in result
             return ToolResponse(content="资料当前不可用，请重新选择。", tool_calls=[])
 
-    monkeypatch.setattr(main, "retrieve_knowledge_base", retrieve)
+    monkeypatch.setattr(retrieval, "retrieve_knowledge_base", retrieve)
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_kwargs: StaleDiscoveryProvider())
     conversation = create(http)
     events, _ = turn(http, conversation["id"])
@@ -607,7 +610,7 @@ def test_followup_does_not_reuse_deleted_document_as_evidence(client, monkeypatc
     library = add_library(db)
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     document = add_document(db, library, "needle duration is 3 days", store=store)
     conversation = create(http, [library])
     turn(http, conversation["id"])
@@ -720,7 +723,7 @@ def test_stop_conflict_delete_and_restart_recovery(client):
     row.active_request_id = uuid4()
     pending.status = "streaming"
     db.commit()
-    chat.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     db.refresh(pending)
     assert pending.status == "interrupted"
     assert http.get(f"/conversations/{id}").json()["active_request_id"] is None

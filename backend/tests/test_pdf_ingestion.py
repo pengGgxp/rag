@@ -8,7 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import tasks
-from app.docmind import DocMindError, normalize_layouts
+from app.knowledge.ingestion import pipeline
+from app.knowledge import routes as knowledge_routes
+from app.knowledge.ingestion.docmind import DocMindError, normalize_layouts
 from app.models import (
     Chunk, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState,
     KnowledgeBase, UsageEvent, UsagePolicy,
@@ -43,17 +45,17 @@ def pdf_job(accounts, monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     store.objects[doc.object_key] = content.getvalue()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     doc.size_bytes = len(content.getvalue())
     doc.content_hash = hashlib.sha256(content.getvalue()).hexdigest()
     db.commit()
-    monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
-    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
-    settings = tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"})
-    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    monkeypatch.setattr(pipeline, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
+    monkeypatch.setattr(pipeline, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
+    settings = pipeline.get_settings().model_copy(update={"pdf_parser": "aliyun"})
+    monkeypatch.setattr(pipeline, "get_settings", lambda: settings)
     embedded = []
     monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: embedded.append(args))
-    monkeypatch.setattr("app.main.process_document.delay", lambda *_: None)
+    monkeypatch.setattr("app.knowledge.routes.process_document.delay", lambda *_: None)
     return owner, outsider, db, kb, doc.id, job.id, embedded
 
 
@@ -81,15 +83,15 @@ def fake_provider(monkeypatch, *, collect=None, submit=None, original=None):
                  "pos": [{"x": 10, "y": 20}, {"x": 120, "y": 40}]},
             ], 2)
 
-    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    monkeypatch.setattr(pipeline, "AliyunDocMind", Provider)
     return calls
 
 
 @pytest.mark.parametrize("interrupt", [None, "rejected", "commit_failed", "response_lost"])
 def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pdf_job, monkeypatch, interrupt):
     import httpx
-    from app.config import Settings
-    from app.embedding import OpenAICompatibleEmbeddingProvider
+    from app.infra.config import Settings
+    from app.knowledge.ingestion.embedding import OpenAICompatibleEmbeddingProvider
 
     owner, _, db, kb_id, doc_id, old_job_id, embedded = pdf_job
     document = db.get(Document, doc_id)
@@ -111,7 +113,7 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
         embedding_base_url="https://provider.example/v1", embedding_api_key="test",
         embedding_model="test-model", embedding_dimension=1024,
     )
-    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider",
+    monkeypatch.setattr(pipeline, "OpenAICompatibleEmbeddingProvider",
                         lambda: OpenAICompatibleEmbeddingProvider(settings))
     batches = []
     checkpoint_seen = []
@@ -150,7 +152,7 @@ def test_large_pdf_index_retry_batches_without_reparsing_or_duplicate_billing(pd
     assert embedded == [(str(doc_id), str(job_id))]
     monkeypatch.setattr(Session, "commit", commit_with_fault)
     if interrupt:
-        from app.embedding import EmbeddingProviderError
+        from app.knowledge.ingestion.embedding import EmbeddingProviderError
 
         with pytest.raises((EmbeddingProviderError, OSError)):
             tasks.embed_document.run(doc_id, job_id)
@@ -202,8 +204,8 @@ def test_cos_pdf_is_submitted_by_url_and_resume_reuses_paid_task(pdf_job, monkey
         def collect(self, identifier, count, check):
             check()
             return normalize_layouts([{"pageNum": 0, "text": "URL parsed document", "type": "text"}], count)
-    monkeypatch.setattr(tasks, "ocr_storage", lambda _: SimpleNamespace(read_url=lambda key: "https://cos.invalid/" + key))
-    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    monkeypatch.setattr(pipeline, "ocr_storage", lambda _: SimpleNamespace(read_url=lambda key: "https://cos.invalid/" + key))
+    monkeypatch.setattr(pipeline, "AliyunDocMind", Provider)
     tasks.process_document.run(str(job_id))
     tasks.process_document.run(str(job_id))
     assert len(calls) == 1 and calls[0][1] == 2
@@ -247,13 +249,13 @@ def test_pdf_ingestion_preserves_original_version_and_single_processing(pdf_job,
 
     owner, outsider, db, _, doc_id, job_id, embedded = pdf_job
     content = make_pdf(password=password)
-    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    monkeypatch.setattr(pipeline, "download_fileobj", lambda _: io.BytesIO(content))
     document = db.get(Document, doc_id)
     document.content_hash = hashlib.sha256(content).hexdigest()
     document.size_bytes = len(content)
     db.commit()
-    settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
-    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    settings = pipeline.get_settings().model_copy(update={"pdf_parser": parser})
+    monkeypatch.setattr(pipeline, "get_settings", lambda: settings)
     document = db.get(Document, doc_id)
     document.size_bytes, document.content_hash = len(content), hashlib.sha256(content).hexdigest()
     db.commit()
@@ -293,13 +295,13 @@ def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatc
     from app.models import UserCreditAccount, CreditLedgerEntry
 
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
-    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    monkeypatch.setattr(pipeline, "download_fileobj", lambda _: io.BytesIO(content))
     document = db.get(Document, doc_id)
     document.content_hash = hashlib.sha256(content).hexdigest()
     document.size_bytes = len(content)
     db.commit()
-    settings = tasks.get_settings().model_copy(update={"pdf_parser": parser})
-    monkeypatch.setattr(tasks, "get_settings", lambda: settings)
+    settings = pipeline.get_settings().model_copy(update={"pdf_parser": parser})
+    monkeypatch.setattr(pipeline, "get_settings", lambda: settings)
     before = [(row.user_id, row.balance, row.lifetime_spent) for row in db.scalars(select(UserCreditAccount))]
     ledger_before = list(db.scalars(select(CreditLedgerEntry.id)))
     calls = fake_provider(monkeypatch)
@@ -331,7 +333,7 @@ def test_pdf_failure_reason_survives_retry_without_paid_work(pdf_job, monkeypatc
 def test_timeout_retry_reuses_remote_task_instead_of_submitting_again(pdf_job, monkeypatch, password):
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     content = make_pdf(password=password)
-    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content))
+    monkeypatch.setattr(pipeline, "download_fileobj", lambda _: io.BytesIO(content))
     document = db.get(Document, doc_id)
     document.content_hash = hashlib.sha256(content).hexdigest()
     document.size_bytes = len(content)
@@ -418,7 +420,7 @@ def test_completed_parse_cache_is_reused_on_retry(pdf_job, monkeypatch):
 
 def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
     _, _, db, _, doc_id, job_id, _ = pdf_job
-    from app.credits import ensure_account
+    from app.billing.credits import ensure_account
     account = ensure_account(db, db.get(Document, doc_id).knowledge_base.account_id)
     account.balance += 10000
     account.lifetime_granted += 10000
@@ -428,7 +430,7 @@ def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
         writer.add_blank_page(width=600, height=800)
     content = io.BytesIO()
     writer.write(content)
-    monkeypatch.setattr(tasks, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
+    monkeypatch.setattr(pipeline, "download_fileobj", lambda _: io.BytesIO(content.getvalue()))
     calls = []
 
     class Provider:
@@ -443,7 +445,7 @@ def test_pdf_beyond_former_page_cap_preserves_final_page(pdf_job, monkeypatch):
             check()
             return normalize_layouts([{"pageNum": page_count - 1, "text": "Last page evidence"}], page_count)
 
-    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    monkeypatch.setattr(pipeline, "AliyunDocMind", Provider)
     tasks.process_document.run(str(job_id))
     assert calls == [500, 1]
     db.expire_all()
@@ -457,8 +459,7 @@ def test_ingestion_options_are_authenticated_and_never_include_keys(accounts, mo
     (owner, _, anonymous), _ = accounts
     assert anonymous.get("/ingestion/options").status_code == 401
     register(owner)
-    from app import main
-    monkeypatch.setattr(main, "get_settings", lambda: tasks.get_settings().model_copy(update={"pdf_parser": "aliyun"}))
+    monkeypatch.setattr(knowledge_routes, "get_settings", lambda: pipeline.get_settings().model_copy(update={"pdf_parser": "aliyun"}))
     data = owner.get("/ingestion/options").json()
     assert data == {
         "pdf_parser": "aliyun", "max_pdf_pages": None, "max_upload_bytes": 200 * 1024 * 1024,
@@ -468,7 +469,7 @@ def test_ingestion_options_are_authenticated_and_never_include_keys(accounts, mo
 
 @pytest.mark.parametrize("failure", ["timeout", "uncertain", "rejected"])
 def test_batch_retry_keeps_completed_results_task_ids_and_original_pages(pdf_job, monkeypatch, failure):
-    from app import docmind
+    from app.knowledge.ingestion import docmind
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     monkeypatch.setattr(docmind, "MAX_SUBMISSION_PAGES", 1)
     calls = []
@@ -498,7 +499,7 @@ def test_batch_retry_keeps_completed_results_task_ids_and_original_pages(pdf_job
             return normalize_layouts([{"pageNum": 0, "text": f"Evidence {task_id}",
                                       "pos": [{"x": 10, "y": 20}, {"x": 30, "y": 40}]}], page_count)
 
-    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    monkeypatch.setattr(pipeline, "AliyunDocMind", Provider)
     with pytest.raises(DocMindError):
         tasks.process_document.run(str(job_id))
     db.expire_all()
@@ -533,7 +534,7 @@ def test_batch_retry_keeps_completed_results_task_ids_and_original_pages(pdf_job
 
 @pytest.mark.parametrize("action", ["cancel", "delete"])
 def test_batch_interruption_does_not_submit_next_part_or_create_chunks(pdf_job, monkeypatch, action):
-    from app import docmind
+    from app.knowledge.ingestion import docmind
     owner, _, db, _, doc_id, job_id, embedded = pdf_job
     monkeypatch.setattr(docmind, "MAX_SUBMISSION_PAGES", 1)
     calls = []
@@ -554,7 +555,7 @@ def test_batch_interruption_does_not_submit_next_part_or_create_chunks(pdf_job, 
             check()
             raise AssertionError("Cancelled work continued")
 
-    monkeypatch.setattr(tasks, "AliyunDocMind", Provider)
+    monkeypatch.setattr(pipeline, "AliyunDocMind", Provider)
     tasks.process_document.run(str(job_id))
     db.expire_all()
     assert calls == ["submit", "collect"]

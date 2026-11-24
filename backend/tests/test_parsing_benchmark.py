@@ -6,7 +6,7 @@ import json
 import pytest
 
 pytest.importorskip("markitdown")
-from app.parsed_document import ParsedDocument
+from app.knowledge.ingestion.parsed_document import ParsedDocument
 from experiments import benchmark
 from experiments.checkpoints import Checkpoints, UncertainCall
 from experiments.selective_parser import image_pdf

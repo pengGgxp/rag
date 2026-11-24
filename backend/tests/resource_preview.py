@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import chat_attachment_preview as fixture
-from app import resource_cache, storage_downloads, workspace_files
+from app.files import cache as resource_cache, downloads as storage_downloads, workspace as workspace_files
 from app.models import LoginSession, User
 from test_chat_attachments import PNG
 

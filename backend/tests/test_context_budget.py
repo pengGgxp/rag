@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.conversation_context import input_budget
+from app.agent.conversation_context import input_budget
 
 
 @pytest.mark.parametrize('capacity,output,expected', [

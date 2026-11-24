@@ -8,12 +8,13 @@ from contextlib import asynccontextmanager
 from threading import Lock, Thread
 
 import chat_attachment_preview as fixture
-from app import image_adapters, image_tasks, shared_resources, storage_downloads, workspace_files
-from app.config import get_settings
-from app.llm_providers import _encrypt_api_key
+from app.files import shared as shared_resources, downloads as storage_downloads, workspace as workspace_files
+from app.images import adapters as image_adapters, tasks as image_tasks
+from app.infra.config import get_settings
+from app.model_catalog.providers import _encrypt_api_key
 from app.models import ImageModelSettings, ModelConnection
 from PIL import Image
-from app.llm import LLMUsage, ToolCall, ToolResponse
+from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from fastapi.responses import Response
 from test_cloud_computer_mount import MemoryMount
 
@@ -85,7 +86,8 @@ if __name__ == "__main__":
     image_tasks.dispatch = dispatch
     # One outer execution slot; inline Agent images must not queue a child here.
     from concurrent.futures import ThreadPoolExecutor
-    from app import conversation_jobs, tasks
+    from app import tasks
+    from app.conversations import jobs as conversation_jobs
     executor = ThreadPoolExecutor(max_workers=1)
     conversation_jobs.dispatch = lambda identifier: executor.submit(
         conversation_jobs.run, identifier, factory=fixture.SessionLocal)

@@ -5,8 +5,8 @@ from fastapi import HTTPException
 from sqlalchemy import select, func, event, text
 from sqlalchemy.orm import Session
 from app.models import SiteModelProvider, LLMProviderConfig, UsagePolicy, User, ModelBillingSettings
-from app.shared_providers import request_binding
-from app.model_billing import CAPABILITIES
+from app.model_catalog.shared_providers import request_binding
+from app.billing.model_usage import CAPABILITIES
 from test_auth_postgres import auth_postgres
 from auth_helpers import connection_id
 
@@ -43,7 +43,7 @@ def test_parallel_selection_has_one_association_and_no_price_copies(auth_postgre
         db.commit()
         request_binding(db, workspace_id, provider_id); db.commit()
         assert not db.scalars(select(UsagePolicy).where(UsagePolicy.account_id == workspace_id)).all()
-        from app.model_billing import price_snapshot
+        from app.billing.model_usage import price_snapshot
         binding = db.scalar(select(LLMProviderConfig).where(LLMProviderConfig.account_id == workspace_id))
         assert price_snapshot(db, workspace_id, binding.id)["llm_input_tokens"]["credits_per_unit"] == 99
 

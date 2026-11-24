@@ -10,8 +10,13 @@ from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import auth, document_uploads as uploads, site_auth, storage_settings, tasks
-from app.cos_storage import CosStorage
+from app.files import settings as storage_settings
+from app import tasks
+
+from app.identity import auth, site_auth
+from app.knowledge.ingestion import pipeline
+from app.knowledge.ingestion import uploads as uploads
+from app.infra.cos_storage import CosStorage
 from app.models import (
     Chunk, UserCreditAccount, CreditLedgerEntry, Document, DocumentStatus, DocumentUpload, EmbeddingStatus,
     IngestionJob, JobState, SiteAuditEvent, SiteStorageSettings, UsageEvent, UsagePolicy, User,
@@ -84,7 +89,7 @@ def direct(accounts, monkeypatch):
     kb = library(owner)
     storage = FakeCos()
     monkeypatch.setattr(uploads, "current_storage", lambda *_: storage)
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
     monkeypatch.setattr(uploads, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
     queued = []
     monkeypatch.setattr(tasks.verify_upload, "delay", queued.append)
@@ -167,11 +172,11 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
     monkeypatch.setattr(tasks.process_document, "delay", scheduled.append)
     uploads.recover_uploads()
     assert len(scheduled) == 1
-    monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
-    monkeypatch.setattr(tasks, "download_fileobj", storage.download)
+    monkeypatch.setattr(pipeline, "SessionLocal", lambda: Session(db.get_bind(), expire_on_commit=False))
+    monkeypatch.setattr(pipeline, "download_fileobj", storage.download)
     monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: vectors.append(args))
     with Session(db.get_bind()) as worker:
-        tasks._process_document(tasks.process_document, worker, UUID(scheduled[0]), None)
+        pipeline._process_document(tasks.process_document, worker, UUID(scheduled[0]), None)
 
     def fake_embed(texts, *, batch_start, batch_success, **_):
         batch_start()
@@ -179,8 +184,8 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
         batch_success(0, result)
         return result
 
-    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(embed_texts=fake_embed))
-    monkeypatch.setattr(main, "OpenAICompatibleEmbeddingProvider",
+    monkeypatch.setattr(pipeline, "OpenAICompatibleEmbeddingProvider", lambda: SimpleNamespace(embed_texts=fake_embed))
+    monkeypatch.setattr("app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
                         lambda: SimpleNamespace(status=SimpleNamespace(configured=False, provider=None, model=None)))
     tasks.embed_document.run(*vectors[0])
     status = owner.get(f"/uploads/{identifier}").json()
@@ -202,9 +207,9 @@ def test_docx_recovers_dispatch_and_keeps_retrieval_offsets(direct, monkeypatch)
 def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcome):
     from decimal import Decimal
     import httpx
-    from app.config import Settings
-    from app.embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
-    from app.upstream_retries import RetryBudget
+    from app.infra.config import Settings
+    from app.knowledge.ingestion.embedding import EmbeddingProviderError, OpenAICompatibleEmbeddingProvider
+    from app.infra.upstream_retries import RetryBudget
 
     owner, outsider, db, identity, kb, storage, _, _ = direct
     account_id = UUID(identity["user"]["id"])
@@ -233,8 +238,8 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
 
     settings = Settings(embedding_base_url="https://embedding.invalid", embedding_api_key="test",
                         embedding_model="test-model")
-    monkeypatch.setattr(tasks, "OpenAICompatibleEmbeddingProvider", lambda: OpenAICompatibleEmbeddingProvider(settings))
-    monkeypatch.setattr(tasks, "SessionLocal", lambda: Session(db.get_bind()))
+    monkeypatch.setattr(pipeline, "OpenAICompatibleEmbeddingProvider", lambda: OpenAICompatibleEmbeddingProvider(settings))
+    monkeypatch.setattr(pipeline, "SessionLocal", lambda: Session(db.get_bind()))
     dispatched = []
     monkeypatch.setattr(tasks.embed_document, "delay", lambda *args: dispatched.append(args))
     calls, seen = [], []
@@ -274,13 +279,13 @@ def test_upload_embedding_retry_progress_and_billing(direct, monkeypatch, outcom
     monkeypatch.setattr(httpx, "post", post)
     monkeypatch.setattr(RetryBudget, "wait", wait)
     if outcome == "settlement_error":
-        settle_usage = tasks.settle_usage
+        settle_usage = pipeline.settle_usage
         def fail_settlement(*_, **__):
             raise RuntimeError("database write failed")
-        monkeypatch.setattr(tasks, "settle_usage", fail_settlement)
+        monkeypatch.setattr(pipeline, "settle_usage", fail_settlement)
         with pytest.raises(RuntimeError, match="database write failed"):
             tasks.embed_document.run(doc_id, job_id)
-        monkeypatch.setattr(tasks, "settle_usage", settle_usage)
+        monkeypatch.setattr(pipeline, "settle_usage", settle_usage)
     elif outcome == "exhaust":
         with pytest.raises(EmbeddingProviderError):
             tasks.embed_document.run(doc_id, job_id)
@@ -545,7 +550,7 @@ def test_download_reads_real_sdk_stream_body_and_closes_connection(size):
 
 def test_download_failure_closes_files_and_hides_provider_details(monkeypatch):
     from types import SimpleNamespace
-    from app import cos_storage
+    from app.infra import cos_storage
     from requests import Response
     from qcloud_cos.streambody import StreamBody
 
@@ -742,7 +747,7 @@ def test_temporary_verification_read_failure_preserves_object_and_recovers(direc
 def test_verification_database_failure_is_not_reported_as_storage_failure(direct, monkeypatch, caplog):
     from psycopg.errors import DeadlockDetected
     from sqlalchemy.exc import OperationalError
-    from app.document_failures import log
+    from app.knowledge.ingestion.failures import log
 
     owner, _, db, _, kb, storage, _, processed = direct
     content = b"sealed content"

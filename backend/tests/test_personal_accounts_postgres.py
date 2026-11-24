@@ -18,7 +18,7 @@ from app.models import (
     KnowledgeBase, LegacyAccountObjectPrefix, LoginSession, User, UserCreditAccount,
     UserModelPolicy, WorkspaceFile, WorkspaceFileVersion,
 )
-from app.personal_accounts import cleanup_suspended_accounts
+from app.identity.account_cleanup import cleanup_suspended_accounts
 from app.storage_models import StorageEntitlement
 
 

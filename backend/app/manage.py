@@ -7,17 +7,17 @@ from urllib.parse import quote
 
 from sqlalchemy import delete, select
 
-from .auth import digest, now
-from .config import get_settings
-from .db import SessionLocal
+from .identity.auth import digest, now
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal
 from .models import AuthToken, User, SiteAuthAudit
 
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "personal-accounts":
-        from .personal_accounts import cleanup_external_resources, cleanup_suspended_accounts
+        from .identity.account_cleanup import cleanup_external_resources, cleanup_suspended_accounts
         if sys.argv[2:] == ["cleanup-suspended"]:
-            from .storage import list_object_keys
+            from app.infra.storage import list_object_keys
             with SessionLocal() as db:
                 while True:
                     result = cleanup_suspended_accounts(db, list_objects=list_object_keys,
@@ -35,7 +35,7 @@ def main():
             "cleanup-suspended"
         )
     if len(sys.argv) >= 3 and sys.argv[1] == "pricing":
-        from .billing_admin import migration_command
+        from app.billing.admin import migration_command
         from fastapi import HTTPException
         if sys.argv[2] not in ("preview", "pause", "resume", "activate") or len(sys.argv) != (4 if sys.argv[2] == "activate" else 3):
             raise SystemExit("Usage: pricing preview|pause|resume|activate <reviewed-fingerprint>")
@@ -48,14 +48,14 @@ def main():
             print(json.dumps(result, ensure_ascii=True, indent=2))
         return
     if sys.argv[1:] == ["models", "migrate"]:
-        from .shared_providers import migrate_connections
+        from app.model_catalog.shared_providers import migrate_connections
         with SessionLocal() as db:
             count = migrate_connections(db, get_settings())
             db.commit()
             print(f"Migrated {count} model associations; credentials were not printed.")
         return
     if len(sys.argv) == 3 and sys.argv[1] == "model-billing" and sys.argv[2] in ("status", "enable", "disable"):
-        from .model_pricing import switch_billing
+        from app.billing.pricing import switch_billing
         from fastapi import HTTPException
         with SessionLocal() as db:
             try:
@@ -67,7 +67,7 @@ def main():
                 f"template version: {status['version']}; complete: {status['configured']}")
         return
     if sys.argv[1:] == ["site-audit", "prune"]:
-        from .site_audit import prune
+        from app.operations.site_audit import prune
         with SessionLocal() as db:
             count = prune(db)
             db.commit()
@@ -80,7 +80,7 @@ def main():
                 raise SystemExit("User not found; create the account before granting site administration.")
             user.is_site_admin = sys.argv[2] == "grant"
             db.add(SiteAuthAudit(actor_user_id=user.id, action=f"auth.site_admin_{sys.argv[2]}", details={"source": "server_console"}))
-            from .site_audit import record
+            from app.operations.site_audit import record
             record(db, user, f"auth.site_admin_{sys.argv[2]}", "user", user.id, details={"source": "server_console"})
             db.commit()
             print(f"Site administration {sys.argv[2]} completed.")

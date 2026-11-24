@@ -8,7 +8,10 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import auth, conversation_documents as saves, storage
+from app.conversations import documents as saves
+from app.infra import storage
+
+from app.identity import auth
 from app.models import ChatMessage, Conversation, ConversationDocumentSave, Document, KnowledgeBase
 from test_auth_postgres import auth_postgres
 
@@ -32,7 +35,7 @@ def test_parallel_save_has_one_document_receipt_and_dispatch(auth_postgres, monk
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     stored, queued = store.objects, []
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     monkeypatch.setattr(saves,'dispatch_ingestion',queued.append)
     barrier=Barrier(3)
     def save(_):

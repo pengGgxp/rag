@@ -8,8 +8,13 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, conversation_documents as saves, document_ingestion, main, storage
-from app.extensions import ExtensionRuntime
+from app import main
+from app.conversations import documents as saves
+from app.infra import storage
+
+from app.identity import auth
+from app.knowledge.ingestion import admission as document_ingestion
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (ChatMessage, ConversationDocumentSave, Document, DocumentStatus, IngestionJob,
     JobState, KnowledgeBase, KnowledgeBaseStatus, UsageEvent)
 from test_auth import library, register
@@ -30,7 +35,7 @@ def saving(accounts, monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     stored, queued, deleted = store.objects, [], []
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     monkeypatch.setattr(saves, 'dispatch_ingestion', queued.append)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message.id, request_id=request_id)
@@ -131,7 +136,7 @@ def test_verified_provenance_and_text_parser_do_not_invent_sources(saving):
     result=e.runtime.execute('save_to_knowledge_base',payload(e,markdown=f'结论 [{chunk.id}]'))
     receipt=e.db.get(ConversationDocumentSave,UUID(result['save_id']))
     assert receipt.source_citations==[{'chunk_id':str(chunk.id),'document_id':str(doc.id),'original_hash':doc.content_hash,'page_number':None}]
-    from app.tasks import parse_for_ingestion
+    from app.knowledge.ingestion.pipeline import parse_for_ingestion
     created=e.db.get(Document,UUID(result['document_id']))
     parsed=parse_for_ingestion(e.db,e.db.get(IngestionJob,receipt.job_id),created,next(iter(e.stored.values())))
     assert str(chunk.id) in parsed.text and created.parsing_metadata is None
@@ -149,8 +154,8 @@ def test_commit_failure_cleans_object(saving,monkeypatch):
 
 
 def test_stream_emits_saved_document_activity_at_actual_call(saving):
-    from app.agent import stream_retrieval_agent
-    from app.llm import ToolCall, ToolResponse
+    from app.agent.loop import stream_retrieval_agent
+    from app.model_runtime.client import ToolCall, ToolResponse
     e=saving
     class Provider:
         step=0

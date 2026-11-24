@@ -2,7 +2,8 @@ import pytest
 from uuid import UUID
 from sqlalchemy import select
 
-from app import cloud_computer as cloud, shared_resources as shared, workspace_files
+from app.cloud_computer import runtime as cloud
+from app.files import shared, workspace as workspace_files
 from app.models import WorkspaceFileVersion
 from test_cloud_computer import setup, submit
 from test_cloud_computer_mount import MemoryMount, configure_mount
@@ -25,7 +26,7 @@ def test_shell_edit_is_current_file_without_copy_or_body_read(accounts, monkeypa
     computer = db.get(cloud.Computer, submit(db, access, conversation).session_id)
     storage.objects[key] = b"cloud modification"
     monkeypatch.setattr(storage, "download", lambda *_: pytest.fail("body downloaded"))
-    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_: pytest.fail("cache used"))
+    monkeypatch.setattr("app.files.cache.read_bytes", lambda *_: pytest.fail("cache used"))
     assert cloud.synchronize(db, computer, None, None) == []
     result = client.get("/resources").json()["items"]
     assert result[0]["size_bytes"] == len(b"cloud modification")
@@ -102,7 +103,7 @@ def legacy_resource(client, db, storage, *, name="legacy.txt"):
 
 
 def test_migration_preflight_checks_missing_and_conflicting_objects_before_copy(accounts, monkeypatch, resource_store):
-    from app.migrate_shared_resources import migrate
+    from app.operations.migrate_shared_resources import migrate
     client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
     first, old, target = legacy_resource(client, db, storage)
     second, missing, _ = legacy_resource(client, db, storage, name="missing.txt")
@@ -118,7 +119,7 @@ def test_migration_preflight_checks_missing_and_conflicting_objects_before_copy(
 
 
 def test_migration_preserves_current_attachment_and_can_be_repeated(accounts, monkeypatch, resource_store):
-    from app.migrate_shared_resources import migrate
+    from app.operations.migrate_shared_resources import migrate
     client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
     item, old, target = legacy_resource(client, db, storage)
     assert migrate(db)["verified"] == 1 and not storage.copies

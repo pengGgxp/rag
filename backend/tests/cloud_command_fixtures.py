@@ -1,5 +1,5 @@
 """Local file executor for isolated regressions and the browser fixture; no cloud IO."""
-from app.cloud_file_operation import perform
+from app.cloud_computer.cloud_file_operation import perform
 from test_cloud_computer import FakeCloud
 
 

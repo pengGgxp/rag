@@ -2,7 +2,7 @@ from uuid import UUID
 import pytest
 
 from test_auth import library, register
-from app import main
+from app.knowledge import routes as knowledge_routes
 from app.models import Document, DocumentStatus
 
 
@@ -10,8 +10,8 @@ from app.models import Document, DocumentStatus
 def local_upload_io(monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
-    monkeypatch.setattr(main.process_document, "delay", lambda *_: None)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
+    monkeypatch.setattr(knowledge_routes.process_document, "delay", lambda *_: None)
 
 
 def test_document_preview_is_loaded_on_demand_and_hides_deleted_content(accounts):

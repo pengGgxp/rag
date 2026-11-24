@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
-from app import cloud_computer as cloud, cloud_preview as preview
-from app.credits import ensure_account
+from app.cloud_computer import runtime as cloud, preview
+from app.billing.credits import ensure_account
 from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, CreditLedgerEntry
 from test_auth import register
 from test_cloud_computer import setup, submit

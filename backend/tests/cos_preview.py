@@ -18,8 +18,12 @@ from cryptography.fernet import Fernet
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import auth, document_uploads, main, storage_settings, tasks
-from app.db import Base, SessionLocal, engine
+from app import main, tasks
+from app.files import settings as storage_settings
+
+from app.identity import auth
+from app.knowledge.ingestion import uploads as document_uploads
+from app.infra.db import Base, SessionLocal, engine
 from app.models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, User
 from auth_helpers import authenticate
 from fastapi.testclient import TestClient

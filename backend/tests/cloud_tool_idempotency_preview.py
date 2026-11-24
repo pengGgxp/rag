@@ -21,12 +21,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app import auth, cloud_computer as cloud, conversation_jobs, conversations, llm_providers, main
-from app import shared_resources, storage_backend, storage_downloads, workspace_files
-from app.db import Base, engine, SessionLocal
-from app.llm import ToolCall, ToolResponse
+from app.cloud_computer import runtime as cloud
+from app.model_catalog import providers as llm_providers
+from app import main
+from app.identity import auth
+from app.conversations import jobs as conversation_jobs, execution as conversations
+from app.files import shared as shared_resources, downloads as storage_downloads, workspace as workspace_files
+from app.infra import storage_backend
+from app.infra.db import Base, engine, SessionLocal
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import CloudComputerSettings, ModelBillingSettings, SiteStorageSettings
-from app.site_auth import protect
+from app.identity.site_auth import protect
 from auth_helpers import authenticate, configured_model
 from cloud_command_fixtures import LocalFileCloud
 from test_cloud_computer_mount import MemoryMount
@@ -66,7 +71,7 @@ if __name__ == "__main__":
     llm_providers._decrypt_api_key = lambda _: "local-only"
     conversations.OpenAICompatibleChatProvider = lambda **_: Provider()
     conversation_jobs.dispatch = lambda identifier: Thread(target=conversation_jobs.run,
-        args=(identifier,), kwargs={"factory": SessionLocal, "retrieve": main.retrieve_knowledge_base}, daemon=True).start()
+        args=(identifier,), kwargs={"factory": SessionLocal}, daemon=True).start()
     from app import tasks
     tasks.name_conversation.delay = lambda *_: None
     @asynccontextmanager

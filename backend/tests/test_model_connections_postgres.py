@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from app.model_connections import lock_connection
+from app.model_catalog.connections import lock_connection
 from app.models import ModelConnection
 from test_auth_postgres import auth_postgres
 
@@ -90,7 +90,7 @@ def test_upgrade_preserves_models_and_does_not_merge_equal_connections(auth_post
 
 def test_concurrent_bulk_import_is_atomic_and_unique(auth_postgres):
     from app.models import SiteModelProvider
-    from app.shared_providers import BatchModels, create_models
+    from app.model_catalog.shared_providers import BatchModels, create_models
     with Session(auth_postgres) as db:
         connection = ModelConnection(name="Bulk", base_url="https://example.test/v1", encrypted_api_key="ciphertext")
         db.add(connection); db.commit(); identifier = connection.id

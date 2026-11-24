@@ -1,7 +1,7 @@
 import hashlib
 import pytest
 
-from app import migrate_cos
+from app.operations import migrate_cos
 from app.models import Document, SiteStorageSettings
 from test_auth import library, register
 from test_retrieval import add_document

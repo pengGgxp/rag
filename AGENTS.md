@@ -23,6 +23,11 @@
 
 - 开始修改前先阅读相关代码、配置和现有约定。
 - 优先遵循仓库已有的框架、模块边界、命名和测试模式。
+- 新增或修改代码的注释与 docstring 使用中文；Python docstring 按 Google Python Style Guide 组织，按需包含 Args、Returns、Raises 和 Examples。
+- 登录、认证流程、站点账号管理和对应 HTTP 请求模型归 `backend/app/identity/`，请求模型集中维护在 `identity/schemas.py`；跨业务鉴权使用 `identity.auth`，不新增旧顶层模块兼容层。
+- 后端模块归属以 `docs/backend-architecture.md` 为准。`admin/` 只装配站点管理入口和承接真正跨域的后台接口；各域维护自己的管理接口和业务规则，不让普通业务或 Worker 依赖后台装配。
+- `backend/app/` 根目录仅保留包初始化、既有进程和运维命令入口、集中 ORM 注册；业务实现和共用逻辑归入现有职责包。
+- 图片生成、编辑、任务和供应商适配归 `backend/app/images/`；图像理解与会话附件仍由共享调用方模块维护，调整其边界前先单独讨论。
 - 前端创建或修改组件前，必须先检索 `frontend/components/ui` 和现有业务组件，优先复用或扩展已有入口；具体规则以 `docs/design-system.md` 的“组件复用与扩展规范”为准。
 - 变更应保持范围清晰，避免无关重构。
 - 对涉及权限、索引、文档版本、删除、异步任务和引用的改动，补充针对性测试或验证。

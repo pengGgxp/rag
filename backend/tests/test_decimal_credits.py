@@ -5,9 +5,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from app import model_billing, workspace_billing
-from app.credit_amounts import allocate, amount
-from app.credits import authorization_hold, recharge, settle_model_usage, settle_usage
+from app.billing import model_usage as model_billing, workspace as workspace_billing
+from app.billing.amounts import allocate, amount
+from app.billing.credits import authorization_hold, recharge, settle_model_usage, settle_usage
 from app.models import UserCreditAccount, ModelBillingSettings, ModelUsageRequest, SiteModelProvider, UsageEvent, UserModelPolicy
 from test_workspace_billing import shared_billing, binding, model, set_user_multiplier
 
@@ -131,7 +131,7 @@ def test_document_can_spend_exact_balance_after_hold_refund(shared_billing):
 
 @pytest.mark.parametrize("cached", [0, 700, 1000])
 def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(shared_billing, cached):
-    from app.llm import _parse_usage
+    from app.model_runtime.client import _parse_usage
     from app.models import CreditLedgerEntry, ModelCallUsage
     _, db, workspace, user, identifier = shared_billing
     provider = db.get(SiteModelProvider, identifier)

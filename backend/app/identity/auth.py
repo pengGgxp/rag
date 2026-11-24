@@ -1,0 +1,459 @@
+"""Opaque browser sessions and personal-account authorization."""
+import hashlib
+import secrets
+import smtplib
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
+
+import redis
+from authlib.integrations.starlette_client import OAuth
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+from pwdlib import PasswordHash
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.operations.audit_log import record_audit
+from app.infra.config import get_settings
+from app.infra.db import get_db
+from ..models import (
+    AuthToken, Conversation, ExternalIdentity,
+    KnowledgeBase, KnowledgeBaseStatus, LoginSession,
+    User,
+)
+from .schemas import Bootstrap, Credentials, EmailRequest, OAuthStart, PasswordChange, Registration, ResetPassword
+
+COOKIE = "rag_session"
+passwords = PasswordHash.recommended()
+DUMMY_HASH = passwords.hash(secrets.token_urlsafe(32))
+router = APIRouter(prefix="/auth", tags=["accounts"])
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+def aware(value):
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def digest(value: str):
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def rate_limit(request: Request, action: str, identifier: str = "", limit: int = 15):
+    key = "auth-limit:" + digest(f"{action}:{request.client.host if request.client else ''}:{identifier}")
+    try:
+        store = redis.Redis.from_url(get_settings().redis_url)
+        count = store.eval(
+            "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],900) end; return n",
+            1, key,
+        )
+    except redis.RedisError as exc:
+        raise HTTPException(503, "登录服务暂不可用，请稍后重试") from exc
+    if count > limit:
+        raise HTTPException(429, "操作过于频繁，请 15 分钟后重试")
+
+
+class BrowserRequestGuard:
+    """Custom header + exact Origin allowlist also protects anonymous login endpoints."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Signed callbacks and the narrowly authenticated workbench service bridge are not browser requests.
+        payment_callback = scope.get("path") in ("/payments/zhifux/notify", "/payments/ezfp/notify") and scope.get("method") == "POST"
+        workbench_service = scope.get("path") in ("/question-workbench/exchange", "/question-workbench/introspect") and scope.get("method") == "POST"
+        deploy_control = scope.get("path", "").startswith("/internal/deploy/")
+        if scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS") and not payment_callback and not workbench_service and not deploy_control:
+            headers = dict(scope["headers"])
+            settings = get_settings()
+            origin = headers.get(b"origin", b"").decode()
+            allowed = {settings.frontend_url.rstrip("/"), settings.api_public_url.rstrip("/")}
+            if headers.get(b"x-rag-request") != b"1" or (origin and origin not in allowed):
+                response = JSONResponse({"detail": "请求来源校验失败"}, status_code=403)
+                await response(scope, receive, send)
+                return
+        async def no_store(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers = [(key, value) for key, value in headers if key.lower() != b"cache-control"]
+                headers.extend([(b"cache-control", b"no-store"), (b"referrer-policy", b"no-referrer")])
+                message["headers"] = headers
+            await send(message)
+        await self.app(scope, receive, no_store)
+
+
+def current_session(request: Request, db: Session = Depends(get_db)) -> LoginSession:
+    raw = request.cookies.get(COOKIE, "")
+    session = db.get(LoginSession, digest(raw), populate_existing=True) if raw else None
+    if session is None or aware(session.expires_at) <= now():
+        raise HTTPException(401, "请先登录")
+    user = db.get(User, session.user_id, populate_existing=True)
+    if user is None or user.is_suspended:
+        db.delete(session)
+        db.commit()
+        raise HTTPException(401, "账号已停用，请联系站点管理员")
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        if not secrets.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf_token):
+            raise HTTPException(403, "登录校验已失效，请刷新页面")
+    return session
+
+
+@dataclass(frozen=True)
+class Access:
+    user_id: UUID
+    session_hash: str
+
+    def visible_libraries(self):
+        return KnowledgeBase.account_id == self.user_id
+
+    def library(self, db: Session, id: UUID, write=False, allow_archived=False):
+        library = db.scalar(select(KnowledgeBase).where(KnowledgeBase.id == id, self.visible_libraries()))
+        if library is None:
+            raise HTTPException(404, "知识库不存在或无权访问")
+        if library.status == KnowledgeBaseStatus.ARCHIVED and not allow_archived:
+            if write:
+                raise HTTPException(409, "知识库已归档，请先恢复后再修改")
+        return library
+
+    def conversation(self, db: Session, row: Conversation):
+        # Historical library links do not define access to the owner's conversation.
+        if row.owner_id != self.user_id:
+            raise HTTPException(404, "会话不存在或无权访问")
+
+    def revalidate(self, db: Session):
+        # Fresh sessions are used by streaming generators, so revocation is observed.
+        session = db.get(LoginSession, self.session_hash, populate_existing=True)
+        user = db.get(User, self.user_id, populate_existing=True)
+        if (session is None or session.user_id != self.user_id or aware(session.expires_at) <= now()
+                or user is None or user.is_suspended):
+            raise HTTPException(403, "登录或账号权限已失效")
+        return self
+
+
+def get_access(session: LoginSession = Depends(current_session)):
+    return Access(session.user_id, session.token_hash)
+
+
+def normalize_email(email):
+    return str(email).strip().lower()
+
+
+def create_user(db, email, name, password=None):
+    name = name.strip()
+    if not name:
+        raise HTTPException(422, "请输入姓名")
+    user = User(email=normalize_email(email), name=name, password_hash=passwords.hash(password) if password else None)
+    db.add(user)
+    db.flush()
+    from app.billing.credits import ensure_account
+    ensure_account(db, user.id)
+    db.flush()
+    return user
+
+
+def session_info(db, session):
+    user = db.get(User, session.user_id)
+    result = {
+        "user": {"id": str(user.id), "name": user.name, "email": user.email,
+                 "has_password": user.password_hash is not None,
+                 "email_verified": user.email_verified_at is not None,
+                 "is_site_admin": user.is_site_admin,
+                 "wechat_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ExternalIdentity.provider.like("senyu:%")))),
+                 "oauth_linked": bool(db.scalar(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ~ExternalIdentity.provider.like("senyu:%"))))},
+        "csrf_token": session.csrf_token,
+    }
+    return result
+
+
+def record_account_audit(db, user_id, action, resource_type, *, resource_id=None, request=None):
+    record_audit(db, owner_user_id=user_id, actor_user_id=user_id, action=action,
+                 resource_type=resource_type, resource_id=resource_id, request=request)
+
+
+def login_response(db, user, previous=None, *, request=None, action="auth.login"):
+    # Serialize session issuance with suspension and administrative revocation.
+    suspended = db.scalar(select(User.is_suspended).where(User.id == user.id).with_for_update())
+    if suspended is None or suspended:
+        raise HTTPException(403, "账号已停用，请联系站点管理员")
+    if previous:
+        db.execute(delete(LoginSession).where(LoginSession.token_hash == digest(previous)))
+    settings = get_settings()
+    raw = secrets.token_urlsafe(48)
+    session = LoginSession(
+        token_hash=digest(raw), user_id=user.id,
+        csrf_token=secrets.token_urlsafe(32), expires_at=now() + timedelta(hours=settings.auth_session_hours),
+    )
+    db.add(session)
+    record_account_audit(db, user.id, action, "session", request=request)
+    from app.operations.site_audit import record as record_site_event
+    record_site_event(db, user, action, "user", user.id, request=request)
+    db.commit()
+    response = JSONResponse(session_info(db, session))
+    response.set_cookie(COOKIE, raw, httponly=True, secure=settings.auth_cookie_secure,
+                        samesite="lax", max_age=settings.auth_session_hours * 3600, path="/")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/options")
+def options(db: Session = Depends(get_db)):
+    from .site_auth import email_enabled, verification_required, wechat_enabled
+    settings = get_settings()
+    # The setup link is only useful while a server-issued one-time token is
+    # active. Do not advertise a dead public entry point when setup has not
+    # been prepared from the server console (or when its token expired).
+    has_users = db.scalar(select(User.id).limit(1)) is not None
+    bootstrap_ready = db.scalar(
+        select(AuthToken).where(
+            AuthToken.purpose == "bootstrap",
+            AuthToken.expires_at > now(),
+        )
+    ) is not None
+    return {
+        "oauth_name": settings.oidc_name if settings.oidc_configured else None,
+        "password_reset": email_enabled(db),
+        "email_code": email_enabled(db),
+        "wechat": wechat_enabled(db),
+        "require_verified_email": verification_required(db),
+        "setup_available": not has_users and bootstrap_ready,
+        "first_run": not has_users,
+    }
+
+
+@router.post("/register", status_code=201)
+def register(payload: Registration, request: Request, db: Session = Depends(get_db)):
+    from .site_auth import verification_required, email_enabled
+    from .email_auth import complete_registration, CompleteRegistration, find_flow
+    if verification_required(db) or email_enabled(db):
+        flow = find_flow(request, db)
+        if flow.purpose != "register" or flow.data.get("stage") != "profile" or flow.email != normalize_email(payload.email):
+            raise HTTPException(409, "注册邮箱与验证邮箱不一致")
+        return complete_registration(CompleteRegistration(name=payload.name, password=payload.password), request, db)
+    rate_limit(request, "register", limit=5)
+    if db.scalar(select(User).where(User.email == normalize_email(payload.email))):
+        raise HTTPException(409, "邮箱已被使用，请登录或找回密码")
+    try:
+        user = create_user(db, payload.email, payload.name, payload.password)
+        response = login_response(db, user, request.cookies.get(COOKIE), request=request, action="auth.register")
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409, "邮箱已被使用") from exc
+    response.status_code = 201
+    return response
+
+
+@router.post("/login")
+def login(payload: Credentials, request: Request, db: Session = Depends(get_db)):
+    rate_limit(request, "login-ip", limit=60)
+    rate_limit(request, "login-account", normalize_email(payload.email))
+    user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
+    valid = passwords.verify(payload.password, user.password_hash if user and user.password_hash else DUMMY_HASH)
+    if not user or not user.password_hash or not valid:
+        from app.operations.site_audit import record as record_site_event
+        record_site_event(db, None, "auth.login_failed", "user", user.id if user else None,
+                          request=request, result="failed", details={"method": "password"})
+        db.commit()
+        raise HTTPException(401, "邮箱或密码不正确")
+    if user.is_suspended:
+        from app.operations.site_audit import record as record_site_event
+        record_site_event(db, None, "auth.login_blocked_suspended", "user", user.id, request=request, result="blocked")
+        db.commit()
+        raise HTTPException(403, "账号已停用，请联系站点管理员")
+    from .site_auth import verification_required
+    if verification_required(db) and not user.email_verified_at:
+        from .email_auth import password_verification
+        return password_verification(request, db, user, password_proven=True)
+    return login_response(db, user, request.cookies.get(COOKIE), request=request)
+
+
+@router.get("/me")
+def me(session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+    return JSONResponse(session_info(db, session), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/logout", status_code=204)
+def logout(request: Request, session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+    from app.operations.site_audit import record
+    record(db, db.get(User, session.user_id), "auth.logout", "user", session.user_id, request=request)
+    record_account_audit(db, session.user_id, "auth.logout", "session", request=request)
+    db.delete(session)
+    db.commit()
+    response = JSONResponse(None, status_code=204)
+    response.delete_cookie(COOKIE, path="/", secure=get_settings().auth_cookie_secure, httponly=True, samesite="lax")
+    return response
+
+
+@router.post("/password")
+def change_password(payload: PasswordChange, request: Request,
+                    session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
+    rate_limit(request, "password", limit=10)
+    user = db.get(User, session.user_id)
+    from .site_auth import verification_required
+    if verification_required(db) and not user.email_verified_at:
+        raise HTTPException(409, "请先验证邮箱，再设置密码")
+    if user.password_hash and not passwords.verify(payload.current_password, user.password_hash):
+        raise HTTPException(400, "当前密码不正确")
+    user.password_hash = passwords.hash(payload.password)
+    from app.operations.site_audit import record
+    record(db, user, "auth.password_changed", "user", user.id, request=request)
+    db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.token_hash != session.token_hash))
+    record_account_audit(db, user.id, "auth.password_changed", "user", resource_id=user.id, request=request)
+    db.commit()
+    return {"message": "密码已更新，其他设备已退出登录"}
+
+
+@router.post("/bootstrap")
+def bootstrap(payload: Bootstrap, request: Request, db: Session = Depends(get_db)):
+    rate_limit(request, "bootstrap", limit=5)
+    if db.scalar(select(User.id).limit(1)) is not None:
+        raise HTTPException(409, "账号已经完成初始化")
+    token = db.get(AuthToken, digest(payload.token), with_for_update=True)
+    if token is None or token.purpose != "bootstrap" or aware(token.expires_at) <= now():
+        raise HTTPException(400, "初始化口令无效或已过期")
+    user = create_user(db, payload.email, payload.name, payload.password)
+    db.execute(delete(AuthToken).where(AuthToken.purpose == "bootstrap"))
+    return login_response(db, user, request.cookies.get(COOKIE), request=request, action="auth.bootstrap")
+
+
+def send_reset(email, token, db=None):
+    from html import escape
+    from .site_auth import send_mail
+    url = f"{get_settings().frontend_url.rstrip('/')}/?reset={token}"
+    send_mail(db, email, "知库 - 重置密码", f"请在 30 分钟内打开链接重置密码：\n{url}\n如果不是你本人操作，请忽略此邮件。",
+              f'<h1>重置知库密码</h1><p><a href="{escape(url, quote=True)}">设置新密码</a></p><p>30 分钟内有效。非本人操作请忽略。</p>')
+
+
+@router.post("/forgot-password")
+def forgot(payload: EmailRequest, request: Request, db: Session = Depends(get_db)):
+    from .site_auth import email_enabled
+    from .email_auth import email_rate_limit
+    if not email_enabled(db):
+        raise HTTPException(503, "管理员尚未配置密码找回邮件服务")
+    rate_limit(request, "forgot", limit=5)
+    email_rate_limit(request, db, normalize_email(payload.email), "password-reset")
+    user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
+    if user:
+        raw = secrets.token_urlsafe(48)
+        db.execute(delete(AuthToken).where(AuthToken.user_id == user.id, AuthToken.purpose == "reset"))
+        db.add(AuthToken(token_hash=digest(raw), purpose="reset", user_id=user.id, expires_at=now()+timedelta(minutes=30)))
+        db.commit()
+        try:
+            send_reset(user.email, raw, db)
+        except (OSError, smtplib.SMTPException, HTTPException):
+            # Same public result for existing/unknown email, including delivery failures.
+            db.execute(delete(AuthToken).where(AuthToken.token_hash == digest(raw)))
+            db.commit()
+    return {"message": "如果该邮箱已注册，将收到密码重置邮件"}
+
+
+@router.post("/reset-password")
+def reset(payload: ResetPassword, request: Request, db: Session = Depends(get_db)):
+    rate_limit(request, "reset", limit=10)
+    new_hash = passwords.hash(payload.password)
+    user_id = db.scalar(delete(AuthToken).where(
+        AuthToken.token_hash == digest(payload.token), AuthToken.purpose == "reset",
+        AuthToken.expires_at > now(),
+    ).returning(AuthToken.user_id))
+    if user_id is None:
+        db.rollback()
+        raise HTTPException(400, "重置链接无效或已过期")
+    db.execute(update(User).where(User.id == user_id).values(password_hash=new_hash, email_verified_at=now()))
+    db.execute(delete(AuthToken).where(AuthToken.user_id == user_id, AuthToken.purpose == "reset"))
+    db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
+    from app.operations.site_audit import record
+    record(db, db.get(User, user_id), "auth.password_reset", "user", user_id, request=request)
+    record_account_audit(db, user_id, "auth.password_reset", "user", resource_id=user_id, request=request)
+    db.commit()
+    response = JSONResponse({"message": "密码已更新，请重新登录"})
+    response.delete_cookie(COOKIE, path="/")
+    return response
+
+
+def oidc_client():
+    settings = get_settings()
+    if not settings.oidc_configured:
+        raise HTTPException(503, "尚未配置外部登录")
+    oauth = OAuth()
+    oauth.register(
+        "oidc", server_metadata_url=settings.oidc_metadata_url,
+        client_id=settings.oidc_client_id, client_secret=settings.oidc_client_secret.get_secret_value(),
+        client_kwargs={"scope": "openid email profile", "code_challenge_method": "S256"},
+    )
+    return oauth.create_client("oidc")
+
+
+@router.post("/oauth/start")
+async def oauth_start(payload: OAuthStart, request: Request, db: Session = Depends(get_db)):
+    rate_limit(request, "oauth", limit=20)
+    client = oidc_client()
+    request.session.clear()
+    if payload.link:
+        session = current_session(request, db)
+        from .site_auth import verification_required
+        if verification_required(db) and not db.get(User, session.user_id).email_verified_at:
+            raise HTTPException(409, "请先验证邮箱，再绑定登录方式")
+        request.session["link_session"] = session.token_hash
+    response = await client.authorize_redirect(request, f"{get_settings().api_public_url}/auth/oauth/callback")
+    return {"url": response.headers["location"]}
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    try:
+        client = oidc_client()
+        token = await client.authorize_access_token(request)
+        info = token.get("userinfo")
+        if not info or not info.get("sub") or not info.get("iss"):
+            raise ValueError("missing verified OIDC identity")
+        identity_key = (info["iss"], info["sub"])
+        identity = db.get(ExternalIdentity, identity_key)
+        linking = request.session.get("link_session")
+        if linking:
+            current = current_session(request, db)
+            if not secrets.compare_digest(linking, current.token_hash):
+                raise ValueError("link session changed")
+            if identity and identity.user_id != current.user_id:
+                raise ValueError("identity already linked")
+            if not identity:
+                db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=current.user_id))
+            from app.operations.site_audit import record
+            record(db, db.get(User, current.user_id), "auth.oauth_linked", "user", current.user_id, request=request)
+            db.commit()
+            return RedirectResponse(f"{settings.frontend_url}/?account=1", status_code=303)
+        if identity:
+            user = db.get(User, identity.user_id)
+        else:
+            if info.get("email_verified") is not True or not info.get("email"):
+                raise ValueError("verified email is required")
+            email = str(EmailRequest(email=info["email"]).email).lower()
+            if db.scalar(select(User).where(User.email == email)):
+                return RedirectResponse(f"{settings.frontend_url}/?auth_error=link_required", status_code=303)
+            user = create_user(db, email, (info.get("name") or email.split("@")[0])[:100])
+            user.email_verified_at = now()
+            db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=user.id))
+        from .site_auth import verification_required
+        if verification_required(db) and not user.email_verified_at:
+            from .email_auth import password_verification
+            pending = password_verification(request, db, user)
+            response = RedirectResponse(f"{settings.frontend_url}/auth/verify-email", status_code=303)
+            for cookie in pending.headers.getlist("set-cookie"):
+                response.headers.append("set-cookie", cookie)
+            return response
+        signed_in = login_response(db, user, request.cookies.get(COOKIE), request=request)
+        response = RedirectResponse(settings.frontend_url, status_code=303)
+        for cookie in signed_in.headers.getlist("set-cookie"):
+            response.headers.append("set-cookie", cookie)
+        return response
+    except Exception:
+        db.rollback()
+        from app.operations.site_audit import record
+        record(db, None, "auth.oauth_failed", "user", request=request, result="failed")
+        db.commit()
+        return RedirectResponse(f"{settings.frontend_url}/?auth_error=oauth_failed", status_code=303)
+    finally:
+        request.session.clear()

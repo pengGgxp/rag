@@ -5,8 +5,9 @@ from httpx_sse import EventSource
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import conversations, main
-from app.llm import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
+from app.conversations import execution as conversations
+from app.knowledge import routes as knowledge_routes
+from app.model_runtime.client import LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import (BillingSnapshot, ChatMessage, UserCreditAccount, CreditLedgerEntry,
                         LLMProviderConfig, ModelCallUsage, ModelBillingSettings, SiteModelProvider,
                         UsageEvent, UsagePolicy)
@@ -80,7 +81,7 @@ def test_user_can_choose_a_model_allowed_by_site_policy(accounts, monkeypatch):
     data = member.get("/models/available")
     assert public["id"] in data.text and private["id"] in data.text
     assert all(key not in data.text for key in ("secret", "base_url", "prices", "api_key"))
-    from app import shared_providers
+    from app.model_catalog import shared_providers
     binding, _ = shared_providers.request_binding(db, UUID(identity["user"]["id"]), UUID(private["id"]))
     assert binding.site_provider_id == UUID(private["id"])
     db.commit()
@@ -175,7 +176,7 @@ def test_single_answer_uses_explicit_model(accounts, monkeypatch):
             self.last_usage = LLMUsage(prompt_tokens=1, completion_tokens=1)
             return "confirmed answer"
 
-    monkeypatch.setattr(main, "OpenAICompatibleChatProvider", Model)
+    monkeypatch.setattr(knowledge_routes, "OpenAICompatibleChatProvider", Model)
     response = client.post(f"/knowledge-bases/{library['id']}/answer",
         json={"query": "needle", "provider_id": chosen["id"]})
     assert response.status_code == 200, response.text

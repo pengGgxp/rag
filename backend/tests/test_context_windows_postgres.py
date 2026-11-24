@@ -6,10 +6,10 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app import auth
-from app.auth import Access
-from app.context_windows import ContextWindowError, WindowStore, make_item
-from app.llm import ChatProviderConfig
+from app.identity import auth
+from app.identity.auth import Access
+from app.agent.context_windows import ContextWindowError, WindowStore, make_item
+from app.model_runtime.client import ChatProviderConfig
 from app.models import Conversation, LoginSession, LLMProviderConfig, SiteModelProvider
 from auth_helpers import connection_id
 from test_auth_postgres import auth_postgres
@@ -60,9 +60,9 @@ def test_postgres_install_serializes_competing_replacements(auth_postgres):
 def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_postgres):
     from sqlalchemy import select, func
     from sqlalchemy.orm import sessionmaker
-    from app.agent import AgentCancelled
-    from app.effective_context import ContextManager
-    from app.llm import ToolCall
+    from app.agent.loop import AgentCancelled
+    from app.agent.effective_context import ContextManager
+    from app.model_runtime.client import ToolCall
     from app.models import AgentToolExecution
     import pytest
     engine = auth_postgres
@@ -109,8 +109,9 @@ def test_postgres_tool_admission_is_once_and_late_success_survives_stop(auth_pos
 def test_postgres_steering_admission_and_stop_are_atomic(auth_postgres):
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs, main
-    from app.effective_context import ContextManager
+    from app import main
+    from app.conversations import jobs as conversation_jobs
+    from app.agent.effective_context import ContextManager
     from app.models import ChatMessage
 
     engine = auth_postgres

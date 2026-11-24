@@ -2,8 +2,8 @@
 import os
 from uuid import uuid4
 
-from app import auth
-from app.db import SessionLocal
+from app.identity import auth
+from app.infra.db import SessionLocal
 from app.models import SiteSkill, SiteSkillFile
 from workspace_local_preview import LocalFiles, LocalS3
 
@@ -12,11 +12,11 @@ def main():
     if os.environ.get("ISSUE100_LOCAL_PREVIEW") != "1":
         raise RuntimeError("local preview only")
     from sqlalchemy.engine import make_url
-    from app.config import get_settings
+    from app.infra.config import get_settings
     if not make_url(get_settings().database_url).database.startswith("rag_auth_test_issue100_browser_"):
         raise RuntimeError("refusing non-disposable database")
     store = LocalFiles() if os.environ.get("ISSUE100_LOCAL_STORE") == "filesystem" else LocalS3()
-    from app import shared_resources as shared
+    from app.files import shared
     shared.backend = lambda db: store
     with SessionLocal() as db:
         owner = auth.create_user(db, "issue100-local@example.com", "临时验收", "local-preview-password-100")
@@ -30,7 +30,7 @@ def main():
                 SiteSkillFile(path="references/guide.md", content="本地临时参考资料".encode())])
         db.add(skill); db.commit()
         actor = auth.Access(owner.id, "")
-        from app.workspace_mutations import save_files, create_directory
+        from app.files.mutations import save_files, create_directory
         create_directory(db, actor, "项目资料")
         create_directory(db, actor, "项目资料/目标文件夹")
         save_files(db, actor, {

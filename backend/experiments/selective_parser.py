@@ -18,9 +18,9 @@ from markitdown.converters import DocxConverter, PdfConverter
 from PIL import Image
 import pdfplumber
 
-from app.docmind import pdf_part
-from app.parsed_document import ParsedDocument, assemble_pages
-from app.parsers import pdf_pages
+from app.knowledge.ingestion.docmind import pdf_part
+from app.knowledge.ingestion.parsed_document import ParsedDocument, assemble_pages
+from app.knowledge.ingestion.parsers import pdf_pages
 
 VERSION = "selective-v1"
 MAX_BYTES = 200 * 1024 * 1024

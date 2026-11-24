@@ -19,7 +19,7 @@ class LocalS3:
     region = "us-east-1"
 
     def __init__(self):
-        from app.config import get_settings
+        from app.infra.config import get_settings
         config = get_settings()
         if os.environ.get("ISSUE100_LOCAL_PREVIEW") != "1" or config.s3_endpoint != "http://minio:9000":
             raise RuntimeError("refusing non-local preview storage")
@@ -137,13 +137,16 @@ class LocalFiles:
 
 def build_app():
     from sqlalchemy.engine import make_url
-    from app.config import get_settings
+    from app.infra.config import get_settings
     database = make_url(get_settings().database_url)
     if (os.environ.get("ISSUE100_LOCAL_PREVIEW") != "1" or database.host != "db"
             or not (database.database or "").startswith("rag_auth_test_issue100_browser_")):
         raise RuntimeError("refusing non-disposable preview database")
-    from app import main, shared_resources, storage_backend, storage, storage_downloads, resource_cache
-    from app import skill_discovery, cloud_computer
+    from app import main
+    from app.files import shared as shared_resources, downloads as storage_downloads, cache as resource_cache
+    from app.infra import storage_backend, storage
+    from app.skills import discovery as skill_discovery
+    from app.cloud_computer import runtime as cloud_computer
     local = LocalFiles() if os.environ.get("ISSUE100_LOCAL_STORE") == "filesystem" else LocalS3()
     shared_resources.backend = lambda db: local
     storage_backend.current_storage = lambda db: local

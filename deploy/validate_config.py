@@ -32,8 +32,7 @@ APPLICATION_SERVICES = {
     "migrate-rehearsal",
 }
 
-# These are read by backend/app/config.py. Listing every setting makes adding
-# a runtime setting require an explicit documentation and contract update.
+# 这里登记 backend/app/infra/config.py 读取的环境变量，以便检查新增配置。
 APP_KEYS = {
     "DATABASE_URL",
     "REDIS_URL",

@@ -11,8 +11,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, chat_attachments, resource_cache, resources, storage_billing, tasks, workspace_files
-from app.config import get_settings
+from app.files import cache as resource_cache, resources, quotas as storage_billing, workspace as workspace_files
+from app import tasks
+
+from app.identity import auth
+from app.conversations import attachments as chat_attachments
+from app.infra.config import get_settings
 from app.models import ChatAttachment, ChatMessage, Conversation, Document, KnowledgeBase, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 from app.storage_models import StorageQuotaSettings, StorageTransfer, WorkspaceStorageState
 from test_auth import register
@@ -29,13 +33,13 @@ def resource_store(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_attachments, "upload_fileobj", put)
     monkeypatch.setattr(workspace_files, "upload_fileobj", put)
     monkeypatch.setattr(resource_cache, "download_range_fileobj", get)
-    monkeypatch.setattr("app.storage_downloads.download_range_fileobj", get)
-    monkeypatch.setattr("app.storage.delete_object", lambda key: objects.pop(key, None))
+    monkeypatch.setattr("app.files.downloads.download_range_fileobj", get)
+    monkeypatch.setattr("app.infra.storage.delete_object", lambda key: objects.pop(key, None))
     monkeypatch.setattr(get_settings(), "resource_cache_dir", str(tmp_path / "cache"))
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     store.objects = objects
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: store)
+    monkeypatch.setattr("app.files.shared.backend", lambda _db: store)
     return objects, reads
 
 
@@ -92,7 +96,7 @@ def test_current_file_and_object_inventory_dedup(accounts, resource_store):
 
 
 def test_migrated_files_and_empty_folders_use_their_original_keys(accounts, resource_store):
-    from app.shared_resources import directory_marker_key, object_key
+    from app.files.shared import directory_marker_key, object_key
 
     (owner, outsider, _), db = accounts
     register(owner)
@@ -123,7 +127,7 @@ def test_migrated_files_and_empty_folders_use_their_original_keys(accounts, reso
     assert objects[legacy_key] == b"edited"
     assert owner.get(f"/resources/{new['id']}/download").content == b"current"
 
-    from app.workspace_mutations import delete, snapshot
+    from app.files.mutations import delete, snapshot
     assert "empty (2)" in snapshot(db, actor)[1]
     delete(db, actor, ["empty (2)"])
     assert marker_key not in objects
@@ -161,7 +165,7 @@ def test_embed_image_in_mounted_document_without_archive_or_binary_stdout(accoun
     from test_cloud_computer import enable_execution
     fake, execute = enable_execution(db, actor, monkeypatch)
     from test_cloud_computer_mount import MemoryMount, configure_mount
-    from app.shared_resources import prefix
+    from app.files.shared import prefix
     storage = MemoryMount(); storage.objects = resource_store[0]
     configure_mount(db, monkeypatch, storage)
     def run(sandbox, identifier, command):
@@ -310,7 +314,7 @@ def test_patch_propagates_cloud_conflict_without_cached_read(accounts, resource_
         assert operation["patch"] == "@@ -1 +1 @@\n-old\n+patched\n"
         assert "expected_hash" not in operation
         return {"status": "completed", "file_result": {"error": "文件已变化，请重新读取", "status_code": 409}}
-    monkeypatch.setattr("app.cloud_computer.execute", concurrent_edit)
+    monkeypatch.setattr("app.cloud_computer.runtime.execute", concurrent_edit)
     with pytest.raises(HTTPException) as error:
         workspace_files.execute_tool("apply_patch", {"path": item["path"], "expected_version": 1,
             "patch": "@@ -1 +1 @@\n-old\n+patched\n"}, db, actor, actor.user_id)

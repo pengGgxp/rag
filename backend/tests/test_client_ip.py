@@ -9,8 +9,8 @@ import uvicorn
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from app.client_ip import payment_client_ip
-from app.config import Settings
+from app.infra.client_ip import payment_client_ip
+from app.infra.config import Settings
 
 
 def request(peer, headers=()):

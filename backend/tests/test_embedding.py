@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from app.config import Settings
-from app.embedding import (
+from app.infra.config import Settings
+from app.knowledge.ingestion.embedding import (
     EmbeddingConfigurationError,
     EmbeddingProviderError,
     OpenAICompatibleEmbeddingProvider,
@@ -127,7 +127,8 @@ def test_batch_rejects_invalid_or_duplicate_indexes(monkeypatch, indexes):
 @pytest.fixture
 def retry_clock(monkeypatch):
     from types import SimpleNamespace
-    from app import embedding, upstream_retries
+    from app.infra import upstream_retries
+    from app.knowledge.ingestion import embedding
 
     clock = SimpleNamespace(now=0.0)
     clock.monotonic = lambda: clock.now
@@ -139,7 +140,7 @@ def retry_clock(monkeypatch):
 
 
 def test_ingestion_retries_only_the_rate_limited_batch(monkeypatch, retry_clock):
-    from app.embedding import INGESTION_RETRY
+    from app.knowledge.ingestion.embedding import INGESTION_RETRY
 
     calls, progress = [], []
 
@@ -167,7 +168,7 @@ def test_ingestion_retries_only_the_rate_limited_batch(monkeypatch, retry_clock)
     (503, "", None, 1),
 ])
 def test_ingestion_retry_admission(monkeypatch, retry_clock, status, header, code, attempts):
-    from app.embedding import INGESTION_RETRY
+    from app.knowledge.ingestion.embedding import INGESTION_RETRY
 
     timeouts = []
 
@@ -184,7 +185,7 @@ def test_ingestion_retry_admission(monkeypatch, retry_clock, status, header, cod
 
 @pytest.mark.parametrize(("error", "expected"), [(httpx.ConnectTimeout, 4), (httpx.ReadTimeout, 1)])
 def test_ingestion_retries_only_safe_transport_errors(monkeypatch, retry_clock, error, expected):
-    from app.embedding import INGESTION_RETRY
+    from app.knowledge.ingestion.embedding import INGESTION_RETRY
 
     calls = []
 

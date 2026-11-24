@@ -1,14 +1,14 @@
 import json
 from fractions import Fraction
-from app.credit_amounts import amount
+from app.billing.amounts import amount
 from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from app import payments
-from app.config import Settings
+from app.payments import orders as payments
+from app.infra.config import Settings
 from app.models import ModelBillingSettings, SiteAuditEvent, UsagePolicy, User
 from test_auth import register
 from test_payments import gateway

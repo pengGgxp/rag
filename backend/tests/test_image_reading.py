@@ -11,14 +11,14 @@ from uuid import uuid4
 
 import pytest
 
-from app import cloud_computer as cloud
-from app import image_reading
-from app.agent import stream_retrieval_agent
-from app.chat_attachments import model_messages, summary_content
-from app.cloud_file_operation import inspect_image, perform
-from app.extensions import ExtensionRuntime
-from app.llm import ChatProviderConfig
-from app.llm import OpenAICompatibleChatProvider
+from app.cloud_computer import runtime as cloud
+from app.files import image_reading
+from app.agent.loop import stream_retrieval_agent
+from app.conversations.attachments import model_messages, summary_content
+from app.cloud_computer.cloud_file_operation import inspect_image, perform
+from app.integrations.runtime import ExtensionRuntime
+from app.model_runtime.client import ChatProviderConfig
+from app.model_runtime.client import OpenAICompatibleChatProvider
 from test_chat_attachments import PNG
 from test_agent import runtime as agent_runtime
 from test_conversation_streaming import upstream, sse
@@ -26,7 +26,7 @@ from test_extensions import access_for as load_access
 from test_shared_providers import setup_site
 from test_cloud_computer import FakeCloud
 from test_resources import access_for, resource_store
-from app.llm import ToolCall, ToolResponse
+from app.model_runtime.client import ToolCall, ToolResponse
 
 
 JPEG = (b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01"
@@ -183,8 +183,8 @@ def test_compaction_drops_read_image_tool_payload_for_every_protocol(protocol):
 
 def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):
     from types import SimpleNamespace
-    from app import thinking
-    from app.thinking import ThinkingSelection
+    from app.model_catalog import thinking
+    from app.model_catalog.thinking import ThinkingSelection
     value = image_reading.workspace_image(
         "/home/user/workspace/chart.png", "image/png", 1, 1,
         hashlib.sha256(PNG).hexdigest(), PNG)
@@ -206,7 +206,7 @@ def test_persisted_images_are_safe_text_and_history_has_no_bytes(monkeypatch):
         provider_id="provider", site_provider_id="provider",
         connection_id="connection", supports_images=True, api_protocol="responses",
         thinking=ThinkingSelection(adapter="none", kind="fixed"))
-    monkeypatch.setattr("app.mcp_client.decrypt_headers", lambda _: {
+    monkeypatch.setattr("app.integrations.mcp_client.decrypt_headers", lambda _: {
         "continuation": json.dumps({"provider": "provider", "model": "vision",
             "protocol": "responses", "adapter": "none",
             "connection": "connection", "messages": persisted})})
@@ -234,7 +234,7 @@ def test_repeated_reads_can_load_same_image_on_demand():
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
 def test_loaded_image_reaches_four_actual_wire_payloads(monkeypatch, protocol):
-    from app.cloud_computer_adapter import AlibabaSandbox
+    from app.cloud_computer.adapter import AlibabaSandbox
     from test_cloud_computer_adapter import streamed_file
 
     config = ChatProviderConfig("https://provider.example/v1", "test-key", "vision",
@@ -315,7 +315,7 @@ def test_agent_injects_loaded_image_only_after_tool_call(agent_runtime, protocol
             return "查看图片"
 
         def execute(self, name, arguments, check_active=None, **kwargs):
-            from app.extensions import ImageToolResult
+            from app.integrations.runtime import ImageToolResult
             return ImageToolResult(image, {"filename": "chart.png",
                 "summary": "已读取图片「chart.png」"})
 
@@ -371,7 +371,7 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
             "cloud_computer": {"status": "ready"}, "command_id": "command"}
 
     monkeypatch.setattr(cloud, "execute_image", execute_image)
-    from app.shared_resources import object_key
+    from app.files.shared import object_key
     resource_store[0][object_key(access.user_id, "chart.png")] = PNG
     runtime.request_id = uuid4()
     result = runtime.execute("read_image", {"path": "chart.png",
@@ -389,7 +389,7 @@ def test_runtime_local_image_uses_cloud_computer_and_returns_safe_result(account
 @pytest.mark.parametrize("failure", ["interrupted", "empty", "oversized"])
 def test_image_download_failure_returns_tool_result_and_agent_continues(agent_runtime, protocol, failure, caplog):
     import httpx
-    from app.cloud_computer_adapter import AlibabaSandbox
+    from app.cloud_computer.adapter import AlibabaSandbox
     from test_cloud_computer_adapter import streamed_file
 
     blocks = [] if failure == "empty" else [PNG[:10], PNG[10:]]
@@ -446,7 +446,7 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
 @pytest.mark.parametrize("failure", ["cancel", "permission", "unauthorized", "forbidden", "bug"])
 def test_read_image_does_not_swallow_cancel_permission_or_programming_errors(failure):
     from fastapi import HTTPException
-    from app.agent import AgentCancelled
+    from app.agent.loop import AgentCancelled
 
     errors = {"cancel": AgentCancelled(), "permission": PermissionError("denied"),
         "unauthorized": HTTPException(401, "denied"), "forbidden": HTTPException(403, "denied"),
@@ -480,7 +480,7 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
     from test_cloud_computer import enable_execution
     from test_cloud_computer_mount import MemoryMount
     from app.models import Conversation
-    from app import storage_backend
+    from app.infra import storage_backend
 
     (client, _, _), db = accounts
     from test_auth import register
@@ -517,7 +517,7 @@ def test_workspace_image_end_to_end_uses_cloud_environment_and_no_duplicate_star
 def test_workspace_image_passes_paths_to_sandbox_for_access_checks(accounts, monkeypatch):
     from test_cloud_computer import enable_execution
     from test_cloud_computer_mount import MemoryMount
-    from app import storage_backend
+    from app.infra import storage_backend
     (client, _, _), db = accounts
     from test_auth import register
     register(client)

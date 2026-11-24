@@ -8,9 +8,9 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import model_billing as billing, workspace_billing as pricing
-from app.credits import authorization_hold, settle_model_usage, settle_usage
-from app.llm import LLMUsage
+from app.billing import model_usage as billing, workspace as pricing
+from app.billing.credits import authorization_hold, settle_model_usage, settle_usage
+from app.model_runtime.client import LLMUsage
 from app.models import (BillingSnapshot, UserCreditAccount, LLMProviderConfig, ModelBillingSettings, ModelUsageRequest,
                         SiteModelProvider, UsageEvent, UsagePolicy, User,
                         UserModelPolicy)
@@ -84,7 +84,7 @@ def test_request_exact_multiplier_applied_once(shared_billing, percent):
             cached_input_tokens=50, cache_status="reported").measured(), "completed")
     total = billing.finalize_request(db, request, "completed")
     db.commit()
-    from app.credit_amounts import amount
+    from app.billing.amounts import amount
     assert total == amount(Fraction(9, 10) * Fraction(percent, 100))
     events = db.scalars(select(UsageEvent).where(UsageEvent.request_id == request)).all()
     assert sum(e.credits for e in events) == total
@@ -263,7 +263,7 @@ def test_multiplier_api_site_only_cross_workspace_conflicts_and_audit(shared_bil
 
 
 def test_migration_requires_reviewed_versions_complete_prices_and_drain(shared_billing):
-    from app.billing_admin import migration_command
+    from app.billing.admin import migration_command
     client, db, workspace, _, provider_id = shared_billing
     settings = db.get(ModelBillingSettings, 1)
     settings.shared_pricing_enabled = False
@@ -300,7 +300,7 @@ def test_migration_requires_reviewed_versions_complete_prices_and_drain(shared_b
 
 
 def test_migration_never_autofills_missing_cache_or_overwrites_legacy_prices(shared_billing):
-    from app.billing_admin import migration_command
+    from app.billing.admin import migration_command
     _, db, workspace, _, provider_id = shared_billing
     settings = db.get(ModelBillingSettings, 1)
     settings.shared_pricing_enabled = False

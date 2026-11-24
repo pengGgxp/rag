@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import main
-from app.db import Base
-from app.embedding import EmbeddingProviderError
+from app.infra.db import Base
+from app.knowledge.ingestion.embedding import EmbeddingProviderError
 from app.models import (
     Chunk,
     Document,
@@ -33,8 +33,7 @@ def retrieval_client(monkeypatch):
     Base.metadata.create_all(engine)
     session = Session(engine)
     monkeypatch.setattr(
-        main,
-        "OpenAICompatibleEmbeddingProvider",
+        "app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
         lambda: SimpleNamespace(
             status=SimpleNamespace(
                 configured=False,
@@ -255,8 +254,7 @@ def test_vector_failure_is_visible_as_bm25_fallback(retrieval_client, monkeypatc
         raise EmbeddingProviderError("upstream unavailable")
 
     monkeypatch.setattr(
-        main,
-        "OpenAICompatibleEmbeddingProvider",
+        "app.knowledge.retrieval.OpenAICompatibleEmbeddingProvider",
         lambda: SimpleNamespace(
             status=SimpleNamespace(
                 configured=True,

@@ -4,8 +4,11 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import auth, conversations as chat, workspace_files
-from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app.files import workspace as workspace_files
+
+from app.identity import auth
+from app.conversations import execution as chat
+from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (ChatAttachment, ChatMessage, CloudComputerCommand, CloudComputerSession,
     CreditLedgerEntry, ModelUsageRequest, User, WorkspaceFile, WorkspaceFileVersion)
 from auth_helpers import model_id
@@ -68,7 +71,7 @@ def test_reference_is_metadata_only_and_does_not_start_cloud(client, resource_st
     item = upload(http, body=b"SECRET FILE BODY")
     attachment_ids = set(db.scalars(select(ChatAttachment.id)))
     if cloud_enabled:
-        from app import shared_resources
+        from app.files import shared as shared_resources
         from test_cloud_computer import enable_execution
         original_backend = shared_resources.backend
         fake, _ = enable_execution(db, access_for(http, db), monkeypatch)
@@ -117,7 +120,7 @@ def test_retry_uses_current_metadata_and_preserves_history(client, resource_stor
     conversation = create(http)
     events, _ = turn(http, conversation["id"], resource_ids=[item["id"]])
     failed = events[-1][1]
-    from app.shared_resources import object_key
+    from app.files.shared import object_key
     actor = access_for(http, db)
     resource_store[0][object_key(actor.user_id, item["path"])] = b"new current bytes"
     calls.clear(); provider(monkeypatch, calls)
@@ -169,11 +172,10 @@ def test_worker_revalidates_after_submission(client, resource_store, monkeypatch
     else:
         db.get(User, access_for(http, db).user_id).is_suspended = True
         db.commit()
-    from app.conversation_jobs import run
+    from app.conversations.jobs import run
     from app import main
     from sqlalchemy.orm import sessionmaker
-    run(response.json()["request_id"], factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False),
-        retrieve=main.retrieve_knowledge_base)
+    run(response.json()["request_id"], factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     if change == "revoked":
         assert not calls
     else:
@@ -221,7 +223,7 @@ def test_agent_reads_reference_through_existing_file_tool(client, resource_store
     enable_execution(db, access_for(http, db), monkeypatch)
     from test_cloud_computer_mount import MemoryMount
     storage = MemoryMount(); storage.objects = resource_store[0]
-    monkeypatch.setattr("app.shared_resources.backend", lambda _: storage)
+    monkeypatch.setattr("app.files.shared.backend", lambda _: storage)
     operations = []
     def execute(db, access, conversation_id, request_id, arguments, *_, **execution):
         assert execution["agent_tool_execution_id"] and callable(execution["on_progress"])
@@ -230,7 +232,7 @@ def test_agent_reads_reference_through_existing_file_tool(client, resource_store
         return {"status": "completed", "computer_id": arguments["computer_id"],
             "cloud_computer": {}, "command_id": str(uuid4()),
             "file_result": {"value": {"content": "resource facts"}}}
-    monkeypatch.setattr("app.cloud_computer.execute", execute)
+    monkeypatch.setattr("app.cloud_computer.runtime.execute", execute)
     calls = []
     provider(monkeypatch, calls, read=True)
     events, _ = turn(http, create(http)["id"], resource_ids=[item["id"]])

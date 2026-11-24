@@ -9,7 +9,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, llm_providers, main, shared_providers
+from app.model_catalog import providers as llm_providers, shared_providers
+from app import main
+
+from app.identity import auth
 from app.models import ModelBillingSettings, SiteModelProvider, ThinkingTest
 from auth_helpers import configured_model
 from test_auth_postgres import auth_postgres

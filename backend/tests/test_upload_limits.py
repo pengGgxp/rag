@@ -6,7 +6,8 @@ from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from starlette.datastructures import Headers
 
-from app import auth, main
+from app.identity import auth
+from app.knowledge import routes as knowledge_routes
 from app.models import Document, IngestionJob, KnowledgeBase, LoginSession
 from test_auth import library, register
 from test_retrieval import add_document
@@ -48,8 +49,8 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
 
     storage = DiskStore()
 
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
-    monkeypatch.setattr(main.process_document, "delay", queued.append)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
+    monkeypatch.setattr(knowledge_routes.process_document, "delay", queued.append)
     if previous:
         storage.path(previous.object_key).write_bytes(b"previous version")
     kwargs = {"replace_document_id": previous.id if previous else None,
@@ -60,8 +61,8 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
     with TemporaryFile() as stream:
         stream.truncate(size)
         upload = UploadFile(stream, filename="large.txt", headers=Headers({"content-type": "text/plain"}))
-        if size == main.MAX_DOCUMENT_BYTES:
-            result = main.upload_document(kb_id, request, upload, **kwargs)
+        if size == knowledge_routes.MAX_DOCUMENT_BYTES:
+            result = knowledge_routes.upload_document(kb_id, request, upload, **kwargs)
             assert result.size_bytes == size
             assert stored == [size]
             assert len(queued) == 1
@@ -71,7 +72,7 @@ def test_real_spooled_upload_boundary_before_storage_and_jobs(accounts, monkeypa
                 assert previous.is_active
         else:
             with pytest.raises(HTTPException) as caught:
-                main.upload_document(kb_id, request, upload, **kwargs)
+                knowledge_routes.upload_document(kb_id, request, upload, **kwargs)
             assert caught.value.status_code == (400 if size == 0 else 413)
             assert stored == queued == []
             assert db.scalar(select(func.count()).select_from(Document)) == before_docs
@@ -91,5 +92,5 @@ def test_upload_inspection_only_uses_bounded_reads():
             self.remaining -= 1
             return b"text" if self.remaining >= 0 else b""
 
-    from app.document_ingestion import inspect_file
+    from app.knowledge.ingestion.admission import inspect_file
     assert inspect_file(Stream()) == (12, hashlib.sha256(b"text" * 3).hexdigest())

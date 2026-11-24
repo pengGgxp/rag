@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.agent import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
-from app.llm import ToolCall, ToolResponse
+from app.agent.loop import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import DocumentStatus, KnowledgeBaseStatus
 
 
@@ -452,7 +452,7 @@ def test_file_failure_stream_uses_safe_actionable_summary(runtime, name, result,
 
 
 def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime):
-    from app.agent import AGENT_SYSTEM_PROMPT
+    from app.agent.loop import AGENT_SYSTEM_PROMPT
 
     output = {"id": "file-1", "path": "reports/summary.md", "size_bytes": 21, "version": 1,
         "object_key": "must-not-be-public"}
@@ -550,7 +550,7 @@ def test_delivery_instructions_and_actual_results_reach_final_model_round(runtim
 def test_cloud_file_results_reach_model_and_allow_remaining_tools(runtime, state):
     from datetime import datetime, timezone
     from decimal import Decimal
-    from app.cloud_computer import read
+    from app.cloud_computer.runtime import read
 
     timestamp = datetime(2026, 11, 6, 13, 17, 13, tzinfo=timezone.utc)
     computer = SimpleNamespace(id=uuid4(), name="测试实例", conversation_id=uuid4(), status=state, error=None,

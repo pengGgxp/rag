@@ -13,9 +13,12 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from app import auth, main, payments
-from app.auth import Access, now
-from app.config import Settings
+from app import main
+from app.payments import orders as payments
+
+from app.identity import auth
+from app.identity.auth import Access, now
+from app.infra.config import Settings
 from app.models import (
     AuditLog, UserCreditAccount, CreditLedgerEntry, LoginSession, RechargeOrder, User,
 )

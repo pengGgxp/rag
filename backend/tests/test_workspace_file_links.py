@@ -5,10 +5,11 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import cloud_computer, shared_resources, workspace_files
-from app.extensions import ExtensionRuntime
+from app.cloud_computer import runtime as cloud_computer
+from app.files import shared as shared_resources, workspace as workspace_files
+from app.integrations.runtime import ExtensionRuntime
 from app.models import WorkspaceFile, WorkspaceFileVersion
-from app.workspace_file_links import get_file_link
+from app.files.links import get_file_link
 from test_auth import register
 from test_resources import resource_store, upload, access_for
 
@@ -98,7 +99,7 @@ def test_link_reuses_one_head_and_refreshes_fallback_storage(accounts, resource_
     head = storage.head
     storage.head = lambda key: calls.append(key) or head(key)
     monkeypatch.setattr(shared_resources, "backend", lambda _: None)
-    monkeypatch.setattr("app.storage_backend.current_storage", lambda _: storage)
+    monkeypatch.setattr("app.infra.storage_backend.current_storage", lambda _: storage)
     linked = get_file_link(db, access, {"id": item["id"]})
     assert linked["size_bytes"] == len(b"current bytes") and linked["revision"] != item["revision"]
     assert len(calls) == 1
@@ -146,8 +147,8 @@ def test_download_and_file_link_use_the_recorded_legacy_key(accounts, resource_s
 def test_durable_command_link_delivery_and_replay(accounts, resource_store, monkeypatch):
     """The real Agent gets a link for a command-created file, then persists it."""
     import json
-    from app import conversations
-    from app.llm import ToolCall, ToolResponse
+    from app.conversations import execution as conversations
+    from app.model_runtime.client import ToolCall, ToolResponse
     from auth_helpers import configured_model, StreamingTestProvider
     from test_cloud_computer import enable_execution
     from test_conversations import create, turn
@@ -176,7 +177,7 @@ def test_durable_command_link_delivery_and_replay(accounts, resource_store, monk
 
     monkeypatch.setattr(conversations, "OpenAICompatibleChatProvider", lambda **_: Provider())
     conversation = create(http)
-    from app import cloud_computer
+    from app.cloud_computer import runtime as cloud_computer
     actor = access_for(http, db)
     computer_id = cloud_computer.create_computer(db, actor, UUID(conversation["id"]), uuid4(),
         {"name": "文件链接测试"})["computer_id"]

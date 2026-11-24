@@ -7,7 +7,7 @@ from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, JSON, Numeric,
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .db import Base
+from app.infra.db import Base
 
 
 class StorageQuotaSettings(Base):

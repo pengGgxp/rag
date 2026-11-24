@@ -13,8 +13,10 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import cloud_computer, cloud_file_operation, extensions, shared_resources, workspace_files
-from app.extensions import ExtensionRuntime
+from app.cloud_computer import runtime as cloud_computer, cloud_file_operation
+from app.integrations import runtime as extensions
+from app.files import shared as shared_resources, workspace as workspace_files
+from app.integrations.runtime import ExtensionRuntime
 from app.models import AgentSkill, SiteSkill, WorkspaceFile
 from test_auth import register
 from test_cloud_computer import enable_execution
@@ -139,7 +141,7 @@ def test_skill_catalog_indexes_only_manifests_and_reads_only_their_headers(accou
 
 
 def test_skill_manifest_over_five_megabytes_can_be_imported_and_opened(accounts, monkeypatch, resource_store):
-    from app import skill_files
+    from app.skills import files as skill_files
     monkeypatch.setattr(skill_files, "MAX_FILE_BYTES", 6 * 1024 * 1024)
     monkeypatch.setattr(skill_files, "MAX_BUNDLE_BYTES", 6 * 1024 * 1024)
     markdown = b"---\nname: large\n---\n" + b"x" * (5 * 1024 * 1024)
@@ -190,13 +192,13 @@ def test_unpack_rejects_links_duplicate_roots_and_limits(accounts, monkeypatch, 
     assert client.post("/agent/skills/import", files={"file": ("bad.zip", output.getvalue())}).status_code == 422
     for files in ({"a/SKILL.md": b"one", "b/SKILL.md": b"two"}, {"SKILL.md": b"one", "skill.md": b"two"}, {"README.md": b"none"}):
         assert client.post("/agent/skills/import", files={"file": ("bad.zip", zipped(files))}).status_code == 422
-    monkeypatch.setattr("app.skill_files.MAX_FILE_BYTES", 1024)
+    monkeypatch.setattr("app.skills.files.MAX_FILE_BYTES", 1024)
     assert client.post("/agent/skills/import", files={"file": ("large.zip", zipped({"SKILL.md": b"x" * 1025}))}).status_code == 413
     assert resource_store[0] == {}
 
 
 def test_zip_splits_multiple_skills_and_keeps_each_resource_with_its_manifest():
-    from app.skill_files import unzip_packages
+    from app.skills.files import unzip_packages
     packages = unzip_packages(zipped({
         "collection/one/SKILL.md": b"---\nname: one\n---\nOne body",
         "collection/one/data.txt": b"one resource",
@@ -209,7 +211,7 @@ def test_zip_splits_multiple_skills_and_keeps_each_resource_with_its_manifest():
 
 
 def test_nested_skill_files_do_not_leak_into_parent_package():
-    from app.skill_files import unzip_packages
+    from app.skills.files import unzip_packages
     packages = unzip_packages(zipped({
         "parent/SKILL.md": b"---\nname: parent\n---\nParent",
         "parent/parent.txt": b"parent resource",

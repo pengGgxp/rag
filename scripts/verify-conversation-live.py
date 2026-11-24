@@ -13,15 +13,15 @@ import httpx
 from httpx_sse import EventSource
 from sqlalchemy import delete, select
 
-from app import auth
-from app.config import get_settings
-from app.credits import ensure_account
-from app.db import SessionLocal
+from app.identity import auth
+from app.infra.config import get_settings
+from app.billing.credits import ensure_account
+from app.infra.db import SessionLocal
 from app.models import (
     ChatMessage, ContextCheckpoint, Conversation, LoginSession, Membership, ModelBillingSettings,
     SiteModelProvider, ModelConnection, User, UsageEvent, Workspace,
 )
-from app.site_audit import record
+from app.operations.site_audit import record
 
 
 def invariant(db):

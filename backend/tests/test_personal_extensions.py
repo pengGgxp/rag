@@ -8,10 +8,12 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import conversations, mcp_client, workspace_files
-from app.agent import AgentCancelled
-from app.extensions import ExtensionRuntime
-from app.llm import LLMUsage, ToolCall, ToolResponse
+from app.integrations import mcp_client
+from app.files import workspace as workspace_files
+from app.conversations import execution as conversations
+from app.agent.loop import AgentCancelled
+from app.integrations.runtime import ExtensionRuntime
+from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import AgentSkill, Conversation, MCPServer, RemoteToolExecution, SiteModelProvider
 from auth_helpers import StreamingTestProvider
 from test_auth import register
@@ -48,7 +50,7 @@ def test_other_user_cannot_read_select_or_execute(accounts, monkeypatch):
     (_, other_client, _), _ = accounts
     register(other_client, "other-extension-account@example.com")
     other = access_for(other_client, db)
-    from app.extensions import validate_selection
+    from app.integrations.runtime import validate_selection
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as exc:
         validate_selection(db, other, [], [remote["id"]])
@@ -217,10 +219,10 @@ def test_generated_file_download_link_data_persists_with_chat_and_enforces_works
     from test_cloud_computer_mount import MemoryMount
     storage = MemoryMount()
     storage.objects = stored
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: storage)
+    monkeypatch.setattr("app.files.shared.backend", lambda _db: storage)
     monkeypatch.setattr(workspace_files, "upload_fileobj", lambda stream, key, *_: stored.update({key: stream.read()}))
     monkeypatch.setattr(workspace_files, "download_fileobj", lambda key: __import__("io").BytesIO(stored[key]))
-    from app import storage_downloads
+    from app.files import downloads as storage_downloads
     monkeypatch.setattr(storage_downloads, "download_range_fileobj",
         lambda key, start, end: __import__("io").BytesIO(stored[key][start:end+1]))
     access = access_for(owner, db)

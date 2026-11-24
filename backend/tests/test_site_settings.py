@@ -4,7 +4,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import func, select
 
-from app import auth, email_auth
+from app.identity import auth, email_auth
 from app.models import (
     AuthenticationFlow, UserCreditAccount, CreditLedgerEntry, SiteAuditEvent, SiteSettings, User,
 )

@@ -13,13 +13,19 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import migrate_storage, site_auth, storage_backend, storage_settings, tasks
+from app import tasks
+from app.operations import migrate_storage
+from app.infra import storage_backend
+from app.files import settings as storage_settings
+
+from app.identity import site_auth
+from app.knowledge.ingestion import pipeline
 from app.models import (
     ChatAttachment, DocumentStatus, KnowledgeBase, SiteAuditEvent, SiteStorageSettings,
     StorageMigration, StorageMigrationObject, User, WorkspaceFile, WorkspaceFileVersion,
 )
-from app.oss_storage import OssStorage
-from app.storage_settings import StorageInput
+from app.infra.oss_storage import OssStorage
+from app.files.settings import StorageInput
 from test_auth import library, register
 from test_cos_uploads import FakeCos
 from test_retrieval import add_document
@@ -195,9 +201,9 @@ def test_only_one_active_store_and_ocr_uses_oss(stores, monkeypatch):
         db.commit()
     db.rollback()
     monkeypatch.setattr(storage_backend, "configured_backend", factory)
-    assert tasks.ocr_storage(db) is source
+    assert pipeline.ocr_storage(db) is source
     migrate_storage.migrate(db, target_provider="oss", version=2, execute=True, offline=True, factory=factory)
-    assert tasks.ocr_storage(db) is target
+    assert pipeline.ocr_storage(db) is target
 
 
 def bare_oss(**methods):

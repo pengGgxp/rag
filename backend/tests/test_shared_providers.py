@@ -5,9 +5,9 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
 
-from app import shared_providers as shared, llm_providers
-from app.config import Settings
-from app.llm import OpenAICompatibleChatProvider
+from app.model_catalog import shared_providers as shared, providers as llm_providers
+from app.infra.config import Settings
+from app.model_runtime.client import OpenAICompatibleChatProvider
 from app.models import (
     LLMProviderConfig, ModelBillingSettings, ModelConnection,
     SiteModelProvider, UsagePolicy, User,
@@ -28,7 +28,7 @@ def setup_site(accounts, monkeypatch):
     db.commit()
     monkeypatch.setattr(shared, "_encrypt_api_key", lambda value: f"enc:{value}")
     monkeypatch.setattr(shared, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
-    from app import model_connections
+    from app.model_catalog import connections as model_connections
     monkeypatch.setattr(model_connections, "_encrypt_api_key", lambda value: f"enc:{value}")
     monkeypatch.setattr(model_connections, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
     monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda value: value.removeprefix("enc:"))
@@ -62,7 +62,7 @@ def choose(client, identifier):
 
 
 def test_legacy_empty_image_config_is_complete_in_admin_reads_without_db_changes(accounts, monkeypatch):
-    from app.model_capabilities import ImageConfig
+    from app.model_catalog.capabilities import ImageConfig
     owner, db, _ = setup_site(accounts, monkeypatch)
     value = provider(owner)
     row = db.get(SiteModelProvider, UUID(value["id"]))
@@ -98,7 +98,7 @@ def test_shared_selection_has_no_copies_and_switchback_uses_live_prices(accounts
     assert len(db.scalars(select(LLMProviderConfig).where(LLMProviderConfig.account_id == UUID(session["user"]["id"]))).all()) == 2
     for a in associations:
         assert db.scalars(select(UsagePolicy).where(UsagePolicy.provider_id == a.id)).all() == []
-    from app.model_billing import price_snapshot
+    from app.billing.model_usage import price_snapshot
     assert price_snapshot(db, associations[0].account_id, associations[0].id)["llm_input_tokens"]["credits_per_unit"] == 20
     config = llm_providers.request_provider_config(db, UUID(other_session["user"]["id"]), UUID(p["id"]))
     assert config.model == "model-one" and config.api_key == "secret"

@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import Settings
-from app.docmind import AliyunDocMind, DocMindError, normalize_layouts
-from app.parsed_document import parsed_chunks
+from app.infra.config import Settings
+from app.knowledge.ingestion.docmind import AliyunDocMind, DocMindError, normalize_layouts
+from app.knowledge.ingestion.parsed_document import parsed_chunks
 
 
 def configured(**kwargs):
@@ -61,7 +61,7 @@ def test_cos_url_submission_uses_non_upload_api_and_never_retries():
 def test_polling_and_pagination_do_not_drop_layouts(monkeypatch):
     statuses = iter(["Processing", "Success"])
     offsets = []
-    monkeypatch.setattr("app.docmind.sleep", lambda _: None)
+    monkeypatch.setattr("app.knowledge.ingestion.docmind.sleep", lambda _: None)
 
     def get_result(request, runtime):
         offsets.append(request.layout_num)
@@ -134,7 +134,7 @@ def test_network_submission_error_is_marked_uncertain():
 
 def test_timeout_keeps_known_task_available_for_retry(monkeypatch):
     ticks = iter([0, 2])
-    monkeypatch.setattr("app.docmind.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("app.knowledge.ingestion.docmind.monotonic", lambda: next(ticks))
     with pytest.raises(DocMindError, match="继续查询原任务"):
         AliyunDocMind(configured(docmind_timeout_seconds=1), SimpleNamespace()).collect(
             "remote-job", 1, lambda: None,
@@ -153,7 +153,7 @@ def test_missing_credentials_are_rejected():
 def test_pdf_batch_preflight_covers_every_page_and_respects_size(monkeypatch):
     import io
     from pypdf import PdfReader, PdfWriter
-    from app import docmind
+    from app.knowledge.ingestion import docmind
 
     writer = PdfWriter()
     for _ in range(5):

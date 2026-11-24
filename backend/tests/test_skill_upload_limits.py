@@ -11,10 +11,10 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import skill_files
+from app.skills import files as skill_files
 from app.models import SiteSkill, WorkspaceFile
-from app.site_skill_packages import decode_files
-from app.site_skills import SkillFileWrite
+from app.skills.packages import decode_files
+from app.skills.catalog import SkillFileWrite
 from test_resources import resource_store
 from test_shared_providers import setup_site
 from test_skill_resources import FILES, zipped

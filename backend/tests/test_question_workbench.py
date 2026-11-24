@@ -8,8 +8,10 @@ import pytest
 from pydantic import SecretStr
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, question_workbench as qw
-from app.extensions import ExtensionRuntime
+from app.integrations import question_workbench as qw
+
+from app.identity import auth
+from app.integrations.runtime import ExtensionRuntime
 from app.models import AuthenticationFlow, LoginSession, QuestionWorkbenchGrant, User
 from test_auth import register as register_account
 from remote_receipt_helpers import answer_identity

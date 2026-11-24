@@ -8,8 +8,10 @@ from cryptography.hazmat.primitives import serialization
 from pydantic import SecretStr
 import pytest
 
-from app import payments, site_auth
-from app.config import Settings
+from app.payments import orders as payments
+
+from app.identity import site_auth
+from app.infra.config import Settings
 from app.models import SiteAuditEvent, SitePaymentConfig, User
 from test_auth import PASSWORD, register
 from test_payments import create, custom_order, notification, sign_ezfp

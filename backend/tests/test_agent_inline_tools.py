@@ -10,10 +10,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud, conversations, image_adapters, image_tasks, image_tools
-from app.agent import AgentCancelled
-from app.credits import ensure_account
-from app.extensions import ExtensionRuntime
+from app.cloud_computer import runtime as cloud
+
+from app.identity import auth
+from app.images import adapters as image_adapters, tasks as image_tasks, tools as image_tools
+from app.conversations import execution as conversations
+from app.agent.loop import AgentCancelled
+from app.billing.credits import ensure_account
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (AgentToolExecution, ChatMessage, Conversation, ImageTask,
     UsageEvent)
 from auth_helpers import configured_model
@@ -189,7 +193,7 @@ def test_edit_uses_saved_reference_and_receipt_recovery_does_not_generate(inline
         {"prompt": "调整配图", "references": [{"id": reference["id"], "version": reference["version"]}]},
         agent_tool_execution_id=edit.id)
     assert edited["status"] == "completed" and len(attempts[1][-1]) == 1
-    from app.effective_context import ContextManager
+    from app.agent.effective_context import ContextManager
     receipt = ContextManager._business_receipt(SimpleNamespace(access=actor, conversation_id=conversation.id),
         db, {"id": str(edit.model_item_id), "request_id": str(runtime.request_id)},
         {"id": edit.call_id, "function": {"name": "edit_image"}})
@@ -286,7 +290,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     mounted = MemoryMount()
     mounted.objects = resource_store[0]
     configure_mount(db, monkeypatch, mounted)
-    from app.shared_resources import prefix
+    from app.files.shared import prefix
     fake = LocalFileCloud(tmp_path / "workspace", mounted, prefix(actor.user_id))
     start_file = fake.start_file
     monkeypatch.setattr(fake, "start_file", lambda sandbox, identifier, operation:
@@ -309,7 +313,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     encoded = base64.b64encode(png()).decode()
     document = f'<!doctype html><html lang="zh"><title>配图报告</title><h1>配图报告</h1><img alt="配图" src="data:image/png;base64,{encoded}"></html>'
     from auth_helpers import StreamingTestProvider
-    from app.llm import ToolCall, ToolResponse
+    from app.model_runtime.client import ToolCall, ToolResponse
     class Provider(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, **kwargs):
             calls.append(messages)
@@ -336,7 +340,8 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
         from celery import Celery
         from celery.contrib.testing.app import setup_default_app
         from celery.contrib.testing.worker import start_worker
-        from app import conversation_jobs, main, tasks
+        from app import main, tasks
+        from app.conversations import jobs as conversation_jobs
         import test_conversations
         # Use the production task body in an actual single-slot worker, while
         # keeping its broker/results isolated from every developer service.
@@ -347,7 +352,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
         run = conversation_jobs.run
         factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
         monkeypatch.setattr(conversation_jobs, "run", lambda identifier:
-            run(identifier, factory=factory, retrieve=main.retrieve_knowledge_base))
+            run(identifier, factory=factory))
         executed = []
         def worker_response(response):
             identifier = response.json()["request_id"]
@@ -389,7 +394,7 @@ def test_durable_turn_stop_keeps_late_result_without_another_model_call(accounts
     actor = access_for(http, db)
     configured_model(db, actor.user_id)
     from auth_helpers import StreamingTestProvider
-    from app.llm import ToolCall, ToolResponse
+    from app.model_runtime.client import ToolCall, ToolResponse
     calls = []
     class Provider(StreamingTestProvider):
         def complete_with_tools(self, messages, tools, **kwargs):

@@ -5,8 +5,8 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app import shared_providers
-from app.llm import _parse_usage
+from app.model_catalog import shared_providers
+from app.model_runtime.client import _parse_usage
 from app.models import BillingSnapshot, ModelBillingSettings, SiteModelProvider, ThinkingTest
 from test_shared_providers import provider, setup_site
 from test_thinking import effort
@@ -105,8 +105,8 @@ def test_probe_conflicts_and_permissions_never_call_upstream(accounts, monkeypat
 
 
 def test_real_http_thinking_precedes_text_and_final_usage():
-    from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider
-    from app.thinking import select_thinking
+    from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider
+    from app.model_catalog.thinking import select_thinking
     from test_conversation_streaming import upstream, sse
     from threading import Event
     release, ended = Event(), Event()
@@ -138,9 +138,9 @@ def test_display_checkpoint_permissions_and_no_private_continuation_fallback(acc
     from types import SimpleNamespace
     from cryptography.fernet import Fernet
     from pydantic import SecretStr
-    from app import mcp_client
+    from app.integrations import mcp_client
     from app.models import ChatMessage, Conversation
-    from app.thinking import encrypt_display_thinking
+    from app.model_catalog.thinking import encrypt_display_thinking
     from test_auth import register
     client, db, _, _ = configured(accounts, monkeypatch)
     key = Fernet.generate_key().decode()
@@ -171,7 +171,7 @@ def test_failed_stream_keeps_encrypted_thinking_and_confirmed_usage(accounts, mo
     from types import SimpleNamespace
     from cryptography.fernet import Fernet
     from pydantic import SecretStr
-    from app import mcp_client
+    from app.integrations import mcp_client
     from app.models import ChatMessage, ModelCallUsage, CreditLedgerEntry
     from test_request_models import send
     client, db, _, item = configured(accounts, monkeypatch)

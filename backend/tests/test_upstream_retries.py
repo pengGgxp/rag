@@ -13,11 +13,11 @@ from e2b.connection_config import ConnectionConfig
 from e2b.sandbox_sync.filesystem.filesystem import Filesystem
 from packaging.version import Version
 
-from app import upstream_retries as retry
-from app.agent import AgentCancelled
-from app.cloud_computer_adapter import AlibabaSandbox
-from app.image_reading import ImageReadError, read_image
-from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
+from app.infra import upstream_retries as retry
+from app.agent.loop import AgentCancelled
+from app.cloud_computer.adapter import AlibabaSandbox
+from app.files.image_reading import ImageReadError, read_image
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from test_cloud_computer_adapter import FileDownload
 from test_chat_attachments import PNG
 from test_conversation_streaming import upstream, sse
@@ -151,7 +151,7 @@ def sdk_files(respond):
     files = Filesystem("https://sandbox.test", Version("0.4.0"), ConnectionConfig())
     client = httpx.Client(base_url="https://sandbox.test", transport=httpx.MockTransport(respond))
     try:
-        with patch("app.cloud_computer_adapter.image_file_client", return_value=client):
+        with patch("app.cloud_computer.adapter.image_file_client", return_value=client):
             yield SimpleNamespace(files=files)
         assert client.event_hooks["response"] == []
     finally:
@@ -394,7 +394,7 @@ def test_explicit_task_deadline_still_bounds_model_timeout(clock, monkeypatch, m
 
 
 def test_retry_transport_disables_sdk_inner_connection_retries(monkeypatch):
-    from app import cloud_computer_adapter as adapter
+    from app.cloud_computer import adapter
     captured = []
     monkeypatch.setattr(httpx, "HTTPTransport", lambda **kwargs: captured.append(kwargs) or httpx.MockTransport(
         lambda request: httpx.Response(200)))
@@ -424,7 +424,7 @@ def test_durable_agent_retries_only_failed_model_round_and_reconnect_does_not_ex
     from uuid import UUID, uuid4
     from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs, conversations
+    from app.conversations import jobs as conversation_jobs, execution as conversations
     from app.models import BillingSnapshot, ChatMessage, ModelCallUsage, ModelBillingSettings
     http, db, _ = client
     conversation = create(http, [])
@@ -501,7 +501,7 @@ def test_restart_interrupts_waiting_activity_without_dispatch_or_charging_twice(
     from uuid import UUID, uuid4
     from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
-    from app import conversation_jobs
+    from app.conversations import jobs as conversation_jobs
     from app.models import ChatMessage, ConversationExecution, Conversation
     http, db, _ = client
     conversation = create(http, [])

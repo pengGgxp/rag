@@ -18,10 +18,12 @@ THINKING = os.environ.get("PREVIEW_THINKING") == "1"
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import auth, llm_providers, main
-from app.db import Base, engine, SessionLocal
+from app.model_catalog import providers as llm_providers
+from app import main
+from app.identity import auth
+from app.infra.db import Base, engine, SessionLocal
 from app.models import ChatMessage, Conversation, ModelBillingSettings, SiteModelProvider
-from app.credits import ensure_account
+from app.billing.credits import ensure_account
 from auth_helpers import authenticate, configured_model
 from test_conversation_streaming import upstream, sse
 from fastapi.testclient import TestClient

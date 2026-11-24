@@ -10,9 +10,9 @@ import httpx
 from httpx_sse import EventSource
 from sqlalchemy import delete, select
 
-from app import auth
-from app.config import get_settings
-from app.db import SessionLocal
+from app.identity import auth
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal
 from app.models import (
     LoginSession, Membership, ModelBillingSettings, ModelConnection, SiteModelProvider, UsageEvent, User,
 )

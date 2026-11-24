@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import httpx
 
-from app import cloud_computer as cloud, storage_backend
+from app.cloud_computer import runtime as cloud
+from app.infra import storage_backend
 from app.main import app
 from app.tasks import celery_app
 

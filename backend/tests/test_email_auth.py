@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from app import auth, email_auth, site_auth, wechat_auth
+from app.identity import auth, email_auth, site_auth, wechat_auth
 from app.models import AuthenticationFlow, CreditLedgerEntry, ExternalIdentity, LoginSession, SiteAuthAudit, SiteAuthSettings, User
 from test_auth import PASSWORD, register
 

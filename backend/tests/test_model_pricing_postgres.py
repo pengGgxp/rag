@@ -6,8 +6,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import model_pricing as pricing
-from app.auth import create_user
+from app.billing import pricing
+from app.identity.auth import create_user
 from app.models import ModelBillingSettings, UsagePolicy, User, UserModelPolicy
 from test_auth_postgres import auth_postgres
 

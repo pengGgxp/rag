@@ -1,6 +1,7 @@
 FROM swr.cn-south-1.myhuaweicloud.com/str1ct/zhiku-api:v0.1.27
 ARG GIT_COMMIT
 LABEL org.opencontainers.image.revision=$GIT_COMMIT
+RUN rm -rf /app/app /app/alembic
 COPY backend/app /app/app
 COPY backend/alembic /app/alembic
 COPY backend/alembic.ini /app/alembic.ini

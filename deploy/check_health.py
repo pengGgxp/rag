@@ -145,8 +145,8 @@ def verify_storage() -> str:
             "python",
             "-c",
             (
-                "from app.db import SessionLocal; "
-                "from app.storage_backend import active_settings, configured_backend; "
+                "from app.infra.db import SessionLocal; "
+                "from app.infra.storage_backend import active_settings, configured_backend; "
                 "db=SessionLocal(); row=active_settings(db); "
                 "result='skipped' if row is None else ("
                 "'unexpected' if configured_backend(row).head('_deploy/health-missing') "

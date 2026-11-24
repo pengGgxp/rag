@@ -1,9 +1,9 @@
 import secrets
 from datetime import timedelta
 
-from app.auth import COOKIE, digest, now
+from app.identity.auth import COOKIE, digest, now
 from app.models import LoginSession, User
-from app.llm import OpenAICompatibleChatProvider
+from app.model_runtime.client import OpenAICompatibleChatProvider
 
 
 class StreamingTestProvider(OpenAICompatibleChatProvider):
@@ -26,8 +26,8 @@ def connection_id(db, *, url="https://example.test/v1", secret="test-only"):
 def configured_model(db, workspace_id, monkeypatch=None):
     """Seed persisted configuration for workflow tests; never bypass provider resolution."""
     from app.models import SiteModelProvider, ModelConnection, LLMProviderConfig, UsagePolicy
-    from app import llm_providers
-    from app.credits import DEFAULT_USAGE_POLICIES
+    from app.model_catalog import providers as llm_providers
+    from app.billing.credits import DEFAULT_USAGE_POLICIES
     if monkeypatch:
         monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _value: "test-only")
     prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000,
@@ -63,12 +63,12 @@ def generation_response(response):
     if "request_id" not in data:
         return response
     from app import main
-    from app.conversation_jobs import run
+    from app.conversations.jobs import run
     from sqlalchemy.orm import sessionmaker
     from fastapi.testclient import TestClient
     db = main.app.dependency_overrides[main.get_db]()
     factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-    run(data["request_id"], factory=factory, retrieve=main.retrieve_knowledge_base)
+    run(data["request_id"], factory=factory)
     path = response.request.url.path.rsplit("/", 1)[0]
     headers = {key: value for key, value in response.request.headers.items()
         if key.lower() not in ("content-length", "content-type")}

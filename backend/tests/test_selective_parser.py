@@ -8,7 +8,7 @@ pytest.importorskip("markitdown")
 from docx import Document
 from docx.shared import Inches
 from PIL import Image
-from app.parsed_document import ParsedDocument, parsed_chunks
+from app.knowledge.ingestion.parsed_document import ParsedDocument, parsed_chunks
 from experiments.selective_parser import parse_docx, parse_pdf, Policy, page_decision, _marked_docx
 from experiments.fixtures import generate, pdf_document, screenshot
 

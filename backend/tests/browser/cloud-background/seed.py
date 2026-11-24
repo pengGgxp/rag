@@ -2,12 +2,14 @@ from decimal import Decimal
 from pathlib import Path
 import json
 
-from app import auth, cloud_computer as cloud
-from app.credits import ensure_account
-from app.db import SessionLocal
-from app.llm_providers import _encrypt_api_key
+from app.cloud_computer import runtime as cloud
+
+from app.identity import auth
+from app.billing.credits import ensure_account
+from app.infra.db import SessionLocal
+from app.model_catalog.providers import _encrypt_api_key
 from app.models import CloudComputerSettings, ModelBillingSettings, ModelConnection, SiteModelProvider
-from app.site_auth import protect
+from app.identity.site_auth import protect
 
 with SessionLocal() as db:
     assert db.bind.url.database == "rag_auth_test_issue118_browser"

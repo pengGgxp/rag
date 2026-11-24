@@ -5,9 +5,9 @@ from dataclasses import replace
 
 import pytest
 
-from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
-from app.llm_native import NativeStream, request, result
-from app.thinking import select_thinking
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
+from app.model_runtime.native import NativeStream, request, result
+from app.model_catalog.thinking import select_thinking
 from test_chat_attachments import PNG
 
 
@@ -129,7 +129,7 @@ def test_native_thinking_budget_uses_native_parameters(protocol):
 def test_async_native_stream_closes_transport_when_cancelled(monkeypatch):
     import asyncio
     import httpx
-    from app import llm_native
+    from app.model_runtime import native as llm_native
     closed = []
     class Wire(httpx.AsyncByteStream):
         async def __aiter__(self):
