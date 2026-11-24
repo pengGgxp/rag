@@ -36,8 +36,8 @@ from app.skills.catalog import catalog_router as platform_skills_router
 from app.skills.personal import router as personal_skills_router
 from app.skills.uploads import router as skill_uploads_router
 
-from .context_windows import ContextWindowError
-from .conversation_documents import router as conversation_documents_router
+from .agent.context_windows import ContextWindowError
+from .conversations.documents import router as conversation_documents_router
 from .conversations.attachments import router as chat_attachments_router
 from .conversations.feedback import router as feedback_router
 from .conversations.jobs import recover_interrupted_conversations
@@ -75,7 +75,7 @@ async def lifespan(_: FastAPI):
             except Exception:
                 logging.getLogger(__name__).warning("Retention maintenance unavailable; retrying next hour")
     async def recover_document_saves():
-        from .conversation_documents import recover_pending
+        from .conversations.documents import recover_pending
         from .tasks import recover_document_ingestion
         while True:
             try:

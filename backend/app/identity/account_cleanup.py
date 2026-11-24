@@ -1,4 +1,4 @@
-"""One-time suspended-account cleanup with a durable object deletion queue."""
+"""清理停用账号，并持久化待删除对象队列。"""
 
 from collections.abc import Callable, Iterable
 from uuid import UUID
@@ -6,8 +6,8 @@ from uuid import UUID
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from . import storage_models  # noqa: F401
-from .models import (
+from .. import storage_models  # noqa: F401
+from ..models import (
     AccountCleanupObject, Base, CloudComputerSession, DocumentUpload,
     LegacyAccountObjectPrefix, SkillUpload, User,
 )

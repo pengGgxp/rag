@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.integrations import runtime as extensions
-from app import executor_service
+from app.skills import executor_service
 from app.files import workspace as workspace_files
 from app.infra.config import get_settings
 from app.integrations.runtime import ExtensionRuntime

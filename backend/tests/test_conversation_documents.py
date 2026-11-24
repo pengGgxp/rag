@@ -8,7 +8,8 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversation_documents as saves, main
+from app import main
+from app.conversations import documents as saves
 from app.infra import storage
 
 from app.identity import auth

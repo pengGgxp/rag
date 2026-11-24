@@ -1,11 +1,11 @@
-"""Authorized reads from retained observations; no remote IO or billing."""
+"""校验读取权限并从已保存的结果中返回内容，不发起远程调用或计费。"""
 import json
 from uuid import UUID
 
 from fastapi import HTTPException
 
-from .agent.tools import evidence_page, text_fields
-from .models import AgentToolExecution, Chunk, Document, DocumentStatus, KnowledgeBaseStatus, MCPServer
+from .tools import evidence_page, text_fields
+from ..models import AgentToolExecution, Chunk, Document, DocumentStatus, KnowledgeBaseStatus, MCPServer
 
 
 def metadata(content):
@@ -50,7 +50,7 @@ def authorize(db, access, row, message, data):
     from app.integrations.question_workbench import LABELS
     if row.name in LABELS:
         from app.integrations.question_workbench import require_access
-        from .models import QuestionWorkbenchGrant
+        from ..models import QuestionWorkbenchGrant
         require_access(db, access)
         grant = db.get(QuestionWorkbenchGrant, (access.user_id, access.user_id), populate_existing=True)
         if not grant or not grant.enabled or grant.version != extension.get("version"):

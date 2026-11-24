@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.identity.auth import now
 from app.models import AuditLog, CloudComputerSession, LegacyAccountObjectPrefix, User, WorkspaceFile
-from app.personal_accounts import cleanup_suspended_accounts
+from app.identity.account_cleanup import cleanup_suspended_accounts
 from app.files.shared import materialize_legacy_mount, object_key
 from test_auth import library, register
 from test_resources import resource_store, upload

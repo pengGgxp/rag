@@ -1,4 +1,4 @@
-"""Read-only, tool-specific presentation of retained receipts."""
+"""按工具类型生成已保留回执的只读视图。"""
 import json
 import re
 from uuid import UUID
@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from .context_windows import decrypt_items
 from app.integrations.mcp_client import decrypt_headers
-from .models import AgentToolExecution, KnowledgeBaseStatus, WorkspaceFile, WorkspaceFileVersion
+from ..models import AgentToolExecution, KnowledgeBaseStatus, WorkspaceFile, WorkspaceFileVersion
 from .tool_result_reads import authorize, metadata
 
 PAGE_SIZE = 4000

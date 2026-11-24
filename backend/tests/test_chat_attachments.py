@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.identity import auth
 from app.conversations import attachments as attachments, execution as chat
-from app.conversation_context import estimate_input
+from app.agent.conversation_context import estimate_input
 from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, ToolResponse
 from app.models import ChatAttachment, CreditLedgerEntry, SiteModelProvider
 from test_auth import accounts, register
@@ -156,7 +156,7 @@ def test_model_capability_is_explicit_and_multimodal_protocols(objects):
 
 
 def test_unattached_history_keeps_existing_checkpoint_digest():
-    from app.conversation_context import digest, source_digest
+    from app.agent.conversation_context import digest, source_digest
     row = SimpleNamespace(id=uuid4(), sequence=0, role="user", content="prior message", status="completed",
         encrypted_continuation=None, citations=[], attachments=[])
     legacy = [(str(row.id), 0, "user", "prior message", "completed", None, [])]

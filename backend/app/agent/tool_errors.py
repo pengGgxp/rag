@@ -1,4 +1,4 @@
-"""Preserve actionable tool errors without publishing common credential forms."""
+"""保留可执行的工具错误信息，并过滤常见的凭据格式。"""
 import re
 
 

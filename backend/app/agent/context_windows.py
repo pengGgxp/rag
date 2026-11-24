@@ -1,8 +1,7 @@
-"""Encrypted, item-addressable replacement history + append-only effective suffix.
+"""维护加密、可按项定位的替换历史和只追加的有效后缀。
 
-Initialization is the sole caller allowed to read display history. Once a state exists,
-neither source changes nor checkpoint corruption can select an older boundary.
-All writers lock Conversation first, then compare the context revision.
+只有初始化可以读取展示历史。窗口建好后，来源变化或检查点损坏都不能回退上下文边界。
+写入时先锁定会话，再比较上下文版本。
 """
 import base64
 import hashlib
@@ -12,8 +11,8 @@ from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select
 
-from .model_runtime.client import LLMConfigurationError
-from .models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext
+from ..model_runtime.client import LLMConfigurationError
+from ..models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext
 
 
 class ContextWindowError(LLMConfigurationError):
@@ -146,7 +145,7 @@ class WindowStore:
         from .conversation_context import scope_digest
         scope = scope_digest(db, conversation, self.access)
         if request_id is not None and conversation.active_request_id != request_id:
-            from .agent.loop import AgentCancelled
+            from .loop import AgentCancelled
             raise AgentCancelled()
         return conversation, scope
 
@@ -260,7 +259,7 @@ class WindowStore:
         state.revision += 1
         state.attempted_revision = state.revision
         # Manual operation truth survives a crash or lost completion event.
-        from .models import ContextOperation
+        from ..models import ContextOperation
         operation = db.get(ContextOperation, request_id)
         if operation:
             operation.status = "completed"

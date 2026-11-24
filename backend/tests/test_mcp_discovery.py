@@ -10,7 +10,7 @@ import pytest
 from mcp.types import Tool
 
 from app.integrations import mcp_client
-from app.conversation_context import estimate_input
+from app.agent.conversation_context import estimate_input
 from app.integrations.runtime import ExtensionRuntime
 from app.model_runtime.client import ChatProviderConfig
 from app.models import MCPServer

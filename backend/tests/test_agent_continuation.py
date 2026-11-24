@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.agent.loop import AgentCancelled, run_retrieval_agent
 from app.agent.tools import bounded_message, update_plan
-from app.context_windows import groups, make_item, project
+from app.agent.context_windows import groups, make_item, project
 from app.agent.effective_context import ContextManager
 from app.model_runtime.client import LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import AgentToolExecution, ChatMessage, Conversation, ConversationContext
@@ -103,7 +103,7 @@ def test_full_large_result_is_saved_and_can_be_read_in_pages(client):
 
 
 def test_legacy_large_tool_result_can_continue_and_read_after_compact(client):
-    from app.conversation_context import estimate_request, input_budget
+    from app.agent.conversation_context import estimate_request, input_budget
     db, manager = fresh_manager(client)
     call = ToolCall("legacy-large", "read_file", {})
     original = tool_message(call, {"text": "旧资料完整内容" * 18000})
@@ -267,7 +267,7 @@ def test_structured_capacity_error_is_classified_without_guessing_ordinary_400(c
 
 
 def test_error_detail_retains_reason_and_redacts_credentials():
-    from app.tool_errors import public_error
+    from app.agent.tool_errors import public_error
     value = public_error("上级路径是文件；api_key=abcdef token=xyz https://user:pass@example.test/path Bearer raw-secret")
     assert "上级路径是文件" in value
     assert all(secret not in value for secret in ("abcdef", "xyz", "user:pass", "raw-secret"))

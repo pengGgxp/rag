@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.identity import auth
 from app.conversations import execution as conversations
-from app.conversation_context import scope_digest
+from app.agent.conversation_context import scope_digest
 from app.integrations.runtime import ExtensionRuntime
 from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import AgentSkill, AgentSkillFile, Conversation, LoginSession, MCPServer, SiteAuditEvent, SiteSkill

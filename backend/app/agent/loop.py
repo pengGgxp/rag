@@ -18,8 +18,8 @@ from ..models import Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatu
 from app.files.workspace import FILE_TOOL_ERRORS
 from app.files.image_reading import model_image_message
 from app.infra.upstream_retries import retry_activity
-from ..knowledge_base_tools import LABELS as KNOWLEDGE_TOOL_LABELS
-from ..tool_errors import tool_outcome
+from ..knowledge.tools import LABELS as KNOWLEDGE_TOOL_LABELS
+from .tool_errors import tool_outcome
 
 FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_file",
                              "apply_patch", "delete_file", "run_command", "get_workspace_file_link",
@@ -29,7 +29,7 @@ FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_fil
 
 def tool_failure_summary(name, result):
     if result.get("error"):
-        from ..tool_errors import public_error
+        from .tool_errors import public_error
         return public_error(result["error"])
     if name in KNOWLEDGE_TOOL_LABELS:
         return result.get("error") or "操作未完成，请重新选择知识库后重试"
@@ -341,7 +341,7 @@ def stream_retrieval_agent(
         tools = ([DISCOVER_TOOL, SEARCH_TOOL] if context_manager is None or context_manager.config.thinking.supports_tools
             else []) + extension_tools + (search.tools if search else [])
         if context_manager and context_manager.config.thinking.supports_tools:
-            from ..conversation_context import HISTORY_TOOL
+            from .conversation_context import HISTORY_TOOL
             from .tools import PLAN_TOOL, RESULT_TOOL
             tools = tools + [HISTORY_TOOL, PLAN_TOOL, RESULT_TOOL]
         elif context_manager is None:
@@ -514,7 +514,7 @@ def stream_retrieval_agent(
             try:
                 return invoke()
             except HTTPException as error:
-                from ..tool_errors import public_error
+                from .tool_errors import public_error
                 return {"error": public_error(error.detail), "status_code": error.status_code,
                         "error_code": "tool_access" if error.status_code in (401, 403, 404) else "tool_operation"}
 

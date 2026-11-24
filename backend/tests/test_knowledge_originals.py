@@ -12,7 +12,7 @@ from app.identity import auth
 from app.knowledge.ingestion import pipeline
 from app.knowledge import routes as knowledge_routes
 from app.knowledge.originals import original_key, prefix, resolve_citation
-from app.migrate_knowledge_originals import migrate
+from app.operations.migrate_knowledge_originals import migrate
 from app.models import ChatMessage, Chunk, Conversation, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBase
 from app.files.quotas import inventory
 from test_auth import library, register

@@ -12,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.integrations import mcp_client
 from app.conversations import jobs as conversation_jobs, execution as conversations
-from app.context_windows import WindowStore
+from app.agent.context_windows import WindowStore
 from app.integrations.runtime import ExtensionRuntime
 from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider
 from app.model_catalog.providers import request_provider_config

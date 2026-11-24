@@ -46,7 +46,7 @@ def mount_config(db, account_id):
 def materialize_legacy_mount(db, account_id):
     from io import BytesIO
     from app.files.operations import copy_object
-    from app.migrate_shared_resources import _fingerprint
+    from .integrity import object_fingerprint
     from app.models import LegacyAccountObjectPrefix
 
     has_legacy = db.scalar(select(LegacyAccountObjectPrefix.prefix).where(
@@ -70,7 +70,7 @@ def materialize_legacy_mount(db, account_id):
             raise HTTPException(409, "历史资源缺失，请联系管理员")
         if store.head(target) is None:
             copy_object(store, source, target, etag=head.get("ETag"), create=True)
-        elif _fingerprint(store, source) != _fingerprint(store, target):
+        elif object_fingerprint(store, source) != object_fingerprint(store, target):
             raise HTTPException(409, "资源目录中已有不同内容的同名文件，请联系管理员")
 
     legacy_root = "workspaces/"

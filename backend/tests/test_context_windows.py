@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.identity import auth
 from app.identity.auth import Access
-from app.context_windows import ContextWindowError, WindowStore, decrypt_items, make_item, project
+from app.agent.context_windows import ContextWindowError, WindowStore, decrypt_items, make_item, project
 from app.model_catalog.providers import request_provider_config
 from app.models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext, LoginSession
 from test_conversations import client, create
@@ -118,7 +118,7 @@ def test_legacy_unknown_same_turn_checkpoint_blocks_without_erasing_chat(client)
 def test_encrypted_image_snapshot_recovers_and_projects_to_every_protocol(client, protocol):
     import base64
     import hashlib
-    from app.context_windows import encrypt_items
+    from app.agent.context_windows import encrypt_items
     from app.model_runtime.client import OpenAICompatibleChatProvider
     from test_chat_attachments import PNG
     db, store, request = setup_store(client)
@@ -141,7 +141,7 @@ def test_encrypted_image_snapshot_recovers_and_projects_to_every_protocol(client
 
 
 def test_proven_legacy_checkpoint_converts_once_and_cannot_roll_back(client):
-    from app.conversation_context import source_digest
+    from app.agent.conversation_context import source_digest
     db, store, request = setup_store(client)
     rows = [ChatMessage(conversation_id=store.conversation_id, sequence=n,
         role="user" if n % 2 == 0 else "assistant", content=f"legacy-{n}") for n in range(4)]

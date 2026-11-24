@@ -8,7 +8,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import conversation_documents as saves
+from app.conversations import documents as saves
 from app.infra import storage
 
 from app.identity import auth

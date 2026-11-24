@@ -15,7 +15,7 @@ from .models import AuthToken, User, SiteAuthAudit
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "personal-accounts":
-        from .personal_accounts import cleanup_external_resources, cleanup_suspended_accounts
+        from .identity.account_cleanup import cleanup_external_resources, cleanup_suspended_accounts
         if sys.argv[2:] == ["cleanup-suspended"]:
             from app.infra.storage import list_object_keys
             with SessionLocal() as db:

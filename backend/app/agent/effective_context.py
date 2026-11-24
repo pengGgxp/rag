@@ -6,8 +6,8 @@ from copy import deepcopy
 from uuid import UUID, uuid5
 
 from .loop import AgentCancelled
-from ..context_windows import ContextWindowError, WindowStore, groups, make_item, project
-from ..conversation_context import (
+from .context_windows import ContextWindowError, WindowStore, groups, make_item, project
+from .conversation_context import (
     HISTORY_TOOL, SUMMARY_INSTRUCTION, SUMMARY_PREFIX, estimate_input, estimate_request, input_budget,
 )
 from ..model_runtime.client import LLMConfigurationError, LLMProviderError, LLMContextCapacityError
@@ -130,7 +130,7 @@ class ContextManager:
 
     def archive_large_results(self):
         """Give legacy oversized observations the same readable receipt as new calls."""
-        from ..context_windows import encrypt_items
+        from .context_windows import encrypt_items
         from ..models import AgentToolExecution
         oversized = [(item, identifier, model_id) for item, identifier, visible, model_id in self.result_projections()
             if visible != item["message"]]
@@ -167,7 +167,7 @@ class ContextManager:
         return identifier
 
     def finish_tool(self, identifier, message, budget):
-        from ..context_windows import encrypt_items
+        from .context_windows import encrypt_items
         from ..models import AgentToolExecution
         from .tools import bounded_message
         raw = make_item(uuid5(identifier, "full-result"), message, "tool", self.request_id)
@@ -186,7 +186,7 @@ class ContextManager:
         return visible
 
     def recover_tools(self, pending):
-        from ..context_windows import decrypt_items, encrypt_items
+        from .context_windows import decrypt_items, encrypt_items
         from ..models import AgentToolExecution
         model = pending[0]
         returned = {i["message"].get("tool_call_id") for i in pending[1:]}
@@ -295,7 +295,7 @@ class ContextManager:
         return None
 
     def read_result(self, arguments):
-        from ..context_windows import decrypt_items
+        from .context_windows import decrypt_items
         from ..models import AgentToolExecution
         try:
             identifier = UUID(arguments["result_id"])
@@ -316,7 +316,7 @@ class ContextManager:
                 return {"error": "该工具结果不存在或尚未确认"}
             message = decrypt_items(row.encrypted_result)[0]["message"]
             content = message.get("content") or ""
-            from ..tool_result_reads import authorize, metadata, read
+            from .tool_result_reads import authorize, metadata, read
             data = metadata(content)
             from fastapi import HTTPException
             try:

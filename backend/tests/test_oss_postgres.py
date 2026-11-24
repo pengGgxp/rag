@@ -7,7 +7,7 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import migrate_storage
+from app.operations import migrate_storage
 from app.files import settings as storage_settings
 from app.models import SiteStorageSettings, StorageMigration, StorageMigrationObject
 from test_auth_postgres import auth_postgres

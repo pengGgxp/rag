@@ -524,8 +524,8 @@ def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app.identity.auth import Access
     from app.model_catalog.providers import request_provider_config
     from app.agent.effective_context import ContextManager
-    from app.conversation_context import SUMMARY_PREFIX
-    from app.context_windows import encrypt_items, make_item
+    from app.agent.conversation_context import SUMMARY_PREFIX
+    from app.agent.context_windows import encrypt_items, make_item
     from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
@@ -563,7 +563,7 @@ def tool_group(identifier, text):
 
 
 def test_automatic_compaction_keeps_budgeted_users_and_current_input(client):
-    from app.conversation_context import SUMMARY_PREFIX
+    from app.agent.conversation_context import SUMMARY_PREFIX
     manager, messages = manager_fixture(client, capacity=7500)
     captured = []
     class Provider:

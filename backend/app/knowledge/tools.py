@@ -1,4 +1,4 @@
-"""Workspace-bound metadata tools. No document ingestion or permission mutations."""
+"""在运行时绑定的工作区内提供知识库元数据操作。"""
 import hashlib
 import json
 from uuid import UUID, uuid5
@@ -8,10 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from sqlalchemy import select
 
 from app.operations.audit_log import record_audit
-from .conversation_documents import definition
-from .models import (ChatMessage, Conversation, Document, DocumentStatus,
+from ..conversations.documents import definition
+from ..models import (ChatMessage, Conversation, Document, DocumentStatus,
                      JobState, KnowledgeBase, KnowledgeBaseStatus, KnowledgeBaseToolExecution)
-from .knowledge.schemas import KnowledgeBaseCreate, KnowledgeBaseUpdate
+from .schemas import KnowledgeBaseCreate, KnowledgeBaseUpdate
 
 LABELS = {"create_knowledge_base": "创建知识库", "update_knowledge_base": "修改知识库",
           "list_knowledge_bases": "查看知识库", "get_knowledge_base_document_status": "查看文档处理状态"}
@@ -74,8 +74,8 @@ def library_view(row):
 
 
 def document_view(db, library, document):
-    from .knowledge.originals import mount_path
-    from .knowledge.ingestion.jobs import latest_document_job
+    from .originals import mount_path
+    from .ingestion.jobs import latest_document_job
     job = latest_document_job(db, document)
     searchable = (document.status == DocumentStatus.READY and document.is_active
                   and library.status != KnowledgeBaseStatus.ARCHIVED

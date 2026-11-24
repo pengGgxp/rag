@@ -103,7 +103,7 @@ def legacy_resource(client, db, storage, *, name="legacy.txt"):
 
 
 def test_migration_preflight_checks_missing_and_conflicting_objects_before_copy(accounts, monkeypatch, resource_store):
-    from app.migrate_shared_resources import migrate
+    from app.operations.migrate_shared_resources import migrate
     client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
     first, old, target = legacy_resource(client, db, storage)
     second, missing, _ = legacy_resource(client, db, storage, name="missing.txt")
@@ -119,7 +119,7 @@ def test_migration_preflight_checks_missing_and_conflicting_objects_before_copy(
 
 
 def test_migration_preserves_current_attachment_and_can_be_repeated(accounts, monkeypatch, resource_store):
-    from app.migrate_shared_resources import migrate
+    from app.operations.migrate_shared_resources import migrate
     client, db, _, _, storage = mounted(accounts, monkeypatch, resource_store)
     item, old, target = legacy_resource(client, db, storage)
     assert migrate(db)["verified"] == 1 and not storage.copies

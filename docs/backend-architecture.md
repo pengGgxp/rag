@@ -9,7 +9,9 @@
 
 ```text
 backend/app/
-  main.py, tasks.py, preview_gateway.py, manage.py  既有进程及运维入口
+  __init__.py
+  main.py, tasks.py, preview_gateway.py, executor_service.py, manage.py
+  migrate_cos.py, migrate_knowledge_originals.py, migrate_shared_resources.py, migrate_storage.py
   models.py, storage_models.py                    集中 ORM 注册
   admin/          站点后台路由装配、全站审计查询
   identity/       登录、鉴权、账号管理
@@ -30,6 +32,11 @@ backend/app/
   operations/     健康、就绪与内部部署维护
   infra/          配置、数据库及对象存储连接
 ```
+
+`app/` 根目录的 Python 文件仅用于包初始化、既有进程或运维命令入口、集中 ORM 注册。业务实现按职责放入现有包：
+上下文预算、窗口存取和工具回执归 `agent/`，会话产物保存归 `conversations/`，知识库操作工具归 `knowledge/`，
+停用账号清理归 `identity/`。存储迁移实现归 `operations/`，旧命令由同名根目录入口转发。
+独立 Skill 执行器实现归 `skills/`，根目录保留 ASGI 入口。
 
 `admin/router.py` 统一登记后台入口；域内管理接口和业务规则留在各自的包，真正跨域的全站审计查询归 `admin/audit_routes.py`。后台不拥有业务规则，普通用户路由、业务模块和 Worker 不导入后台装配。站点管理员、工作区权限、支付回调和运维控制沿用各自的鉴权。模型配置与协议分开，新供应商或管理入口按实际归属扩展，不预建空模块。
 
@@ -159,6 +166,7 @@ Worker 的业务代码也不再依赖 FastAPI 入口。
 | `app.conversations.management` | 会话元数据和项目管理 |
 | `app.conversations.attachments` | 会话附件的 HTTP 路由、校验和模型输入 |
 | `app.conversations.feedback` | 消息反馈和问题报告 |
+| `app.conversations.documents` | 会话产物保存到知识库的路由、校验和恢复 |
 
 FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 `app.tasks.execute_conversation(identifier)` 和 `app.tasks.name_conversation(identifier)`
@@ -171,8 +179,10 @@ FastAPI 通过 `conversations.routes` 接收请求。Worker 通过原有的
 | --- | --- |
 | `app.agent.loop` | 模型轮次、工具选择与调度 |
 | `app.agent.effective_context` | 有效上下文管理、滚动窗口与结果恢复 |
+| `app.agent.conversation_context`、`app.agent.context_windows` | 上下文预算和消息构造、持久化窗口和协议投影 |
 | `app.agent.tools` | 计划及工具结果读取所用的协议与分页 |
 | `app.agent.tool_jobs` | 工具任务归属、活动状态与取消 |
+| `app.agent.tool_detail`、`app.agent.tool_result_reads`、`app.agent.tool_errors` | 回执展示、结果读权限和可公开错误 |
 
 `conversations.execution` 保存用户可见的回答与用量，并调用 `agent.loop`。
 文件操作、云电脑、图片和知识库工具仍在其业务模块内执行。

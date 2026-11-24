@@ -93,8 +93,8 @@ class ExtensionRuntime:
         from app.images.tools import tools as image_tools
         with factory() as db:
             self.tools.extend(image_tools(db, access))
-        from app.conversation_documents import TOOLS as DOCUMENT_TOOLS
-        from app.knowledge_base_tools import TOOLS as KNOWLEDGE_TOOLS
+        from app.conversations.documents import TOOLS as DOCUMENT_TOOLS
+        from app.knowledge.tools import TOOLS as KNOWLEDGE_TOOLS
         self.tools.extend(KNOWLEDGE_TOOLS)
         self.tools.extend(DOCUMENT_TOOLS)
         self.versions.append(("knowledge-base-tools", 1))
@@ -134,13 +134,13 @@ class ExtensionRuntime:
             return COMPUTER_LABELS[name]
         if name in ("search_mcp_tools", "load_mcp_tool"):
             return "查找已授权工具" if name == "search_mcp_tools" else "加载已授权工具"
-        from app.knowledge_base_tools import LABELS as KNOWLEDGE_LABELS
+        from app.knowledge.tools import LABELS as KNOWLEDGE_LABELS
         if name in KNOWLEDGE_LABELS:
             return KNOWLEDGE_LABELS[name]
         from app.images.tools import LABELS as IMAGE_LABELS
         if name in IMAGE_LABELS:
             return IMAGE_LABELS[name]
-        from app.conversation_documents import LABELS as DOCUMENT_LABELS
+        from app.conversations.documents import LABELS as DOCUMENT_LABELS
         if name in DOCUMENT_LABELS:
             return DOCUMENT_LABELS[name]
         from app.integrations.question_workbench import LABELS
@@ -157,7 +157,7 @@ class ExtensionRuntime:
 
     def execute(self, name, arguments, check_active=None, *, call_id=None,
                 agent_tool_execution_id=None, on_progress=None):
-        from app.tool_errors import public_error
+        from app.agent.tool_errors import public_error
         execution = {key: value for key, value in {
             "agent_tool_execution_id": agent_tool_execution_id, "on_progress": on_progress}.items()
             if value is not None}
@@ -177,7 +177,7 @@ class ExtensionRuntime:
         from app.integrations.mcp_tool_catalog import NAMES as MCP_DISCOVERY_NAMES
         if name in MCP_DISCOVERY_NAMES:
             return self.mcp_catalog.execute(name, arguments)
-        from app.knowledge_base_tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
+        from app.knowledge.tools import LABELS as KNOWLEDGE_LABELS, execute as knowledge_tool
         if name in KNOWLEDGE_LABELS:
             try:
                 return knowledge_tool(self, name, arguments, call_id=call_id)
@@ -203,7 +203,7 @@ class ExtensionRuntime:
         from app.images.tools import LABELS as IMAGE_LABELS, execute as image_tool
         if name in IMAGE_LABELS:
             return image_tool(self, name, arguments, check_active=check_active, **execution)
-        from app.conversation_documents import LABELS as DOCUMENT_LABELS, execute as document_tool
+        from app.conversations.documents import LABELS as DOCUMENT_LABELS, execute as document_tool
         if name in DOCUMENT_LABELS:
             try:
                 return document_tool(self, name, arguments)

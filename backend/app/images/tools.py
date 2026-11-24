@@ -58,5 +58,5 @@ def execute(runtime, name, arguments, *, agent_tool_execution_id=None, check_act
         except (ValidationError, ValueError, TypeError):
             return {"error": "图片参数不完整，请检查提示词、规格和参考资源", "error_code": "image_arguments"}
         except HTTPException as exc:
-            from ..tool_errors import public_error
+            from ..agent.tool_errors import public_error
             return {"error": public_error(exc.detail), "status_code": exc.status_code}

@@ -12,7 +12,7 @@ from app.files import mentions as resource_references
 from ..agent.effective_context import ContextManager
 from app.operations.audit_log import record_audit
 from ..identity.auth import Access, get_access
-from ..conversation_context import HISTORY_TOOL, build_messages
+from ..agent.conversation_context import HISTORY_TOOL, build_messages
 from app.billing.credits import CreditError, authorization_hold, authorization_hold_amount
 from app.infra.db import get_db
 from app.integrations.runtime import ExtensionRuntime, defaults as extension_defaults, validate_selection
@@ -239,7 +239,7 @@ def tool_detail(conversation_id: UUID, request_id: UUID, execution_id: UUID, off
                 db: Session = Depends(get_db), access: Access = Depends(get_access)):
     access = access.revalidate(db)
     live_conversation(db, conversation_id, access)
-    from ..tool_detail import receipt_projection
+    from ..agent.tool_detail import receipt_projection
     return JSONResponse(receipt_projection(db, access, conversation_id, request_id, execution_id, offset),
                         headers={"Cache-Control": "private, no-store"})
 

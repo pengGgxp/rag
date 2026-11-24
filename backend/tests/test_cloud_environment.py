@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.cloud_computer.environment import VERIFIED_TEMPLATE, environment_description
-from app.conversation_context import build_messages
+from app.agent.conversation_context import build_messages
 
 
 @pytest.mark.parametrize("settings", [None, SimpleNamespace(enabled=False)])

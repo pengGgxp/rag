@@ -13,7 +13,8 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import migrate_storage, tasks
+from app import tasks
+from app.operations import migrate_storage
 from app.infra import storage_backend
 from app.files import settings as storage_settings
 

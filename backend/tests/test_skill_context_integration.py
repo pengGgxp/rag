@@ -4,8 +4,8 @@ from uuid import uuid4
 import pytest
 
 from app.agent.effective_context import ContextManager
-from app.conversation_context import digest, scope_digest
-from app.context_windows import ContextWindowError, make_item
+from app.agent.conversation_context import digest, scope_digest
+from app.agent.context_windows import ContextWindowError, make_item
 from app.models import AgentSkill, ContextCheckpoint, Conversation, ConversationContext, MCPServer, SiteSkill
 from test_context_windows import client, install, setup_store
 from test_resources import resource_store

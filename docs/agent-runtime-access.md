@@ -110,7 +110,7 @@ runtime = ExtensionRuntime(
 
 ## 示例：列出知识库并保存成果
 
-实现入口：`backend/app/conversation_documents.py`。
+实现入口：`backend/app/conversations/documents.py`。
 
 ### 列出可写知识库
 
@@ -158,7 +158,7 @@ with runtime.factory() as db:
 
 ## 知识库基础管理（Issue #93）
 
-实现入口：`backend/app/knowledge_base_tools.py`。工具始终使用运行时绑定的身份，参数禁止额外的用户、工作区或权限字段。
+实现入口：`backend/app/knowledge/tools.py`。工具始终使用运行时绑定的身份，参数禁止额外的用户、工作区或权限字段。
 
 | 工具 | 输入与行为 |
 | --- | --- |
@@ -211,7 +211,7 @@ Issue #102 将环境观察、记忆和工具执行进一步分开。文件增删
 | `backend/app/conversations.py` | 聊天接口的 `Depends(get_access)`、生成函数创建 `ExtensionRuntime` |
 | `backend/app/extensions.py` | `ExtensionRuntime.__init__`、`execute` |
 | `backend/app/agent.py` | 工具调用循环与运行时分派 |
-| `backend/app/conversation_documents.py` | 工具参数、权限复核、保存归属及幂等 |
+| `backend/app/conversations/documents.py` | 工具参数、权限复核、保存归属及幂等 |
 | `backend/app/document_ingestion.py` | 共用上传入库服务 |
 | `backend/app/model_billing.py`、`backend/app/tasks.py` | 模型及后台处理用量关联 |
 

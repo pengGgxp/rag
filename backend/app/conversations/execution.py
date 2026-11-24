@@ -15,7 +15,7 @@ from app.billing import model_usage as model_billing
 from app.files import mentions as resource_references
 from ..agent.effective_context import ContextManager
 from ..agent.loop import AgentCancelled, stream_retrieval_agent
-from ..conversation_context import HISTORY_TOOL, build_messages
+from ..agent.conversation_context import HISTORY_TOOL, build_messages
 from app.billing.credits import settle_model_usage
 from app.integrations.runtime import ExtensionRuntime
 from ..model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
@@ -355,7 +355,7 @@ async def generate(factory, conversation_id, message_id, request_id, access, hol
     except AgentCancelled:
         final_status = "cancelled"
     except HTTPException as exc:
-        from ..tool_errors import public_error
+        from ..agent.tool_errors import public_error
         final_status = "interrupted"
         error_detail = ("访问权限已变更，回答已停止" if exc.status_code in (401, 403) else
             public_error(exc.detail))

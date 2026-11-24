@@ -48,7 +48,7 @@ class Catalog:
 
     @property
     def budget(self):
-        from app.conversation_context import input_budget
+        from app.agent.conversation_context import input_budget
         config = self.runtime.provider_config
         budget = input_budget(config) if config else None
         return (24000 if budget is None else budget) // 4
@@ -59,7 +59,7 @@ class Catalog:
             "parameters": item["tool"]["inputSchema"]}}
 
     def cost(self, schemas):
-        from app.conversation_context import estimate_input, estimate_request
+        from app.agent.conversation_context import estimate_input, estimate_request
         config = self.runtime.provider_config
         if config:
             return max(0, estimate_request(config, [], schemas) - estimate_request(config, []))
