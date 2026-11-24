@@ -118,7 +118,7 @@ def read_provider(db, row):
 
 def apply_provider(db, row, payload):
     connection = lock_connection(db, payload.connection_id, payload.connection_version)
-    from .llm_responses import validate_thinking
+    from .model_runtime.responses import validate_thinking
     from .thinking import select_thinking
     try:
         validate_thinking(payload.chat_protocol or connection.api_protocol, select_thinking(payload.thinking.model_dump(), 0))
@@ -341,7 +341,7 @@ def request_binding(db, account_id, identifier):
 
 def assert_available(identifier, connection_id=None):
     from .db import SessionLocal
-    from .llm import LLMConfigurationError
+    from .model_runtime.client import LLMConfigurationError
     with SessionLocal() as db:
         row = db.get(SiteModelProvider, UUID(identifier))
         connection = (db.get(ModelConnection, UUID(connection_id)) if connection_id

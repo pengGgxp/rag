@@ -150,8 +150,8 @@ def test_commit_failure_cleans_object(saving,monkeypatch):
 
 
 def test_stream_emits_saved_document_activity_at_actual_call(saving):
-    from app.agent import stream_retrieval_agent
-    from app.llm import ToolCall, ToolResponse
+    from app.agent.loop import stream_retrieval_agent
+    from app.model_runtime.client import ToolCall, ToolResponse
     e=saving
     class Provider:
         step=0

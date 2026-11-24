@@ -10,10 +10,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversation_jobs, conversations, mcp_client
+from app import mcp_client
+from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.context_windows import WindowStore
 from app.extensions import ExtensionRuntime
-from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider
+from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider
 from app.llm_providers import request_provider_config
 from app.models import (BillingSnapshot, ChatMessage, CreditLedgerEntry, ModelBillingSettings,
     UserCreditAccount, ModelCallUsage, ModelConnection, SiteModelProvider, UsageEvent)

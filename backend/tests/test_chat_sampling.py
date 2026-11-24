@@ -6,10 +6,11 @@ from uuid import uuid4
 
 import pytest
 
-from app import chat_sampling as sampling, conversation_jobs
-from app.agent import AgentCancelled
-from app.llm import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider, ToolResponse
-from app.responses_socket import ResponsesSocket
+from app.model_runtime import sampling
+from app.conversations import jobs as conversation_jobs
+from app.agent.loop import AgentCancelled
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider, ToolResponse
+from app.model_runtime.responses_socket import ResponsesSocket
 from auth_helpers import generation_response, model_id
 from test_conversation_streaming import sse, upstream
 from test_conversations import client, create
@@ -216,7 +217,7 @@ def test_authentication_rechecks_rotated_credentials_without_using_retry_budget(
 
 
 def test_responses_preserves_distinct_output_phases():
-    from app.llm_responses import ResponseStream
+    from app.model_runtime.responses import ResponseStream
     state = ResponseStream(OpenAICompatibleChatProvider(config=ChatProviderConfig("https://example.test", "test", "test")))
     first = state.feed({"type": "response.output_text.delta", "delta": "先核对资料", "output_index": 0})
     final = state.feed({"type": "response.completed", "response": {"status": "completed", "output": [
@@ -234,7 +235,7 @@ def test_responses_preserves_distinct_output_phases():
 
 
 def test_responses_websocket_continues_and_falls_back_with_same_route(monkeypatch):
-    from app.llm_responses import OUTPUT_FIELD
+    from app.model_runtime.responses import OUTPUT_FIELD
     from websockets.sync.server import serve
     received, https_requests, notices = [], [], []
     monkeypatch.setattr(sampling, "wait", no_wait)
@@ -294,7 +295,7 @@ def test_responses_websocket_continues_and_falls_back_with_same_route(monkeypatc
 
 
 def test_steering_is_idempotent_and_keeps_the_original_turn(client, monkeypatch):
-    from app import conversations
+    from app.conversations import execution as conversations
     http, db, _ = client
     chat = create(http, [])
     chat_id, turn, message_id = chat["id"], uuid4(), uuid4()

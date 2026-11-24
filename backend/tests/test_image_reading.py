@@ -13,12 +13,12 @@ import pytest
 
 from app import cloud_computer as cloud
 from app import image_reading
-from app.agent import stream_retrieval_agent
-from app.chat_attachments import model_messages, summary_content
+from app.agent.loop import stream_retrieval_agent
+from app.conversations.attachments import model_messages, summary_content
 from app.cloud_file_operation import inspect_image, perform
 from app.extensions import ExtensionRuntime
-from app.llm import ChatProviderConfig
-from app.llm import OpenAICompatibleChatProvider
+from app.model_runtime.client import ChatProviderConfig
+from app.model_runtime.client import OpenAICompatibleChatProvider
 from test_chat_attachments import PNG
 from test_agent import runtime as agent_runtime
 from test_conversation_streaming import upstream, sse
@@ -26,7 +26,7 @@ from test_extensions import access_for as load_access
 from test_shared_providers import setup_site
 from test_cloud_computer import FakeCloud
 from test_resources import access_for, resource_store
-from app.llm import ToolCall, ToolResponse
+from app.model_runtime.client import ToolCall, ToolResponse
 
 
 JPEG = (b"\xff\xd8\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01\x11\x00\x02\x11\x01\x03\x11\x01"
@@ -446,7 +446,7 @@ def test_image_download_failure_returns_tool_result_and_agent_continues(agent_ru
 @pytest.mark.parametrize("failure", ["cancel", "permission", "unauthorized", "forbidden", "bug"])
 def test_read_image_does_not_swallow_cancel_permission_or_programming_errors(failure):
     from fastapi import HTTPException
-    from app.agent import AgentCancelled
+    from app.agent.loop import AgentCancelled
 
     errors = {"cancel": AgentCancelled(), "permission": PermissionError("denied"),
         "unauthorized": HTTPException(401, "denied"), "forbidden": HTTPException(403, "denied"),

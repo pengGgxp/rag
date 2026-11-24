@@ -8,10 +8,11 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import conversations, mcp_client, workspace_files
-from app.agent import AgentCancelled
+from app import mcp_client, workspace_files
+from app.conversations import execution as conversations
+from app.agent.loop import AgentCancelled
 from app.extensions import ExtensionRuntime
-from app.llm import LLMUsage, ToolCall, ToolResponse
+from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import AgentSkill, Conversation, MCPServer, RemoteToolExecution, SiteModelProvider
 from auth_helpers import StreamingTestProvider
 from test_auth import register

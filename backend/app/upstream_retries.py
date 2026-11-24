@@ -149,8 +149,8 @@ def retry_activity(check_active, emit, activity, *, finish=True):
             yield
     except BaseException as error:
         if seen and finish:
-            from .llm import LLMProviderError
-            from .agent import AgentCancelled
+            from .model_runtime.client import LLMProviderError
+            from .agent.loop import AgentCancelled
             cancelled = isinstance(error, AgentCancelled)
             emit(("tool_result", {**activity,
                 "status": "cancelled" if cancelled else "error" if isinstance(error, LLMProviderError) else "interrupted",
@@ -162,7 +162,7 @@ def retry_activity(check_active, emit, activity, *, finish=True):
 
 
 def model_failure(*, status=None, uncertain=False):
-    from .llm import LLMProviderError
+    from .model_runtime.client import LLMProviderError
     if status == 400:
         message = "模型请求失败（HTTP 400），请调整输入或联系管理员检查模型调用配置"
     elif status in (401, 403):
@@ -193,7 +193,7 @@ def context_capacity_failure(response):
         explicit |= kind == "invalid_request_error" and message.startswith("prompt is too long")
         explicit |= kind == "invalid_argument" and "input token count" in message and "exceeds" in message and "maximum" in message
         if explicit:
-            from .llm import LLMContextCapacityError
+            from .model_runtime.client import LLMContextCapacityError
             return LLMContextCapacityError("模型输入超出上下文容量，正在尝试整理当前上下文")
     except (ValueError, TypeError, AttributeError, httpx.ResponseNotRead):
         pass
@@ -227,7 +227,7 @@ def _model_timeout(budget, configured):
         return configured
     remaining = budget.hooks.deadline - time.monotonic()
     if remaining <= 0:
-        from .llm import LLMProviderError
+        from .model_runtime.client import LLMProviderError
         raise LLMProviderError("模型请求已超过任务截止时间")
     return min(configured, remaining)
 

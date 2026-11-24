@@ -670,7 +670,7 @@ def cleanup_parsing_objects(factory):
     with factory() as db:
         storage = ocr_storage(db)
         if storage:
-            from ...chat_attachments import cleanup
+            from ...conversations.attachments import cleanup
             cleanup(db, storage)
             document_ids = db.scalars(select(Document.id).where(Document.parsing_metadata.is_not(None))).all()
             for document_id in document_ids:

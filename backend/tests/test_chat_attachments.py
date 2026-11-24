@@ -12,9 +12,10 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import auth, chat_attachments as attachments, conversations as chat
+from app import auth
+from app.conversations import attachments as attachments, execution as chat
 from app.conversation_context import estimate_input
-from app.llm import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, ToolResponse
+from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, ToolResponse
 from app.models import ChatAttachment, CreditLedgerEntry, SiteModelProvider
 from test_auth import accounts, register
 from test_conversations import client, create, turn
@@ -175,7 +176,7 @@ def test_send_history_retry_and_no_extra_attachment_charge(client, objects, monk
         def complete_with_tools(self, messages, tools, *, tool_choice):
             calls.append(messages)
             if fail:
-                from app.llm import LLMProviderError
+                from app.model_runtime.client import LLMProviderError
                 raise LLMProviderError("test interruption")
             return ToolResponse(content="附件中的内容", tool_calls=[])
     monkeypatch.setattr(chat, "OpenAICompatibleChatProvider", lambda **_: Provider())
@@ -217,7 +218,7 @@ def test_send_history_retry_and_no_extra_attachment_charge(client, objects, monk
 @pytest.mark.parametrize("remove_access", [False, True])
 def test_steering_checks_references_at_admission_and_keeps_attachments(client, objects, monkeypatch, remove_access):
     from sqlalchemy.orm import Session
-    from app import conversation_jobs
+    from app.conversations import jobs as conversation_jobs
     from app.models import Document
     from test_conversations import add_document, add_library
 

@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
-from .agent_tools import evidence_page, text_fields
+from .agent.tools import evidence_page, text_fields
 from .models import AgentToolExecution, Chunk, Document, DocumentStatus, KnowledgeBaseStatus, MCPServer
 
 

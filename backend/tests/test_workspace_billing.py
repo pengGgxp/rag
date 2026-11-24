@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import model_billing as billing, workspace_billing as pricing
 from app.credits import authorization_hold, settle_model_usage, settle_usage
-from app.llm import LLMUsage
+from app.model_runtime.client import LLMUsage
 from app.models import (BillingSnapshot, UserCreditAccount, LLMProviderConfig, ModelBillingSettings, ModelUsageRequest,
                         SiteModelProvider, UsageEvent, UsagePolicy, User,
                         UserModelPolicy)

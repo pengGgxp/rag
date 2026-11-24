@@ -12,7 +12,7 @@ from mcp.types import Tool
 from app import mcp_client
 from app.conversation_context import estimate_input
 from app.extensions import ExtensionRuntime
-from app.llm import ChatProviderConfig
+from app.model_runtime.client import ChatProviderConfig
 from app.models import MCPServer
 from remote_receipt_helpers import answer_identity
 from test_extensions import access_for
@@ -99,7 +99,7 @@ def test_budget_eviction_reconstruction_and_unmodified_large_schema_rejection(ru
 
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
 def test_dynamic_schema_is_valid_for_each_protocol_and_not_in_catalog_estimate(runtime, protocol):
-    from app.llm import OpenAICompatibleChatProvider
+    from app.model_runtime.client import OpenAICompatibleChatProvider
     build, _, _ = runtime
     config = ChatProviderConfig("https://example.test", "unused", "model", api_protocol=protocol,
         context_capacity=32000, max_output_tokens=4000)

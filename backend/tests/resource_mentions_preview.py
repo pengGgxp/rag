@@ -16,9 +16,10 @@ os.environ["MCP_CREDENTIAL_KEY"] = Fernet.generate_key().decode()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
-from app import auth, conversation_jobs, conversations, llm_providers, main, shared_resources, workspace_files
+from app import auth, llm_providers, main, shared_resources, workspace_files
+from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.db import Base, engine, SessionLocal
-from app.llm import ToolResponse
+from app.model_runtime.client import ToolResponse
 from app.models import ModelBillingSettings
 from auth_helpers import authenticate, configured_model
 from test_cloud_computer_mount import MemoryMount
@@ -39,7 +40,7 @@ if __name__ == "__main__":
     llm_providers._decrypt_api_key = lambda _: "local-only"
     conversations.OpenAICompatibleChatProvider = lambda **_: Provider()
     conversation_jobs.dispatch = lambda identifier: Thread(target=conversation_jobs.run,
-        args=(identifier,), kwargs={"factory": SessionLocal, "retrieve": main.retrieve_knowledge_base}, daemon=True).start()
+        args=(identifier,), kwargs={"factory": SessionLocal}, daemon=True).start()
 
     @asynccontextmanager
     async def lifespan(_app):

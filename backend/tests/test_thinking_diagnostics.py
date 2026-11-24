@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app import shared_providers
-from app.llm import _parse_usage
+from app.model_runtime.client import _parse_usage
 from app.models import BillingSnapshot, ModelBillingSettings, SiteModelProvider, ThinkingTest
 from test_shared_providers import provider, setup_site
 from test_thinking import effort
@@ -105,7 +105,7 @@ def test_probe_conflicts_and_permissions_never_call_upstream(accounts, monkeypat
 
 
 def test_real_http_thinking_precedes_text_and_final_usage():
-    from app.llm import ChatProviderConfig, OpenAICompatibleChatProvider
+    from app.model_runtime.client import ChatProviderConfig, OpenAICompatibleChatProvider
     from app.thinking import select_thinking
     from test_conversation_streaming import upstream, sse
     from threading import Event

@@ -14,8 +14,10 @@ from httpx_sse import EventSource
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversations as chat, main
-from app.llm import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
+from app import main
+from app.conversations.jobs import recover_interrupted_conversations
+from app.conversations import execution as chat
+from app.model_runtime.client import ChatProviderConfig, LLMProviderError, LLMUsage, OpenAICompatibleChatProvider, ToolResponse
 from app.models import BillingSnapshot, ChatMessage, ContextCheckpoint, Conversation, SiteModelProvider
 from auth_helpers import model_id, generation_response
 from test_conversations import client, create, turn
@@ -205,11 +207,11 @@ def test_api_sse_reaches_client_before_actual_upstream_closes(
             sse(handler, {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 4}})
         ended.set()
     factory = sessionmaker(bind=db.get_bind())
-    from app import conversation_jobs
+    from app.conversations import jobs as conversation_jobs
     workers = []
     def dispatch(identifier):
         worker = Thread(target=conversation_jobs.run, args=(identifier,),
-            kwargs={"factory": factory, "retrieve": main.retrieve_knowledge_base}, daemon=True)
+            kwargs={"factory": factory}, daemon=True)
         workers.append(worker)
         worker.start()
     monkeypatch.setattr(conversation_jobs, "dispatch", dispatch)
@@ -281,7 +283,7 @@ def test_each_tool_is_interleaved_persisted_and_has_a_unique_public_id(client, m
         def complete_with_tools(self, *_args, **_kwargs):
             raise AssertionError("must stream")
         def stream_with_tools(self, messages, tools, **_kwargs):
-            from app.llm import ToolCall
+            from app.model_runtime.client import ToolCall
             captured.append(messages)
             round = len(captured)
             text = ["先查第一处。", "再核对第二处。", "核对完成。"][round - 1]
@@ -449,7 +451,7 @@ def test_missing_capacity_is_honest_and_no_history_compaction_is_free(client, mo
 def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(client, monkeypatch, settlement):
     from concurrent.futures import ThreadPoolExecutor
     from app.models import ModelBillingSettings, ModelCallUsage, ModelUsageRequest, UsageEvent
-    from app.llm import ToolCall
+    from app.model_runtime.client import ToolCall
     http, db, _ = client
     db.add(ModelBillingSettings(id=1, enabled=settlement)); db.commit()
     conversation = create(http, [])
@@ -477,8 +479,8 @@ def test_stop_waits_for_confirmed_usage_then_settles_once_without_running_tools(
     payload = {"request_id": request_id, "provider_id": model_id(http), "query": "hello"}
     assert http.post(f"/conversations/{conversation['id']}/messages", json=payload).status_code == 200
     with ThreadPoolExecutor(max_workers=1) as pool:
-        from app.conversation_jobs import run
-        response = pool.submit(run, request_id, factory, main.retrieve_knowledge_base)
+        from app.conversations.jobs import run
+        response = pool.submit(run, request_id, factory)
         assert entered.wait(5)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -520,7 +522,8 @@ def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app import auth
     from app.auth import Access
     from app.llm_providers import request_provider_config
-    from app.conversation_context import ContextManager, SUMMARY_PREFIX
+    from app.agent.effective_context import ContextManager
+    from app.conversation_context import SUMMARY_PREFIX
     from app.context_windows import encrypt_items, make_item
     from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)
@@ -621,7 +624,7 @@ def test_compaction_retains_current_multimodal_input_and_atomic_latest_group(cli
 
 
 def test_failed_compaction_does_not_retry_unchanged_window(client):
-    from app.llm import LLMConfigurationError
+    from app.model_runtime.client import LLMConfigurationError
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
     messages += tool_group("old", "内容。" * 2100)
     messages += tool_group("recent", "recent result")
@@ -646,7 +649,7 @@ def test_failed_compaction_does_not_retry_unchanged_window(client):
 
 
 def test_over_budget_summary_never_persists_or_emits_completed(client):
-    from app.llm import LLMConfigurationError
+    from app.model_runtime.client import LLMConfigurationError
     messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "current task " * 600}]
     messages += tool_group("old", "原始结果。" * 850)
     messages += tool_group("recent", "recent result")
@@ -736,7 +739,7 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     provider = SimpleNamespace(status=SimpleNamespace(provider_id=str(binding.id), provider_key=binding.key))
     meter = LegacyPriceMeter(sessionmaker(bind=db.get_bind()), session.user_id, request_id)
     meter.invoke(provider, lambda: ToolResponse("confirmed", [], LLMUsage(prompt_tokens=100, completion_tokens=20)), [])
-    chat.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     assert db.get(ContextOperation, request_id).status == "interrupted"
     assert not db.get(Conversation, UUID(conversation["id"])).active_request_id
     db.refresh(message)
@@ -745,7 +748,7 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     assert message.display_blocks[0]["call_id"] == "second"
     balance = http.get("/usage").json()["balance"]
     assert db.scalars(select(UsageEvent).where(UsageEvent.request_id == request_id)).all()
-    chat.recover_interrupted_conversations(db)
+    recover_interrupted_conversations(db)
     assert http.get("/usage").json()["balance"] == balance
 
 

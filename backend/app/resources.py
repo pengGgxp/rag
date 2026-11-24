@@ -13,7 +13,8 @@ from sqlalchemy import select
 from .auth import Access, get_access, now
 from .db import get_db
 from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
-from . import chat_attachments, workspace_files
+from . import workspace_files
+from .conversations import attachments as chat_attachments
 
 router = APIRouter(prefix="/resources", tags=["resources"])
 DIRECTORY_MARKER = ".rag-directory"

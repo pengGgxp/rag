@@ -259,7 +259,8 @@ def test_asgi_send_only_counts_successful_body(accounts):
 
 
 def test_authenticated_range_head_and_storage_failure(accounts, monkeypatch):
-    from app import chat_attachments, storage_downloads
+    from app import storage_downloads
+    from app.conversations import attachments as chat_attachments
     from test_auth import register
     (client, _, _), db = accounts
     register(client)

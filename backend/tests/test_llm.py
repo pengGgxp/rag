@@ -3,7 +3,7 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.llm import (
+from app.model_runtime.client import (
     LLMConfigurationError,
     LLMProviderError,
     OpenAICompatibleChatProvider,

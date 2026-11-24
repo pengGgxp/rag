@@ -9,12 +9,12 @@ from urllib.parse import quote
 import httpx
 from httpx_sse import EventSource
 
-from .llm import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
-from .upstream_retries import model_post, model_astream
+from .client import LLMConfigurationError, LLMProviderError, LLMUsage, ToolCall, ToolResponse
+from ..upstream_retries import model_post, model_astream
 
 
 def _tool_result_image(image, native):
-    from .chat_attachments import MAX_IMAGE_BYTES
+    from ..conversations.attachments import MAX_IMAGE_BYTES
 
     if not isinstance(image, dict) or image.get("type") != "model_image":
         return None
@@ -32,7 +32,7 @@ def _tool_result_image(image, native):
 
 
 def request(provider, messages, tools=None, tool_choice="auto", temperature=0.0, streaming=False):
-    from .chat_attachments import model_messages
+    from ..conversations.attachments import model_messages
     config = provider.config
     if tools and not config.thinking.supports_tools:
         raise LLMConfigurationError("此模型配置不支持工具调用")
@@ -228,7 +228,7 @@ class NativeStream:
         self.finished = False
 
     def feed(self, event):
-        from .chat_sampling import upstream_error
+        from .sampling import upstream_error
         if event.get("error"):
             raise upstream_error(event["error"])
         if self.provider.config.api_protocol == "gemini":
@@ -279,7 +279,7 @@ class NativeStream:
             self.finished = True
 
     def finish(self):
-        from .chat_sampling import incomplete_response, stream_closed
+        from .sampling import incomplete_response, stream_closed
         if self.provider.config.api_protocol == "gemini":
             blocked = (self.body.get("promptFeedback") or {}).get("blockReason")
             candidates = self.body.get("candidates") or []
@@ -302,7 +302,7 @@ class NativeStream:
 
 
 def stream(provider, messages, tools=None, tool_choice="auto"):
-    from .chat_sampling import model_stream, stream_events, stream_error
+    from .sampling import model_stream, stream_events, stream_error
     url, headers, body = request(provider, messages, tools, tool_choice, streaming=True)
     state = NativeStream(provider)
     provider.stream_diagnostic = "sse"

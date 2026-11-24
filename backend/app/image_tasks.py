@@ -126,7 +126,7 @@ def recover(factory=None, *, agent_only=False):
         saving = []
         for row in rows:
             if row.agent_tool_execution_id:
-                from .agent_tool_jobs import owner_active
+                from .agent.tool_jobs import owner_active
                 active = owner_active(db, row.agent_tool_execution_id)
                 if row.status == "queued" and not active:
                     settle(db, row, 0)
@@ -151,7 +151,7 @@ def recover(factory=None, *, agent_only=False):
 
 def create(db, access, payload, key, *, agent_tool_execution_id=None):
     access = access.revalidate(db)
-    from .agent_tool_jobs import validate_owner
+    from .agent.tool_jobs import validate_owner
     validate_owner(db, agent_tool_execution_id, access)
     # Serialize admission and idempotency through the existing workspace account.
     ensure_account(db, access.user_id)
@@ -252,7 +252,7 @@ def run(identifier, factory=None, *, agent_tool_execution_id=None, check_active=
         preparation_stage = "authorization"
         try:
             if row.agent_tool_execution_id:
-                from .agent_tool_jobs import owner_active
+                from .agent.tool_jobs import owner_active
                 if not owner_active(db, row.agent_tool_execution_id):
                     row.cancel_requested = True
             if check_active:
@@ -429,7 +429,7 @@ def status(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
     if row.status == "running":
         from .auth import aware
-        from .agent_tool_jobs import owner_active
+        from .agent.tool_jobs import owner_active
         live = row.agent_tool_execution_id and owner_active(db, row.agent_tool_execution_id)
         if not live and aware(row.updated_at) < datetime.now(timezone.utc) - timedelta(seconds=row.snapshot["timeout"] + 300):
             row = owned(db, access, identifier, True)

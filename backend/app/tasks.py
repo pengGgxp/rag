@@ -18,13 +18,13 @@ _heartbeat_thread: threading.Thread | None = None
 
 @celery_app.task
 def execute_conversation(identifier):
-    from .conversation_jobs import run
+    from .conversations.jobs import run
     run(identifier)
 
 
 @celery_app.task
 def name_conversation(identifier):
-    from .conversation_jobs import title_run
+    from .conversations.jobs import title_run
     title_run(identifier)
 
 

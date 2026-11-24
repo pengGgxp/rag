@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from app.agent import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
-from app.llm import ToolCall, ToolResponse
+from app.agent.loop import AgentCancelled, run_retrieval_agent, stream_retrieval_agent
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import DocumentStatus, KnowledgeBaseStatus
 
 
@@ -452,7 +452,7 @@ def test_file_failure_stream_uses_safe_actionable_summary(runtime, name, result,
 
 
 def test_successful_file_output_is_attached_to_tool_activity_and_prompt(runtime):
-    from app.agent import AGENT_SYSTEM_PROMPT
+    from app.agent.loop import AGENT_SYSTEM_PROMPT
 
     output = {"id": "file-1", "path": "reports/summary.md", "size_bytes": 21, "version": 1,
         "object_key": "must-not-be-public"}

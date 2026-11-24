@@ -172,11 +172,11 @@ def encrypt_continuation(config, messages):
 
 def history_message(row, config, skill_versions=None):
     if row.role == "user" and getattr(row, "attachments", None):
-        from .chat_attachments import user_content
+        from .conversations.attachments import user_content
         return [{"role": "user", "content": user_content(row.content, row.attachments)}]
     if row.role == "assistant" and row.encrypted_continuation and config.continuation_required:
         from .mcp_client import decrypt_headers, MCPError
-        from .llm import LLMConfigurationError
+        from .model_runtime.client import LLMConfigurationError
         try:
             private = json.loads(decrypt_headers(row.encrypted_continuation)["continuation"])
         except (MCPError, ValueError, KeyError) as exc:

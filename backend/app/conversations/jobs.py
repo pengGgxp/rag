@@ -1,4 +1,4 @@
-"""Durable executions; browser subscriptions never own the model lifecycle."""
+"""持久化回答任务、状态流转与恢复。"""
 import asyncio
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -9,13 +9,16 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
+from sqlalchemy.orm import Session
 
-from .auth import Access
-from .db import SessionLocal
-from .mcp_client import decrypt_headers, encrypt_headers
-from .models import ChatMessage, ContextOperation, Conversation, ConversationEvent, ConversationExecution, ConversationTitleTask
+from .. import model_billing
+from ..auth import Access
+from ..credits import settle_model_usage
+from ..db import SessionLocal
+from ..mcp_client import decrypt_headers, encrypt_headers
+from ..models import ChatMessage, ContextOperation, Conversation, ConversationEvent, ConversationExecution, ConversationTitleTask, ThinkingTest
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.conversation_jobs")
 
 
 def temporary_title(text):
@@ -36,7 +39,7 @@ def enqueue(db, conversation_id, message_id, request_id, access, hold, config, s
 
 def dispatch(identifier):
     try:
-        from .tasks import execute_conversation
+        from ..tasks import execute_conversation
         execute_conversation.delay(str(identifier))
     except Exception:
         logger.warning("Conversation remains queued for dispatch: %s", identifier)
@@ -103,7 +106,7 @@ def steering_batch(factory, conversation_id, request_id, *, seal=False):
     with factory() as db:
         row, active = _steering_execution(db, conversation_id, request_id)
         if not active:
-            from .agent import AgentCancelled
+            from ..agent.loop import AgentCancelled
             raise AgentCancelled()
         payload = _execution_payload(row)
         pending = [key for key, value in payload.get("steering", {}).items() if value["status"] == "pending"]
@@ -144,47 +147,10 @@ def recover_steered_blocks(db, request_id, blocks):
     return [*blocks, *(block for block in accepted_steering(db, request_id) if block["id"] not in existing)]
 
 
-async def subscribe(factory, access, conversation_id, request_id, after=0):
-    from .conversations import live_conversation
-    while True:
-        with factory() as db:
-            live_conversation(db, conversation_id, access.revalidate(db))
-            row = db.get(ConversationExecution, request_id)
-            if row is None or row.conversation_id != conversation_id:
-                return
-            events = list(db.scalars(select(ConversationEvent).where(ConversationEvent.request_id == request_id,
-                ConversationEvent.sequence > after).order_by(ConversationEvent.sequence).limit(200)))
-            status = row.status
-            payloads = [(item.sequence, json.loads(decrypt_headers(item.encrypted_payload)["event"])) for item in events]
-        newest = payloads[-1][0] if payloads else after
-        for sequence, payload in payloads:
-            after = sequence
-            if "\nevent: model_recovering\n" in payload and (
-                    sequence != newest or status not in ("queued", "running")):
-                continue
-            yield payload
-        if status not in ("queued", "running") and len(payloads) < 200:
-            if not any("\nevent: done\n" in payload for _, payload in payloads):
-                # Recovery may finish without the original producer's final event.
-                from .conversations import event, event_text, message_read
-                with factory() as db:
-                    live_conversation(db, conversation_id, access.revalidate(db))
-                    row = db.get(ConversationExecution, request_id)
-                    message = db.get(ChatMessage, row.message_id) if row.message_id else None
-                    if message and message.request_id != request_id:
-                        message = None
-                    operation = db.get(ContextOperation, request_id) if not row.message_id else None
-                    data = message_read(message) if message else operation.result if operation else {"status": status}
-                    yield event_text(event("done", {**data, "request_id": str(request_id)}))
-            return
-        yield ": heartbeat\n\n"
-        await asyncio.sleep(0.3)
-
-
 def unpack(row):
-    from .llm import ChatProviderConfig
-    from .thinking import ThinkingSelection
-    from .web_search import SearchConfig
+    from ..model_runtime.client import ChatProviderConfig
+    from ..thinking import ThinkingSelection
+    from ..web_search import SearchConfig
     payload = json.loads(decrypt_headers(row.encrypted_payload)["payload"])
     actor = payload["access"]
     access = Access(UUID(actor["user_id"]), actor["session_hash"])
@@ -204,11 +170,11 @@ def run(identifier, factory=SessionLocal, retrieve=None):
         access, hold, config, search = unpack(row)
         db.commit()
     if retrieve is None:
-        from .knowledge.retrieval import retrieve_knowledge_base
+        from ..knowledge.retrieval import retrieve_knowledge_base
         retrieve = retrieve_knowledge_base
 
     async def execute():
-        from .conversations import generate
+        from .execution import generate
         from decimal import Decimal
         async def heartbeat():
             while True:
@@ -254,7 +220,7 @@ def run(identifier, factory=SessionLocal, retrieve=None):
 
 
 def title_run(identifier, factory=SessionLocal):
-    from .llm import OpenAICompatibleChatProvider, measured_usage
+    from ..model_runtime.client import OpenAICompatibleChatProvider, measured_usage
     identifier = UUID(str(identifier))
     with factory() as db:
         task = db.get(ConversationTitleTask, identifier, with_for_update=True)
@@ -273,8 +239,8 @@ def title_run(identifier, factory=SessionLocal):
             task.status, task.finished_at = "skipped", datetime.now(timezone.utc)
             db.commit()
             return
-        from .models import SiteModelProvider
-        from .shared_providers import unavailable_reason
+        from ..models import SiteModelProvider
+        from ..shared_providers import unavailable_reason
         shared = db.get(SiteModelProvider, UUID(config.site_provider_id)) if config.site_provider_id else None
         if not shared or unavailable_reason(db, shared, None, True):
             task.status, task.finished_at = "skipped", datetime.now(timezone.utc)
@@ -294,7 +260,7 @@ def title_run(identifier, factory=SessionLocal):
     result, status = "", "failed"
     try:
         provider = OpenAICompatibleChatProvider(config=config)
-        # No tools or ordinary ModelMeter: title usage must never enter user settlement.
+        # 标题请求不调用工具，也不通过常规模型计量向用户结算。
         result = provider.complete(prompt).strip().strip('"“”「」')
         result = re.sub(r"\s+", " ", result)
         status = "completed" if 2 <= len(result) <= 40 else "failed"
@@ -324,7 +290,7 @@ def queue_title(factory, conversation_id, request_id):
             return
         db.add(ConversationTitleTask(conversation_id=conversation_id, request_id=request_id))
         db.commit()
-    from .tasks import name_conversation
+    from ..tasks import name_conversation
     try:
         name_conversation.delay(str(conversation_id))
     except Exception:
@@ -333,7 +299,7 @@ def queue_title(factory, conversation_id, request_id):
 
 def interrupt_execution(db, row):
     row.status, row.finished_at = "interrupted", datetime.now(timezone.utc)
-    from .agent_tool_jobs import cancel_request
+    from ..agent.tool_jobs import cancel_request
     cancel_request(db, row.request_id)
     message = db.get(ChatMessage, row.message_id) if row.message_id else None
     if message and message.request_id == row.request_id and message.status == "streaming":
@@ -348,14 +314,14 @@ def interrupt_execution(db, row):
         operation.status, operation.result = "interrupted", {"status": "failed", "error": "整理已中断，原始记录已保留"}
     db.execute(update(Conversation).where(Conversation.id == row.conversation_id,
         Conversation.active_request_id == row.request_id).values(active_request_id=None))
-    from . import model_billing
-    from .models import ModelUsageRequest
+    from .. import model_billing
+    from ..models import ModelUsageRequest
     if db.get(ModelUsageRequest, row.request_id):
         model_billing.finalize_request(db, row.request_id, row.status)
     else:
         access, hold, _, _ = unpack(row)
-        from .credits import settle_model_usage
-        from .workspace_billing import finish_operation, legacy_call_usage
+        from ..credits import settle_model_usage
+        from ..workspace_billing import finish_operation, legacy_call_usage
         from decimal import Decimal
         settle_model_usage(db, access.user_id, access.user_id, row.request_id,
             legacy_call_usage(db, access.user_id, row.request_id), Decimal(hold))
@@ -363,7 +329,7 @@ def interrupt_execution(db, row):
 
 
 def recover(factory=SessionLocal):
-    """Only expired producers are interrupted; never replay uncertain execution."""
+    """中断心跳过期的任务，保留结果未知的执行记录。"""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=2)
     with factory() as db:
         stale = list(db.scalars(select(ConversationExecution).where(ConversationExecution.status == "running",
@@ -371,7 +337,7 @@ def recover(factory=SessionLocal):
         for row in stale:
             interrupt_execution(db, row)
         queued = list(db.scalars(select(ConversationExecution.request_id).where(ConversationExecution.status == "queued")))
-        # A title call with an unknown result is never retried.
+        # 标题调用结果未知时保留原记录，避免重复调用。
         for title in db.scalars(select(ConversationTitleTask).where(ConversationTitleTask.status == "running",
                 ConversationTitleTask.started_at < cutoff)):
             title.status, title.finished_at = "interrupted", datetime.now(timezone.utc)
@@ -388,11 +354,52 @@ def recover(factory=SessionLocal):
         dispatch(identifier)
     for conversation_id, request_id in missing_titles:
         queue_title(factory, conversation_id, request_id)
-    from .tasks import name_conversation
+    from ..tasks import name_conversation
     for identifier in titles:
         try:
             name_conversation.delay(str(identifier))
         except Exception:
             logger.warning("Automatic title remains queued: %s", identifier)
-    from .image_tasks import recover as recover_images
+    from ..image_tasks import recover as recover_images
     recover_images(factory, agent_only=True)
+
+
+def recover_interrupted_conversations(db: Session):
+    from ..models import RemoteToolExecution, ConversationExecution
+    owned = select(ConversationExecution.request_id).where(ConversationExecution.status.in_(["queued", "running"]))
+    db.execute(update(RemoteToolExecution).where(RemoteToolExecution.status == "running",
+        ~RemoteToolExecution.request_id.in_(owned)).values(status="uncertain"))
+    model_billing.recover_requests(db)
+    for test in db.scalars(select(ThinkingTest).where(ThinkingTest.status == "running")):
+        test.status = "interrupted"
+        test.result = {"request_id": str(test.request_id), "version": test.version,
+            "thinking_version": test.thinking_version, "completed": False,
+            "error": "服务重启，测试已中断，已确认用量按原规则结算"}
+    from ..models import BillingSnapshot, CreditLedgerEntry
+    from ..workspace_billing import legacy_call_usage
+    for snapshot in db.scalars(select(BillingSnapshot).where(
+            BillingSnapshot.event_key == "model", BillingSnapshot.status == "running",
+            ~BillingSnapshot.request_id.in_(owned))):
+        hold = db.scalar(select(CreditLedgerEntry).where(
+            CreditLedgerEntry.idempotency_key == f"usage:{snapshot.request_id}:hold"))
+        if hold:
+            settle_model_usage(db, snapshot.account_id, hold.actor_user_id, snapshot.request_id,
+                legacy_call_usage(db, snapshot.account_id, snapshot.request_id), -hold.amount)
+        snapshot.status = "interrupted"
+    for message in db.scalars(select(ChatMessage).where(ChatMessage.status == "streaming", ~ChatMessage.request_id.in_(owned))):
+        message.status = "interrupted"
+        message.error_detail = "服务重启，回答已中断，可以重试"
+        message.tool_events = [
+            {**item, "status": "interrupted"} if item.get("status") in ("waiting", "running") else item
+            for item in message.tool_events
+        ]
+        message.display_blocks = [
+            {**block, "status": "interrupted"} if block.get("type") == "thinking" and block.get("status") == "running"
+            else block for block in message.display_blocks
+        ]
+    db.execute(update(Conversation).where(Conversation.active_request_id.is_not(None), ~Conversation.active_request_id.in_(owned)).values(
+        active_request_id=None,
+    ))
+    db.execute(update(ContextOperation).where(ContextOperation.status == "running", ~ContextOperation.request_id.in_(owned)).values(
+        status="interrupted", result={"status": "failed", "error": "服务重启，整理已中断，原始记录已保留"}))
+    db.commit()

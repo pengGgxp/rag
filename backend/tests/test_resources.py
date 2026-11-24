@@ -11,7 +11,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, chat_attachments, resource_cache, resources, storage_billing, tasks, workspace_files
+from app import auth, resource_cache, resources, storage_billing, tasks, workspace_files
+from app.conversations import attachments as chat_attachments
 from app.config import get_settings
 from app.models import ChatAttachment, ChatMessage, Conversation, Document, KnowledgeBase, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 from app.storage_models import StorageQuotaSettings, StorageTransfer, WorkspaceStorageState

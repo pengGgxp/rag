@@ -1,4 +1,4 @@
-"""Validated resource uploads and immutable message attachment references."""
+"""校验资源上传并维护不可变的消息附件引用。"""
 import base64
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -16,10 +16,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from .auth import Access, aware, get_access, now
-from .db import get_db
-from .models import ChatAttachment, ChatMessage, Conversation, Document, WorkspaceFile, WorkspaceFileVersion
-from .storage import download_fileobj, upload_fileobj
+from ..auth import Access, aware, get_access, now
+from ..db import get_db
+from ..models import ChatAttachment, ChatMessage, Conversation, Document, WorkspaceFile, WorkspaceFileVersion
+from ..storage import download_fileobj, upload_fileobj
 
 router = APIRouter(prefix="/chat/attachments", tags=["chat-attachments"])
 MAX_FILES = 6
@@ -39,7 +39,7 @@ def attachment_read(row):
 
 
 def image_size(data, suffix):
-    """Read bounded dimensions without decoding user-controlled compressed pixels."""
+    """读取受限的图片尺寸，避免解码用户提供的压缩像素。"""
     try:
         if suffix == ".png" and data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
             offset, has_pixels = 8, False
@@ -90,7 +90,7 @@ def image_size(data, suffix):
 
 
 def extract_document(data, filename):
-    from .knowledge.ingestion.parsers import PdfParsingError, parse_document
+    from ..knowledge.ingestion.parsers import PdfParsingError, parse_document
     def bounded(lines):
         parts, count = [], 0
         for line in lines:
@@ -107,7 +107,7 @@ def extract_document(data, filename):
                 if len(entries) > 2048 or sum(item.file_size for item in entries) > 50 * 1024 * 1024:
                     raise HTTPException(413, "文档内容过多，请拆分后上传")
         if suffix == ".pdf":
-            from .knowledge.ingestion.parsers import pdf_pages
+            from ..knowledge.ingestion.parsers import pdf_pages
             pages = pdf_pages(data)
             if len(pages) > 200:
                 raise HTTPException(413, "对话附件最多支持 200 页 PDF，请拆分或添加到知识库")
@@ -162,13 +162,13 @@ def owned(db, access, identifier, *, lock=False):
         resource = db.get(WorkspaceFile, row.resource_file_id)
         if resource is None or resource.deleted_at:
             raise HTTPException(404, "资源已删除")
-        from .workspace_files import resolve_input
+        from ..workspace_files import resolve_input
         resource, current = resolve_input(db, access, {"id": str(resource.id)})
         changed = row.content_hash != current.content_hash or row.size_bytes != current.size_bytes
         row.object_key, row.size_bytes, row.content_type = current.storage_key, current.size_bytes, current.content_type
         row.content_hash, row.resource_version = current.content_hash, 1
         if changed or (row.kind == "document" and row.text_content is None) or (row.kind == "image" and not row.width):
-            from .resource_cache import read_bytes
+            from ..resource_cache import read_bytes
             raw = read_bytes(db, access, resource, current)
             if row.kind == "document":
                 row.text_content = extract_document(raw, row.filename)
@@ -184,7 +184,7 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
 
 
 def create_upload(file, db, access, *, source, directory=""):
-    from .file_operations import workspace_lock
+    from ..file_operations import workspace_lock
     with workspace_lock(db, access.user_id):
         return _create_upload(file, db, access, source=source, directory=directory)
 
@@ -195,10 +195,10 @@ def _create_upload(file, db, access, *, source, directory):
     if (not filename or len(filename) > 255 or "/" in filename or "\\" in filename
             or any(ord(c) < 32 for c in filename) or suffix not in DOCUMENT_SUFFIXES | IMAGE_TYPES.keys()):
         raise HTTPException(415, "请选择 PNG、JPEG、WebP、PDF、TXT、Markdown、CSV、Word 或 Excel 文件")
-    from .storage_billing import lock_workspace
+    from ..storage_billing import lock_workspace
     lock_workspace(db, access.user_id)
-    # Serialize staging quotas for one user.
-    from .models import User
+    # 按用户串行校验暂存配额。
+    from ..models import User
     db.get(User, access.user_id, with_for_update=True)
     data = file.file.read(MAX_BYTES + 1)
     if not data:
@@ -214,14 +214,14 @@ def _create_upload(file, db, access, *, source, directory):
         if not width or not height or width * height > 40_000_000:
             raise HTTPException(413, "图片尺寸过大，请缩小后重试")
     text = None if image else extract_document(data, filename)
-    from .storage_billing import check_capacity
+    from ..storage_billing import check_capacity
     check_capacity(db, access.user_id, len(data))
     identifier = uuid4()
-    from .shared_resources import object_key
+    from ..shared_resources import object_key
     if directory:
-        from .workspace_files import valid_path
+        from ..workspace_files import valid_path
         directory = valid_path(directory)
-        from .models import WorkspaceDirectory
+        from ..models import WorkspaceDirectory
         if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.owner_user_id == access.user_id,
                 WorkspaceDirectory.path == directory)) or db.scalar(select(WorkspaceFile.id).where(
                 WorkspaceFile.owner_user_id == access.user_id, WorkspaceFile.deleted_at.is_(None),
@@ -251,7 +251,7 @@ def _create_upload(file, db, access, *, source, directory):
             created_by=access.user_id, updated_by=access.user_id,
             expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
         db.add(resource)
-        from .shared_resources import backend
+        from ..shared_resources import backend
         mounted = backend(db)
         resource.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
         db.flush()
@@ -260,14 +260,14 @@ def _create_upload(file, db, access, *, source, directory):
             content_hash=row.content_hash, created_by=access.user_id))
         row.resource_file_id, row.resource_version = identifier, 1
         db.add(row)
-        from .audit_log import record_audit
+        from ..audit_log import record_audit
         record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="resource.created", resource_type="resource", resource_id=identifier,
             metadata={"source": source, "version": 1})
         db.commit()
     except BaseException:
         db.rollback()
-        from .storage import delete_object
+        from ..storage import delete_object
         delete_object(key)
         raise
     return attachment_read(row)
@@ -276,7 +276,7 @@ def _create_upload(file, db, access, *, source, directory):
 @router.api_route("/{identifier}/content", methods=["GET", "HEAD"])
 def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
-    from .storage_downloads import download_response
+    from ..storage_downloads import download_response
     return download_response(db, access, request, object_key=row.object_key, size=row.size_bytes,
         filename=row.filename, content_type=row.content_type, resource=f"attachment:{row.id}", inline=row.kind == "image")
 
@@ -285,7 +285,7 @@ def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depen
 def remove(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
     if row.resource_file_id:
-        from .resources import remove as remove_resource
+        from ..resources import remove as remove_resource
         return remove_resource(row.resource_file_id, db, access)
     row.deleted_at = now()
     db.commit()
@@ -294,7 +294,7 @@ def remove(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
 def select_attachments(db, access, identifiers, config):
     if len(set(identifiers)) != len(identifiers):
         raise HTTPException(422, "附件重复，请移除重复项")
-    # Resources are workspace-shared; attachment to a message is a separate reference.
+    # 资源由工作区共享，关联到消息时另建附件引用。
     locked = {identifier: owned(db, access, identifier, lock=True) for identifier in sorted(identifiers)}
     rows = [locked[identifier] for identifier in identifiers]
     if sum(row.size_bytes for row in rows) > 40 * 1024 * 1024:
@@ -317,8 +317,8 @@ def validate_messages(messages, config):
 
 
 def summary_content(messages):
-    """Keep uploaded images multimodal while omitting transient read_image bytes."""
-    from .image_reading import persisted_model_images
+    """保留上传图片的多模态输入，省略临时读取的图片字节。"""
+    from ..image_reading import persisted_model_images
 
     messages = persisted_model_images(messages)
     safe, images = [], []
@@ -365,7 +365,7 @@ def user_content(text, attachments):
 
 
 def model_messages(messages, config, resource_context=None):
-    from .llm import LLMConfigurationError
+    from ..model_runtime.client import LLMConfigurationError
     result = deepcopy(messages)
     for message in result:
         if not isinstance(message.get("content"), list):
@@ -396,11 +396,11 @@ def model_messages(messages, config, resource_context=None):
                     attachment = owned(db, checked, UUID(part["attachment_id"]))
                     if attachment.resource_file_id is None:
                         raise LLMConfigurationError("图片资源尚未完成迁移，请联系管理员")
-                    from .workspace_files import resolve_input
-                    from .resource_cache import read_bytes
+                    from ..workspace_files import resolve_input
+                    from ..resource_cache import read_bytes
                     resource, version = resolve_input(db, checked,
                         {"id": str(attachment.resource_file_id)})
-                    from .shared_resources import refresh_current_metadata
+                    from ..shared_resources import refresh_current_metadata
                     resource = refresh_current_metadata(db, checked, resource)
                     version.content_type, version.size_bytes = resource.content_type, resource.size_bytes
                     version.content_hash = resource.content_hash or ""
@@ -408,8 +408,7 @@ def model_messages(messages, config, resource_context=None):
                     attachment.size_bytes = resource.size_bytes
                     attachment.object_key = version.storage_key
                     raw = read_bytes(db, checked, resource, version)
-                    # A retained image denotes the originally selected bytes. Never
-                    # silently upgrade a saved window to a changed live resource.
+                    # 已保留的图片指向最初选择的字节，不能随资源修改而替换。
                     expected_hash = part["sha256"]
             else:
                 with download_fileobj(part["object_key"]) as source:
@@ -423,10 +422,10 @@ def model_messages(messages, config, resource_context=None):
 
 
 def estimate_content(value):
-    """Budget descriptors instead of megabytes of base64 or private object keys."""
+    """用描述信息估算预算，省略 Base64 正文和私有对象键。"""
     if isinstance(value, dict):
         if value.get("type") in ("chat_image", "model_image"):
-            # Conservative estimate; actual upstream usage remains authoritative.
+            # 保守估算，以供应商实际用量为准。
             tiles = ((value.get("width") or 512) + 511) // 512 * (((value.get("height") or 512) + 511) // 512)
             return {"image_input_estimate": "x" * min(131072, 4096 + tiles * 2048)}
         return {key: estimate_content(item) for key, item in value.items()}

@@ -8,8 +8,8 @@ from pathlib import PurePosixPath
 
 from fastapi import HTTPException
 
-from .chat_attachments import IMAGE_TYPES, MAX_IMAGE_BYTES, image_size
-from .llm import ChatProviderConfig
+from .conversations.attachments import IMAGE_TYPES, MAX_IMAGE_BYTES, image_size
+from .model_runtime.client import ChatProviderConfig
 
 WORKSPACE_ROOT = "/home/user/workspace"
 MAX_PATH_LENGTH = 1024

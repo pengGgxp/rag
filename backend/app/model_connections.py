@@ -125,7 +125,7 @@ def apply_connection(row, payload):
     row.name, row.platform = payload.name.strip(), payload.platform
     row.website_url = validate_base_url(payload.website_url) if payload.website_url else ""
     row.base_url = validate_base_url(payload.base_url)
-    from .llm_responses import endpoint
+    from .model_runtime.responses import endpoint
     if payload.api_protocol in ("chat_completions", "responses"):
         endpoint(row.base_url, payload.api_protocol)
     row.api_protocol = payload.api_protocol
@@ -153,7 +153,7 @@ def create_connection(payload: ConnectionInput, db=Depends(get_db), actor=Depend
 def update_connection(identifier: UUID, payload: ConnectionInput, db=Depends(get_db), actor=Depends(connection_writer)):
     settings_locked(db)
     row = lock_connection(db, identifier, payload.version)
-    from .llm_responses import validate_thinking
+    from .model_runtime.responses import validate_thinking
     from .thinking import select_thinking
     for model in db.scalars(select(SiteModelProvider).where(SiteModelProvider.connection_id == identifier)):
         try:
@@ -183,7 +183,7 @@ def discover_models(url, secret, timeout, protocol="chat_completions"):
     # Bounded read; credentials stay on the server and are never forwarded on redirects.
     try:
         deadline = monotonic() + min(timeout, 10)
-        from .llm_responses import api_root
+        from .model_runtime.responses import api_root
         root = api_root(url)
         if protocol == "gemini" and not root.endswith(("/v1", "/v1beta")):
             root += "/v1beta"

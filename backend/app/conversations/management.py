@@ -1,4 +1,4 @@
-"""Permission-filtered conversation pages and literal keyword search."""
+"""提供按权限过滤的对话分页与字面关键词搜索。"""
 import base64
 import json
 from datetime import datetime
@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import Text, and_, case, cast, exists, or_, select
 
-from .models import ChatMessage, Conversation, ConversationLibrary, chat_message_resources
+from ..models import ChatMessage, Conversation, ConversationLibrary, chat_message_resources
 
 
 def encode_cursor(values):

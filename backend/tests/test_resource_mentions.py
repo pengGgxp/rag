@@ -4,8 +4,9 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import auth, conversations as chat, workspace_files
-from app.llm import LLMProviderError, ToolCall, ToolResponse
+from app import auth, workspace_files
+from app.conversations import execution as chat
+from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (ChatAttachment, ChatMessage, CloudComputerCommand, CloudComputerSession,
     CreditLedgerEntry, ModelUsageRequest, User, WorkspaceFile, WorkspaceFileVersion)
 from auth_helpers import model_id
@@ -169,11 +170,10 @@ def test_worker_revalidates_after_submission(client, resource_store, monkeypatch
     else:
         db.get(User, access_for(http, db).user_id).is_suspended = True
         db.commit()
-    from app.conversation_jobs import run
+    from app.conversations.jobs import run
     from app import main
     from sqlalchemy.orm import sessionmaker
-    run(response.json()["request_id"], factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False),
-        retrieve=main.retrieve_knowledge_base)
+    run(response.json()["request_id"], factory=sessionmaker(bind=db.get_bind(), expire_on_commit=False))
     if change == "revoked":
         assert not calls
     else:

@@ -5,9 +5,9 @@ from httpx_sse import SSEError
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from .config import Settings, get_settings
-from .thinking import ThinkingSelection
-from .upstream_retries import model_post, model_stream, model_astream
+from ..config import Settings, get_settings
+from ..thinking import ThinkingSelection
+from ..upstream_retries import model_post, model_stream, model_astream
 
 
 class LLMConfigurationError(RuntimeError):
@@ -96,7 +96,7 @@ def measured_usage(usage, messages, output, tools=None, *, success=True):
 
 def estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Conservative provider-neutral fallback when usage is omitted."""
-    from .chat_attachments import estimate_content
+    from ..conversations.attachments import estimate_content
     text = json.dumps(estimate_content(messages), ensure_ascii=False)
     return max(1, (len(text) + 3) // 4)
 
@@ -185,21 +185,21 @@ class OpenAICompatibleChatProvider:
         if not self.configured:
             raise LLMConfigurationError("请在问答输入区选择可用模型")
         if self.config.site_provider_id:
-            from .shared_providers import assert_available
+            from ..shared_providers import assert_available
             assert_available(self.config.site_provider_id, self.config.connection_id)
 
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):
         if self.config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import request
+            from .native import request
             return request(self, messages, tools, tool_choice, temperature, stream)[2]
         if self.config.api_protocol == "responses":
-            from .llm_responses import payload
+            from .responses import payload
             return payload(self.config, messages, temperature, tools=tools, tool_choice=tool_choice, stream=stream,
                 resource_context=getattr(self, "resource_context", None))
         thinking = self.config.thinking
         if tools and not thinking.supports_tools:
             raise LLMConfigurationError("此模型配置不支持当前协议的工具调用，请选择其他模型")
-        from .chat_attachments import model_messages
+        from ..conversations.attachments import model_messages
         payload = {"model": self.model, "messages": model_messages(messages, self.config,
             getattr(self, "resource_context", None))}
         # Older encrypted continuations also contain empty call arrays. Normalize
@@ -310,13 +310,13 @@ class OpenAICompatibleChatProvider:
         self.reset_observation()
         self.check_available()
         if self.config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import complete
+            from .native import complete
             response = complete(self, messages, temperature=temperature)
             if not response.content:
                 raise LLMProviderError("模型未返回正文")
             return response.content
         if self.config.api_protocol == "responses":
-            from .llm_responses import complete
+            from .responses import complete
             response = complete(self, messages, temperature=temperature)
             if not response.content:
                 raise LLMProviderError("模型未返回正文")
@@ -351,10 +351,10 @@ class OpenAICompatibleChatProvider:
         self.reset_observation()
         self.check_available()
         if self.config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import complete
+            from .native import complete
             return complete(self, messages, tools, tool_choice)
         if self.config.api_protocol == "responses":
-            from .llm_responses import complete
+            from .responses import complete
             return complete(self, messages, tools, tool_choice)
         if not self.configured:
             raise LLMConfigurationError(
@@ -394,15 +394,15 @@ class OpenAICompatibleChatProvider:
 
     def stream_with_tools(self, messages, tools, *, tool_choice="auto") -> Iterator[tuple[str, Any]]:
         """Forward public text as received; assemble private protocol fields and tool JSON server-side."""
-        from .chat_sampling import incomplete_response, model_stream, stream_events, stream_closed, stream_error, upstream_error
+        from .sampling import incomplete_response, model_stream, stream_events, stream_closed, stream_error, upstream_error
         self.reset_observation()
         self.check_available()
         if self.config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import stream
+            from .native import stream
             yield from stream(self, messages, tools, tool_choice)
             return
         if self.config.api_protocol == "responses":
-            from .llm_responses import stream
+            from .responses import stream
             yield from stream(self, messages, tools, tool_choice)
             return
         self.stream_diagnostic = "sse"
@@ -503,12 +503,12 @@ class OpenAICompatibleChatProvider:
         self.reset_observation()
         self.check_available()
         if self.config.api_protocol in ("anthropic", "gemini"):
-            from .llm_native import stream_text
+            from .native import stream_text
             async for text in stream_text(self, messages):
                 yield text
             return
         if self.config.api_protocol == "responses":
-            from .llm_responses import stream_text
+            from .responses import stream_text
             async for text in stream_text(self, messages):
                 yield text
             return

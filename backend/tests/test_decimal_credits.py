@@ -131,7 +131,7 @@ def test_document_can_spend_exact_balance_after_hold_refund(shared_billing):
 
 @pytest.mark.parametrize("cached", [0, 700, 1000])
 def test_cache_request_uses_three_rates_frozen_multiplier_and_one_rounding(shared_billing, cached):
-    from app.llm import _parse_usage
+    from app.model_runtime.client import _parse_usage
     from app.models import CreditLedgerEntry, ModelCallUsage
     _, db, workspace, user, identifier = shared_billing
     provider = db.get(SiteModelProvider, identifier)

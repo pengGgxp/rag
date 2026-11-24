@@ -146,8 +146,8 @@ def test_download_and_file_link_use_the_recorded_legacy_key(accounts, resource_s
 def test_durable_command_link_delivery_and_replay(accounts, resource_store, monkeypatch):
     """The real Agent gets a link for a command-created file, then persists it."""
     import json
-    from app import conversations
-    from app.llm import ToolCall, ToolResponse
+    from app.conversations import execution as conversations
+    from app.model_runtime.client import ToolCall, ToolResponse
     from auth_helpers import configured_model, StreamingTestProvider
     from test_cloud_computer import enable_execution
     from test_conversations import create, turn

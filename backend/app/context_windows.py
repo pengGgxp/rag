@@ -12,7 +12,7 @@ from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import select
 
-from .llm import LLMConfigurationError
+from .model_runtime.client import LLMConfigurationError
 from .models import ChatMessage, ContextCheckpoint, Conversation, ConversationContext
 
 
@@ -146,7 +146,7 @@ class WindowStore:
         from .conversation_context import scope_digest
         scope = scope_digest(db, conversation, self.access)
         if request_id is not None and conversation.active_request_id != request_id:
-            from .agent import AgentCancelled
+            from .agent.loop import AgentCancelled
             raise AgentCancelled()
         return conversation, scope
 

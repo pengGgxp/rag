@@ -20,9 +20,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from app import auth, conversation_jobs, conversations, llm_providers, main, tasks
+from app import auth, llm_providers, main, tasks
+from app.conversations import jobs as conversation_jobs, execution as conversations
 from app.db import Base, engine, SessionLocal
-from app.llm import ToolCall, ToolResponse
+from app.model_runtime.client import ToolCall, ToolResponse
 from app.models import (ChatMessage, Document, DocumentStatus, IngestionJob, JobState,
                         KnowledgeBase, KnowledgeBaseToolExecution, ModelBillingSettings)
 from auth_helpers import authenticate, configured_model
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     llm_providers._decrypt_api_key = lambda _: "local-only"
     conversations.OpenAICompatibleChatProvider = lambda **_: Provider()
     conversation_jobs.dispatch = lambda identifier: Thread(target=conversation_jobs.run,
-        args=(identifier,), kwargs={"factory": SessionLocal, "retrieve": main.retrieve_knowledge_base}, daemon=True).start()
+        args=(identifier,), kwargs={"factory": SessionLocal}, daemon=True).start()
     tasks.name_conversation.delay = lambda *_: None
     @asynccontextmanager
     async def lifespan(_app):

@@ -4,8 +4,8 @@ from datetime import timedelta
 from fastapi import HTTPException
 from sqlalchemy import select, update
 
-from .auth import aware, now
-from .models import AgentToolExecution, CloudComputerCommand, Conversation, ConversationExecution, ImageTask
+from ..auth import aware, now
+from ..models import AgentToolExecution, CloudComputerCommand, Conversation, ConversationExecution, ImageTask
 
 
 def validate_owner(db, identifier, access, conversation_id=None, request_id=None):

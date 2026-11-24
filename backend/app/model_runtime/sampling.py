@@ -1,4 +1,4 @@
-"""Interactive model transport and sampling recovery, scoped to one agent step."""
+"""管理单轮模型采样的交互式传输与中断恢复。"""
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -8,8 +8,8 @@ import time
 import httpx
 from httpx_sse import EventSource
 
-from .llm import LLMContextCapacityError, LLMProviderError
-from .upstream_retries import context_capacity_failure, model_failure, retry_after
+from .client import LLMContextCapacityError, LLMProviderError
+from ..upstream_retries import context_capacity_failure, model_failure, retry_after
 
 HTTP_RETRIES = 4
 SAMPLING_RETRIES = 5
@@ -188,7 +188,7 @@ def stream_events(response):
 def model_stream(provider, method, url, **kwargs):
     check_active = _check_active.get()
     if check_active is None:
-        from .upstream_retries import model_stream as shared_stream
+        from ..upstream_retries import model_stream as shared_stream
         with shared_stream(provider, method, url, **kwargs) as response:
             yield response
         return

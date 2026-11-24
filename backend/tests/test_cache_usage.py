@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from app.llm import LLMProviderError, OpenAICompatibleChatProvider, _parse_usage, measured_usage
+from app.model_runtime.client import LLMProviderError, OpenAICompatibleChatProvider, _parse_usage, measured_usage
 from test_llm import configured_settings
 
 

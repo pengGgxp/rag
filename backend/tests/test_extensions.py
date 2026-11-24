@@ -8,10 +8,11 @@ from httpx_sse import EventSource
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, conversations
+from app import auth
+from app.conversations import execution as conversations
 from app.conversation_context import scope_digest
 from app.extensions import ExtensionRuntime
-from app.llm import LLMUsage, ToolCall, ToolResponse
+from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import AgentSkill, AgentSkillFile, Conversation, LoginSession, MCPServer, SiteAuditEvent, SiteSkill
 from auth_helpers import StreamingTestProvider
 from test_auth import register

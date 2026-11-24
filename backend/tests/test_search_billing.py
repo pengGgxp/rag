@@ -105,8 +105,8 @@ def test_balance_and_disable_prevent_upstream_without_task_call_cap(paid, monkey
 @pytest.mark.parametrize("failure", [False, True])
 def test_agent_finishes_after_repeated_empty_or_failed_searches_and_fresh_fetches(paid, monkeypatch, failure):
     import json
-    from app.agent import run_retrieval_agent
-    from app.llm import ToolCall, ToolResponse
+    from app.agent.loop import run_retrieval_agent
+    from app.model_runtime.client import ToolCall, ToolResponse
     _, db, _, _, request, runtime = paid
     calls = []
     def invoke(config, name, arguments):

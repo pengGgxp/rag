@@ -7,11 +7,11 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app.agent import AgentCancelled, run_retrieval_agent
-from app.agent_tools import bounded_message, update_plan
+from app.agent.loop import AgentCancelled, run_retrieval_agent
+from app.agent.tools import bounded_message, update_plan
 from app.context_windows import groups, make_item, project
-from app.effective_context import ContextManager
-from app.llm import LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, ToolResponse
+from app.agent.effective_context import ContextManager
+from app.model_runtime.client import LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import AgentToolExecution, ChatMessage, Conversation, ConversationContext
 from test_context_windows import client, setup_store
 from test_context_replacement import manager_for, Summary

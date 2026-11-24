@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app import shared_providers as shared, llm_providers
 from app.config import Settings
-from app.llm import OpenAICompatibleChatProvider
+from app.model_runtime.client import OpenAICompatibleChatProvider
 from app.models import (
     LLMProviderConfig, ModelBillingSettings, ModelConnection,
     SiteModelProvider, UsagePolicy, User,
