@@ -3,6 +3,38 @@
 本文记录 Issue #146 已迁移的后端目录。后端按业务组织为模块化单体。
 `app.main` 负责 FastAPI 装配，API、Celery Worker 和其他进程入口共用业务模块。
 
+## 第五期目标目录
+
+第五期收齐 #146 的剩余模块。已迁移的知识库、会话、Agent、文本协议、图片和身份模块不重做；仅调整它们与本期模块的接线，以及全站审计路由的归属。
+
+```text
+backend/app/
+  main.py, tasks.py, preview_gateway.py, manage.py  既有进程及运维入口
+  models.py, storage_models.py                    集中 ORM 注册
+  admin/          站点后台路由装配、全站审计查询
+  identity/       登录、鉴权、账号管理
+  knowledge/      知识库、检索、入库
+  conversations/  会话、回答、附件、反馈
+  agent/          执行循环、上下文、工具调度
+  model_runtime/  模型调用协议与流式传输
+  model_catalog/  模型目录、连接、可用性配置
+  images/         生图、编辑及图片任务
+  files/          文件、资源、预览、下载与额度
+  cloud_computer/ 云电脑生命周期、供应商及预览授权
+  skills/         Skill 目录、安装、上传与发现
+  integrations/   MCP 与题目工作台等外部接入
+  search/         联网搜索、配置及计量
+  billing/        积分账本、定价、预留与结算
+  payments/       订单、渠道、签名回调与充值配置
+  site/           站点设置、公告与联系信息
+  operations/     健康、就绪与内部部署维护
+  infra/          配置、数据库及对象存储连接
+```
+
+`admin/router.py` 统一登记后台入口；域内管理接口和业务规则留在各自的包，真正跨域的全站审计查询归 `admin/audit_routes.py`。后台不拥有业务规则，普通用户路由、业务模块和 Worker 不导入后台装配。站点管理员、工作区权限、支付回调和运维控制沿用各自的鉴权。模型配置与协议分开，新供应商或管理入口按实际归属扩展，不预建空模块。
+
+验收以迁移前后的完整 OpenAPI、路由匹配顺序、权限、Celery 任务名/参数/队列、Alembic 元数据与既有启动命令为基线。针对支付回调幂等、账务结算、文件权限、云电脑预览与恢复跑回归；真实验收走 `test`，不在本次 PR 自行合并或部署。
+
 ## 身份与账号模块
 
 | 模块 | 职责 |
