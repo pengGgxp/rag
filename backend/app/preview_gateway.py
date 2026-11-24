@@ -12,11 +12,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import select
 
-from .auth import Access, aware, now
+from .identity.auth import Access, aware, now
 from .cloud_preview import Grant, Preview, digest, origin, owned
 from .config import get_settings
 from .db import SessionLocal
-from .site_auth import reveal
+from .identity.site_auth import reveal
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 COOKIE = "__Host-zk-preview"

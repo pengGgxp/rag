@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFil
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from .auth import Access, get_access, now
+from .identity.auth import Access, get_access, now
 from .db import get_db
 from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 from . import workspace_files

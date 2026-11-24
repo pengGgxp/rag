@@ -10,7 +10,7 @@ from . import payments
 from .db import get_db
 from .models import SiteRechargeConfig
 from .site_audit import record
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 
 
 class CashierMethod(payments.PaymentMethod):

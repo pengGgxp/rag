@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth
+from app.identity import auth
 from app.agent import loop as agent
 from app.extensions import ExtensionRuntime
 from app.knowledge_base_tools import LABELS, TOOLS

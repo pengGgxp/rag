@@ -14,12 +14,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy import func, select, text, update
 
-from .auth import Access, aware, get_access, now
+from .identity.auth import Access, aware, get_access, now
 from .credit_amounts import CreditRate, amount
 from .credits import CreditError, _entry, authorization_hold, ensure_account, release_hold
 from .db import SessionLocal, get_db
 from .models import CloudComputerCommand as Command, CloudComputerSession as Computer, CloudComputerSettings as Settings, Conversation, UsageEvent
-from .site_auth import protect, reveal, site_admin
+from .identity.site_auth import protect, reveal, site_admin
 from .cloud_computer_adapter import adapter
 
 router = APIRouter(tags=["cloud-computer"])

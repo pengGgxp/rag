@@ -68,7 +68,7 @@ def build_group(db, store, library, rows):
 
 def citation_inventory(db, accounts, *, execute):
     """Keep the evidence digest before a later replacement removes the old chunks."""
-    from .auth import Access
+    from .identity.auth import Access
     from .knowledge.originals import resolve_citation
 
     counts = {account: Counter() for account in accounts}

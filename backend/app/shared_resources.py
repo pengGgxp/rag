@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import func, select
 
-from .auth import now
+from .identity.auth import now
 from .models import ChatAttachment, CloudComputerSession, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 
 EXCLUDED = {"node_modules", ".venv", "venv", "__pycache__", ".cache", ".git"}
@@ -329,7 +329,7 @@ def remove_live(db, resource):
 
 def delete_path(db, access, resource, *, remove_object=True, commit=True):
     from .storage_billing import lock_workspace
-    from .auth import now as current_time
+    from .identity.auth import now as current_time
     if resource.owner_user_id != access.user_id:
         raise HTTPException(404, "资源不存在")
     lock_workspace(db, access.user_id)

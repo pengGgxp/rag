@@ -17,7 +17,8 @@ os.environ["MCP_CREDENTIAL_KEY"] = Fernet.generate_key().decode()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
-from app import auth, main, mcp_client
+from app import main, mcp_client
+from app.identity import auth
 from app.db import Base, engine, SessionLocal
 from app.models import MCPServer
 from auth_helpers import authenticate

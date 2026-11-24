@@ -2,20 +2,19 @@
 import hmac
 import secrets
 from datetime import timedelta
-from typing import Literal
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import auth
-from .config import get_settings
-from .db import get_db
-from .models import AuthToken, AuthenticationFlow, ExternalIdentity, LoginSession, User
+from .schemas import CompleteRegistration, ConfirmEmail, SendCode, VerifyCode
+from ..config import get_settings
+from ..db import get_db
+from ..models import AuthToken, AuthenticationFlow, ExternalIdentity, LoginSession, User
 from .site_auth import configuration, email_enabled, send_code_mail
 
 router = APIRouter(prefix="/auth", tags=["email-authentication"])
@@ -128,12 +127,6 @@ def get_flow(request: Request, db: Session = Depends(get_db)):
     return {"flow": flow_view(row) if row else None}
 
 
-class SendCode(BaseModel):
-    email: EmailStr | None = None
-    purpose: Literal["register", "login", "verify", "wechat"] = "login"
-    return_to: str = "/"
-
-
 @router.post("/email/send-code")
 def send_code(payload: SendCode, request: Request, db: Session = Depends(get_db)):
     if not email_enabled(db):
@@ -188,7 +181,7 @@ def send_code(payload: SendCode, request: Request, db: Session = Depends(get_db)
     except HTTPException:
         row.code_hash = None
         row.sent_at = None
-        from .site_audit import record
+        from ..site_audit import record
         record(db, None, "auth.email_delivery_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         response = JSONResponse({"detail": "邮件发送失败，请稍后重试"}, status_code=503)
@@ -197,10 +190,6 @@ def send_code(payload: SendCode, request: Request, db: Session = Depends(get_db)
         return response
     db.commit()
     return pending(row, raw)
-
-
-class VerifyCode(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
 
 
 def finish_login(request, db, row, user):
@@ -215,7 +204,7 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     row = find_flow(request, db)
     email_rate_limit(request, db, row.email or "", row.token_hash, sending=False)
     if row.data.get("stage") != "code" or not row.code_hash or not row.code_expires_at or auth.aware(row.code_expires_at) <= auth.now() or row.attempts >= 5:
-        from .site_audit import record
+        from ..site_audit import record
         record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         raise HTTPException(400, "验证码已失效，请重新发送")
@@ -223,7 +212,7 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
     if not secrets.compare_digest(row.code_hash, code_digest(row, payload.code)):
         if row.attempts >= 5:
             row.code_hash = None
-        from .site_audit import record
+        from ..site_audit import record
         record(db, None, "auth.email_verification_failed", "user", row.user_id, request=request, result="failed")
         db.commit()
         raise HTTPException(400, "验证码不正确")
@@ -247,18 +236,14 @@ def verify_code(payload: VerifyCode, request: Request, db: Session = Depends(get
             user.password_hash = None
         db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))
         user.email_verified_at = auth.now()
-        from .site_audit import record
+        from ..site_audit import record
         record(db, user, "auth.email_verified", "user", user.id, request=request)
     return finish_login(request, db, row, user)
 
 
-class ConfirmEmail(BaseModel):
-    token: str = Field(min_length=20, max_length=200)
-
-
 @router.post("/email/confirm-link")
 def confirm_link(payload: ConfirmEmail, request: Request, db: Session = Depends(get_db)):
-    from .site_audit import record
+    from ..site_audit import record
     auth.rate_limit(request, "confirm-email", limit=15)
     candidate = db.get(AuthToken, auth.digest(payload.token))
     if not candidate or candidate.purpose != "site_verify" or auth.aware(candidate.expires_at) <= auth.now():
@@ -280,11 +265,6 @@ def confirm_link(payload: ConfirmEmail, request: Request, db: Session = Depends(
     record(db, user, "auth.email_verified", "user", user.id, request=request, details={"source": "site_admin_resend"})
     db.commit()
     return {"message": "邮箱验证成功，请使用邮箱验证码登录后设置密码"}
-
-
-class CompleteRegistration(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    password: str | None = Field(default=None, max_length=128)
 
 
 @router.post("/complete-registration", status_code=201)

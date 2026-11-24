@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import auth
+from app.identity import auth
 from app.conversations import attachments as attachments, execution as chat
 from app.conversation_context import estimate_input
 from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, ToolResponse

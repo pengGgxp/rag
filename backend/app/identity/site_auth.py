@@ -3,18 +3,18 @@ import ssl
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr
-from typing import Literal
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, SecretStr, TypeAdapter, ValidationError
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
+from ..db import get_db
+from ..models import LoginSession, SiteAuthAudit, SiteAuthSettings, User
 from .auth import current_session
-from .config import get_settings
-from .db import get_db
-from .models import LoginSession, SiteAuthAudit, SiteAuthSettings, User
+from .schemas import ConfigInput, TestEmail
 
 router = APIRouter(prefix="/site/settings/auth", tags=["site-authentication"])
 
@@ -120,42 +120,8 @@ def site_admin(session: LoginSession = Depends(current_session), db: Session = D
 
 def audit(db, actor, action, details):
     db.add(SiteAuthAudit(actor_user_id=actor.id, action=action, details=details))
-    from .site_audit import record
+    from ..site_audit import record
     record(db, actor, action, "auth_settings", result="failed" if details.get("accepted") is False else "success", details=details)
-
-
-class SMTPInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    host: str = Field(default="", max_length=255, pattern=r"^[a-zA-Z0-9.:-]*$")
-    port: int = Field(default=587, ge=1, le=65535)
-    tls_mode: Literal["ssl", "starttls", "plain"] = "starttls"
-    username: str = Field(default="", max_length=320)
-    password: SecretStr | None = None
-    clear_password: bool = False
-    from_address: str = Field(default="", max_length=320)
-    from_name: str = Field(default="知库", max_length=100, pattern=r"^[^\r\n]*$")
-
-
-class WechatInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    app_id: str = Field(default="", max_length=100, pattern=r"^[a-zA-Z0-9_-]*$")
-    app_key: SecretStr | None = None
-    clear_app_key: bool = False
-
-
-class PolicyInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    require_verified_email: bool = False
-    hourly_email_limit: int = Field(default=100, ge=1, le=10000)
-
-
-class ConfigInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    smtp: SMTPInput | None = None
-    wechat: WechatInput | None = None
-    policy: PolicyInput | None = None
 
 
 def public_config(db):
@@ -229,10 +195,6 @@ def save_config(payload: ConfigInput, db: Session = Depends(get_db), actor: User
     audit(db, actor, "auth.settings_updated", {"fields": [f"{section}.{field}" for section in payload.model_fields_set for field in getattr(payload, section).model_fields_set]})
     db.commit()
     return public_config(db)
-
-
-class TestEmail(BaseModel):
-    email: EmailStr
 
 
 @router.post("/test-email")

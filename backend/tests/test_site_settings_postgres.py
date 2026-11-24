@@ -7,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app import auth, main
+from app import main
+
+from app.identity import auth
 from app.models import UserCreditAccount, SiteSettings
 from test_auth_postgres import auth_postgres
 

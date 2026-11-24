@@ -11,7 +11,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(tempfile.mkdtemp(prefix='rag-pric
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = "local-fixture-only"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app import auth, main, payments
+from app import main, payments
+
+from app.identity import auth
 from app.config import Settings
 from app.db import Base, SessionLocal, engine
 from app.models import ModelBillingSettings, SiteModelProvider

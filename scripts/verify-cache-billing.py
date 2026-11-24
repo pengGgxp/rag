@@ -10,7 +10,7 @@ import httpx
 from httpx_sse import EventSource
 from sqlalchemy import delete, select
 
-from app import auth
+from app.identity import auth
 from app.config import get_settings
 from app.credit_amounts import amount
 from app.db import SessionLocal

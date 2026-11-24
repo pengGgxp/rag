@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from . import model_billing
-from .auth import Access, get_access
+from .identity.auth import Access, get_access
 from .credits import authorization_hold, authorization_hold_amount, settle_model_usage
 from .db import get_db
 from .model_runtime.client import ChatProviderConfig, LLMConfigurationError, LLMProviderError, OpenAICompatibleChatProvider
@@ -17,7 +17,7 @@ from .llm_providers import request_provider_config
 from .models import ModelUsageRequest, ThinkingTest, User
 from .shared_providers import lock_provider
 from .site_audit import record
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .thinking import ThinkingConfig, select_thinking
 from .workspace_billing import LegacyPriceMeter, finish_operation, legacy_call_usage, operation_snapshot
 

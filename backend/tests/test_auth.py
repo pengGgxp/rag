@@ -18,7 +18,9 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from pydantic import SecretStr
 
-from app import auth, main
+from app import main
+
+from app.identity import auth
 from app.conversations import execution as chat
 from app.db import Base
 from app.model_runtime.client import ToolResponse
@@ -169,7 +171,7 @@ def test_reset_is_single_use_and_revokes_all_sessions(accounts, monkeypatch):
     settings = auth.get_settings().model_copy(update={"smtp_host": "smtp.example.com", "smtp_from": "rag@example.com"})
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
     sent = []
-    from app import site_auth, email_auth
+    from app.identity import site_auth, email_auth
     monkeypatch.setattr(site_auth, "get_settings", lambda: settings)
     monkeypatch.setattr(email_auth, "email_rate_limit", lambda *_a, **_k: None)
     monkeypatch.setattr(auth, "send_reset", lambda email, token, db=None: sent.append((email, token)))
@@ -347,7 +349,7 @@ def test_oidc_does_not_merge_by_email_but_supports_explicit_link(accounts, monke
     logged_in = owner.post("/auth/login", json={"email": "owner@example.com", "password": PASSWORD})
     owner.headers["X-CSRF-Token"] = logged_in.json()["csrf_token"]
     # Linking now requires a real mailbox proof even while rollout policy is off.
-    from app import email_auth, site_auth
+    from app.identity import email_auth, site_auth
     mail_settings = auth.get_settings().model_copy(update={"smtp_host": "smtp.example.com", "smtp_from": "mail@example.com"})
     monkeypatch.setattr(site_auth, "get_settings", lambda: mail_settings)
     monkeypatch.setattr(email_auth, "get_settings", lambda: mail_settings)

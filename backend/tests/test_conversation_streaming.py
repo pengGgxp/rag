@@ -376,7 +376,8 @@ def test_manual_compaction_preserves_budgeted_users_and_repeat_is_free(client, m
 
 
 def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinking(client, monkeypatch):
-    from app import auth, mcp_client
+    from app import mcp_client
+    from app.identity import auth
     from app.models import AgentSkill, LoginSession
     from app.thinking import encrypt_display_thinking
     from cryptography.fernet import Fernet
@@ -519,8 +520,8 @@ def test_hard_budget_rejects_huge_current_input_without_upstream(client, monkeyp
 
 
 def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
-    from app import auth
-    from app.auth import Access
+    from app.identity import auth
+    from app.identity.auth import Access
     from app.llm_providers import request_provider_config
     from app.agent.effective_context import ContextManager
     from app.conversation_context import SUMMARY_PREFIX
@@ -716,7 +717,7 @@ def test_confirmed_failed_stream_is_charged_and_insufficient_balance_becomes_pen
 
 def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(client):
     from types import SimpleNamespace
-    from app import auth
+    from app.identity import auth
     from app.models import LoginSession, ContextOperation, UsageEvent, LLMProviderConfig
     from app.credits import authorization_hold
     from app.workspace_billing import operation_snapshot, LegacyPriceMeter

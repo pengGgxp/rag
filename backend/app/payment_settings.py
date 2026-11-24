@@ -12,7 +12,7 @@ from . import payments
 from .db import get_db
 from .models import SitePaymentConfig
 from .site_audit import record
-from .site_auth import site_admin, protect
+from .identity.site_auth import site_admin, protect
 
 router = APIRouter(prefix="/site/admin/payments", tags=["site-admin-payments"])
 

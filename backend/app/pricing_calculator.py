@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import payments
 from .db import get_db
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .credit_amounts import amount
 
 router = APIRouter(prefix="/site/admin/pricing-calculator", tags=["site-admin"])

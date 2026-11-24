@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .auth import Access, get_access, now
+from .identity.auth import Access, get_access, now
 from .db import get_db
 from .models import ChatAttachment, Document, DocumentStatus
 from .storage_backend import current_storage

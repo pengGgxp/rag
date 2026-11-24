@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.auth import now
+from app.identity.auth import now
 from app.models import Chunk, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBase
 from test_auth import accounts, library, register, share, switch
 from test_retrieval import add_document

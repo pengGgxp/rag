@@ -6,7 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from ...auth import aware, now
+from ...identity.auth import aware, now
 from ...config import get_settings
 from ...credits import (
     CreditError, authorization_hold, authorization_hold_amount, release_hold, release_embedding_hold,

@@ -13,7 +13,7 @@ from .db import get_db
 from .llm_providers import _encrypt_api_key, _decrypt_api_key, validate_base_url
 from .model_pricing import settings_locked
 from .models import ModelConnection, SiteModelProvider
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 
 router = APIRouter(prefix="/site/admin/model-connections", tags=["site-admin"])

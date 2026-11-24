@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from . import file_operations as ops, shared_resources as shared
-from .auth import now
+from .identity.auth import now
 from .models import ChatAttachment, WorkspaceDirectory, WorkspaceFile, WorkspaceFileVersion
 
 

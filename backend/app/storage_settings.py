@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from .db import get_db
 from .models import SiteStorageSettings
-from .site_auth import protect, reveal, site_admin
+from .identity.site_auth import protect, reveal, site_admin
 from .site_audit import record
 from .cos_storage import CosStorage
 from .oss_storage import OssStorage

@@ -7,10 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
-from .auth import get_access
+from .identity.auth import get_access
 from .db import get_db
 from .models import ProductSuggestion, User
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 
 router = APIRouter(tags=["suggestions"])

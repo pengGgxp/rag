@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .. import model_billing
 from ..audit_log import record_audit
-from ..auth import Access, get_access
+from ..identity.auth import Access, get_access
 from ..config import get_settings
 from ..credits import authorization_hold, authorization_hold_amount, settle_model_usage
 from ..db import get_db

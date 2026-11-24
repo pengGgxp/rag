@@ -9,7 +9,7 @@ from . import model_billing, web_search
 from .credit_amounts import amount, exact_charge
 from .credits import CreditError
 from .models import ModelCallUsage, ModelUsageRequest, SearchToolCall, SiteSearchSettings
-from .site_auth import protect, reveal
+from .identity.site_auth import protect, reveal
 from .workspace_billing import multiplier
 
 

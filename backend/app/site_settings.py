@@ -6,10 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .auth import current_session
+from .identity.auth import current_session
 from .db import get_db
 from .models import SiteSettings
-from .site_auth import site_admin
+from .identity.site_auth import site_admin
 from .site_audit import record
 
 router = APIRouter(tags=["site-settings"])

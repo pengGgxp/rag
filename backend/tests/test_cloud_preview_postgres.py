@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import auth
+from app.identity import auth
 from app.models import CloudComputerSession, CloudComputerCommand, CloudPreview, Conversation
 from test_auth_postgres import auth_postgres
 

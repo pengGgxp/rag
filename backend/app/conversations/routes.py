@@ -11,7 +11,7 @@ from .. import model_billing
 from .. import resource_mentions as resource_references
 from ..agent.effective_context import ContextManager
 from ..audit_log import record_audit
-from ..auth import Access, get_access
+from ..identity.auth import Access, get_access
 from ..conversation_context import HISTORY_TOOL, build_messages
 from ..credits import CreditError, authorization_hold, authorization_hold_amount
 from ..db import get_db

@@ -18,7 +18,8 @@ THINKING = os.environ.get("PREVIEW_THINKING") == "1"
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app import auth, llm_providers, main
+from app import llm_providers, main
+from app.identity import auth
 from app.db import Base, engine, SessionLocal
 from app.models import ChatMessage, Conversation, ModelBillingSettings, SiteModelProvider
 from app.credits import ensure_account

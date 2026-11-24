@@ -11,7 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+
+from app.identity import auth
 from app.models import AgentToolExecution, CloudComputerSettings, CloudComputerSession, CloudComputerCommand, Conversation, LoginSession
 from test_auth_postgres import auth_postgres
 from test_cloud_computer import FakeCloud

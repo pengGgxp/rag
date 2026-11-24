@@ -10,7 +10,9 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import auth, cloud_computer as cloud
+from app import cloud_computer as cloud
+
+from app.identity import auth
 from app.config import get_settings
 from app.credits import ensure_account
 from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, UserCreditAccount, CreditLedgerEntry, Conversation, User, UsageEvent

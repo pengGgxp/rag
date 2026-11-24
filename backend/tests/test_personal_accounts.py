@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app.auth import now
+from app.identity.auth import now
 from app.models import AuditLog, CloudComputerSession, LegacyAccountObjectPrefix, User, WorkspaceFile
 from app.personal_accounts import cleanup_suspended_accounts
 from app.shared_resources import materialize_legacy_mount, object_key

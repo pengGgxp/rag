@@ -2,7 +2,7 @@
 import os
 from uuid import uuid4
 
-from app import auth
+from app.identity import auth
 from app.db import SessionLocal
 from app.models import SiteSkill, SiteSkillFile
 from workspace_local_preview import LocalFiles, LocalS3

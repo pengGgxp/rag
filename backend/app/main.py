@@ -13,12 +13,12 @@ from sqlalchemy import text
 from .knowledge.routes import router as knowledge_router
 from .config import get_settings
 from .db import SessionLocal, engine, get_db, init_db
-from .auth import BrowserRequestGuard, router as auth_router
-from .email_auth import router as email_auth_router
-from .wechat_auth import router as wechat_auth_router
-from .site_auth import router as site_auth_router
-from .site_admin import router as site_admin_router
-from . import auth_logging  # noqa: F401
+from .identity.auth import BrowserRequestGuard, router as auth_router
+from .identity.email_auth import router as email_auth_router
+from .identity.wechat_auth import router as wechat_auth_router
+from .identity.site_auth import router as site_auth_router
+from .identity.site_admin import router as site_admin_router
+from .identity import auth_logging  # noqa: F401
 from .knowledge.ingestion.embedding import OpenAICompatibleEmbeddingProvider
 from .storage_settings import router as storage_settings_router
 from .knowledge.ingestion.uploads import router as document_uploads_router

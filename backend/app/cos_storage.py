@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from qcloud_cos import CosConfig, CosS3Client
 from qcloud_cos.cos_exception import CosServiceError
 
-from .site_auth import reveal
+from .identity.site_auth import reveal
 
 logging.getLogger("qcloud_cos").setLevel(logging.CRITICAL)
 

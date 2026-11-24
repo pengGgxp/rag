@@ -7,7 +7,9 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, shared_resources
+from app import shared_resources
+
+from app.identity import auth
 from app.models import WorkspaceFile, WorkspaceFileVersion, LoginSession
 from app.workspace_file_links import get_file_link
 from test_auth_postgres import auth_postgres

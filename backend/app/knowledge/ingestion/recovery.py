@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import select, text
 
-from ...auth import now
+from ...identity.auth import now
 from .failures import failure, uncertain_submission
 from .jobs import job_matches_original
 from ...models import Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBaseStatus

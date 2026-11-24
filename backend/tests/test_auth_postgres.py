@@ -14,7 +14,9 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
-from app import auth, email_auth, main, site_auth
+from app import main
+
+from app.identity import auth, email_auth, site_auth
 from app.models import AuthenticationFlow, CreditLedgerEntry, ExternalIdentity, LoginSession, User
 
 

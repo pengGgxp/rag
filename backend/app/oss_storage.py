@@ -5,7 +5,7 @@ from tempfile import TemporaryFile
 import alibabacloud_oss_v2 as oss
 from fastapi import HTTPException
 
-from .site_auth import reveal
+from .identity.site_auth import reveal
 
 
 class OssStorage:
