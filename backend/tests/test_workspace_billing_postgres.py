@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import workspace_billing as pricing
+from app.billing import workspace as pricing
 from app.models import BillingSnapshot, ModelBillingSettings, User, UserModelPolicy
 from test_auth_postgres import auth_postgres
 

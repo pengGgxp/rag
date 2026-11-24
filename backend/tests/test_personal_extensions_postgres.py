@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
-from app import remote_tool_receipts as receipts
+from app.integrations import receipts
 from app.identity import auth
 from app.models import ChatMessage, LoginSession, MCPServer, RemoteToolExecution
 from test_auth_postgres import auth_postgres

@@ -8,8 +8,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import ChatMessage, Conversation, SiteModelProvider, User, LLMProviderConfig, ContextCheckpoint
-from app.shared_providers import lock_provider
-from app.thinking import select_thinking
+from app.model_catalog.shared_providers import lock_provider
+from app.model_catalog.thinking import select_thinking
 from test_auth_postgres import auth_postgres
 from test_thinking import effort
 from auth_helpers import connection_id

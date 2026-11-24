@@ -12,7 +12,7 @@ from sse_starlette.sse import AppStatus
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, RedirectResponse
 
-from app import mcp_client
+from app.integrations import mcp_client
 
 
 @pytest.mark.parametrize("url", [

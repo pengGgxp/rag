@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import Settings
+from app.infra.config import Settings
 from app.knowledge.ingestion.docmind import AliyunDocMind, DocMindError, normalize_layouts
 from app.knowledge.ingestion.parsed_document import parsed_chunks
 

@@ -7,9 +7,9 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from ..identity.auth import Access, get_access
-from ..db import get_db
+from app.infra.db import get_db
 from ..models import AnswerFeedback, ChatMessage, Conversation
-from ..audit_log import record_audit
+from app.operations.audit_log import record_audit
 
 from .schemas import FeedbackWrite
 

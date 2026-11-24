@@ -12,14 +12,14 @@ from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import OperationalError
 
 from ...identity.auth import Access, aware, now, get_access
-from ...db import get_db, SessionLocal
+from app.infra.db import get_db, SessionLocal
 from .failures import classify, database_sqlstate, failure, log_worker_failure, rejection
 from .admission import publish, replacement_target, check_format, MAX_DOCUMENT_BYTES, SUFFIXES
 from .jobs import latest_document_job
 from ..schemas import PartInput, UploadInput
 from ...models import Document, DocumentStatus, DocumentUpload, User
-from ...storage_backend import current_storage
-from ...upstream_retries import retry_after
+from app.infra.storage_backend import current_storage
+from app.infra.upstream_retries import retry_after
 
 router = APIRouter(tags=["document-uploads"])
 PART_SIZE = 8 * 1024 * 1024
@@ -89,7 +89,7 @@ def create_upload(library_id: UUID, payload: UploadInput, idempotency_key: UUID 
     previous = replacement_target(db, library_id, payload.replace_document_id) if payload.replace_document_id else None
     if previous and previous.content_hash != payload.expected_content_hash:
         raise HTTPException(412, "原件已经更新，请刷新后重新选择文件")
-    from ...storage_billing import check_capacity
+    from app.files.quotas import check_capacity
     check_capacity(db, access.user_id, payload.size_bytes, replaced_bytes=previous.size_bytes if previous else 0)
     if (Path(payload.filename).suffix.lower() not in SUFFIXES or "/" in payload.filename
             or "\\" in payload.filename or any(ord(c) < 32 for c in payload.filename + payload.content_type)):
@@ -236,7 +236,7 @@ def cancel_upload(identifier: UUID, db=Depends(get_db), access=Depends(get_acces
 
 
 def finalize_upload(identifier):
-    from ...file_operations import workspace_lock
+    from app.files.operations import workspace_lock
     with SessionLocal() as db:
         row = db.get(DocumentUpload, UUID(identifier))
         if not row:
@@ -433,7 +433,7 @@ def recover_uploads():
 
 def cleanup_orphans():
     """Only platform-shaped objects older than the session lifetime are eligible."""
-    from ...storage_backend import active_settings
+    from app.infra.storage_backend import active_settings
     with SessionLocal() as db:
         settings = active_settings(db)
         if not settings or not settings.active:

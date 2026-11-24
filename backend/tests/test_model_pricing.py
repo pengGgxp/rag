@@ -1,7 +1,7 @@
 from uuid import UUID
 import pytest
 from sqlalchemy import select
-from app import model_pricing as prices
+from app.billing import pricing as prices
 from app.models import ModelBillingSettings, SiteAuditEvent, UsagePolicy, User
 from test_auth import accounts, register
 from test_workspace_billing import shared_billing

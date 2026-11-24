@@ -8,9 +8,10 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import cloud_computer as cloud, cloud_preview as preview, preview_gateway as gateway
+from app.cloud_computer import runtime as cloud, preview
+from app import preview_gateway as gateway
 from app.identity.auth import aware
-from app.config import get_settings
+from app.infra.config import get_settings
 from app.models import CloudPreview, CloudPreviewGrant, LoginSession
 from test_auth import accounts, register
 from test_cloud_computer import setup
@@ -20,7 +21,7 @@ def prepare(accounts, monkeypatch):
     client, db, conversation, access, fake, factory = setup(accounts, monkeypatch, rate="0")
     monkeypatch.setattr(get_settings(), "preview_enabled", True)
     monkeypatch.setattr(fake, "start_preview", lambda sandbox, identifier, payload: fake.start(sandbox, identifier, payload["command"]), raising=False)
-    from app.cloud_computer_adapter import preview_ingress_port
+    from app.cloud_computer.adapter import preview_ingress_port
     monkeypatch.setattr(fake, "preview_target", lambda sandbox, port, identifier: (f"{preview_ingress_port(identifier)}-synthetic.cn-hangzhou.sandbox.aliyuncs.com", "synthetic-traffic-token"), raising=False)
     monkeypatch.setattr(fake, "preview_alive", lambda *_: True, raising=False)
     monkeypatch.setattr(fake, "stop_preview", lambda *_: None, raising=False)

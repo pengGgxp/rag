@@ -11,7 +11,7 @@ from app.models import (
     AuthToken, ExternalIdentity, LoginSession, SiteAuditEvent, SiteAuthSettings,
     SiteModelProvider, User, UserCreditAccount, UserModelPolicy,
 )
-from app.site_audit import prune, record
+from app.operations.site_audit import prune, record
 from test_auth import PASSWORD, register
 from auth_helpers import connection_id
 

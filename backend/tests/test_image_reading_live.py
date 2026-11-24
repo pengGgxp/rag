@@ -9,9 +9,9 @@ from uuid import uuid4
 
 import pytest
 
-from app.cloud_computer_adapter import AlibabaSandbox
-from app.cloud_file_operation import image_path, inspect_image
-from app.image_reading import image_type
+from app.cloud_computer.adapter import AlibabaSandbox
+from app.cloud_computer.cloud_file_operation import image_path, inspect_image
+from app.files.image_reading import image_type
 
 
 @pytest.mark.skipif(os.environ.get("RAG_IMAGE_READ_LIVE_ACCEPT") != "1",

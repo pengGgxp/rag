@@ -10,14 +10,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 
 from app.identity import auth
 from app.images import adapters as image_adapters, tasks as image_tasks, tools as image_tools
 from app.conversations import execution as conversations
 from app.agent.loop import AgentCancelled
-from app.credits import ensure_account
-from app.extensions import ExtensionRuntime
+from app.billing.credits import ensure_account
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (AgentToolExecution, ChatMessage, Conversation, ImageTask,
     UsageEvent)
 from auth_helpers import configured_model
@@ -290,7 +290,7 @@ def test_single_worker_generation_visual_read_document_and_replay(accounts, monk
     mounted = MemoryMount()
     mounted.objects = resource_store[0]
     configure_mount(db, monkeypatch, mounted)
-    from app.shared_resources import prefix
+    from app.files.shared import prefix
     fake = LocalFileCloud(tmp_path / "workspace", mounted, prefix(actor.user_id))
     start_file = fake.start_file
     monkeypatch.setattr(fake, "start_file", lambda sandbox, identifier, operation:

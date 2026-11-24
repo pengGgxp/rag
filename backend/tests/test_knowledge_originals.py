@@ -5,15 +5,16 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import file_preview_access, tasks
+from app.files import preview_access as file_preview_access
+from app import tasks
 
 from app.identity import auth
 from app.knowledge.ingestion import pipeline
 from app.knowledge import routes as knowledge_routes
 from app.knowledge.originals import original_key, prefix, resolve_citation
-from app.migrate_knowledge_originals import migrate
+from app.operations.migrate_knowledge_originals import migrate
 from app.models import ChatMessage, Chunk, Conversation, Document, DocumentStatus, EmbeddingStatus, IngestionJob, JobState, KnowledgeBase
-from app.storage_billing import inventory
+from app.files.quotas import inventory
 from test_auth import library, register
 from test_auth_postgres import auth_postgres
 from test_cloud_computer_mount import MemoryMount
@@ -30,7 +31,7 @@ def test_upload_replace_delete_restore_and_historical_citation(accounts, monkeyp
     kb = library(owner)
     library(outsider)
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     monkeypatch.setattr(file_preview_access, "current_storage", lambda _: store)
     queued = []
     monkeypatch.setattr(knowledge_routes.process_document, "delay", queued.append)

@@ -11,7 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app import main, storage_billing, tasks
+from app import main, tasks
+from app.files import quotas as storage_billing
 
 from app.identity import auth
 from app.knowledge.ingestion import uploads as document_uploads
@@ -26,7 +27,7 @@ def test_verifying_upload_does_not_lock_account_during_download(auth_postgres, m
     engine = auth_postgres
     storage = FakeCos()
     monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     processed = []
     monkeypatch.setattr(tasks.process_document, "delay", processed.append)
@@ -122,7 +123,7 @@ def test_parallel_sealing_and_verifying_admits_only_once(auth_postgres, monkeypa
     monkeypatch.setattr(storage, "copy", copy, raising=False)
     monkeypatch.setattr(storage, "download", record_download)
     monkeypatch.setattr(document_uploads, "current_storage", lambda _: storage)
-    monkeypatch.setattr("app.file_operations.storage", lambda _: storage)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: storage)
     monkeypatch.setattr(document_uploads, "SessionLocal", lambda: Session(engine, expire_on_commit=False))
     monkeypatch.setattr(tasks.verify_upload, "delay", lambda _: None)
     processed = []

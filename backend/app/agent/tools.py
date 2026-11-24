@@ -38,7 +38,7 @@ def update_plan(arguments):
 
 
 def select_evidence(evidence, count, budget):
-    from ..conversation_context import estimate_input
+    from .conversation_context import estimate_input
     selected = []
     for item in evidence:
         if len(selected) >= count:
@@ -50,7 +50,7 @@ def select_evidence(evidence, count, budget):
 
 def bounded_message(message, result_id, budget):
     """Keep the full receipt elsewhere; bound only the live model projection."""
-    from ..conversation_context import estimate_input
+    from .conversation_context import estimate_input
     result = deepcopy(message)
     content = result.get("content") or ""
     try:
@@ -124,7 +124,7 @@ def text_fields(data):
 
 
 def evidence_page(data, result_id, budget, offset=None):
-    from ..conversation_context import estimate_input
+    from .conversation_context import estimate_input
     candidates = data["evidence"]
     base = data.get("candidate_offset", 0)
     offset = base if offset is None else offset

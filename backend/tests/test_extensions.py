@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.identity import auth
 from app.conversations import execution as conversations
-from app.conversation_context import scope_digest
-from app.extensions import ExtensionRuntime
+from app.agent.conversation_context import scope_digest
+from app.integrations.runtime import ExtensionRuntime
 from app.model_runtime.client import LLMUsage, ToolCall, ToolResponse
 from app.models import AgentSkill, AgentSkillFile, Conversation, LoginSession, MCPServer, SiteAuditEvent, SiteSkill
 from auth_helpers import StreamingTestProvider
@@ -52,8 +52,8 @@ def test_non_tool_model_ignores_platform_and_historical_extensions(accounts, mon
 
 def test_retired_or_stale_skill_protocol_content_does_not_reenter_requests(monkeypatch):
     from types import SimpleNamespace
-    from app import mcp_client
-    from app.thinking import history_message
+    from app.integrations import mcp_client
+    from app.model_catalog.thinking import history_message
     config = SimpleNamespace(continuation_required=True, site_provider_id="provider", model="model",
                              thinking=SimpleNamespace(adapter="deepseek"), api_protocol="chat_completions", connection_id="connection")
     row = SimpleNamespace(role="assistant", content="Historical answer", encrypted_continuation="opaque")

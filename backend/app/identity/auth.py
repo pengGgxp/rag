@@ -15,9 +15,9 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..audit_log import record_audit
-from ..config import get_settings
-from ..db import get_db
+from app.operations.audit_log import record_audit
+from app.infra.config import get_settings
+from app.infra.db import get_db
 from ..models import (
     AuthToken, Conversation, ExternalIdentity,
     KnowledgeBase, KnowledgeBaseStatus, LoginSession,
@@ -149,7 +149,7 @@ def create_user(db, email, name, password=None):
     user = User(email=normalize_email(email), name=name, password_hash=passwords.hash(password) if password else None)
     db.add(user)
     db.flush()
-    from ..credits import ensure_account
+    from app.billing.credits import ensure_account
     ensure_account(db, user.id)
     db.flush()
     return user
@@ -189,7 +189,7 @@ def login_response(db, user, previous=None, *, request=None, action="auth.login"
     )
     db.add(session)
     record_account_audit(db, user.id, action, "session", request=request)
-    from ..site_audit import record as record_site_event
+    from app.operations.site_audit import record as record_site_event
     record_site_event(db, user, action, "user", user.id, request=request)
     db.commit()
     response = JSONResponse(session_info(db, session))
@@ -253,13 +253,13 @@ def login(payload: Credentials, request: Request, db: Session = Depends(get_db))
     user = db.scalar(select(User).where(User.email == normalize_email(payload.email)))
     valid = passwords.verify(payload.password, user.password_hash if user and user.password_hash else DUMMY_HASH)
     if not user or not user.password_hash or not valid:
-        from ..site_audit import record as record_site_event
+        from app.operations.site_audit import record as record_site_event
         record_site_event(db, None, "auth.login_failed", "user", user.id if user else None,
                           request=request, result="failed", details={"method": "password"})
         db.commit()
         raise HTTPException(401, "邮箱或密码不正确")
     if user.is_suspended:
-        from ..site_audit import record as record_site_event
+        from app.operations.site_audit import record as record_site_event
         record_site_event(db, None, "auth.login_blocked_suspended", "user", user.id, request=request, result="blocked")
         db.commit()
         raise HTTPException(403, "账号已停用，请联系站点管理员")
@@ -277,7 +277,7 @@ def me(session: LoginSession = Depends(current_session), db: Session = Depends(g
 
 @router.post("/logout", status_code=204)
 def logout(request: Request, session: LoginSession = Depends(current_session), db: Session = Depends(get_db)):
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, db.get(User, session.user_id), "auth.logout", "user", session.user_id, request=request)
     record_account_audit(db, session.user_id, "auth.logout", "session", request=request)
     db.delete(session)
@@ -298,7 +298,7 @@ def change_password(payload: PasswordChange, request: Request,
     if user.password_hash and not passwords.verify(payload.current_password, user.password_hash):
         raise HTTPException(400, "当前密码不正确")
     user.password_hash = passwords.hash(payload.password)
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, user, "auth.password_changed", "user", user.id, request=request)
     db.execute(delete(LoginSession).where(LoginSession.user_id == user.id, LoginSession.token_hash != session.token_hash))
     record_account_audit(db, user.id, "auth.password_changed", "user", resource_id=user.id, request=request)
@@ -364,7 +364,7 @@ def reset(payload: ResetPassword, request: Request, db: Session = Depends(get_db
     db.execute(update(User).where(User.id == user_id).values(password_hash=new_hash, email_verified_at=now()))
     db.execute(delete(AuthToken).where(AuthToken.user_id == user_id, AuthToken.purpose == "reset"))
     db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, db.get(User, user_id), "auth.password_reset", "user", user_id, request=request)
     record_account_audit(db, user_id, "auth.password_reset", "user", resource_id=user_id, request=request)
     db.commit()
@@ -421,7 +421,7 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
                 raise ValueError("identity already linked")
             if not identity:
                 db.add(ExternalIdentity(provider=info["iss"], subject=info["sub"], user_id=current.user_id))
-            from ..site_audit import record
+            from app.operations.site_audit import record
             record(db, db.get(User, current.user_id), "auth.oauth_linked", "user", current.user_id, request=request)
             db.commit()
             return RedirectResponse(f"{settings.frontend_url}/?account=1", status_code=303)
@@ -451,7 +451,7 @@ async def oauth_callback(request: Request, db: Session = Depends(get_db)):
         return response
     except Exception:
         db.rollback()
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, None, "auth.oauth_failed", "user", request=request, result="failed")
         db.commit()
         return RedirectResponse(f"{settings.frontend_url}/?auth_error=oauth_failed", status_code=303)

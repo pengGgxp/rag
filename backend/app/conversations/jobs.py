@@ -11,11 +11,11 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .. import model_billing
+from app.billing import model_usage as model_billing
 from ..identity.auth import Access
-from ..credits import settle_model_usage
-from ..db import SessionLocal
-from ..mcp_client import decrypt_headers, encrypt_headers
+from app.billing.credits import settle_model_usage
+from app.infra.db import SessionLocal
+from app.integrations.mcp_client import decrypt_headers, encrypt_headers
 from ..models import ChatMessage, ContextOperation, Conversation, ConversationEvent, ConversationExecution, ConversationTitleTask, ThinkingTest
 
 logger = logging.getLogger("app.conversation_jobs")
@@ -149,8 +149,8 @@ def recover_steered_blocks(db, request_id, blocks):
 
 def unpack(row):
     from ..model_runtime.client import ChatProviderConfig
-    from ..thinking import ThinkingSelection
-    from ..web_search import SearchConfig
+    from app.model_catalog.thinking import ThinkingSelection
+    from app.search.web import SearchConfig
     payload = json.loads(decrypt_headers(row.encrypted_payload)["payload"])
     actor = payload["access"]
     access = Access(UUID(actor["user_id"]), actor["session_hash"])
@@ -240,7 +240,7 @@ def title_run(identifier, factory=SessionLocal):
             db.commit()
             return
         from ..models import SiteModelProvider
-        from ..shared_providers import unavailable_reason
+        from app.model_catalog.shared_providers import unavailable_reason
         shared = db.get(SiteModelProvider, UUID(config.site_provider_id)) if config.site_provider_id else None
         if not shared or unavailable_reason(db, shared, None, True):
             task.status, task.finished_at = "skipped", datetime.now(timezone.utc)
@@ -314,14 +314,14 @@ def interrupt_execution(db, row):
         operation.status, operation.result = "interrupted", {"status": "failed", "error": "整理已中断，原始记录已保留"}
     db.execute(update(Conversation).where(Conversation.id == row.conversation_id,
         Conversation.active_request_id == row.request_id).values(active_request_id=None))
-    from .. import model_billing
+    from app.billing import model_usage as model_billing
     from ..models import ModelUsageRequest
     if db.get(ModelUsageRequest, row.request_id):
         model_billing.finalize_request(db, row.request_id, row.status)
     else:
         access, hold, _, _ = unpack(row)
-        from ..credits import settle_model_usage
-        from ..workspace_billing import finish_operation, legacy_call_usage
+        from app.billing.credits import settle_model_usage
+        from app.billing.workspace import finish_operation, legacy_call_usage
         from decimal import Decimal
         settle_model_usage(db, access.user_id, access.user_id, row.request_id,
             legacy_call_usage(db, access.user_id, row.request_id), Decimal(hold))
@@ -376,7 +376,7 @@ def recover_interrupted_conversations(db: Session):
             "thinking_version": test.thinking_version, "completed": False,
             "error": "服务重启，测试已中断，已确认用量按原规则结算"}
     from ..models import BillingSnapshot, CreditLedgerEntry
-    from ..workspace_billing import legacy_call_usage
+    from app.billing.workspace import legacy_call_usage
     for snapshot in db.scalars(select(BillingSnapshot).where(
             BillingSnapshot.event_key == "model", BillingSnapshot.status == "running",
             ~BillingSnapshot.request_id.in_(owned))):

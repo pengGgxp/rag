@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import payments
+from app.payments import orders as payments
 from app.models import RechargeOrder, SiteRechargeConfig, SiteAuditEvent
 from test_auth import register, share, switch
 from test_payment_settings import admin

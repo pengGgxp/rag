@@ -4,8 +4,8 @@ from uuid import uuid4
 import pytest
 
 from app.agent.effective_context import ContextManager
-from app.conversation_context import digest, scope_digest
-from app.context_windows import ContextWindowError, make_item
+from app.agent.conversation_context import digest, scope_digest
+from app.agent.context_windows import ContextWindowError, make_item
 from app.models import AgentSkill, ContextCheckpoint, Conversation, ConversationContext, MCPServer, SiteSkill
 from test_context_windows import client, install, setup_store
 from test_resources import resource_store
@@ -87,7 +87,8 @@ def test_retired_skill_versions_are_absent_from_identity_fingerprint(scope_case)
 
 
 def test_each_message_and_compact_recovery_uses_current_skill_metadata(client, resource_store, monkeypatch):
-    from app import cloud_computer, shared_resources
+    from app.cloud_computer import runtime as cloud_computer
+    from app.files import shared as shared_resources
     from app.conversations import execution as conversations
     from app.model_runtime.client import LLMUsage, ToolResponse
     from test_conversations import turn

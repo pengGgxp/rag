@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
-from .. import resource_mentions as resource_references
+from app.files import mentions as resource_references
 from ..identity.auth import Access
 from ..models import ChatMessage, ContextCheckpoint, Conversation, Document, DocumentStatus, KnowledgeBaseStatus
 from .attachments import attachment_read

@@ -135,7 +135,7 @@ def test_candidate_pages_revalidate_versions_and_inherit_access_on_saved_pages(c
 
 
 def test_large_mcp_text_is_saved_paged_and_revocation_blocks_saved_pages(client):
-    from app.mcp_client import tool_digest
+    from app.integrations.mcp_client import tool_digest
     db, manager = fresh_manager(client)
     server = MCPServer(owner_id=manager.access.user_id, account_id=manager.access.user_id,
         name="Remote", url="https://example.test/mcp", transport="sse", tools=[], allowed_tools=["read"],
@@ -174,7 +174,7 @@ def test_candidate_continuation_enters_citations_only_when_delivered_to_model(cl
 
 
 def test_mcp_evidence_fields_cannot_be_promoted_to_knowledge_citations(client):
-    from app.mcp_client import tool_digest
+    from app.integrations.mcp_client import tool_digest
     db, manager = fresh_manager(client)
     _, candidates = knowledge_candidates(db, manager)
     server = MCPServer(owner_id=manager.access.user_id, account_id=manager.access.user_id,
@@ -252,8 +252,8 @@ def test_oversized_single_candidate_text_is_readable_and_stale_read_is_rejected(
 @pytest.mark.parametrize("protocol", ["chat_completions", "responses", "anthropic", "gemini"])
 def test_agent_discovers_loads_and_runs_over_20_fresh_mcp_observations(client, monkeypatch, protocol):
     from datetime import datetime, timezone
-    from app import mcp_client
-    from app.extensions import ExtensionRuntime
+    from app.integrations import mcp_client
+    from app.integrations.runtime import ExtensionRuntime
     from app.models import ChatMessage
     db, manager = fresh_manager(client)
     manager.config = replace(manager.config, api_protocol=protocol)

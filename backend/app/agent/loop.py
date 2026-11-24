@@ -15,11 +15,11 @@ from sqlalchemy import or_, select
 
 from ..model_runtime.client import LLMProviderError, LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, estimate_tokens
 from ..models import Document, DocumentStatus, KnowledgeBase, KnowledgeBaseStatus
-from ..workspace_files import FILE_TOOL_ERRORS
-from ..image_reading import model_image_message
-from ..upstream_retries import retry_activity
-from ..knowledge_base_tools import LABELS as KNOWLEDGE_TOOL_LABELS
-from ..tool_errors import tool_outcome
+from app.files.workspace import FILE_TOOL_ERRORS
+from app.files.image_reading import model_image_message
+from app.infra.upstream_retries import retry_activity
+from ..knowledge.tools import LABELS as KNOWLEDGE_TOOL_LABELS
+from .tool_errors import tool_outcome
 
 FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_file",
                              "apply_patch", "delete_file", "run_command", "get_workspace_file_link",
@@ -29,7 +29,7 @@ FILE_TOOL_NAMES = frozenset(("list_files", "read_file", "read_image", "write_fil
 
 def tool_failure_summary(name, result):
     if result.get("error"):
-        from ..tool_errors import public_error
+        from .tool_errors import public_error
         return public_error(result["error"])
     if name in KNOWLEDGE_TOOL_LABELS:
         return result.get("error") or "操作未完成，请重新选择知识库后重试"
@@ -293,7 +293,7 @@ def stream_retrieval_agent(
     read_steering=None,
 ) -> Iterator[tuple[str, Any]]:
     """Run model/tool rounds until the model answers, the user stops, or a request fails."""
-    from ..skill_discovery import prompt as skill_prompt
+    from app.skills.discovery import prompt as skill_prompt
     knowledge_base_mentions = knowledge_base_mentions or []
     document_mentions = document_mentions or []
     with factory() as db:
@@ -341,7 +341,7 @@ def stream_retrieval_agent(
         tools = ([DISCOVER_TOOL, SEARCH_TOOL] if context_manager is None or context_manager.config.thinking.supports_tools
             else []) + extension_tools + (search.tools if search else [])
         if context_manager and context_manager.config.thinking.supports_tools:
-            from ..conversation_context import HISTORY_TOOL
+            from .conversation_context import HISTORY_TOOL
             from .tools import PLAN_TOOL, RESULT_TOOL
             tools = tools + [HISTORY_TOOL, PLAN_TOOL, RESULT_TOOL]
         elif context_manager is None:
@@ -514,7 +514,7 @@ def stream_retrieval_agent(
             try:
                 return invoke()
             except HTTPException as error:
-                from ..tool_errors import public_error
+                from .tool_errors import public_error
                 return {"error": public_error(error.detail), "status_code": error.status_code,
                         "error_code": "tool_access" if error.status_code in (401, 403, 404) else "tool_operation"}
 
@@ -669,7 +669,7 @@ def stream_retrieval_agent(
                     candidates = result.get("files", []) or (result.get("generated_files", [])
                         if call.name == "run_command" else [result]
                         if call.name in ("write_file", "apply_patch", "read_file", "get_workspace_file_link") else [])
-                    from ..workspace_file_links import file_reference
+                    from app.files.links import file_reference
                     output_files = [file_reference(file)
                         for file in candidates if isinstance(file, dict) and file.get("id") and file.get("path")]
                     saved_file_summary = (f"已生成 {len(output_files)} 个文件"

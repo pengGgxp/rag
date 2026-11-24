@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app import file_preview_access as preview
+from app.files import preview_access as preview
 
 from app.identity import auth
 from app.models import ChatAttachment, Document, DocumentStatus, KnowledgeBase, UsageEvent
@@ -101,7 +101,7 @@ def test_document_versions_have_distinct_grants_and_download_is_metered(accounts
     assert not list(db.scalars(select(StorageTransfer)))
     document = versions[0]
     endpoint = f"/documents/{document.id}/download"
-    monkeypatch.setattr("app.storage_downloads.download_range_fileobj",
+    monkeypatch.setattr("app.files.downloads.download_range_fileobj",
         lambda key, start, end: io.BytesIO(store.objects[key][start:end + 1]))
     assert owner.head(endpoint).status_code == 200
     assert not list(db.scalars(select(StorageTransfer)))

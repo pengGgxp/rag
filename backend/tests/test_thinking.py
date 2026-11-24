@@ -6,10 +6,10 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app import shared_providers
+from app.model_catalog import shared_providers
 from app.knowledge import routes as knowledge_routes
 from app.model_runtime.client import ChatProviderConfig, LLMConfigurationError, OpenAICompatibleChatProvider, _parse_usage
-from app.thinking import ThinkingConfig, public_capability, select_thinking
+from app.model_catalog.thinking import ThinkingConfig, public_capability, select_thinking
 from test_shared_providers import provider, setup_site
 
 
@@ -168,7 +168,7 @@ def test_agent_continuation_is_encrypted_private_and_model_scoped(accounts, monk
     from cryptography.fernet import Fernet
     from pydantic import SecretStr
     from sqlalchemy import select
-    from app import mcp_client
+    from app.integrations import mcp_client
     from app.conversations import execution as conversations
     from app.models import ChatMessage, SiteModelProvider
     from test_request_models import send

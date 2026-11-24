@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from . import auth
 from .email_auth import FLOW_COOKIE, find_flow, flow_cookie, new_flow, password_verification, safe_return
 from .schemas import WechatStart
-from ..config import get_settings
-from ..db import get_db
+from app.infra.config import get_settings
+from app.infra.db import get_db
 from ..models import AuthToken, ExternalIdentity, User
 from .site_auth import email_enabled, reveal, wechat_configuration, wechat_enabled
 
@@ -123,7 +123,7 @@ def callback(state: str, request: Request, db: Session = Depends(get_db)):
             if not identity:
                 db.add(ExternalIdentity(provider=provider, subject=uid, user_id=current.user_id))
             db.delete(row)
-            from ..site_audit import record
+            from app.operations.site_audit import record
             record(db, db.get(User, current.user_id), "auth.wechat_linked", "user", current.user_id, request=request)
             db.commit()
             response = redirect(safe_return(data.get("return_to")))
@@ -146,7 +146,7 @@ def callback(state: str, request: Request, db: Session = Depends(get_db)):
     except (HTTPException, IntegrityError):
         # Consume the callback even on failure; retry always starts a new authorization.
         db.rollback()
-        from ..site_audit import record
+        from app.operations.site_audit import record
         record(db, None, "auth.wechat_failed", "user", request=request, result="failed")
         row = find_flow(request, db, required=False)
         if row:
@@ -163,7 +163,7 @@ def unlink(request: Request, db: Session = Depends(get_db), session=Depends(auth
     rows = db.scalars(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id, ExternalIdentity.provider.like("senyu:%")).with_for_update()).all()
     for row in rows:
         db.delete(row)
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, user, "auth.wechat_unlinked", "user", user.id, request=request)
     auth.record_account_audit(db, user.id, "auth.wechat_unlinked", "user", resource_id=user.id, request=request)
     db.commit()

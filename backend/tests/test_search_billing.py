@@ -5,7 +5,8 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import model_billing, search_billing, search_settings, web_search
+from app.billing import model_usage as model_billing
+from app.search import billing as search_billing, settings as search_settings, web as web_search
 
 from app.identity import auth
 from app.models import UserCreditAccount, CreditLedgerEntry, ModelBillingSettings, ModelUsageRequest, SearchToolCall, SiteSearchSettings, UsageEvent, UserModelPolicy
@@ -172,7 +173,7 @@ def test_admin_test_tool_only_and_idempotency(search_admin, monkeypatch):
 
 
 def test_model_and_tool_exact_amounts_round_only_once(metered, monkeypatch):
-    from app.web_search import SearchConfig
+    from app.search.web import SearchConfig
     _, db, workspace, user = metered
     prices = {key: {"capability": key, "unit": "calls", "unit_size": 1000,
         "credits_per_unit": .04, "enabled": True} for key in web_search.CAPABILITIES}
@@ -211,7 +212,7 @@ def test_zero_price_retains_usage_when_cancelled(paid, monkeypatch):
 
 
 def test_confirmed_tool_usage_stays_pending_until_recharged(paid, monkeypatch):
-    from app.credits import recharge
+    from app.billing.credits import recharge
     _, db, workspace, user, request, runtime = paid
     monkeypatch.setattr(web_search, "invoke", lambda *_: {"effective": True, "result_count": 1})
     runtime.execute("web_search", {"query": "public"}, "done", lambda: None)

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app import main
 from app.conversations.jobs import recover_interrupted_conversations
 from app.conversations import execution as chat
-from app.db import Base
+from app.infra.db import Base
 from app.knowledge import retrieval
 from app.model_runtime.client import LLMProviderError, ToolCall, ToolResponse
 from app.models import (
@@ -610,7 +610,7 @@ def test_followup_does_not_reuse_deleted_document_as_evidence(client, monkeypatc
     library = add_library(db)
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     document = add_document(db, library, "needle duration is 3 days", store=store)
     conversation = create(http, [library])
     turn(http, conversation["id"])

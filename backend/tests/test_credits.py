@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.credits import (
+from app.billing.credits import (
     CreditError, authorization_hold, release, reserve, settle_model_usage,
 )
 from app.models import CreditLedgerEntry, UsageEvent, User, UserCreditAccount

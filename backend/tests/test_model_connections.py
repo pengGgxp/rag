@@ -5,7 +5,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app import model_connections as connections, llm_providers
+from app.model_catalog import connections, providers as llm_providers
 from app.models import ModelConnection, SiteModelProvider, LLMProviderConfig, UsageEvent
 from test_auth import register
 from test_shared_providers import setup_site, prices
@@ -40,10 +40,10 @@ def test_shared_connection_independent_prices_and_frozen_request(accounts, monke
     assert changed.status_code == 200
     assert config.base_url == "https://provider.example/v1" and config.api_key == "secret"
     assert config.connection_version == 1
-    from app import shared_providers
+    from app.model_catalog import shared_providers
     from app.model_runtime.client import LLMConfigurationError
     from sqlalchemy.orm import sessionmaker
-    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=db.get_bind()))
+    monkeypatch.setattr("app.infra.db.SessionLocal", sessionmaker(bind=db.get_bind()))
     current = llm_providers.request_provider_config(db, UUID(identity["user"]["id"]), UUID(second["id"]))
     assert current.api_key == "replacement" and current.connection_version == 2
     db.commit()

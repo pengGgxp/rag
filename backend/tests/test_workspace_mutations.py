@@ -7,7 +7,7 @@ import zipfile
 import pytest
 from sqlalchemy import select
 
-from app import file_operations as ops, shared_resources as shared, workspace_files
+from app.files import operations as ops, shared, workspace as workspace_files
 from app.models import WorkspaceFile, WorkspaceFileOperation, WorkspaceSkillInstall
 from test_resources import resource_store, access_for, upload
 from test_auth import register
@@ -272,7 +272,7 @@ def test_install_cross_workspace_name_only_delete_and_reinstall(accounts, monkey
 
 def test_discovery_duplicates_damage_roots_and_context_metadata(accounts, resource_store, monkeypatch):
     client, db, actor = setup(accounts)
-    from app.skill_discovery import summary, prompt
+    from app.skills.discovery import summary, prompt
     for path, text in {
         ".skills/a/SKILL.md": "---\nname: demo\ndescription: current\n---\nFULL BODY SECRET",
         ".skills/a/examples/SKILL.md": "---\nname: example\n---",
@@ -328,7 +328,7 @@ def test_metadata_commit_failure_compensates_and_original_request_retries(accoun
     monkeypatch.setattr(db, "commit", fail_once)
     request = str(uuid4())
     with pytest.raises(RuntimeError, match="metadata"):
-        from app.workspace_mutations import save_files
+        from app.files.mutations import save_files
         save_files(db, actor, {"commit.txt": (b"changed", "text/plain")}, expected={"commit.txt": initial["revision"]}, request_id=request)
     assert resource_store[0][key] == b"original" and not any("/file-operations/" in name for name in resource_store[0])
     retry = save_files(db, actor, {"commit.txt": (b"changed", "text/plain")}, expected={"commit.txt": initial["revision"]}, request_id=request)

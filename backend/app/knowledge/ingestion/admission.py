@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from ...audit_log import record_audit
+from app.operations.audit_log import record_audit
 from ...models import Document, DocumentStatus, IngestionJob, JobState, KnowledgeBase, KnowledgeBaseStatus
 
 from .jobs import latest_document_job, stop_ingestion_job
@@ -41,7 +41,7 @@ def check_format(stream, filename):
 
 def stage_upload(db, access, library_id, filename, content_type, stream, *, replace_id=None,
                  expected_hash=None, request=None, request_id=None, finish=None):
-    from ... import file_operations as ops
+    from app.files import operations as ops
 
     if not filename or len(filename) > 255 or "/" in filename or "\\" in filename or any(
             ord(character) < 32 for character in filename):
@@ -77,9 +77,9 @@ def replacement_target(db, library_id, identifier):
 
 def publish(db, access, library_id, filename, content_type, size, digest, key, *, replace_id=None,
             expected_hash=None, request=None, request_id=None, finish=None):
-    from ... import file_operations as ops
+    from app.files import operations as ops
     from ..originals import copy_change, delete_change, original_key
-    from ...storage_billing import check_capacity
+    from app.files.quotas import check_capacity
 
     signature = ops.fingerprint([library_id, filename, content_type, digest, replace_id, expected_hash])
     with ops.workspace_lock(db, access.user_id):

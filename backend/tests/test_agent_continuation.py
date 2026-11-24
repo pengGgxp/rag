@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.agent.loop import AgentCancelled, run_retrieval_agent
 from app.agent.tools import bounded_message, update_plan
-from app.context_windows import groups, make_item, project
+from app.agent.context_windows import groups, make_item, project
 from app.agent.effective_context import ContextManager
 from app.model_runtime.client import LLMContextCapacityError, OpenAICompatibleChatProvider, ToolCall, ToolResponse
 from app.models import AgentToolExecution, ChatMessage, Conversation, ConversationContext
@@ -103,7 +103,7 @@ def test_full_large_result_is_saved_and_can_be_read_in_pages(client):
 
 
 def test_legacy_large_tool_result_can_continue_and_read_after_compact(client):
-    from app.conversation_context import estimate_request, input_budget
+    from app.agent.conversation_context import estimate_request, input_budget
     db, manager = fresh_manager(client)
     call = ToolCall("legacy-large", "read_file", {})
     original = tool_message(call, {"text": "旧资料完整内容" * 18000})
@@ -225,9 +225,9 @@ def test_catalog_changes_keep_existing_tool_results_images_and_checkpoint(client
 
 
 def test_unrelated_pending_file_operation_does_not_gate_observation_or_new_file(client, resource_store, monkeypatch):
-    from app import file_operations as ops, shared_resources as shared
-    from app.skill_discovery import summary
-    from app.workspace_mutations import save_files, snapshot
+    from app.files import operations as ops, shared
+    from app.skills.discovery import summary
+    from app.files.mutations import save_files, snapshot
     from app.models import WorkspaceFileOperation
     from fastapi import HTTPException
     db, manager = fresh_manager(client)
@@ -250,8 +250,8 @@ def test_unrelated_pending_file_operation_does_not_gate_observation_or_new_file(
 
 
 def test_optional_skill_hints_do_not_refresh_storage_or_take_write_locks(client, monkeypatch):
-    from app import shared_resources
-    from app.skill_discovery import summary
+    from app.files import shared as shared_resources
+    from app.skills.discovery import summary
     db, manager = fresh_manager(client)
     monkeypatch.setattr(shared_resources, "refresh_index", lambda *_a, **_k: pytest.fail("model admission refreshed storage"))
     assert summary(db, manager.access) == []
@@ -260,14 +260,14 @@ def test_optional_skill_hints_do_not_refresh_storage_or_take_write_locks(client,
 @pytest.mark.parametrize("code", ["context_length_exceeded", "context_window_exceeded", "prompt_too_long"])
 def test_structured_capacity_error_is_classified_without_guessing_ordinary_400(code):
     import httpx
-    from app.upstream_retries import context_capacity_failure
+    from app.infra.upstream_retries import context_capacity_failure
     assert isinstance(context_capacity_failure(httpx.Response(400, json={"error": {"code": code}})), LLMContextCapacityError)
     assert context_capacity_failure(httpx.Response(400, json={"error": {"message": "bad request"}})) is None
     assert context_capacity_failure(httpx.Response(503, json={"error": {"code": code}})) is None
 
 
 def test_error_detail_retains_reason_and_redacts_credentials():
-    from app.tool_errors import public_error
+    from app.agent.tool_errors import public_error
     value = public_error("上级路径是文件；api_key=abcdef token=xyz https://user:pass@example.test/path Bearer raw-secret")
     assert "上级路径是文件" in value
     assert all(secret not in value for secret in ("abcdef", "xyz", "user:pass", "raw-secret"))

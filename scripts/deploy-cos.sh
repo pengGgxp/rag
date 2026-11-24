@@ -59,7 +59,7 @@ cmp "$release/data.before" "$release/data.after"
 docker compose ps -q db redis minio > "$release/data-containers.after"
 cmp "$release/data-containers.before" "$release/data-containers.after"
 docker compose exec -T api alembic current
-docker compose exec -T worker python -c "from app.config import get_settings; assert get_settings().site_config_encryption_key; print('worker encryption key available')"
+docker compose exec -T worker python -c "from app.infra.config import get_settings; assert get_settings().site_config_encryption_key; print('worker encryption key available')"
 docker compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
 touch "$release/configuration-ready"
 printf '%s\n' 'Application deployed. COS credentials, approved CORS, verified migration and real acceptance are still required.'

@@ -8,10 +8,10 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.db import SessionLocal
-from app.model_pricing import complete, settings_locked, switch_billing
+from app.infra.db import SessionLocal
+from app.billing.pricing import complete, settings_locked, switch_billing
 from app.models import ModelBillingSettings, SiteModelProvider, Workspace
-from app.site_audit import record
+from app.operations.site_audit import record
 
 CORRECTIONS = (
     ("84060463-d21e-440c-ac58-8b6d8f5d1011", "gpt-6-astra", "1001.001", 1),

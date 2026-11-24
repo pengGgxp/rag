@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import cloud_computer as cloud, cloud_preview as preview
+from app.cloud_computer import runtime as cloud, preview
 
 from app.identity import auth
 from app.models import CloudComputerCommand, CloudPreview, UserCreditAccount, CreditLedgerEntry, UsageEvent

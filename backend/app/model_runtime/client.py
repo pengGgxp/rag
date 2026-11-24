@@ -5,9 +5,9 @@ from httpx_sse import SSEError
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
-from ..config import Settings, get_settings
-from ..thinking import ThinkingSelection
-from ..upstream_retries import model_post, model_stream, model_astream
+from app.infra.config import Settings, get_settings
+from app.model_catalog.thinking import ThinkingSelection
+from app.infra.upstream_retries import model_post, model_stream, model_astream
 
 
 class LLMConfigurationError(RuntimeError):
@@ -185,7 +185,7 @@ class OpenAICompatibleChatProvider:
         if not self.configured:
             raise LLMConfigurationError("请在问答输入区选择可用模型")
         if self.config.site_provider_id:
-            from ..shared_providers import assert_available
+            from app.model_catalog.shared_providers import assert_available
             assert_available(self.config.site_provider_id, self.config.connection_id)
 
     def _payload(self, messages, temperature=0.0, *, tools=None, tool_choice="auto", stream=False):

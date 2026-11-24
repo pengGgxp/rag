@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from decimal import Decimal
 
 import cloud_experience_fixture as fixture
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 from app.identity.auth import Access, digest
 from app.models import CloudPreview, UserCreditAccount
 

@@ -8,8 +8,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from app import deployment, main
-from app.db import Base
+from app.operations import deployment, health
+from app import main
+from app.infra.db import Base
 
 
 TOKEN = "test-deployment-control-token-with-at-least-32-characters"
@@ -122,7 +123,7 @@ def test_version_reports_release_identity(monkeypatch):
             "deployment_rollback": "automatic-app-rollback",
         }
     )
-    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    monkeypatch.setattr(health, "get_settings", lambda: settings)
     client = TestClient(main.app)
     try:
         response = client.get("/version")

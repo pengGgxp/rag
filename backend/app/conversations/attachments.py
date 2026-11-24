@@ -17,9 +17,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
 from ..identity.auth import Access, aware, get_access, now
-from ..db import get_db
+from app.infra.db import get_db
 from ..models import ChatAttachment, ChatMessage, Conversation, Document, WorkspaceFile, WorkspaceFileVersion
-from ..storage import download_fileobj, upload_fileobj
+from app.infra.storage import download_fileobj, upload_fileobj
 
 router = APIRouter(prefix="/chat/attachments", tags=["chat-attachments"])
 MAX_FILES = 6
@@ -162,13 +162,13 @@ def owned(db, access, identifier, *, lock=False):
         resource = db.get(WorkspaceFile, row.resource_file_id)
         if resource is None or resource.deleted_at:
             raise HTTPException(404, "资源已删除")
-        from ..workspace_files import resolve_input
+        from app.files.workspace import resolve_input
         resource, current = resolve_input(db, access, {"id": str(resource.id)})
         changed = row.content_hash != current.content_hash or row.size_bytes != current.size_bytes
         row.object_key, row.size_bytes, row.content_type = current.storage_key, current.size_bytes, current.content_type
         row.content_hash, row.resource_version = current.content_hash, 1
         if changed or (row.kind == "document" and row.text_content is None) or (row.kind == "image" and not row.width):
-            from ..resource_cache import read_bytes
+            from app.files.cache import read_bytes
             raw = read_bytes(db, access, resource, current)
             if row.kind == "document":
                 row.text_content = extract_document(raw, row.filename)
@@ -184,7 +184,7 @@ def upload(file: UploadFile, db=Depends(get_db), access: Access = Depends(get_ac
 
 
 def create_upload(file, db, access, *, source, directory=""):
-    from ..file_operations import workspace_lock
+    from app.files.operations import workspace_lock
     with workspace_lock(db, access.user_id):
         return _create_upload(file, db, access, source=source, directory=directory)
 
@@ -195,7 +195,7 @@ def _create_upload(file, db, access, *, source, directory):
     if (not filename or len(filename) > 255 or "/" in filename or "\\" in filename
             or any(ord(c) < 32 for c in filename) or suffix not in DOCUMENT_SUFFIXES | IMAGE_TYPES.keys()):
         raise HTTPException(415, "请选择 PNG、JPEG、WebP、PDF、TXT、Markdown、CSV、Word 或 Excel 文件")
-    from ..storage_billing import lock_workspace
+    from app.files.quotas import lock_workspace
     lock_workspace(db, access.user_id)
     # 按用户串行校验暂存配额。
     from ..models import User
@@ -214,12 +214,12 @@ def _create_upload(file, db, access, *, source, directory):
         if not width or not height or width * height > 40_000_000:
             raise HTTPException(413, "图片尺寸过大，请缩小后重试")
     text = None if image else extract_document(data, filename)
-    from ..storage_billing import check_capacity
+    from app.files.quotas import check_capacity
     check_capacity(db, access.user_id, len(data))
     identifier = uuid4()
-    from ..shared_resources import object_key
+    from app.files.shared import object_key
     if directory:
-        from ..workspace_files import valid_path
+        from app.files.workspace import valid_path
         directory = valid_path(directory)
         from ..models import WorkspaceDirectory
         if not (db.scalar(select(WorkspaceDirectory).where(WorkspaceDirectory.owner_user_id == access.user_id,
@@ -251,7 +251,7 @@ def _create_upload(file, db, access, *, source, directory):
             created_by=access.user_id, updated_by=access.user_id,
             expires_at=datetime(9999, 12, 31, tzinfo=timezone.utc))
         db.add(resource)
-        from ..shared_resources import backend
+        from app.files.shared import backend
         mounted = backend(db)
         resource.live_etag = (mounted.head(key) or {}).get("ETag") if mounted else None
         db.flush()
@@ -260,14 +260,14 @@ def _create_upload(file, db, access, *, source, directory):
             content_hash=row.content_hash, created_by=access.user_id))
         row.resource_file_id, row.resource_version = identifier, 1
         db.add(row)
-        from ..audit_log import record_audit
+        from app.operations.audit_log import record_audit
         record_audit(db, owner_user_id=access.user_id, actor_user_id=access.user_id,
             action="resource.created", resource_type="resource", resource_id=identifier,
             metadata={"source": source, "version": 1})
         db.commit()
     except BaseException:
         db.rollback()
-        from ..storage import delete_object
+        from app.infra.storage import delete_object
         delete_object(key)
         raise
     return attachment_read(row)
@@ -276,7 +276,7 @@ def _create_upload(file, db, access, *, source, directory):
 @router.api_route("/{identifier}/content", methods=["GET", "HEAD"])
 def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
-    from ..storage_downloads import download_response
+    from app.files.downloads import download_response
     return download_response(db, access, request, object_key=row.object_key, size=row.size_bytes,
         filename=row.filename, content_type=row.content_type, resource=f"attachment:{row.id}", inline=row.kind == "image")
 
@@ -285,7 +285,7 @@ def content(identifier: UUID, request: Request, db=Depends(get_db), access=Depen
 def remove(identifier: UUID, db=Depends(get_db), access=Depends(get_access)):
     row = owned(db, access, identifier)
     if row.resource_file_id:
-        from ..resources import remove as remove_resource
+        from app.files.resources import remove as remove_resource
         return remove_resource(row.resource_file_id, db, access)
     row.deleted_at = now()
     db.commit()
@@ -318,7 +318,7 @@ def validate_messages(messages, config):
 
 def summary_content(messages):
     """保留上传图片的多模态输入，省略临时读取的图片字节。"""
-    from ..image_reading import persisted_model_images
+    from app.files.image_reading import persisted_model_images
 
     messages = persisted_model_images(messages)
     safe, images = [], []
@@ -396,11 +396,11 @@ def model_messages(messages, config, resource_context=None):
                     attachment = owned(db, checked, UUID(part["attachment_id"]))
                     if attachment.resource_file_id is None:
                         raise LLMConfigurationError("图片资源尚未完成迁移，请联系管理员")
-                    from ..workspace_files import resolve_input
-                    from ..resource_cache import read_bytes
+                    from app.files.workspace import resolve_input
+                    from app.files.cache import read_bytes
                     resource, version = resolve_input(db, checked,
                         {"id": str(attachment.resource_file_id)})
-                    from ..shared_resources import refresh_current_metadata
+                    from app.files.shared import refresh_current_metadata
                     resource = refresh_current_metadata(db, checked, resource)
                     version.content_type, version.size_bytes = resource.content_type, resource.size_bytes
                     version.content_hash = resource.content_hash or ""

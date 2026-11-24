@@ -8,11 +8,13 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
-from app import conversation_documents as saves, main, storage
+from app import main
+from app.conversations import documents as saves
+from app.infra import storage
 
 from app.identity import auth
 from app.knowledge.ingestion import admission as document_ingestion
-from app.extensions import ExtensionRuntime
+from app.integrations.runtime import ExtensionRuntime
 from app.models import (ChatMessage, ConversationDocumentSave, Document, DocumentStatus, IngestionJob,
     JobState, KnowledgeBase, KnowledgeBaseStatus, UsageEvent)
 from test_auth import library, register
@@ -33,7 +35,7 @@ def saving(accounts, monkeypatch):
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
     stored, queued, deleted = store.objects, [], []
-    monkeypatch.setattr("app.file_operations.storage", lambda _: store)
+    monkeypatch.setattr("app.files.operations.storage", lambda _: store)
     monkeypatch.setattr(saves, 'dispatch_ingestion', queued.append)
     runtime = ExtensionRuntime(sessionmaker(bind=db.get_bind(), expire_on_commit=False), access,
         message_id=message.id, request_id=request_id)

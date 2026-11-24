@@ -10,11 +10,11 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 
 from app.identity import auth
-from app.config import get_settings
-from app.credits import ensure_account
+from app.infra.config import get_settings
+from app.billing.credits import ensure_account
 from app.models import CloudComputerCommand as Command, CloudComputerSession as Computer, UserCreditAccount, CreditLedgerEntry, Conversation, User, UsageEvent
 from test_auth import register
 from test_resources import resource_store, upload, access_for
@@ -89,7 +89,7 @@ def setup(accounts, monkeypatch, rate="0.6"):
     # Use a fixed generated test-only key for repeated encrypt/decrypt calls.
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(get_settings(), "site_config_encryption_key", SimpleNamespace(get_secret_value=lambda: key))
-    from app import storage_backend
+    from app.infra import storage_backend
     from app.models import SiteStorageSettings
     storage_row = db.get(SiteStorageSettings, 1)
     if storage_row is None:
@@ -102,7 +102,7 @@ def setup(accounts, monkeypatch, rate="0.6"):
         bucket="test-bucket", region="cn-hangzhou"))
     from test_cloud_computer_mount import MemoryMount
     store = MemoryMount()
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: store)
+    monkeypatch.setattr("app.files.shared.backend", lambda _db: store)
     body = {"version": 0, "enabled": True, "region": "cn-hangzhou", "template": "test-template", "specification": "test-only",
             "api_key": "synthetic-api-key", "credits_per_minute": rate, "oss_role_arn": "acs:ram::123:role/test"}
     response = client.put("/site/admin/cloud-computer", json=body)
@@ -141,7 +141,7 @@ def enable_execution(db, access, monkeypatch):
     fake = FakeCloud()
     fake.outputs = {}
     from test_cloud_computer_mount import MemoryMount, configure_mount
-    from app.shared_resources import prefix
+    from app.files.shared import prefix
     fake.storage = MemoryMount()
     configure_mount(db, monkeypatch, fake.storage)
     original_start = fake.start
@@ -215,7 +215,7 @@ def test_replay_returns_original_without_preparing_inputs(accounts, monkeypatch,
     def unavailable(*args):
         raise HTTPException(404, "resource no longer available")
 
-    monkeypatch.setattr("app.workspace_files.resolve_input", unavailable)
+    monkeypatch.setattr("app.files.workspace.resolve_input", unavailable)
     assert submit(db, access, conversation, request=request).id == original.id
     assert fake.creates == 1
 

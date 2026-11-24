@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from app import main
 
 from app.identity import auth
-from app.credits import adjust_balance
+from app.billing.credits import adjust_balance
 from app.models import UserCreditAccount, CreditLedgerEntry, SiteAuditEvent
-from app.site_audit import record
+from app.operations.site_audit import record
 from test_auth_postgres import auth_postgres
 
 

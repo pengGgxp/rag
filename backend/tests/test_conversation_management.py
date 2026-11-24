@@ -84,7 +84,7 @@ def test_submission_is_durable_and_worker_is_idempotent(client):
 
 
 def test_worker_executes_conversation_without_http_routes(client):
-    from app.mcp_client import get_settings
+    from app.integrations.mcp_client import get_settings
 
     http, db, _ = client
     item = create(http)

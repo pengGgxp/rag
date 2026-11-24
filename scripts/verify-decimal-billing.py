@@ -12,8 +12,8 @@ from httpx_sse import EventSource
 from sqlalchemy import delete, select
 
 from app.identity import auth
-from app.config import get_settings
-from app.db import SessionLocal
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal
 from app.models import (CreditAccount, CreditLedgerEntry, LoginSession, ModelBillingSettings,
                         ModelConnection, ModelUsageRequest, SiteModelProvider, UsageEvent, UsagePolicy, User, Workspace)
 
@@ -52,7 +52,7 @@ def snapshot(db):
 
 
 def live(model_name=None):
-    from app.credit_amounts import amount
+    from app.billing.amounts import amount
     settings = get_settings()
     identifier = None
     before = None

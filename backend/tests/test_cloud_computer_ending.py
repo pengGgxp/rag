@@ -6,8 +6,8 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
-from app import cloud_computer as cloud
-from app.credits import ensure_account
+from app.cloud_computer import runtime as cloud
+from app.billing.credits import ensure_account
 from app.models import CloudComputerSession as Computer, CreditLedgerEntry, UsageEvent
 from test_cloud_computer import setup, submit
 

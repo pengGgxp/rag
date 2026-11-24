@@ -26,8 +26,8 @@ def connection_id(db, *, url="https://example.test/v1", secret="test-only"):
 def configured_model(db, workspace_id, monkeypatch=None):
     """Seed persisted configuration for workflow tests; never bypass provider resolution."""
     from app.models import SiteModelProvider, ModelConnection, LLMProviderConfig, UsagePolicy
-    from app import llm_providers
-    from app.credits import DEFAULT_USAGE_POLICIES
+    from app.model_catalog import providers as llm_providers
+    from app.billing.credits import DEFAULT_USAGE_POLICIES
     if monkeypatch:
         monkeypatch.setattr(llm_providers, "_decrypt_api_key", lambda _value: "test-only")
     prices = {key: {"capability": key, "unit": "tokens", "unit_size": 1000,

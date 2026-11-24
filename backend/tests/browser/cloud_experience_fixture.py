@@ -15,12 +15,14 @@ if os.environ.get("DATABASE_URL") != "sqlite:////tmp/cloud-107-acceptance.db":
     raise RuntimeError("This fixture requires its disposable database")
 os.environ["SITE_CONFIG_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 
-from app import cloud_computer as cloud, resource_cache, shared_resources, storage_backend, storage_downloads
+from app.cloud_computer import runtime as cloud
+from app.files import cache as resource_cache, shared as shared_resources, downloads as storage_downloads
+from app.infra import storage_backend
 
 from app.identity import auth
-from app.config import get_settings
-from app.db import SessionLocal, init_db
-from app.credits import authorization_hold, ensure_account
+from app.infra.config import get_settings
+from app.infra.db import SessionLocal, init_db
+from app.billing.credits import authorization_hold, ensure_account
 from app.main import app
 from app.models import ChatMessage, CloudComputerCommand, CloudComputerSession, CloudPreview, User
 from app.identity.site_auth import protect

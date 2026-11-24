@@ -6,8 +6,8 @@ import zipfile
 
 import pytest
 from fastapi import HTTPException
-from app.site_skill_packages import review
-from app.skill_files import archive_entries, unzip
+from app.skills.packages import review
+from app.skills.files import archive_entries, unzip
 
 
 def zipped(files, root=""):

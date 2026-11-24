@@ -550,7 +550,7 @@ def test_delivery_instructions_and_actual_results_reach_final_model_round(runtim
 def test_cloud_file_results_reach_model_and_allow_remaining_tools(runtime, state):
     from datetime import datetime, timezone
     from decimal import Decimal
-    from app.cloud_computer import read
+    from app.cloud_computer.runtime import read
 
     timestamp = datetime(2026, 11, 6, 13, 17, 13, tzinfo=timezone.utc)
     computer = SimpleNamespace(id=uuid4(), name="测试实例", conversation_id=uuid4(), status=state, error=None,

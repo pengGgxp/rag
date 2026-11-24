@@ -7,12 +7,12 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import cloud_computer as cloud
+from app.cloud_computer import runtime as cloud
 
 from app.identity import auth
 from app.agent.loop import AgentCancelled, run_retrieval_agent
-from app.credits import ensure_account
-from app.extensions import ExtensionRuntime
+from app.billing.credits import ensure_account
+from app.integrations.runtime import ExtensionRuntime
 from app.model_runtime.client import ChatProviderConfig, ToolCall, ToolResponse
 from app.models import ChatMessage, UserCreditAccount, CreditLedgerEntry, LoginSession, UsageEvent
 from cloud_command_fixtures import LocalFileCloud
@@ -28,7 +28,7 @@ def runtime(accounts, monkeypatch, resource_store, tmp_path):
     storage.objects = resource_store[0]
     configure_mount(db, monkeypatch, storage)
     item = upload(client, "count.txt", b"quantity 17\n")
-    from app.shared_resources import prefix
+    from app.files.shared import prefix
     provider = LocalFileCloud(tmp_path / "workspace", storage, prefix(access.user_id))
     monkeypatch.setattr(cloud, "adapter", lambda *_: provider)
     monkeypatch.setattr(cloud, "dispatch", lambda identifier: cloud.run(identifier, factory))
@@ -188,10 +188,10 @@ def test_same_call_conflicting_parameters_never_dispatches(runtime, monkeypatch,
 @pytest.mark.parametrize("tool", ["read_image", "start_preview"])
 def test_image_and_preview_forward_stable_invocation_identity(runtime, monkeypatch, tool):
     client, _, _, _, _, fake, _, extensions, request_id = runtime
-    from app.config import get_settings
-    from app.image_reading import workspace_image
+    from app.infra.config import get_settings
+    from app.files.image_reading import workspace_image
     from test_chat_attachments import PNG
-    monkeypatch.setattr("app.workspace_file_links.get_file_link", lambda *_: {
+    monkeypatch.setattr("app.files.links.get_file_link", lambda *_: {
         "id": "synthetic-file", "path": "chart.png", "content_type": "image/png",
         "size_bytes": len(PNG), "version": 1, "revision": "synthetic",
         "availability": "available", "url": "/resources?file=synthetic-file"})
@@ -248,7 +248,7 @@ def test_uncertain_computer_creation_is_not_reported_as_success(runtime):
 @pytest.mark.parametrize("confirmed", [True, False])
 def test_stop_running_preview_stops_service_or_reports_uncertain(runtime, monkeypatch, confirmed):
     _, _, _, _, _, fake, _, extensions, _ = runtime
-    from app.config import get_settings
+    from app.infra.config import get_settings
     monkeypatch.setattr(get_settings(), "preview_enabled", True)
     stopped = []
     monkeypatch.setattr(fake, "start_preview", lambda sandbox, identifier, payload:

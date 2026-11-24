@@ -7,11 +7,11 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import shared_resources
+from app.files import shared as shared_resources
 
 from app.identity import auth
 from app.models import WorkspaceFile, WorkspaceFileVersion, LoginSession
-from app.workspace_file_links import get_file_link
+from app.files.links import get_file_link
 from test_auth_postgres import auth_postgres
 from test_cloud_computer_mount import MemoryMount
 

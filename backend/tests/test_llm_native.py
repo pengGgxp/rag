@@ -7,7 +7,7 @@ import pytest
 
 from app.model_runtime.client import ChatProviderConfig, LLMProviderError, OpenAICompatibleChatProvider
 from app.model_runtime.native import NativeStream, request, result
-from app.thinking import select_thinking
+from app.model_catalog.thinking import select_thinking
 from test_chat_attachments import PNG
 
 

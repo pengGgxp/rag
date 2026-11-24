@@ -50,7 +50,7 @@ def sse(handler, data):
 
 
 def test_real_multiturn_stream_normalizes_legacy_empty_tool_calls():
-    from app.thinking import ThinkingSelection
+    from app.model_catalog.thinking import ThinkingSelection
     captured = []
     def respond(handler, payload):
         captured.append(payload)
@@ -376,10 +376,10 @@ def test_manual_compaction_preserves_budgeted_users_and_repeat_is_free(client, m
 
 
 def test_personal_skill_checkpoint_survives_context_refresh_and_preserves_thinking(client, monkeypatch):
-    from app import mcp_client
+    from app.integrations import mcp_client
     from app.identity import auth
     from app.models import AgentSkill, LoginSession
-    from app.thinking import encrypt_display_thinking
+    from app.model_catalog.thinking import encrypt_display_thinking
     from cryptography.fernet import Fernet
     from pydantic import SecretStr
     from types import SimpleNamespace
@@ -522,10 +522,10 @@ def test_hard_budget_rejects_huge_current_input_without_upstream(client, monkeyp
 def manager_fixture(client, *, capacity=16000, messages=None, manual=False):
     from app.identity import auth
     from app.identity.auth import Access
-    from app.llm_providers import request_provider_config
+    from app.model_catalog.providers import request_provider_config
     from app.agent.effective_context import ContextManager
-    from app.conversation_context import SUMMARY_PREFIX
-    from app.context_windows import encrypt_items, make_item
+    from app.agent.conversation_context import SUMMARY_PREFIX
+    from app.agent.context_windows import encrypt_items, make_item
     from app.models import LoginSession, ConversationContext
     http, db, conversation, provider = context_fixture(client, length=60)
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))
@@ -563,7 +563,7 @@ def tool_group(identifier, text):
 
 
 def test_automatic_compaction_keeps_budgeted_users_and_current_input(client):
-    from app.conversation_context import SUMMARY_PREFIX
+    from app.agent.conversation_context import SUMMARY_PREFIX
     manager, messages = manager_fixture(client, capacity=7500)
     captured = []
     class Provider:
@@ -681,7 +681,7 @@ def test_original_lookup_is_current_conversation_only_and_rechecks_access(client
 
 @pytest.mark.parametrize("settlement", [False, True])
 def test_confirmed_failed_stream_is_charged_and_insufficient_balance_becomes_pending(client, monkeypatch, settlement):
-    from app.credits import ensure_account
+    from app.billing.credits import ensure_account
     from app.models import ModelBillingSettings, ModelUsageRequest
     http, db, _ = client
     db.add(ModelBillingSettings(id=1, enabled=settlement))
@@ -719,8 +719,8 @@ def test_restart_settles_durable_legacy_usage_and_marks_operations_interrupted(c
     from types import SimpleNamespace
     from app.identity import auth
     from app.models import LoginSession, ContextOperation, UsageEvent, LLMProviderConfig
-    from app.credits import authorization_hold
-    from app.workspace_billing import operation_snapshot, LegacyPriceMeter
+    from app.billing.credits import authorization_hold
+    from app.billing.workspace import operation_snapshot, LegacyPriceMeter
     http, db, _ = client
     conversation = create(http, [])
     session = db.get(LoginSession, auth.digest(http.cookies.get(auth.COOKIE)))

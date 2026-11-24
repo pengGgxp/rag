@@ -1,6 +1,6 @@
 """Stateless Responses adaptation for the existing provider-neutral Agent contract."""
 import json
-from ..upstream_retries import model_post, model_astream
+from app.infra.upstream_retries import model_post, model_astream
 from copy import deepcopy
 
 from fastapi import HTTPException

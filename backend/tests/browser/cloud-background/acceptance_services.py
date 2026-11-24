@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
-from app.cloud_file_operation import perform
+from app.cloud_computer.cloud_file_operation import perform
 
 app = FastAPI()
 instances, jobs = {}, {}

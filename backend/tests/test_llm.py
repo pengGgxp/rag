@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import pytest
 
-from app.config import Settings
+from app.infra.config import Settings
 from app.model_runtime.client import (
     LLMConfigurationError,
     LLMProviderError,

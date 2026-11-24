@@ -10,7 +10,9 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from app import cloud_computer as cloud, storage_backend, workspace_files
+from app.cloud_computer import runtime as cloud
+from app.infra import storage_backend
+from app.files import workspace as workspace_files
 from app.models import CloudComputerSettings, WorkspaceFile, WorkspaceFileVersion, UsageEvent
 from test_auth import register
 from test_cloud_computer import setup, submit
@@ -51,7 +53,7 @@ def configure_mount(db, monkeypatch, storage):
     monkeypatch.setattr(storage_backend, "active_settings", lambda _db: SimpleNamespace(
         provider="oss", bucket=storage.bucket, region=storage.region))
     monkeypatch.setattr(storage_backend, "current_storage", lambda _db: storage)
-    monkeypatch.setattr("app.shared_resources.backend", lambda _db: storage)
+    monkeypatch.setattr("app.files.shared.backend", lambda _db: storage)
 
 
 def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accounts, monkeypatch, resource_store):
@@ -83,7 +85,7 @@ def test_mount_is_persistent_workspace_directory_without_cache_or_staging(accoun
 
 
 def test_knowledge_file_tools_use_the_owned_mount_and_hide_other_accounts(accounts, monkeypatch, tmp_path):
-    from app.cloud_file_operation import perform
+    from app.cloud_computer.cloud_file_operation import perform
     from app.knowledge.originals import MOUNT_ROOT, prefix
     from app.models import Document
     from test_auth import library
@@ -212,7 +214,7 @@ def test_legacy_mount_mode_cannot_read_resource_bodies(accounts, monkeypatch):
         snapshot={"resource_mount": {"mode": "legacy"}}, encrypted_api_key="test",
         manifest={}, held_credits=0, charged_credits=0, billed_seconds=0, billing_sequence=0)
     db.add(row); db.commit()
-    monkeypatch.setattr("app.resource_cache.read_bytes", lambda *_a, **_k: pytest.fail("legacy body read"))
+    monkeypatch.setattr("app.files.cache.read_bytes", lambda *_a, **_k: pytest.fail("legacy body read"))
     with pytest.raises(HTTPException) as error:
         cloud.synchronize(db, row, None, None)
     assert error.value.status_code == 503
@@ -220,8 +222,8 @@ def test_legacy_mount_mode_cannot_read_resource_bodies(accounts, monkeypatch):
 
 @pytest.mark.skipif(os.environ.get("RAG_MOUNT_LIVE_ACCEPT") != "1", reason="explicit paid cloud mount opt-in required")
 def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatch, resource_store):
-    from app import oss_storage
-    from app.cloud_computer_adapter import AlibabaSandbox
+    from app.infra import oss_storage
+    from app.cloud_computer.adapter import AlibabaSandbox
     from app.identity.site_auth import protect, reveal
     client, db, conversation, access, _, factory = setup(accounts, monkeypatch, rate="1")
     raw = Path(os.environ["RAG_MOUNT_CREDENTIAL_FILE"]).read_text(encoding="utf-8-sig")
@@ -234,9 +236,9 @@ def test_live_mounted_resource_versions_billing_and_destroy(accounts, monkeypatc
     configure_mount(db, monkeypatch, storage)
     # All production paths point at the same actual store for this opt-in probe.
     monkeypatch.setattr("app.conversations.attachments.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
-    monkeypatch.setattr("app.workspace_files.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
-    monkeypatch.setattr("app.storage_downloads.download_range_fileobj", storage.download_range)
-    monkeypatch.setattr("app.storage.delete_object", storage.delete)
+    monkeypatch.setattr("app.files.workspace.upload_fileobj", lambda stream, key, mime: storage.put(key, stream, mime))
+    monkeypatch.setattr("app.files.downloads.download_range_fileobj", storage.download_range)
+    monkeypatch.setattr("app.infra.storage.delete_object", storage.delete)
     settings = db.get(CloudComputerSettings, 1)
     settings.config = {**settings.config, "template": "eidpiyb7xazavqt0n4go", "max_seconds": 180, "idle_seconds": 60}
     settings.encrypted_api_key = protect(cloud_key)

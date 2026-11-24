@@ -6,7 +6,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.model_capabilities import ImageConfig
+from app.model_catalog.capabilities import ImageConfig
 from app.images.presets import catalog
 from app.images import adapters as image_adapters
 from test_image_adapters import encoded_image
@@ -103,7 +103,7 @@ def test_save_conflict_task_defaults_and_price_snapshot(accounts, monkeypatch):
     from test_image_tasks import configure
     from app.models import SiteModelProvider, ImageTask, UserCreditAccount
     from sqlalchemy import select
-    from app import llm_providers
+    from app.model_catalog import providers as llm_providers
     from app.images import tasks as image_tasks
     client, db, identity = configure(accounts, monkeypatch)
     row = db.scalar(select(SiteModelProvider))

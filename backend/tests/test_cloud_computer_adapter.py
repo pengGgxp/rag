@@ -8,8 +8,8 @@ import pytest
 import httpx
 from e2b.sandbox_sync.filesystem.filesystem import FileStreamReader
 
-from app.cloud_computer_adapter import AlibabaSandbox, DEPENDENCIES, LAUNCHER, PRIVATE_NETWORKS
-from app.image_reading import ImageReadError
+from app.cloud_computer.adapter import AlibabaSandbox, DEPENDENCIES, LAUNCHER, PRIVATE_NETWORKS
+from app.files.image_reading import ImageReadError
 
 
 class FileDownload(httpx.SyncByteStream):
@@ -241,6 +241,6 @@ def test_manifest_excludes_dependencies_and_retains_outputs(tmp_path):
         path = tmp_path/directory
         path.mkdir()
         (path/"not-an-output.txt").write_text("dependency")
-    from app.cloud_file_operation import perform
+    from app.cloud_computer.cloud_file_operation import perform
     assert [item["path"] for item in perform({"name": "list_files"}, tmp_path)["items"]] == ["report.txt"]
     assert not hasattr(AlibabaSandbox, "manifest")

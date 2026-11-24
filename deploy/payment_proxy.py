@@ -163,7 +163,13 @@ def bridge_contract(network, trusted):
 PROBE = r'''
 import json, os, uvicorn
 from starlette.requests import Request
-from app.client_ip import payment_client_ip
+try:
+    from app.infra.client_ip import payment_client_ip
+except ModuleNotFoundError as exc:
+    if exc.name not in ("app.infra", "app.infra.client_ip"):
+        raise
+    # 回滚检查可能运行在迁移前的发布镜像上。
+    from app.client_ip import payment_client_ip
 async def app(scope, receive, send):
     payload = json.dumps({"peer": scope["client"][0], "source": payment_client_ip(Request(scope), os.environ["PAYMENT_TRUSTED_PROXY_IPS"])}).encode()
     await send({"type": "http.response.start", "status": 200, "headers": []})

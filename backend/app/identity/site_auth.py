@@ -10,8 +10,8 @@ from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import get_settings
-from ..db import get_db
+from app.infra.config import get_settings
+from app.infra.db import get_db
 from ..models import LoginSession, SiteAuthAudit, SiteAuthSettings, User
 from .auth import current_session
 from .schemas import ConfigInput, TestEmail
@@ -120,7 +120,7 @@ def site_admin(session: LoginSession = Depends(current_session), db: Session = D
 
 def audit(db, actor, action, details):
     db.add(SiteAuthAudit(actor_user_id=actor.id, action=action, details=details))
-    from ..site_audit import record
+    from app.operations.site_audit import record
     record(db, actor, action, "auth_settings", result="failed" if details.get("accepted") is False else "success", details=details)
 
 

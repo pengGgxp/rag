@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import shared_resources, workspace_mutations as mutations
+from app.files import shared as shared_resources, mutations
 
 from app.identity import auth
 from app.models import WorkspaceFileOperation
@@ -18,7 +18,8 @@ from test_cloud_computer_mount import MemoryMount
 @pytest.mark.parametrize("directory,neighbor", [("a_b", "axb"), ("a%b", "axxb"), ("a/b", "axb")])
 def test_literal_directory_queries_and_rename_replay(auth_postgres, monkeypatch, directory, neighbor):
     from uuid import UUID
-    from app import personal_skills, resources
+    from app.skills import personal as personal_skills
+    from app.files import resources
     store = MemoryMount()
     monkeypatch.setattr(shared_resources, "backend", lambda db: store)
     with Session(auth_postgres) as db:
@@ -86,7 +87,7 @@ def test_concurrent_writes_and_request_id_are_serialized(auth_postgres, monkeypa
 
 def test_concurrent_file_rename_replays_one_committed_response(auth_postgres, monkeypatch):
     from uuid import UUID
-    from app import resources
+    from app.files import resources
     store = MemoryMount()
     monkeypatch.setattr(shared_resources, "backend", lambda db: store)
     with Session(auth_postgres) as db:
