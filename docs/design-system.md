@@ -3,7 +3,8 @@
 - 状态：已确认，作为前端开发约束
 - 适用范围：知库 Web 前端、知识库工作台、知识问答、Agent 状态、账号与计费界面
 - 关联 Issue：[Issue #10](https://github.com/pengGgxp/rag/issues/10)、[Issue #19](https://github.com/pengGgxp/rag/issues/19)
-- 最后更新：2026-11-16
+- 最后更新：2026-11-27
+- 规范来源：已将《知库 UI 设计指南》（Animate UI 方案）并入本文。动效、弹跳、强度档、文字动画、Animate UI 依赖及组件基线采用该指南的决定，见第 2、3、5、6 章。
 
 ## 1. 产品气质
 
@@ -143,9 +144,9 @@
 1. **Calm Knowledge Workspace**：文档、知识库和配置界面稳定、清晰、耐用。
 2. **Developer Intelligence**：检索详情和 Agent 工具调用保留技术产品的密度与可观察性；系统级诊断不作为普通用户导航入口。
 
-表达型动效只用于 Agent 的关键状态和重要反馈，不让整个工作台变成动画展示页。
+动效强度默认使用“更多”档（见第 6 章）；表达型动效留给 Agent 的关键状态和重要反馈，按页面需要选用，不为了用而用。
 
-- 对话正文及其消息容器保持完整不透明，不使用整体平移、缩放、模糊或淡入动画；不得常驻 `will-change: transform/opacity`，避免流式更新和滚动时文字发虚。动效仅用于独立的状态图标或必要反馈；验收覆盖流式增长、历史回答、滚动及 reduced motion。
+- 对话正文及消息容器可以使用淡入、位移和不超过 4px 的模糊过渡（强度档“更多”）；是否对正文使用文字动画，以原型验证中文观感后再定。验收覆盖流式增长、历史回答、滚动及 reduced motion，确认文字没有发虚或抖动。
 
 ### 1.1 设计原则
 
@@ -168,7 +169,7 @@
 | --- | --- | --- |
 | 无障碍交互基元 | Radix Primitives | Dialog、Tabs、Tooltip、Popover、Menu 等优先复用 |
 | 可控组件源码 | shadcn/ui 风格组件 | 组件源码放在项目内，允许按产品需要修改 |
-| 动画 | `motion/react` | 统一由 Motion 实现组件和状态动效 |
+| 动画 | `motion/react`、`@animate-ui/react` | Animate UI 基于 Motion，不是第二套动画方案；组件动效取其动效令牌（见第 6 章） |
 | 图标 | Lucide | 不混用其他图标库，不手写重复图标 |
 | 跨页面 UI 状态 | Zustand | 仅管理真正跨视图的 UI 状态 |
 | 可调面板 | `react-resizable-panels` | 只有出现真实可调面板需求时才引入 |
@@ -177,7 +178,7 @@
 
 ### 2.1 依赖规则
 
-- 一个职责只保留一个默认依赖。
+- 一个职责只保留一个默认依赖。已确认允许新增 `@animate-ui/react`：它把动画写进 Radix 等交互基元，替换导入来源即可，组件结构与 API 不变。
 - 不为了一个小交互引入完整组件库。
 - 不复制组件库的内部实现到业务组件中。
 - 业务组件可以组合基础组件，但不得绕过 Radix 的焦点、键盘和关闭行为。
@@ -278,6 +279,7 @@
 - 同一视图只允许一个主操作色；Agent 状态和引用可以使用各自的辅助色。
 - 不使用蓝紫渐变、整页紫色背景或大面积高饱和色块。
 - 状态颜色必须同时有文字、图标或结构表达，不能只靠颜色区分。
+- Animate UI 组件自带的示例配色不直接复制，一律替换为本节 Token：选中与悬停高亮用 `--brand-soft` 或 `--surface-muted`，主操作用 `--brand`。
 
 ### 3.2 排版
 
@@ -285,8 +287,11 @@
 - 页面标题只在真正的页面入口使用大字号。
 - 工作台、表格、侧栏和弹窗使用紧凑标题，不使用营销式超大标题。
 - 正文行高优先保证阅读，表格和元数据可以更紧凑。
-- `letter-spacing` 默认保持为 `0`，不使用负字距挤压中文。
-- 数字、时间、积分和模型参数使用等宽数字或稳定的数字对齐方式。
+- `letter-spacing` 默认保持为 `0`，不使用负字距挤压中文，也不用字距做动画。
+- 数字、时间、积分和模型参数使用等宽数字（`font-variant-numeric: tabular-nums`），数字滚动时宽度不跳动。
+- 正文行高不低于 1.5；标题使用 600 字重，层级不靠放大字号表达。
+- 中文标点不得出现在行首（`line-break: strict`）。
+- Animate UI 的文字动画组件（Rolling、Morphing、Rotating、Typing、Splitting Text 等）原本按拉丁字母设计，不预先排除；对汉字的观感用原型实际验证后决定取舍。
 
 ### 3.3 几何与表面
 
@@ -295,7 +300,7 @@
 - 不允许卡片套卡片。
 - 卡片只用于重复条目、弹窗和确实需要边界的工具。
 - 阴影应表达层级，不用于制造装饰性浮层。
-- 不使用渐变球、光晕块、玻璃拟态噪声作为常规背景。
+- 不使用渐变球、光晕块、玻璃拟态噪声作为常规背景；Animate UI 的 Backgrounds、Particles、Liquid Button 等已确认可用，按页面需要选用，配色一律使用本章 Token。
 
 ## 4. 页面与信息架构
 
@@ -419,7 +424,7 @@
 ### 5.2 输入、菜单和弹窗
 
 - 所有输入必须有可访问名称和错误反馈。
-- Dialog、Popover、Tabs、Tooltip 和菜单优先使用 Radix。
+- Dialog、Popover、Tabs、Tooltip 和菜单优先使用 Radix；需要动效时从 `@animate-ui/react/primitives/radix-ui/*` 导入对应的 Radix 基元。
 - 弹窗打开后焦点进入合理位置，关闭后回到触发元素。
 - `Escape` 关闭安全弹窗；任务进行中可阻止关闭并明确显示忙碌状态。
 - 表单失败保留输入，不清空用户已经填写的内容。
@@ -438,65 +443,92 @@
 
 加载状态使用真实骨架或明确的加载文案；不使用无法对应后端进度的假百分比。
 
+### 5.4 Animate UI 基元对应
+
+左列是知库场景，右列是对应的 Animate UI 基元（从 `@animate-ui/react/primitives/...` 导入，换导入来源即可，不改组件结构）。
+
+| 知库组件 | Animate UI 基元 | 备注 |
+| --- | --- | --- |
+| 对话框、确认框 | Dialog、Alert Dialog | 现有 `components/ui/dialog.tsx` 基于 Radix，可替换导入来源 |
+| 标签页 | Tabs | 移动高亮 + 内容切换位移 |
+| 提示 | Tooltip | 相邻提示之间滑动 |
+| 下拉菜单、右键菜单 | Dropdown Menu、Context Menu | 项目尚无统一菜单组件；菜单项高亮取自条目自身的悬停样式 |
+| 选择器、组合框 | Select、Combobox | 模型选择、知识库选择 |
+| 抽屉、侧栏面板 | Sheet、Drawer | 手机端抽屉优先 |
+| 折叠内容 | Accordion、Collapsible | 回答中的“思考过程”“引用”展开 |
+| 开关、复选、单选 | Switch、Checkbox、Radio Group | |
+| 通知 | Toast | 积分、上传、保存结果提示 |
+| 复制按钮 | Copy Button | 图标和文字原位切换 |
+| 数字 | Counting Number、Sliding Number | 积分、用量、数量 |
+| 文字效果 | Shimmering、Typing、Rolling、Morphing Text 等 | 用于 Agent 状态等位置，原型中看效果后定 |
+| 搜索框、输入框 | 无专用基元 | 参考 Animate UI Skill 的 `feel.md` 与 `recipes` 自行实现 |
+
+先用独立对话页原型验证动效和中文排版；确认后再开 Issue，把确认的令牌和组件迁入 `frontend`。
+
 ## 6. 动效规范
 
-### 6.1 动效目标
+本章采用《知库 UI 设计指南》确认的动效规则。动效手感取自 [Animate UI](https://animate-ui.com/docs)（基于 Motion），配色与字体沿用本文第 3 章。
 
-动效只解决三件事：
+### 6.1 已确认的决定
 
-1. 表达状态变化。
-2. 保持空间关系。
-3. 给出及时的操作反馈。
+| 事项 | 决定 |
+| --- | --- |
+| 新增依赖 | 允许新增 `@animate-ui/react`（基于现有 Motion 14，不是第二套动画方案） |
+| 弹跳 | 取消“不使用夸张弹跳”的限制，弹簧过冲按 Animate UI 原值使用 |
+| 强度档 | 默认使用 **更多（more）** |
+| Animate UI 全部内容 | Backgrounds、Particles、Magnetic、Tilt、Liquid Button 等均可用，按页面需要选用，不为了用而用 |
+| 文字动画 | Rolling、Morphing、Rotating、Typing、Splitting Text 等不预先排除，用原型实际看中文效果后再决定取舍 |
+| 其他限制 | 原动效参数表、过冲处理、文字与内容切换限制、高频场景不动、速度与性能约束全部取消 |
 
-动效不用于：
+### 6.2 动效目标
 
-- 装饰空白区域。
-- 无限循环吸引注意。
-- 模拟不存在的系统进度。
-- 让用户等待动画结束。
+动效解决三件事：表达状态变化、保持空间关系、给出及时的操作反馈；也可以用于品牌表达和重要时刻的反馈。
 
-### 6.2 动效层级
+**生产型动效**用于日常工作：Hover、Press、Focus，Tooltip、Popover、Dropdown，Dialog、Drawer，Tab 和筛选切换，列表增删和状态更新。
 
-**生产型动效**用于日常工作：
+**表达型动效**用于重要 AI 反馈：Agent 开始执行任务、正在检索或调用工具、工具调用完成、回答完成并出现引用、知识库创建完成、充值成功、重要失败或需要用户介入。表达型动效可以使用 Rolling、Morphing 等文字动画和 Particles 等效果。
 
-- Hover、Press、Focus
-- Tooltip、Popover、Dropdown
-- Dialog、Drawer
-- Tab 和筛选切换
-- 列表增删和状态更新
+### 6.3 强度档位：更多
 
-**表达型动效**用于重要 AI 反馈：
+Animate UI 的三档是克制（subtle）、更多（more）、表达（expressive）。知库默认用 **更多**，即在克制档基础上：
 
-- Agent 开始执行任务
-- Agent 正在检索或调用工具
-- 工具调用完成
-- 回答完成并出现引用
-- 知识库创建完成
-- 充值成功
-- 重要失败或需要用户介入
+- 模糊提升到 `blur.surface`（4px）。
+- 位移距离约为克制档的 1.5 倍，原本没有位移的地方加短位移。
+- 原位切换用 `transition.reveal`（0.3s）代替 `transition.swap`（0.15s）。
+- 非弹出层的元素在原有弹簧上增加约 0.1 的弹性。
 
-### 6.3 动效参数
+### 6.4 令牌与知库场景的对应
 
-| 场景 | 时长 | 推荐属性 |
-| --- | ---: | --- |
-| Hover / Press | 80–120ms | opacity、background、transform |
-| Focus / 状态切换 | 120–160ms | border、box-shadow、opacity |
-| Tooltip / Popover | 120–180ms | opacity、translate |
-| Dialog / Drawer | 200–280ms | opacity、translate、scale |
-| 列表进入 | 180–260ms | opacity、translate |
-| Agent 状态变化 | 200–320ms | opacity、scale、translate |
-| 成功反馈 | 240–420ms | opacity、scale、短距离位移 |
+数值来自 Animate UI 的 `tokens.md`，未做改动。
 
-### 6.4 动效实现
+| 知库场景 | 令牌 | 数值 | 手感 |
+| --- | --- | --- | --- |
+| 按钮、开关、单选的按压 | `spring.press` + `scale.press` | 刚度 550 / 阻尼 30，缩到 0.97 | 约 120ms 到位 |
+| 整行或整张卡片被按下 | `scale.choice` | 0.985 | 比按钮更轻 |
+| 提示、气泡、悬浮卡 | `spring.pop` + `scale.tooltip` / `scale.popover` | 刚度 400 / 阻尼 29，起始 0.7 / 0.8 | 约 175ms 到位，过冲约 4% |
+| 下拉菜单、选择器、导航菜单 | `transition.menu` + `scale.menu` | 0.22s，`ease.soft`，起始 0.9 | 高频使用，短而稳 |
+| 对话框 | `spring.dialog` | 刚度 150 / 阻尼 25 | 约 450ms |
+| 对话框关闭 | `transition.dismiss` | 0.2s，`ease.away` | 比打开更快 |
+| 侧边抽屉、面板 | `transition.sheet` / `transition.drawer` | 0.4s | 抽屉带轻微回弹 |
+| 折叠面板、手风琴 | `transition.disclosure` | 0.35s，`ease.soft` | 能看见展开过程 |
+| 标签页、选中滑块 | `spring.selection` | 刚度 300 / 阻尼 30 | 平滑滑动 |
+| 菜单项悬停高亮 | `spring.highlight` | 刚度 500 / 阻尼 40 | 约 150ms，不拖尾 |
+| 提示通知（Toast） | `spring.toast` | 刚度 280 / 阻尼 24 | 从边缘升起，过冲约 4% |
+| 列表增删、让位 | `spring.reflow` | 刚度 500 / 阻尼 40 | 快，无过冲 |
+| 进度条 | `spring.progress` | 刚度 300 / 阻尼 35 | 无过冲 |
+| 积分、用量数字 | `spring.number` | 刚度 90 / 阻尼 50 | 滚动到目标值 |
+| 小标记弹出（单选圆点等） | `spring.bounce` | 刚度 200 / 阻尼 16 | 明显弹跳 |
+| 选中对勾 | `transition.check` 或 `spring.checkPop` | 描线 0.3s，或弹出过冲约 13% | 可通过 `checkAnimation` 切换 |
 
-- 统一使用 `motion/react`，由根布局提供统一的 `MotionConfig`。
-- 默认使用 `easeOut` 或平滑的 cubic-bezier，不使用夸张弹跳。
-- 优先动画 `opacity` 和 `transform`，避免造成大面积布局重排。
-- 列表使用轻微错峰，最多 4 个条目，不能让长列表逐项等待。
-- Agent 状态可以使用轻微呼吸或脉冲，但必须有限时、低对比，并且在完成后停止。
-- 流式回答不对每个字符做独立动画；使用稳定的增量渲染和段落级反馈。
-- 所有动效支持 `prefers-reduced-motion`，减少为即时切换或极短淡入。
-- 动效不得遮挡内容、改变按钮尺寸或造成布局抖动。
+### 6.5 实现与速度
+
+- 统一使用 `motion/react` 与 `@animate-ui/react`，由根布局提供 `MotionConfig`；整体快慢由 `AnimateUIProvider` 的 `tempo` 控制，默认 1，看过原型后再定最终值。
+- 弹出层从触发点长出来：菜单、气泡、提示从触发元素位置展开，对话框居中。
+- 按压反馈：按下缩到 0.97，悬停不缩放，悬停只改颜色、背景、边框或阴影。
+- 选中和悬停高亮在条目间滑动（标签页、菜单、工具栏、列表）。
+- Animate UI 的基元已内置 reduced-motion 处理：系统开启后位移取消，淡入淡出保留。内容顺序和反馈在关闭动画后仍须完整清晰。
+- 动效不得遮挡内容、改变按钮尺寸；对话正文是否使用文字动画，以原型验证中文观感后再定。
+- 验收覆盖流式增长、历史回答、滚动及 reduced motion。
 
 ## 7. Agent 表达规范
 
@@ -583,7 +615,7 @@ Agent 的表达型动效必须满足：
 
 - 先审视整体美感与任务体验：信息层级、比例、留白、对齐、操作分组是否协调；不能仅因组件已复用或测试可点击就通过验收。
 - 在真实业务页面逐张查看桌面与手机截图，检查父子容器的最终计算尺寸、内容内边距、图片点击区、长名称、加载与错误状态；独立组件或后台测试入口不能替代实际使用场景。
-- 是否复用了现有 Radix、Lucide 和 Motion 入口。
+- 是否复用了现有 Radix、Lucide、Motion 和 Animate UI 入口。
 - 是否新增了重复依赖或重复组件实现。
 - 是否定义了加载、成功、失败、空、禁用和无权限状态。
 - 是否验证了键盘焦点、Escape 关闭和 Tooltip。
@@ -604,6 +636,7 @@ Agent 的表达型动效必须满足：
 - Radix Colors：语义色阶和明暗主题基础。
 - Lucide：统一图标系统。
 - Motion：React 动画与 reduced-motion 支持。
+- Animate UI：动效令牌、强度档位及动画化的 Radix 基元（见第 5.4 节与第 6 章）。
 - Carbon Design System：生产型动效与表达型动效的区分。
 - Atlassian Design System：时长、缓动和属性的动效建模。
 - WCAG 2.2：键盘、对比度、焦点和动画可访问性要求。
